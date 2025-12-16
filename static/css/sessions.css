@@ -336,12 +336,16 @@
 }
 
 /* Delete Modal Specific Styles */
-#sessionDeleteModal .delete-modal-body {
+#sessionDeleteModal .delete-modal-body,
+#sessionSwitchModal .delete-modal-body,
+#sessionNewModal .delete-modal-body {
   padding: 30px;
   text-align: center;
 }
 
-#sessionDeleteModal .delete-modal-body p {
+#sessionDeleteModal .delete-modal-body p,
+#sessionSwitchModal .delete-modal-body p,
+#sessionNewModal .delete-modal-body p {
   margin: 0.75rem 0;
   color: var(--text-primary, #f0f6fc);
   font-size: 15px;
@@ -361,14 +365,18 @@
   font-size: 16px;
 }
 
-#sessionDeleteModal .warning-text {
+#sessionDeleteModal .warning-text,
+#sessionSwitchModal .warning-text,
+#sessionNewModal .warning-text {
   color: #f85149;
   font-size: 14px;
   font-weight: 500;
   margin-top: 1.25rem;
 }
 
-#sessionDeleteModal .modal-footer {
+#sessionDeleteModal .modal-footer,
+#sessionSwitchModal .modal-footer,
+#sessionNewModal .modal-footer {
   padding: 20px 30px 30px 30px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   margin: 0;

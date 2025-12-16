@@ -259,6 +259,141 @@ export class SessionManager {
     document.addEventListener('keydown', escHandler);
   }
 
+  isRequestActive() {
+    // Check if chat module has an active request
+    // Access the EventSource from chat_module if available
+    if (window.chatModule && window.chatModule.hasActiveRequest) {
+      return window.chatModule.hasActiveRequest();
+    }
+    return false;
+  }
+
+  async showSwitchConfirmation(targetSessionId) {
+    return new Promise((resolve) => {
+      // Close any existing modal
+      const existingModal = document.querySelector('#sessionSwitchModal');
+      if (existingModal) {
+        existingModal.remove();
+      }
+      
+      // Create confirmation modal
+      const modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.id = 'sessionSwitchModal';
+      modal.style.display = 'block';
+      modal.innerHTML = `
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>⚠️ Active Request Running</h2>
+            <span class="close">&times;</span>
+          </div>
+          <div class="delete-modal-body">
+            <p>A request is currently being processed.</p>
+            <p>Switching sessions now will <strong>cancel</strong> the running request.</p>
+            <p class="warning-text">Do you want to continue?</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Stay Here</button>
+            <button type="button" class="btn btn-danger modal-confirm-switch">Switch Session</button>
+          </div>
+        </div>
+      `;
+      
+      document.body.appendChild(modal);
+      
+      const closeBtn = modal.querySelector('.close');
+      const cancelBtn = modal.querySelector('.modal-cancel');
+      const confirmBtn = modal.querySelector('.modal-confirm-switch');
+      
+      // Close handlers - resolve(false)
+      const closeModal = (confirmed) => {
+        modal.remove();
+        resolve(confirmed);
+      };
+      
+      closeBtn.addEventListener('click', () => closeModal(false));
+      cancelBtn.addEventListener('click', () => closeModal(false));
+      confirmBtn.addEventListener('click', () => closeModal(true));
+      
+      // Click outside modal
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal(false);
+      });
+      
+      // ESC key
+      const escHandler = (e) => {
+        if (e.key === 'Escape') {
+          closeModal(false);
+          document.removeEventListener('keydown', escHandler);
+        }
+      };
+      document.addEventListener('keydown', escHandler);
+    });
+  }
+
+  async showNewConversationConfirmation() {
+    return new Promise((resolve) => {
+      // Close any existing modal
+      const existingModal = document.querySelector('#sessionNewModal');
+      if (existingModal) {
+        existingModal.remove();
+      }
+      
+      // Create confirmation modal
+      const modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.id = 'sessionNewModal';
+      modal.style.display = 'block';
+      modal.innerHTML = `
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>⚠️ Active Request Running</h2>
+            <span class="close">&times;</span>
+          </div>
+          <div class="delete-modal-body">
+            <p>A request is currently being processed.</p>
+            <p>Starting a new conversation will <strong>cancel</strong> the running request.</p>
+            <p class="warning-text">Do you want to continue?</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Stay Here</button>
+            <button type="button" class="btn btn-danger modal-confirm-new">New Conversation</button>
+          </div>
+        </div>
+      `;
+      
+      document.body.appendChild(modal);
+      
+      const closeBtn = modal.querySelector('.close');
+      const cancelBtn = modal.querySelector('.modal-cancel');
+      const confirmBtn = modal.querySelector('.modal-confirm-new');
+      
+      // Close handlers - resolve(false)
+      const closeModal = (confirmed) => {
+        modal.remove();
+        resolve(confirmed);
+      };
+      
+      closeBtn.addEventListener('click', () => closeModal(false));
+      cancelBtn.addEventListener('click', () => closeModal(false));
+      confirmBtn.addEventListener('click', () => closeModal(true));
+      
+      // Click outside modal
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal(false);
+      });
+      
+      // ESC key
+      const escHandler = (e) => {
+        if (e.key === 'Escape') {
+          closeModal(false);
+          document.removeEventListener('keydown', escHandler);
+        }
+      };
+      document.addEventListener('keydown', escHandler);
+    });
+  }
+
   setupEventListeners() {
     // Toggle sidebar
     document.getElementById('sessionsToggleBtn')?.addEventListener('click', () => {
@@ -339,14 +474,14 @@ export class SessionManager {
     listEl.querySelectorAll('.session-item').forEach(item => {
       const sessionId = item.dataset.sessionId;
       
-      item.addEventListener('click', (e) => {
+      item.addEventListener('click', async (e) => {
         // Don't trigger if clicking on action buttons or toggle
         if (e.target.closest('.session-item-btn') || e.target.closest('.session-toggle-btn')) return;
         
         // Stop propagation to prevent parent session items from also firing
         e.stopPropagation();
         
-        this.loadSession(sessionId);
+        await this.loadSession(sessionId);
       });
     });
     
@@ -480,7 +615,16 @@ export class SessionManager {
     return div.innerHTML;
   }
 
-  newConversation() {
+  async newConversation() {
+    // Check if a request is currently active
+    if (this.isRequestActive()) {
+      // Show confirmation dialog
+      const confirmed = await this.showNewConversationConfirmation();
+      if (!confirmed) {
+        return; // User cancelled
+      }
+    }
+    
     // Clear current session
     this.currentSessionId = null;
     sessionStorage.removeItem('lastSessionId');
@@ -501,7 +645,16 @@ export class SessionManager {
     window.dispatchEvent(new CustomEvent('session:new'));
   }
 
-  async loadSession(sessionId) {
+  async loadSession(sessionId, force = false) {
+    // Check if a request is currently active
+    if (!force && this.isRequestActive()) {
+      // Show confirmation dialog
+      const confirmed = await this.showSwitchConfirmation(sessionId);
+      if (!confirmed) {
+        return; // User cancelled
+      }
+    }
+    
     try {
       const response = await fetch(`/api/sessions/${sessionId}`, {
         credentials: 'include'

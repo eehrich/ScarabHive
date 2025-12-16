@@ -1527,5 +1527,13 @@
     }
   }
 
+  // Public method to check if a request is active
+  chatModule.hasActiveRequest = function() {
+    return currentEventSource !== null || currentStatusEventSource !== null;
+  };
+
+  // Export chatModule to window
+  global.chatModule = chatModule;
+
 })(window);
 
