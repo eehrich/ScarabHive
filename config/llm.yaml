@@ -26,6 +26,23 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
+    gemini-2-5-flash-nostream:
+      provider: gemini_sdk
+      model: gemini-2.5-flash
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
+      request_timeout: 180
+      include_thoughts: false
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false  # Streams reasoning tokens via delta.reasoning
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
     gemini-3-0-pro:
       provider: gemini_sdk
       model: gemini-3-pro-preview
@@ -51,6 +68,7 @@ llm_system:
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
       request_timeout: 180
+      include_thoughts: false
       capabilities:
         tools: true
         function_calling: true
@@ -268,7 +286,7 @@ llm_system:
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 500
     normal:
-      model_ref: gemini-3-0-pro-nostream
+      model_ref: gemini-2-5-flash-nostream
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
     think:
@@ -303,6 +321,7 @@ llm_system:
       model_ref: gpt-realtime-mini
       description: "Realtime answers, for medium complex tasks"
       max_steps: 500
+
     gemini-flash:
       model_ref: gemini-2-5-flash
       description: "Google Gemini model for advanced reasoning tasks."
@@ -322,7 +341,8 @@ llm_system:
     gpt-nano:
       model_ref: gpt-5-nano
       description: "OpenAI model for medium reasoning tasks."
-      max_steps: 500          
+      max_steps: 500    
+            
     local:
       model_ref: ollama-gpt-oss-20b
       description: "Model for privacy and offline usage, powerful but slow."
