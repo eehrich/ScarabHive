@@ -130,21 +130,27 @@ async def test_semantic_search_indexes_root_files(workspace_config):
     # Build index
     await server.search_engine.rebuild_index(incremental=False)
     
-    # ChromaDB should contain files from tests/ and src/
-    if server.search_engine.chroma_collection:
-        count = server.search_engine.chroma_collection.count()
+    # Vector store should contain files from tests/ and src/
+    if server.search_engine._vector_store:
+        count = server.search_engine._vector_store.count(server.search_engine._collection_name)
         assert count > 50, "Expected test and src files to be indexed"
         
-        # Check for specific root files
-        sample = server.search_engine.chroma_collection.peek(limit=20)
-        file_paths = [meta.get('file_path', '') for meta in sample['metadatas']]
+        # Check for specific root files using query (peek not in VectorStore interface)
+        result = server.search_engine._vector_store.query(
+            server.search_engine._collection_name,
+            "test function",
+            n_results=20
+        )
+        # VectorStore returns list-of-lists format, unwrap first result set
+        metadatas = result['metadatas'][0] if result.get('metadatas') else []
+        file_paths = [meta.get('file_path', '') for meta in metadatas]
         
         # Should include some root files (not just external dependencies)
         root_files = [p for p in file_paths if not any(
             exclude in p.lower() 
             for exclude in ['external', 'node_modules', '.venv', '.git']
         )]
-        assert len(root_files) > 0, "Expected root project files in ChromaDB"
+        assert len(root_files) > 0, "Expected root project files in vector store"
     
     await server.search_engine.stop()
 
@@ -163,10 +169,10 @@ async def test_chromadb_batch_size_handling(workspace_config):
     await server.search_engine.rebuild_index(incremental=False)
     
     # Should not raise batch size errors
-    if server.search_engine.chroma_collection:
-        count = server.search_engine.chroma_collection.count()
+    if server.search_engine._vector_store:
+        count = server.search_engine._vector_store.count(server.search_engine._collection_name)
         # Should handle more than 5000 files (old batch limit)
-        assert count >= 0, "ChromaDB indexing should complete without errors"
+        assert count >= 0, "Vector store indexing should complete without errors"
     
     await server.search_engine.stop()
 
