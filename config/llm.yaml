@@ -15,6 +15,7 @@ llm_system:
       base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
       context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
       request_timeout: 180
+      parallel_tool_calls: false  # Gemini doesn't support this OpenAI parameter
       capabilities:
         tools: true
         function_calling: true
@@ -32,11 +33,29 @@ llm_system:
       base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
       context_window: 200000  # Gemini 3 Pro: 1M input / 64k output, limit to 200k because of $$$
       request_timeout: 180
+      parallel_tool_calls: false  # Gemini doesn't support this OpenAI parameter
       capabilities:
         tools: true
         function_calling: true
         image_input: true
         streaming: true  # Streams reasoning tokens via delta.reasoning
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    gemini-3-0-pro-nostream:
+      provider: openai_httpx
+      model: gemini-3-pro-preview
+      openai_api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
+      context_window: 200000  # Gemini 3 Pro: 1M input / 64k output, limit to 200k because of $$$
+      request_timeout: 180
+      parallel_tool_calls: false  # Gemini doesn't support this OpenAI parameter
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
@@ -247,51 +266,67 @@ llm_system:
     turbo:
       model_ref: gpt-5-nano
       description: "Turbo model for high-speed responses and cheap, but less powerful"
-      max_steps: 100
+      max_steps: 500
     normal:
-      model_ref: gpt-5-mini
+      model_ref: gemini-3-0-pro-nostream
       description: "Fast model for medium reasoning tasks"
-      max_steps: 100
+      max_steps: 500
     think:
-      model_ref: gpt-5.1
+      model_ref: gemini-3-0-pro-nostream
       description: "Advanced model for complex reasoning"
-      max_steps: 100
+      max_steps: 500
+    think-stream:
+      model_ref: gemini-3-0-pro
+      description: "Advanced model for complex reasoning"
+      max_steps: 500      
     big:
       model_ref: gpt-4.1
       description: "Expensive model with big context window, legacy and medium powerful."
-      max_steps: 100
+      max_steps: 500
     chat:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks."
-      max_steps: 100
+      max_steps: 500
     chat-nostream:
       model_ref: deepseek-chat-nostream
       description: "Cheap and fast none thinking model, for medium complex tasks."
-      max_steps: 100
+      max_steps: 500
     code:
       model_ref: gpt-5.1-codex
       description: "Special LLM for complex reasoning Codeing tasks."
-      max_steps: 100
+      max_steps: 500
     code-mini:
       model_ref: gpt-5.1-codex-mini
       description: "Special LLM for medium reasoning Codeing tasks."
-      max_steps: 100
+      max_steps: 500
     realtime:
       model_ref: gpt-realtime-mini
       description: "Realtime answers, for medium complex tasks"
-      max_steps: 100
+      max_steps: 500
     gemini-flash:
       model_ref: gemini-2-5-flash
       description: "Google Gemini model for advanced reasoning tasks."
-      max_steps: 100
+      max_steps: 500
     gemini-pro:
       model_ref: gemini-3-0-pro
       description: "Google Gemini model for advanced reasoning tasks."
-      max_steps: 100
+      max_steps: 500
+    gpt-full:
+      model_ref: gpt-5.1
+      description: "OpenAI Powerful model for complex reasoning tasks."
+      max_steps: 500     
+    gpt-mini:
+      model_ref: gpt-5-mini
+      description: "OpenAI model for medium reasoning tasks."
+      max_steps: 500          
+    gpt-nano:
+      model_ref: gpt-5-mini
+      description: "OpenAI model for medium reasoning tasks."
+      max_steps: 500          
     local:
       model_ref: ollama-gpt-oss-20b
       description: "Model for privacy and offline usage, powerful but slow."
-      max_steps: 100
+      max_steps: 500
 
   default_profile: normal
 

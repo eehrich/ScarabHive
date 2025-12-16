@@ -52,6 +52,7 @@ class HTTPXOpenAIClient(LLMClient):
         verify: Optional[bool] = None,
         context_window: Optional[int] = None,
         capabilities: Optional[dict] = None,
+        parallel_tool_calls: bool = True,
         **extra_params
     ):
         # LLMClient doesn't have __init__, so no super() call needed
@@ -64,6 +65,7 @@ class HTTPXOpenAIClient(LLMClient):
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
         self.verify = verify
+        self.parallel_tool_calls = parallel_tool_calls
         self.extra_params = extra_params
         self.capabilities = capabilities or {}
 
@@ -229,7 +231,8 @@ class HTTPXOpenAIClient(LLMClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-
+            if self.parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
         url = f"{self.base_url}/chat/completions"
 
         # Retry logic with exponential backoff
@@ -325,6 +328,8 @@ class HTTPXOpenAIClient(LLMClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            if self.parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
 
         url = f"{self.base_url}/chat/completions"
 
@@ -535,6 +540,8 @@ class HTTPXOpenAIClient(LLMClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            if self.parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
 
         url = f"{self.base_url}/chat/completions"
 

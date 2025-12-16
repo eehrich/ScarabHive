@@ -18,7 +18,7 @@ from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig  # type: ignore
 from ..config.models import ModelCapabilitiesConfig
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str], base_url: Optional[str] = None, ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None) -> LLMClient:
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], base_url: Optional[str] = None, ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -62,7 +62,8 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], base_url:
                 retry_backoff=1.0,
                 verify=ssl_verify,
                 context_window=context_window,
-                capabilities=capabilities
+                capabilities=capabilities,
+                parallel_tool_calls=parallel_tool_calls
             )
         else:
             return OpenAIAsyncClient(

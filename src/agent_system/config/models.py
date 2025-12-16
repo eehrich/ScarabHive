@@ -69,6 +69,7 @@ class LLMModelConfig(BaseModel):
     context_window: int = 32768  # default num_ctx for Ollama-compatible models
     ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
     request_timeout: int = 120  # seconds for LLM API calls
+    parallel_tool_calls: bool = True  # Enable parallel tool execution (set to False if LLM concatenates tool names/args)
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
 
