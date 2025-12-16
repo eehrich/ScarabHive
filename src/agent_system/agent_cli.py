@@ -1584,7 +1584,8 @@ def main() -> None:
                                 output=summary,
                                 agent_instance=agent,
                                 session_id=actual_session_id,
-                                request_id="cli_display"
+                                request_id="cli_display",
+                                output_format='ansi'  # Request ANSI format for terminal display
                             )
                             if content_format == 'ansi':
                                 render_with_rich(formatted_summary)

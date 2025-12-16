@@ -275,20 +275,60 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 )
             
             elif target_format == 'ansi':
-                # For ANSI output, return the markdown content as-is
-                # The CLI will render it directly with Rich Console
-                # Input is ALWAYS markdown from LLM (thanks to system prompt)
+                # For ANSI output, prepare content for Rich Console rendering in CLI
+                # Input may be Markdown (from LLM) OR HTML (from earlier format_output hook with html target)
                 
-                logger.info(f"Preparing markdown for ANSI rendering (length: {len(output)})")
+                logger.info(f"Preparing content for ANSI rendering (length: {len(output)})")
                 
-                # Just return the markdown - no conversion needed!
-                # Rich Markdown will handle the syntax highlighting
-                updated_context = replace(context, output=output)
+                # Check if input is HTML (from earlier format_output hook that converted for web/storage)
+                if output.strip().startswith('<') and ('</p>' in output or '</h1>' in output or '</h2>' in output):
+                    logger.info("Detected HTML input for ANSI, converting back to Markdown for Rich rendering")
+                    try:
+                        # Convert HTML back to Markdown so Rich Console can render it properly
+                        from markdownify import markdownify as md_convert
+                        markdown_content = md_convert(output, heading_style="ATX")
+                        
+                        logger.debug(f"HTML->Markdown conversion: {len(output)} -> {len(markdown_content)} chars")
+                        
+                        return HookResult(
+                            success=True,
+                            modified=True,
+                            context=replace(context, output=markdown_content),
+                            metadata={
+                                'content_format': 'ansi',
+                                'converted_from': 'html',
+                                'original_length': len(output),
+                                'markdown_length': len(markdown_content),
+                                'render_with_rich': True
+                            }
+                        )
+                    except ImportError:
+                        logger.warning("markdownify not available for HTML->Markdown conversion, stripping HTML tags")
+                        # Fallback: strip HTML tags to get plain text
+                        import re
+                        text_content = re.sub(r'<[^>]+>', '', output).strip()
+                        return HookResult(
+                            success=True,
+                            modified=True,
+                            context=replace(context, output=text_content),
+                            metadata={
+                                'content_format': 'ansi',
+                                'converted_from': 'html_stripped',
+                                'original_length': len(output),
+                                'text_length': len(text_content)
+                            }
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to convert HTML for ANSI: {e}")
+                        # Return as-is and let CLI handle it
+                
+                # Input is already Markdown - return as-is for Rich Console rendering
+                logger.debug(f"Markdown content ready for ANSI rendering (length: {len(output)})")
                 
                 return HookResult(
                     success=True,
-                    modified=False,  # We're not modifying, just passing through
-                    context=updated_context,
+                    modified=False,
+                    context=replace(context, output=output),
                     metadata={
                         'content_format': 'ansi',
                         'original_length': len(output),
