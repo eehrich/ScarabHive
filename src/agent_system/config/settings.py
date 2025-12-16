@@ -244,7 +244,6 @@ def _resolve_server_inheritance(
     Raises:
         ValueError: If circular inheritance detected
     """
-    from .models import MCPConfig
     
     # Check cache for top-level calls only (not during recursion)
     if visited is None and server_name in _inheritance_cache:
