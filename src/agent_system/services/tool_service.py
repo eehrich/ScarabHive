@@ -118,7 +118,7 @@ class ToolService:
                     return {"error": f"Failed to list tools: {str(e)}"}
             
             # Calculate effective tools based on filtering
-            if allowed_tools:
+            if allowed_tools is not None:
                 effective_tools = [t for t in available_tools if t in allowed_tools]
             elif blocked_tools:
                 effective_tools = [t for t in available_tools if t not in blocked_tools]
@@ -393,9 +393,9 @@ class ToolService:
         # Determine status
         if blocked_tools and tool_name in blocked_tools:
             status = "blocked"
-        elif allowed_tools and tool_name in allowed_tools:
+        elif allowed_tools is not None and tool_name in allowed_tools:
             status = "allowed"
-        elif allowed_tools:
+        elif allowed_tools is not None:
             # If allowed list exists but tool not in it, it's blocked
             status = "blocked"
         else:

@@ -64,7 +64,8 @@ class LLMModelConfig(BaseModel):
     provider: Literal["ollama", "openai", "openai_httpx", "mock"] = "ollama"
     model: str
     openai_api_key: Optional[str] = None
-    ollama_url: Optional[str] = None  # e.g. http://remote-host:11434
+    base_url: Optional[str] = None  # Custom base URL for OpenAI-compatible APIs (e.g. Gemini, Ollama)
+    ollama_url: Optional[str] = None  # e.g. http://remote-host:11434 (deprecated, use base_url instead)
     context_window: int = 32768  # default num_ctx for Ollama-compatible models
     ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
     request_timeout: int = 120  # seconds for LLM API calls

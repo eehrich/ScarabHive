@@ -204,10 +204,124 @@
             margin-bottom: 20px;
         }
 
+        .success {
+            color: #4ec9b0;
+            padding: 10px;
+            background: #1e3e1e;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
         .no-data {
             color: #858585;
             text-align: center;
             padding: 40px;
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-content {
+            background-color: #1e1e1e;
+            margin: 15% auto;
+            padding: 0;
+            border-radius: 8px;
+            max-width: 450px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            animation: slideDown 0.3s ease;
+            border: 1px solid #569cd6;
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            background: #2d2d2d;
+            color: white;
+            padding: 20px 25px;
+            border-radius: 8px 8px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #569cd6;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.3rem;
+            color: #dcdcaa;
+        }
+
+        .close {
+            color: #858585;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+            transition: color 0.2s ease;
+        }
+
+        .close:hover {
+            color: #f48771;
+        }
+
+        .modal-body {
+            padding: 25px;
+            color: #d4d4d4;
+            line-height: 1.6;
+        }
+
+        .modal-footer {
+            padding: 15px 25px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            border-top: 1px solid #3e3e3e;
+        }
+
+        .modal-footer button {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+        }
+
+        .modal-footer button.cancel {
+            background: #3e3e3e;
+            color: #d4d4d4;
+        }
+
+        .modal-footer button.cancel:hover {
+            background: #4e4e4e;
+        }
+
+        .modal-footer button.danger {
+            background: #f48771;
+            color: white;
+        }
+
+        .modal-footer button.danger:hover {
+            background: #e06c5c;
         }
     </style>
 </head>
@@ -566,15 +680,37 @@
             }
         }
 
-        async function clearHistory() {
-            if (!confirm('Clear all usage history?')) return;
+        function clearHistory() {
+            console.log('clearHistory() called - showing modal');
+            document.getElementById('clearHistoryModal').style.display = 'block';
+        }
 
+        function closeClearHistoryModal() {
+            console.log('closeClearHistoryModal() called');
+            document.getElementById('clearHistoryModal').style.display = 'none';
+        }
+
+        async function confirmClearHistory() {
+            console.log('confirmClearHistory() called');
+            const errorContainer = document.getElementById('error-container');
+            
+            // Close modal
+            closeClearHistoryModal();
+            
             try {
-                await fetch('/plugins/context_usage_tracker/clear', { method: 'POST' });
+                errorContainer.innerHTML = '<div class="success">⏳ Clearing history...</div>';
+                const response = await fetch('/plugins/context_usage_tracker/clear', { method: 'POST' });
+                console.log('Clear response:', response.status);
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                errorContainer.innerHTML = '<div class="success">✅ History cleared successfully!</div>';
+                setTimeout(() => { errorContainer.innerHTML = ''; }, 3000);
                 await refreshData();
             } catch (error) {
                 console.error('Error clearing history:', error);
-                alert('Error clearing history: ' + error.message);
+                errorContainer.innerHTML = `<div class="error">❌ Error clearing history: ${error.message}</div>`;
             }
         }
 
@@ -611,9 +747,35 @@
             refreshData();
         }
 
+        // Close modal when clicking outside of it
+        window.onclick = function(event) {
+            const modal = document.getElementById('clearHistoryModal');
+            if (event.target === modal) {
+                closeClearHistoryModal();
+            }
+        }
+
         initChart();
         refreshData();
         autoRefreshInterval = setInterval(refreshData, 5000);
     </script>
+
+    <!-- Clear History Modal -->
+    <div id="clearHistoryModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚠️ Clear History</h2>
+                <span class="close" onclick="closeClearHistoryModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to clear all context usage history?</p>
+                <p><strong>This action cannot be undone.</strong></p>
+            </div>
+            <div class="modal-footer">
+                <button class="cancel" onclick="closeClearHistoryModal()">Cancel</button>
+                <button class="danger" onclick="confirmClearHistory()">Clear History</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

@@ -7,6 +7,7 @@ behavior explicit and testable.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from pathlib import Path
 import os
@@ -14,6 +15,8 @@ import yaml
 import glob as glob_module
 
 from .models import AgentSystemConfig, MCPConfig
+
+logger = logging.getLogger(__name__)
 
 
 def deep_merge(base: dict, overlay: dict) -> dict:
@@ -52,6 +55,11 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                      the `config/config.yaml` file if it exists or the
                      path from the AGENT_CONFIG_PATH environment variable.
     """
+    # Clear caches when reloading settings
+    global _plugins_cache, _inheritance_cache
+    _plugins_cache = None
+    _inheritance_cache.clear()
+    
     # Allow overriding default config file via env var
     env_cfg = os.environ.get("AGENT_CONFIG_PATH")
     cfg_path = Path(config_path or env_cfg or "config/config.yaml")
@@ -200,12 +208,127 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     return AgentSystemConfig.model_validate(data)
 
 
-def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig] = None) -> Optional[MCPConfig]:
-    """Get an MCPConfig by name with inheritance from default_config.    This function creates a final MCPConfig by:
-    1. Starting with the default_config (from plugins or legacy mcp_system)
-    2. Overlaying/merging the specific server configuration from servers[server_name]
+# Cache for plugin discovery (avoid repeated calls)
+_plugins_cache: dict[str, type] | None = None
+# Cache for resolved server inheritance
+_inheritance_cache: dict[str, tuple[str, dict]] = {}
+
+
+def _get_plugins_cached() -> dict[str, type]:
+    """Get plugins with caching to avoid repeated discovery."""
+    global _plugins_cache
+    if _plugins_cache is None:
+        from ..plugins import discover_all_plugins
+        _plugins_cache = discover_all_plugins()
+    return _plugins_cache
+
+
+def _resolve_server_inheritance(
+    server_name: str,
+    config: "AgentSystemConfig",
+    visited: set[str] | None = None
+) -> tuple[str, dict]:
+    """Resolve server config inheritance chain with caching.
     
-    Supports both new structure (config.plugins) and legacy (config.mcp_system).
+    If a server's type refers to another server (not a plugin), this function
+    resolves the inheritance chain and merges configurations.
+    
+    Args:
+        server_name: Name of the server to resolve
+        config: AgentSystemConfig instance
+        visited: Set of already visited servers (for cycle detection)
+        
+    Returns:
+        Tuple of (final_plugin_type, merged_config_dict)
+        
+    Raises:
+        ValueError: If circular inheritance detected
+    """
+    
+    # Check cache for top-level calls only (not during recursion)
+    if visited is None and server_name in _inheritance_cache:
+        return _inheritance_cache[server_name]
+    
+    if visited is None:
+        visited = set()
+    
+    if server_name in visited:
+        raise ValueError(f"Circular inheritance detected: {' -> '.join(visited)} -> {server_name}")
+    
+    visited.add(server_name)
+    
+    # Get server config
+    server_config = config.plugins.servers.get(server_name)
+    if server_config is None:
+        return (server_name, {})  # Not found, return as-is
+    
+    server_dict = server_config.model_dump()
+    typ = server_dict.get("type", "basic_agent")
+    
+    # Check if server references itself (e.g., writer_content with type: writer_content)
+    # This is not real inheritance, treat it as if type is a plugin
+    if typ == server_name:
+        # Check if it's a known plugin
+        plugins = _get_plugins_cached()
+        if typ in plugins:
+            # Type is a real plugin, return as-is
+            result = (typ, server_dict)
+            _inheritance_cache[server_name] = result
+            return result
+        else:
+            # Self-reference but not a plugin - return as-is (will fail later in bootstrap)
+            return (typ, server_dict)
+    
+    # Check if type is a known plugin (use cached plugins)
+    plugins = _get_plugins_cached()
+    
+    if typ in plugins:
+        # Type is a real plugin, no further inheritance needed
+        result = (typ, server_dict)
+        _inheritance_cache[server_name] = result
+        return result
+    
+    # Type might be another server - check if it exists
+    parent_server = config.plugins.servers.get(typ)
+    if parent_server is None:
+        # Not a server either, return as-is (will fail later in bootstrap)
+        return (typ, server_dict)
+    
+    # Recursively resolve parent
+    parent_type, parent_dict = _resolve_server_inheritance(typ, config, visited)
+    
+    # Merge: parent config first, then child overrides
+    merged = _deep_merge_dict(parent_dict, server_dict)
+    # The final type comes from the resolved parent chain
+    merged["type"] = parent_type
+    
+    result = (parent_type, merged)
+    
+    # Cache result for this server_name (at any recursion level, since visited contains it)
+    # This way sub_agent_character_designer gets cached even though it goes through writer_agent
+    _inheritance_cache[server_name] = result
+    
+    return result
+
+
+def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig] = None) -> Optional[MCPConfig]:
+    """Get an MCPConfig by name with inheritance from default_config and parent servers.
+    
+    This function creates a final MCPConfig by:
+    1. Starting with the default_config (from plugins or legacy mcp_system)
+    2. Resolving inheritance if type refers to another server (e.g., type: writer_agent)
+    3. Overlaying/merging the specific server configuration
+    
+    Server inheritance example:
+        writer_agent:
+          type: basic_agent
+          agent_config:
+            hooks: {enabled: true}
+            
+        character_designer:
+          type: writer_agent  # Inherits from writer_agent, resolves to basic_agent
+          agent_config:
+            max_steps: 50     # Override specific values
     
     Args:
         server_name: Name of the server configuration to retrieve
@@ -223,19 +346,27 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     if not config.plugins:
         return None
     
-    default_config_dict = config.plugins.default_config.model_dump()
     server_config = config.plugins.servers.get(server_name)
-    
     if server_config is None:
         return None
     
-    server_config_dict = server_config.model_dump()
+    default_config_dict = config.plugins.default_config.model_dump()
     
-    # Start with a complete copy of default config
+    # Resolve inheritance chain (type: writer_agent -> type: basic_agent)
+    try:
+        final_type, resolved_config_dict = _resolve_server_inheritance(server_name, config)
+        logger.debug(
+            "Resolved server '%s': type '%s' -> '%s'",
+            server_name, server_config.type, final_type
+        )
+    except ValueError as e:
+        logger.error("Failed to resolve inheritance for '%s': %s", server_name, e)
+        # Fall back to direct config without inheritance
+        resolved_config_dict = server_config.model_dump()
+    
+    # Start with default config, then merge resolved (inherited) config
     merged_config = default_config_dict.copy()
-    
-    # Deep merge server-specific overrides
-    merged_config = _deep_merge_dict(merged_config, server_config_dict)
+    merged_config = _deep_merge_dict(merged_config, resolved_config_dict)
     
     # Create and return final MCPConfig instance
     return MCPConfig.model_validate(merged_config)

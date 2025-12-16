@@ -234,6 +234,10 @@ class OpenAIAsyncClient(LLMClient):
                                 original_exception=e
                             )
                     raise
+            # Check if resp is None after retry loop (e.g., all attempts failed with rate limiting)
+            if resp is None:
+                raise Exception(f"OpenAI API request failed after {max_attempts} attempts (rate limiting or other errors)")
+            
             try:
                 logger.debug("OpenAI resp id=%s choices=%d", getattr(resp, "id", None), len(getattr(resp, "choices", []) or []))
             except Exception as e:
@@ -424,6 +428,11 @@ class OpenAIAsyncClient(LLMClient):
                                 original_exception=e
                             )
                     raise
+            
+            # Check if resp is None after retry loop (e.g., all attempts failed with rate limiting)
+            if resp is None:
+                raise Exception(f"OpenAI API request failed after {max_attempts} attempts (rate limiting or other errors)")
+            
             choice = resp.choices[0] if resp.choices else None
             if not choice:
                 return {"assistant": {"role": "assistant", "content": ""}}
@@ -709,6 +718,13 @@ class OpenAIAsyncClient(LLMClient):
                     delta = choices[0].delta if hasattr(choices[0], 'delta') else None
                     if not delta:
                         continue
+
+                    # Handle reasoning/thinking delta (Gemini thinking tokens)
+                    if hasattr(delta, 'reasoning') and delta.reasoning:
+                        yield {
+                            "type": "thinking_delta",
+                            "delta": delta.reasoning
+                        }
 
                     # Handle content delta
                     if hasattr(delta, 'content') and delta.content:

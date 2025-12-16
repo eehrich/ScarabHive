@@ -108,3 +108,74 @@ async def test_blocked_tools_returned_with_allowed():
     # Blocked patterns should be returned for later application
     assert blocked_patterns is not None
     assert "writer_graph/writer_graph_batch_link" in blocked_patterns
+
+
+@pytest.mark.asyncio
+async def test_empty_allowed_list_denies_all_tools():
+    """Test that allowed=[] explicitly denies all tools (security by default)."""
+    system_config = Mock(spec=AgentSystemConfig)
+    system_config.llm_system = LLMSystemConfig(
+        models={"gpt-4o-mini": {"provider": "openai", "model": "gpt-4o-mini"}},
+        profiles={"default": {"model_ref": "gpt-4o-mini"}}
+    )
+    
+    # Explicitly set allowed to empty list
+    tool_config = ToolConfig(allowed=[])
+    agent_config = AgentConfig(llm_profile="default", tools=tool_config)
+    mcp_config = MCPConfig(type="basic_agent", enabled=True, agent_config=agent_config)
+    
+    registry = MCPRegistry()
+    agent = Agent("test_agent", system_config, mcp_config, registry)
+    
+    # Should return empty list - no tools allowed
+    filtered, _, _ = await agent.list_usable_tools()  # type: ignore[attr-defined]
+    assert filtered == []
+
+
+@pytest.mark.asyncio
+async def test_none_allowed_denies_all_tools():
+    """Test that allowed=None (not configured) denies all tools by default."""
+    system_config = Mock(spec=AgentSystemConfig)
+    system_config.llm_system = LLMSystemConfig(
+        models={"gpt-4o-mini": {"provider": "openai", "model": "gpt-4o-mini"}},
+        profiles={"default": {"model_ref": "gpt-4o-mini"}}
+    )
+    
+    # No tools config at all
+    agent_config = AgentConfig(llm_profile="default")
+    mcp_config = MCPConfig(type="basic_agent", enabled=True, agent_config=agent_config)
+    
+    registry = MCPRegistry()
+    agent = Agent("test_agent", system_config, mcp_config, registry)
+    
+    # Should return empty list - security by default
+    filtered, _, _ = await agent.list_usable_tools()  # type: ignore[attr-defined]
+    assert filtered == []
+
+
+@pytest.mark.asyncio
+async def test_wildcard_allows_all_tools():
+    """Test that allowed=["*"] explicitly allows all tools."""
+    system_config = Mock(spec=AgentSystemConfig)
+    system_config.llm_system = LLMSystemConfig(
+        models={"gpt-4o-mini": {"provider": "openai", "model": "gpt-4o-mini"}},
+        profiles={"default": {"model_ref": "gpt-4o-mini"}}
+    )
+    
+    # Wildcard to allow all
+    tool_config = ToolConfig(allowed=["*"])
+    agent_config = AgentConfig(llm_profile="default", tools=tool_config)
+    mcp_config = MCPConfig(type="basic_agent", enabled=True, agent_config=agent_config)
+    
+    registry = MCPRegistry()
+    
+    # Register a mock tool server
+    mock_server = Mock()
+    mock_server.schema = {"tools": [{"name": "test_tool"}, {"name": "another_tool"}]}
+    registry.register("mock_server", mock_server)
+    
+    agent = Agent("test_agent", system_config, mcp_config, registry)
+    
+    # Should include the mock_server when wildcard is used
+    filtered, _, _ = await agent.list_usable_tools()  # type: ignore[attr-defined]
+    assert "mock_server" in filtered
