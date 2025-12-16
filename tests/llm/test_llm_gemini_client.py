@@ -65,7 +65,11 @@ class TestGeminiClientMessageConversion:
         assert contents[0]["parts"] == [{"text": "I'm doing well, thank you!"}]
 
     def test_convert_tool_response(self, gemini_client):
-        """Test conversion of tool response message."""
+        """Test conversion of tool response message.
+        
+        IMPORTANT: Must use role="tool" (not "function") per current Gemini API.
+        The "function" role was deprecated in Gemini 1.5.
+        """
         messages = [
             ChatMessage(
                 role="tool",
@@ -79,7 +83,8 @@ class TestGeminiClientMessageConversion:
         
         assert system_instruction is None
         assert len(contents) == 1
-        assert contents[0]["role"] == "function"
+        # Must be "tool" per current Gemini API (not "function" which was old convention)
+        assert contents[0]["role"] == "tool", "Function responses must use role='tool' not 'function'"
         assert "functionResponse" in contents[0]["parts"][0]
         func_response = contents[0]["parts"][0]["functionResponse"]
         assert func_response["name"] == "get_weather"
@@ -188,7 +193,8 @@ class TestGeminiClientMessageConversion:
         
         assert contents[0]["role"] == "user"
         assert contents[1]["role"] == "model"
-        assert contents[2]["role"] == "function"
+        # Must use "tool" not "function" (old convention)
+        assert contents[2]["role"] == "tool"
         assert contents[3]["role"] == "model"
 
     def test_convert_tool_calls_with_thought_signature(self, gemini_client):

@@ -224,3 +224,51 @@ Available characters: 3 characters"""
         # Total length should be sum of both + separator
         expected_length = len(main_prompt) + 2 + len(sub_agent_context)  # 2 = len("\n\n")
         assert len(system_instruction) == expected_length
+
+    def test_tool_response_uses_correct_role(self, gemini_sdk_client):
+        """Test that tool responses use role='tool' not 'user'.
+        
+        CRITICAL: This test verifies the fix for MALFORMED_FUNCTION_CALL errors.
+        Function responses MUST use role="tool" per Gemini SDK documentation.
+        Using role="user" causes MALFORMED_FUNCTION_CALL errors with empty responses.
+        """
+        messages = [
+            ChatMessage(role="user", content="What's the weather?"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{
+                    "id": "call_weather_123",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"location": "Berlin"}'
+                    }
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"temperature": 22, "condition": "sunny"}',
+                tool_call_id="call_weather_123",
+                name="get_weather"
+            )
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        # Find the tool response in contents
+        tool_response = None
+        for part in contents:
+            if hasattr(part, 'parts') and part.parts:
+                for p in part.parts:
+                    if hasattr(p, 'function_response'):
+                        tool_response = part
+                        break
+        
+        assert tool_response is not None, "Tool response not found in converted messages"
+        
+        # CRITICAL: Must be "tool" not "user" to avoid MALFORMED_FUNCTION_CALL
+        assert tool_response.role == "tool", (
+            f"Function responses must use role='tool' not '{tool_response.role}'. "
+            "Using role='user' causes MALFORMED_FUNCTION_CALL errors!"
+        )

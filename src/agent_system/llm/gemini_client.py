@@ -100,9 +100,10 @@ class GeminiClient(LLMClient):
 
             # Handle tool responses
             if msg.role == "tool":
-                # Tool responses go as function responses
+                # Tool responses use role="tool" (per Gemini SDK docs)
+                # Note: "function" was the old Gemini 1.5 convention
                 content = {
-                    "role": "function",
+                    "role": "tool",
                     "parts": [{
                         "functionResponse": {
                             "name": msg.name or "unknown",

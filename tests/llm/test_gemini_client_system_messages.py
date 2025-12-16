@@ -170,3 +170,58 @@ class TestGeminiClientSystemMessageMerging:
         assert system_instruction.startswith("First:")
         assert "Second:" in system_instruction
         assert system_instruction.endswith("Third: Be helpful.")
+
+    def test_tool_response_uses_correct_role(self, gemini_client):
+        """Test that tool responses use role='tool' not 'function'.
+        
+        CRITICAL: This test verifies the fix for MALFORMED_FUNCTION_CALL errors.
+        Function responses MUST use role="tool" per current Gemini API.
+        The "function" role was deprecated in Gemini 1.5.
+        Using role="function" causes MALFORMED_FUNCTION_CALL errors.
+        """
+        messages = [
+            ChatMessage(role="user", content="What's the weather in Paris?"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{
+                    "id": "call_weather_789",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"location": "Paris"}'
+                    }
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"temperature": 18, "condition": "cloudy"}',
+                tool_call_id="call_weather_789",
+                name="get_weather"
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        # Find the tool response in contents
+        tool_response = None
+        for content in contents:
+            if content.get("role") == "tool":
+                tool_response = content
+                break
+        
+        assert tool_response is not None, "Tool response not found in converted messages"
+        
+        # CRITICAL: Must be "tool" not "function" to avoid MALFORMED_FUNCTION_CALL
+        assert tool_response["role"] == "tool", (
+            f"Function responses must use role='tool' not '{tool_response['role']}'. "
+            "The 'function' role was deprecated in Gemini 1.5!"
+        )
+        
+        # Verify the functionResponse structure
+        assert "parts" in tool_response
+        assert len(tool_response["parts"]) > 0
+        assert "functionResponse" in tool_response["parts"][0]
+        func_resp = tool_response["parts"][0]["functionResponse"]
+        assert func_resp["name"] == "get_weather"
+        assert func_resp["response"]["temperature"] == 18

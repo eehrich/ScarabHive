@@ -143,11 +143,12 @@ class GeminiSDKClient(LLMClient):
                     result_data = {"result": content_str}
                 
                 # Create function response part
+                # NOTE: Must use role="tool" (not "user") per Gemini SDK docs
                 function_response = types.Part.from_function_response(
                     name=tool_name,
                     response=result_data
                 )
-                contents.append(types.Content(role="user", parts=[function_response]))
+                contents.append(types.Content(role="tool", parts=[function_response]))
                 continue
             
             # Handle model responses with tool calls
