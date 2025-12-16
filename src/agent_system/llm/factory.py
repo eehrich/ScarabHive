@@ -61,6 +61,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.include_thoughts is not None:
         llm_kwargs["include_thoughts"] = model_config.include_thoughts
 
+    if model_config.thinking_budget is not None:
+        llm_kwargs["thinking_budget"] = model_config.thinking_budget
+
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)
     httpx_timeouts = None
     if model_config.httpx_timeouts:

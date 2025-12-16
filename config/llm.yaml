@@ -16,6 +16,7 @@ llm_system:
       context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
       request_timeout: 180
       include_thoughts: true
+      thinking_budget: 8192
       capabilities:
         tools: true
         function_calling: true
@@ -31,9 +32,10 @@ llm_system:
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # Gemini 2 Flash Thinking: 32k input / 8k output, limit to 200k
+      context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
       request_timeout: 180
       include_thoughts: true
+      thinking_budget: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -48,7 +50,7 @@ llm_system:
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # Gemini 2 Flash Thinking: 32k input / 8k output
+      context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
       request_timeout: 180
       capabilities:
         tools: true

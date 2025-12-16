@@ -1434,25 +1434,8 @@ class Agent(MCPServer):
             for status_event in yield_pending_status_events():
                 yield status_event
 
-            # Infinite loop guard: Track consecutive responses without tool calls
-            if not tool_calls:
-                consecutive_no_tool_calls += 1
-                if consecutive_no_tool_calls >= max_consecutive_no_tools:
-                    logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls")
-                    # Treat final content as answer (assistant_msg already added above)
-                    results["summary"] = content
-                    self._current_messages = messages.copy()
-                    # Use the already formatted content from above
-                    final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
-                    # Include usage data if available from last LLM call
-                    if llm_out and "usage" in llm_out:
-                        final_event["usage"] = llm_out["usage"]
-                    yield final_event
-                    return
-            else:
-                consecutive_no_tool_calls = 0  # Reset counter when we get tool calls
-
-            # Infinite loop guard: Track consecutive empty responses
+            # Infinite loop guard: Track consecutive empty responses FIRST
+            # (before checking tool calls, to catch completely empty responses)
             if not content and not tool_calls:
                 consecutive_empty_responses += 1
                 if consecutive_empty_responses >= max_consecutive_empty:
@@ -1464,8 +1447,10 @@ class Agent(MCPServer):
             else:
                 consecutive_empty_responses = 0  # Reset counter
 
-            # If we have tool calls, execute them
+            # Check if we have tool calls to execute
             if tool_calls:
+                # Reset no-tool-calls counter
+                consecutive_no_tool_calls = 0
                 # Signal tool execution start
                 await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
 
@@ -1588,10 +1573,12 @@ class Agent(MCPServer):
                 # Continue to next iteration to let LLM respond to tool results
                 continue
 
-            # No tool calls - this is the final answer
-            # IMPORTANT: Only stop if we have content AND no tool calls
-            # If LLM provided both content and tool_calls, the tool execution already happened above
-            if content and not tool_calls:
+            # No tool calls - check if we should treat this as the final answer
+            # Track consecutive responses without tool calls
+            consecutive_no_tool_calls += 1
+            
+            # If we have content AND it's not just whitespace, treat as final answer
+            if content and content.strip():
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
@@ -1600,6 +1587,19 @@ class Agent(MCPServer):
                 # Use the already formatted content from above
                 final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
                 # Include usage data if available from last LLM call
+                if llm_out and "usage" in llm_out:
+                    final_event["usage"] = llm_out["usage"]
+                yield final_event
+                return
+            
+            # No tool calls AND (no content OR empty content)
+            # Check consecutive no-tool-calls limit to avoid infinite loop
+            if consecutive_no_tool_calls >= max_consecutive_no_tools:
+                logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls (empty or no content)")
+                # Treat whatever content we have as final (even if empty)
+                results["summary"] = content or ""
+                self._current_messages = messages.copy()
+                final_event = {"type": "final", "summary": formatted_content or "", "content_format": content_format}
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
                 yield final_event

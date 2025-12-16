@@ -753,7 +753,9 @@ class TestGeminiClientStreaming:
             assert mock_client.stream.call_count == 1
             _, kwargs = mock_client.stream.call_args
             assert "json" in kwargs
-            assert kwargs["json"].get("thinkingConfig") == {"includeThoughts": True}
+            # thinkingConfig is now inside generationConfig
+            gen_config = kwargs["json"].get("generationConfig", {})
+            assert gen_config.get("thinkingConfig") == {"thinkingBudget": 8192, "includeThoughts": True}
 
     @pytest.mark.asyncio
     async def test_streaming_http_error(self, gemini_client):
@@ -765,15 +767,16 @@ class TestGeminiClientStreaming:
         mock_response.status_code = 400
         mock_response.request = MagicMock()
         
-        async def mock_atext():
+        # Mock aread() to return bytes (not atext which doesn't exist)
+        async def mock_aread():
             return json.dumps({
                 "error": {
                     "code": 400,
                     "message": "Invalid request"
                 }
-            })
+            }).encode('utf-8')
         
-        mock_response.atext = mock_atext
+        mock_response.aread = mock_aread
 
         with patch('httpx.AsyncClient') as mock_client_class:
             mock_client = MagicMock()

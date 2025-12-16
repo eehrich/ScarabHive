@@ -72,6 +72,7 @@ class LLMModelConfig(BaseModel):
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
+    thinking_budget: Optional[int] = None  # Token budget for thinking process (Gemini 2.5+, default: 8192)
 
 
 class LLMProfile(BaseModel):

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -33,6 +34,8 @@ class GeminiClient(LLMClient):
         httpx_timeouts: dict | None = None,
         max_retries: int = 3,
         parallel_tool_calls: bool = True,
+        include_thoughts: bool | None = None,
+        thinking_budget: int | None = None,
         **extra_params
     ):
         self.model = model
@@ -44,6 +47,14 @@ class GeminiClient(LLMClient):
         self.max_retries = max_retries
         self.parallel_tool_calls = parallel_tool_calls
         self.extra_params = extra_params
+        
+        # Store include_thoughts in extra_params for consistency
+        if include_thoughts is not None:
+            self.extra_params["include_thoughts"] = include_thoughts
+        
+        # Store thinking_budget in extra_params for consistency
+        if thinking_budget is not None:
+            self.extra_params["thinking_budget"] = thinking_budget
 
         # Setup HTTPX timeouts
         if httpx_timeouts:
@@ -63,7 +74,7 @@ class GeminiClient(LLMClient):
             self.verify = ssl_verify
 
         logger.debug(
-            f"GeminiClient initialized model={model} base_url={base_url} verify={self.verify}"
+            f"GeminiClient initialized model={model} base_url={base_url} verify={self.verify} include_thoughts={self.extra_params.get('include_thoughts')} thinking_budget={self.extra_params.get('thinking_budget')}"
         )
 
     def _convert_messages_to_gemini(self, messages: List[ChatMessage]) -> tuple[Optional[str], List[Dict]]:
@@ -222,13 +233,28 @@ class GeminiClient(LLMClient):
         system_instruction, contents = self._convert_messages_to_gemini(messages)
         function_declarations = self._convert_tools_to_gemini(tools)
 
+        # Build generationConfig
+        generation_config: dict = {
+            "temperature": self.extra_params.get("temperature", 1.0),
+            "topP": self.extra_params.get("top_p", 0.95),
+            "topK": self.extra_params.get("top_k", 40),
+        }
+
+        # Optional: enable Gemini "thought summaries" in responses.
+        # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
+        # thinkingConfig must be inside generationConfig.
+        # - Gemini 2.5: use thinkingBudget (e.g. 8192)
+        # - Gemini 3: use thinkingBudget (works for both) or thinkingLevel
+        if self.extra_params.get("include_thoughts") is True:
+            budget = self.extra_params.get("thinking_budget", 8192)
+            generation_config["thinkingConfig"] = {
+                "thinkingBudget": budget,
+                "includeThoughts": True
+            }
+
         payload = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": self.extra_params.get("temperature", 1.0),
-                "topP": self.extra_params.get("top_p", 0.95),
-                "topK": self.extra_params.get("top_k", 40),
-            }
+            "generationConfig": generation_config
         }
 
         if system_instruction:
@@ -239,16 +265,11 @@ class GeminiClient(LLMClient):
                 "functionDeclarations": function_declarations
             }]
 
-        # Optional: enable Gemini "thought summaries" in responses.
-        # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
-        # We stream those as type=thinking_delta (server maps them to reasoning_delta).
-        if self.extra_params.get("include_thoughts") is True:
-            payload["thinkingConfig"] = {"includeThoughts": True}
-
         url = f"{self.base_url}/models/{self.model}:streamGenerateContent?key={self.api_key}&alt=sse"
 
         # Accumulators
-        accumulated_content = []
+        accumulated_content = []  # Only non-thought content (for final message)
+        accumulated_thoughts = []  # Thought summaries (streamed but not saved)
         accumulated_tool_calls = {}  # id -> tool call
         accumulated_usage = None
 
@@ -262,7 +283,8 @@ class GeminiClient(LLMClient):
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:
                     async with client.stream("POST", url, json=payload) as response:
                         if response.status_code != 200:
-                            error_text = await response.atext()
+                            error_bytes = await response.aread()
+                            error_text = error_bytes.decode('utf-8', errors='replace')
                             error_msg = f"HTTP {response.status_code}: {error_text}"
                             logger.error(f"Gemini streaming request failed: {error_msg}")
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
@@ -301,15 +323,22 @@ class GeminiClient(LLMClient):
                                 # Handle text (both normal content and thought summaries)
                                 if "text" in part:
                                     text_delta = part["text"]
+                                    is_thought = part.get("thought", False)
 
-                                    # Stream everything as content_delta (thoughts + content)
-                                    # so the frontend shows it all in the response section
-                                    accumulated_content.append(text_delta)
-                                    logger.debug(f"Gemini text delta: {len(text_delta)} chars (thought={part.get('thought', False)})")
+                                    # Separate thoughts from content
+                                    if is_thought:
+                                        accumulated_thoughts.append(text_delta)
+                                    else:
+                                        accumulated_content.append(text_delta)
+                                    
+                                    logger.debug(f"Gemini text delta: {len(text_delta)} chars (thought={is_thought})")
+                                    
+                                    # Stream everything live (thoughts + content combined for display)
+                                    all_text = "".join(accumulated_thoughts) + "".join(accumulated_content)
                                     yield {
                                         "type": "content_delta",
                                         "delta": text_delta,
-                                        "accumulated": "".join(accumulated_content)
+                                        "accumulated": all_text
                                     }
 
                                 # Handle function calls
@@ -323,8 +352,8 @@ class GeminiClient(LLMClient):
                                     
                                     logger.debug(f"Gemini function call: {func_name}, has_thought_sig={thought_signature is not None}")
                                     
-                                    # Generate unique ID for this tool call
-                                    tool_call_id = f"call_{hash(func_name)}_{len(accumulated_tool_calls)}"
+                                    # Generate stable unique ID for this tool call (UUID4 ensures no collisions)
+                                    tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
                                     
                                     tool_call = {
                                         "id": tool_call_id,
@@ -431,13 +460,26 @@ class GeminiClient(LLMClient):
         system_instruction, contents = self._convert_messages_to_gemini(messages)
         function_declarations = self._convert_tools_to_gemini(tools)
 
+        # Build generationConfig
+        generation_config: dict = {
+            "temperature": self.extra_params.get("temperature", 1.0),
+            "topP": self.extra_params.get("top_p", 0.95),
+            "topK": self.extra_params.get("top_k", 40),
+        }
+
+        # Optional: enable Gemini "thought summaries" in responses.
+        # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
+        # thinkingConfig must be inside generationConfig.
+        if self.extra_params.get("include_thoughts") is True:
+            budget = self.extra_params.get("thinking_budget", 8192)
+            generation_config["thinkingConfig"] = {
+                "thinkingBudget": budget,
+                "includeThoughts": True
+            }
+
         payload = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": self.extra_params.get("temperature", 1.0),
-                "topP": self.extra_params.get("top_p", 0.95),
-                "topK": self.extra_params.get("top_k", 40),
-            }
+            "generationConfig": generation_config
         }
 
         if system_instruction:
@@ -496,7 +538,8 @@ class GeminiClient(LLMClient):
                             # Extract thoughtSignature (Gemini 3 Pro requirement)
                             thought_signature = part.get("thoughtSignature")
                             
-                            tool_call_id = f"call_{hash(func_name)}_{len(tool_calls)}"
+                            # Generate stable unique ID for this tool call (UUID4 ensures no collisions)
+                            tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
                             tool_call = {
                                 "id": tool_call_id,
                                 "type": "function",
@@ -575,3 +618,7 @@ class GeminiClient(LLMClient):
         """Simple chat without tools."""
         result = await self.chat_tools(messages, [], cancellation_token)
         return result["assistant"]["content"]
+
+    def supports_streaming(self) -> bool:
+        """GeminiClient supports true streaming via SSE."""
+        return True

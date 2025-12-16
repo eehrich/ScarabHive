@@ -19,7 +19,7 @@ from .gemini_client import GeminiClient  # type: ignore
 from ..config.models import ModelCapabilitiesConfig
 
 
-def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None) -> LLMClient:
+def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -50,6 +50,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             httpx_timeouts=httpx_timeouts,
             parallel_tool_calls=parallel_tool_calls,
             include_thoughts=include_thoughts,
+            thinking_budget=thinking_budget,
         )
 
     if provider == "openai" or provider == "openai_httpx":
