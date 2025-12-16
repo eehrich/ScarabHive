@@ -190,6 +190,91 @@ class TestGeminiClientMessageConversion:
         assert contents[2]["role"] == "function"
         assert contents[3]["role"] == "model"
 
+    def test_convert_tool_calls_with_thought_signature(self, gemini_client):
+        """Test that thought signatures are preserved in tool calls (Gemini 3 Pro requirement)."""
+        messages = [
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Berlin"}'
+                    },
+                    # Store thought_signature in OpenAI-compatible format
+                    "extra_content": {
+                        "google": {
+                            "thought_signature": "abc123_test_signature"
+                        }
+                    }
+                }]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert len(contents) == 1
+        assert len(contents[0]["parts"]) == 1
+        
+        part = contents[0]["parts"][0]
+        assert "functionCall" in part
+        assert part["functionCall"]["name"] == "get_weather"
+        # Verify thoughtSignature is included
+        assert "thoughtSignature" in part
+        assert part["thoughtSignature"] == "abc123_test_signature"
+
+    def test_convert_tool_calls_with_direct_thought_signature(self, gemini_client):
+        """Test that direct thought_signature field is also supported."""
+        messages = [
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Berlin"}'
+                    },
+                    # Direct field (fallback)
+                    "thought_signature": "direct_signature_xyz"
+                }]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        part = contents[0]["parts"][0]
+        assert "thoughtSignature" in part
+        assert part["thoughtSignature"] == "direct_signature_xyz"
+
+    def test_convert_tool_calls_without_thought_signature_uses_skip(self, gemini_client):
+        """Test that missing thought signature uses skip validator for Gemini 3 Pro compatibility."""
+        messages = [
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Berlin"}'
+                    }
+                    # No thought_signature
+                }]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        part = contents[0]["parts"][0]
+        assert "thoughtSignature" in part
+        # Should use the skip validator placeholder
+        assert part["thoughtSignature"] == "skip_thought_signature_validator"
+
 
 class TestGeminiClientToolConversion:
     """Test tool schema conversion from OpenAI to Gemini format."""
@@ -450,6 +535,72 @@ class TestGeminiClientStreaming:
             assert final_events[0]["assistant"]["tool_calls"][0]["function"]["name"] == "get_weather"
 
     @pytest.mark.asyncio
+    async def test_streaming_function_call_with_thought_signature(self, gemini_client):
+        """Test that thought signatures are extracted from streaming function calls (Gemini 3 Pro)."""
+        messages = [ChatMessage(role="user", content="What's the weather?")]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        
+        async def mock_aiter_lines():
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "functionCall": {
+                                "name": "get_weather",
+                                "args": {"city": "Berlin"}
+                            },
+                            # Gemini 3 Pro returns thoughtSignature in the part
+                            "thoughtSignature": "gemini3_thought_sig_abc123"
+                        }]
+                    }
+                }]
+            })
+            yield "data: [DONE]"
+        
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+            
+            mock_client_class.return_value = mock_client
+
+            events = []
+            async for event in gemini_client.chat_tools_streaming(messages, tools):
+                events.append(event)
+
+            final_events = [e for e in events if e["type"] == "final"]
+            assert len(final_events) == 1
+            
+            tool_call = final_events[0]["assistant"]["tool_calls"][0]
+            
+            # Verify thoughtSignature is stored in both locations
+            assert "thought_signature" in tool_call
+            assert tool_call["thought_signature"] == "gemini3_thought_sig_abc123"
+            
+            # Also check extra_content format (OpenAI-compatible)
+            assert "extra_content" in tool_call
+            assert tool_call["extra_content"]["google"]["thought_signature"] == "gemini3_thought_sig_abc123"
+
+    @pytest.mark.asyncio
     async def test_streaming_with_usage_metadata(self, gemini_client):
         """Test that usage metadata is captured."""
         messages = [ChatMessage(role="user", content="Hello")]
@@ -461,13 +612,15 @@ class TestGeminiClientStreaming:
         async def mock_aiter_lines():
             yield "data: " + json.dumps({
                 "candidates": [{
-                    "content": {"parts": [{"text": "Hi"}]},
-                    "usageMetadata": {
-                        "promptTokenCount": 10,
-                        "candidatesTokenCount": 5,
-                        "totalTokenCount": 15
-                    }
-                }]
+                    "content": {"parts": [{"text": "Hi"}]}
+                }],
+                # usageMetadata is at top level, not in candidate
+                "usageMetadata": {
+                    # Gemini API uses snake_case
+                    "prompt_token_count": 10,
+                    "candidates_token_count": 5,
+                    "total_token_count": 15
+                }
             })
             yield "data: [DONE]"
         
@@ -564,13 +717,15 @@ class TestGeminiClientNonStreaming:
             "candidates": [{
                 "content": {
                     "parts": [{"text": "Hello there!"}]
-                },
-                "usageMetadata": {
-                    "promptTokenCount": 5,
-                    "candidatesTokenCount": 3,
-                    "totalTokenCount": 8
                 }
-            }]
+            }],
+            # usageMetadata is at top level, not in candidate
+            "usageMetadata": {
+                # Gemini API uses snake_case
+                "prompt_token_count": 5,
+                "candidates_token_count": 3,
+                "total_token_count": 8
+            }
         })
 
         with patch('httpx.AsyncClient') as mock_client_class:
@@ -612,13 +767,15 @@ class TestGeminiClientNonStreaming:
                             "args": {"city": "Berlin"}
                         }
                     }]
-                },
-                "usageMetadata": {
-                    "promptTokenCount": 10,
-                    "candidatesTokenCount": 5,
-                    "totalTokenCount": 15
                 }
-            }]
+            }],
+            # usageMetadata is at top level, not in candidate
+            "usageMetadata": {
+                # Gemini API uses snake_case
+                "prompt_token_count": 10,
+                "candidates_token_count": 5,
+                "total_token_count": 15
+            }
         })
 
         with patch('httpx.AsyncClient') as mock_client_class:

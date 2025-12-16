@@ -36,6 +36,7 @@ class GeminiClient(LLMClient):
         **extra_params
     ):
         self.model = model
+        self.model_name = model  # For token tracking
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.context_window = context_window
@@ -105,8 +106,8 @@ class GeminiClient(LLMClient):
                 if msg.content:
                     parts.append({"text": msg.content})
                 
-                # Add function calls
-                for tc in msg.tool_calls:
+                # Add function calls with thought_signature preservation
+                for idx, tc in enumerate(msg.tool_calls):
                     func = tc.get("function", {})
                     func_name = func.get("name", "")
                     func_args = func.get("arguments", "{}")
@@ -118,12 +119,33 @@ class GeminiClient(LLMClient):
                         except json.JSONDecodeError:
                             func_args = {}
                     
-                    parts.append({
+                    part = {
                         "functionCall": {
                             "name": func_name,
                             "args": func_args
                         }
-                    })
+                    }
+                    
+                    # Preserve thoughtSignature if present (required for Gemini 3 Pro)
+                    # The signature is stored in extra_content.google.thought_signature
+                    extra_content = tc.get("extra_content", {})
+                    google_extra = extra_content.get("google", {})
+                    thought_sig = google_extra.get("thought_signature")
+                    
+                    # Also check direct thought_signature field
+                    if not thought_sig:
+                        thought_sig = tc.get("thought_signature")
+                    
+                    if thought_sig:
+                        part["thoughtSignature"] = thought_sig
+                        logger.debug(f"Including thoughtSignature for {func_name}")
+                    else:
+                        # For Gemini 3 Pro, use skip signature if missing
+                        # This allows history transfer from other models
+                        logger.debug(f"No thoughtSignature for {func_name}, using skip validator")
+                        part["thoughtSignature"] = "skip_thought_signature_validator"
+                    
+                    parts.append(part)
                 
                 contents.append({"role": role, "parts": parts})
                 continue
@@ -230,6 +252,7 @@ class GeminiClient(LLMClient):
                 raise asyncio.CancelledError("Request cancelled before attempt")
 
             try:
+                logger.debug(f"Gemini streaming: Starting request to {self.model}")
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:
                     async with client.stream("POST", url, json=payload) as response:
                         if response.status_code != 200:
@@ -238,6 +261,7 @@ class GeminiClient(LLMClient):
                             logger.error(f"Gemini streaming request failed: {error_msg}")
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
+                        logger.debug(f"Gemini streaming: Response started, reading chunks...")
                         async for line in response.aiter_lines():
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
@@ -258,17 +282,21 @@ class GeminiClient(LLMClient):
                             # Process candidates
                             candidates = chunk.get("candidates", [])
                             if not candidates:
+                                logger.debug("Gemini chunk has no candidates, skipping")
                                 continue
 
                             candidate = candidates[0]
                             content = candidate.get("content", {})
                             parts = content.get("parts", [])
+                            
+                            logger.debug(f"Gemini chunk: {len(parts)} parts")
 
                             for part in parts:
                                 # Handle text
                                 if "text" in part:
                                     text_delta = part["text"]
                                     accumulated_content.append(text_delta)
+                                    logger.debug(f"Gemini text delta: {len(text_delta)} chars")
                                     yield {
                                         "type": "content_delta",
                                         "delta": text_delta,
@@ -280,6 +308,11 @@ class GeminiClient(LLMClient):
                                     func_call = part["functionCall"]
                                     func_name = func_call.get("name", "")
                                     func_args = func_call.get("args", {})
+                                    
+                                    # Extract thoughtSignature if present (Gemini 3 Pro)
+                                    thought_signature = part.get("thoughtSignature")
+                                    
+                                    logger.debug(f"Gemini function call: {func_name}, has_thought_sig={thought_signature is not None}")
                                     
                                     # Generate unique ID for this tool call
                                     tool_call_id = f"call_{hash(func_name)}_{len(accumulated_tool_calls)}"
@@ -293,8 +326,20 @@ class GeminiClient(LLMClient):
                                         }
                                     }
                                     
+                                    # Store thoughtSignature for round-trip (Gemini 3 Pro requirement)
+                                    # Using OpenAI-compatible format: extra_content.google.thought_signature
+                                    if thought_signature:
+                                        tool_call["extra_content"] = {
+                                            "google": {
+                                                "thought_signature": thought_signature
+                                            }
+                                        }
+                                        # Also store directly for easier access
+                                        tool_call["thought_signature"] = thought_signature
+                                    
                                     accumulated_tool_calls[tool_call_id] = tool_call
                                     
+                                    logger.debug(f"Yielding tool_call_delta for {func_name}")
                                     yield {
                                         "type": "tool_call_delta",
                                         "index": len(accumulated_tool_calls) - 1,
@@ -302,16 +347,18 @@ class GeminiClient(LLMClient):
                                         "accumulated": tool_call
                                     }
 
-                            # Handle usage metadata
-                            usage_metadata = candidate.get("usageMetadata")
+                            # Handle usage metadata (at top level of chunk, not in candidate)
+                            usage_metadata = chunk.get("usageMetadata")
                             if usage_metadata:
+                                # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count
                                 accumulated_usage = {
-                                    "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
-                                    "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
-                                    "total_tokens": usage_metadata.get("totalTokenCount", 0)
+                                    "prompt_tokens": usage_metadata.get("promptTokenCount", usage_metadata.get("prompt_token_count", 0)),
+                                    "completion_tokens": usage_metadata.get("candidatesTokenCount", usage_metadata.get("candidates_token_count", 0)),
+                                    "total_tokens": usage_metadata.get("totalTokenCount", usage_metadata.get("total_token_count", 0))
                                 }
 
                         # Stream finished successfully
+                        logger.debug(f"Gemini streaming complete: {len(accumulated_content)} content parts, {len(accumulated_tool_calls)} tool calls")
                         assistant = {
                             "role": "assistant",
                             "content": "".join(accumulated_content) if accumulated_content else ""
@@ -324,6 +371,7 @@ class GeminiClient(LLMClient):
                         if accumulated_usage:
                             final_result["usage"] = accumulated_usage
 
+                        logger.debug(f"Yielding final result")
                         yield {"type": "final", **final_result}
                         return  # Success
 
@@ -430,26 +478,43 @@ class GeminiClient(LLMClient):
                             func_name = func_call.get("name", "")
                             func_args = func_call.get("args", {})
                             
+                            # Extract thoughtSignature (Gemini 3 Pro requirement)
+                            thought_signature = part.get("thoughtSignature")
+                            
                             tool_call_id = f"call_{hash(func_name)}_{len(tool_calls)}"
-                            tool_calls.append({
+                            tool_call = {
                                 "id": tool_call_id,
                                 "type": "function",
                                 "function": {
                                     "name": func_name,
                                     "arguments": json.dumps(func_args)
                                 }
-                            })
+                            }
+                            
+                            # Store thoughtSignature for round-trip
+                            if thought_signature:
+                                tool_call["extra_content"] = {
+                                    "google": {
+                                        "thought_signature": thought_signature
+                                    }
+                                }
+                                tool_call["thought_signature"] = thought_signature
+                                logger.debug(f"Non-streaming: stored thought_signature for {func_name}")
+                            
+                            tool_calls.append(tool_call)
 
                     assistant["content"] = "".join(text_parts)
                     if tool_calls:
                         assistant["tool_calls"] = tool_calls
 
-                    # Extract usage
-                    usage_metadata = candidate.get("usageMetadata", {})
+                    # Extract usage from top-level response (not from candidate!)
+                    usage_metadata = data.get("usageMetadata", {})
+                    
+                    # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count
                     usage = {
-                        "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
-                        "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
-                        "total_tokens": usage_metadata.get("totalTokenCount", 0)
+                        "prompt_tokens": usage_metadata.get("promptTokenCount", usage_metadata.get("prompt_token_count", 0)),
+                        "completion_tokens": usage_metadata.get("candidatesTokenCount", usage_metadata.get("candidates_token_count", 0)),
+                        "total_tokens": usage_metadata.get("totalTokenCount", usage_metadata.get("total_token_count", 0))
                     }
 
                     return {"assistant": assistant, "usage": usage}
