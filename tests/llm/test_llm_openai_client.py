@@ -371,6 +371,149 @@ class TestOpenAIClientCancellation:
         assert result == "Response"
 
 
+class TestOpenAIClientGeminiStreaming:
+    """Test Gemini-specific streaming features."""
+
+    @pytest.mark.asyncio
+    async def test_gemini_reasoning_delta_streaming(self, openai_client):
+        """Test that Gemini's delta.reasoning is converted to thinking_delta events."""
+        client, mock_instance = openai_client
+        
+        # Create mock streaming chunks with reasoning deltas
+        class MockChunk:
+            def __init__(self, reasoning=None, content=None, usage=None):
+                self.choices = []
+                if reasoning or content:
+                    delta = MagicMock()
+                    delta.reasoning = reasoning  # Gemini thinking tokens
+                    delta.content = content
+                    delta.tool_calls = None
+                    choice = MagicMock()
+                    choice.delta = delta
+                    self.choices.append(choice)
+                self.usage = usage
+        
+        # Mock chunks: reasoning tokens + content + usage
+        chunks = [
+            MockChunk(reasoning="Let me think..."),
+            MockChunk(reasoning=" analyzing the problem"),
+            MockChunk(content="The answer is 42"),
+            MockChunk(usage=MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30))
+        ]
+        
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
+        
+        mock_stream_obj = MagicMock()
+        mock_stream_obj.__aiter__ = lambda self: mock_stream()
+        
+        mock_chat = MagicMock()
+        mock_chat.completions = MagicMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_stream_obj)
+        mock_instance.chat = mock_chat
+        
+        messages = [ChatMessage(role="user", content="Test")]
+        tools = []
+        
+        # Collect all events
+        events = []
+        async for event in client.chat_tools_streaming(messages, tools):
+            events.append(event)
+        
+        # Verify thinking_delta events for reasoning
+        thinking_deltas = [e for e in events if e.get("type") == "thinking_delta"]
+        assert len(thinking_deltas) == 2
+        assert thinking_deltas[0]["delta"] == "Let me think..."
+        assert thinking_deltas[1]["delta"] == " analyzing the problem"
+        
+        # Verify content deltas
+        content_deltas = [e for e in events if e.get("type") == "content_delta"]
+        assert len(content_deltas) == 1
+        assert content_deltas[0]["delta"] == "The answer is 42"
+        
+        # Verify final event
+        final_event = [e for e in events if e.get("type") == "final"][0]
+        assert final_event["assistant"]["content"] == "The answer is 42"
+        assert "usage" in final_event
+
+
+class TestOpenAIClientRetryExhaustion:
+    """Test retry exhaustion handling."""
+
+    @pytest.mark.asyncio
+    async def test_chat_retry_exhaustion_none_response(self, openai_client):
+        """Test that exhausted retries return error payload instead of AttributeError."""
+        client, mock_instance = openai_client
+        
+        # Configure client with limited retries
+        client.max_attempts = 2
+        
+        from openai import RateLimitError
+        import asyncio
+        
+        # Mock asyncio.sleep to avoid delays
+        with patch('asyncio.sleep', new_callable=AsyncMock):
+            # Mock error response
+            error_response = MagicMock()
+            error_response.status_code = 429
+            
+            # All attempts fail
+            mock_chat = MagicMock()
+            mock_chat.completions = MagicMock()
+            mock_chat.completions.create = AsyncMock(
+                side_effect=RateLimitError("Rate limit", response=error_response, body=None)
+            )
+            mock_instance.chat = mock_chat
+            
+            messages = [ChatMessage(role="user", content="Test")]
+            
+            # Should return error payload JSON, not raise AttributeError
+            result = await client.chat(messages)
+            
+            # Verify result is error JSON
+            import json
+            error_data = json.loads(result)
+            assert "_llm_error" in error_data
+            assert error_data["_llm_error"]["error"] is True
+            # The test verifies that we get a proper error message, not AttributeError
+            assert "failed after" in error_data["_llm_error"]["message"]
+            assert "attempts" in error_data["_llm_error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_chat_tools_retry_exhaustion_none_response(self, openai_client):
+        """Test that exhausted retries in streaming return error payload."""
+        client, mock_instance = openai_client
+        
+        # Mock asyncio.sleep to avoid delays
+        with patch('asyncio.sleep', new_callable=AsyncMock):
+            # Mock chunks that fail immediately
+            async def failing_stream(*args, **kwargs):
+                raise httpx.RemoteProtocolError("peer closed connection")
+                yield  # Never reached
+            
+            mock_chat = MagicMock()
+            mock_chat.completions = MagicMock()
+            mock_chat.completions.create = AsyncMock(side_effect=failing_stream)
+            mock_instance.chat = mock_chat
+            
+            messages = [ChatMessage(role="user", content="Test")]
+            
+            # Collect all events
+            events = []
+            async for event in client.chat_tools_streaming(messages, []):
+                events.append(event)
+            
+            # Should yield final event with error, not raise AttributeError
+            assert len(events) == 1
+            final_event = events[0]
+            assert final_event["type"] == "final"
+            assert "error" in final_event["assistant"]
+            assert "Stream failed after" in final_event["assistant"]["error"]["message"]
+            # Verify multiple retry attempts were made
+            assert mock_chat.completions.create.call_count >= 2
+
+
 class TestOpenAIClientStreamingUsageTracking:
     """Test usage tracking in streaming mode."""
 

@@ -9,22 +9,37 @@ llm_system:
 
   models:
     gemini-2-5-flash:
-      provider: ollama
+      provider: openai_httpx
       model: gemini-2.5-flash
       openai_api_key: "***REMOVED***"
-      ollama_url: https://generativelanguage.googleapis.com/v1beta/openai/
-      ollama_mode: openai_compat
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
       context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
       request_timeout: 180
       capabilities:
         tools: true
         function_calling: true
         image_input: true
-        streaming: false
+        streaming: true  # Streams reasoning tokens via delta.reasoning
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
+
+    gemini-3-0-pro:
+      provider: openai_httpx
+      model: gemini-3-pro-preview
+      openai_api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
+      context_window: 200000  # Gemini 3 Pro: 1M input / 64k output, limit to 200k because of $$$
+      request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true  # Streams reasoning tokens via delta.reasoning
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
 
     gpt-4.1:
       provider: openai_httpx
@@ -203,11 +218,10 @@ llm_system:
         streaming: true
 
     deepseek-chat:
-      provider: ollama
+      provider: openai_httpx
       model: deepseek-chat
       openai_api_key: "***REMOVED***"
-      ollama_url: https://api.deepseek.com
-      ollama_mode: openai_compat
+      base_url: https://api.deepseek.com/v1
       context_window: 100000 # 128K context size totally
       request_timeout: 180
       capabilities:
@@ -217,26 +231,11 @@ llm_system:
         json_mode: true
 
     deepseek-chat-nostream:
-      provider: ollama
+      provider: openai_httpx
       model: deepseek-chat
       openai_api_key: "***REMOVED***"
-      ollama_url: https://api.deepseek.com
-      ollama_mode: openai_compat
+      base_url: https://api.deepseek.com/v1
       context_window: 100000 # 128K context size totally
-      request_timeout: 180
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-
-    deepseek-chat-small:
-      provider: ollama
-      model: deepseek-chat
-      openai_api_key: "***REMOVED***"
-      ollama_url: https://api.deepseek.com
-      ollama_mode: openai_compat
-      context_window: 20000 # for testing small context
       request_timeout: 180
       capabilities:
         tools: true
@@ -281,12 +280,12 @@ llm_system:
       model_ref: gpt-realtime-mini
       description: "Realtime answers, for medium complex tasks"
       max_steps: 100
-    small:
-      model_ref: deepseek-chat-small
-      description: "Cheap and fast none thinking model, for medium complex tasks"
-      max_steps: 100
-    gemini:
+    gemini-flash:
       model_ref: gemini-2-5-flash
+      description: "Google Gemini model for advanced reasoning tasks."
+      max_steps: 100
+    gemini-pro:
+      model_ref: gemini-3-0-pro
       description: "Google Gemini model for advanced reasoning tasks."
       max_steps: 100
     local:

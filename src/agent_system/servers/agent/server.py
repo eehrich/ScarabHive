@@ -1032,7 +1032,15 @@ class Agent(MCPServer):
             async for chunk in llm.chat_tools_streaming(messages, tools_schema, cancellation_token=cancellation_token):
                 chunk_type = chunk.get("type")
 
-                if chunk_type == "content_delta":
+                if chunk_type == "thinking_delta":
+                    # Gemini reasoning/thinking tokens (not content)
+                    yield {"type": "reasoning_delta", "step": step + 1, "delta": chunk["delta"]}
+                    
+                    # Check status events after each token (zero overhead)
+                    for status_event in yield_pending_status_fn():
+                        yield status_event
+
+                elif chunk_type == "content_delta":
                     # Yield token delta for real-time display
                     yield {"type": "thinking_delta", "step": step + 1, "delta": chunk["delta"], "accumulated": chunk["accumulated"]}
                     accumulated_content.append(chunk["delta"])
@@ -1276,7 +1284,10 @@ class Agent(MCPServer):
                 ):
                     event_type = event.get("type")
 
-                    if event_type == "thinking_delta":
+                    if event_type == "reasoning_delta":
+                        # Yield Gemini reasoning/thinking tokens to WebUI
+                        yield event
+                    elif event_type == "thinking_delta":
                         # Yield real-time token deltas to WebUI
                         yield event
                     elif event_type == "status":
