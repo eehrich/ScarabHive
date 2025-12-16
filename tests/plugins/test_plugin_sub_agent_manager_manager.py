@@ -342,3 +342,49 @@ async def test_create_sub_session_ignores_completed_agents_in_limit(mock_session
     )
     
     assert sub_id.startswith("sub_web_research_")
+
+
+@pytest.mark.asyncio
+async def test_create_sub_session_enforces_max_per_session_limit(mock_session_service, mock_registry):
+    """Test that create_sub_session enforces max_sub_agents_per_session limit."""
+    # Create manager with max_sub_agents_per_session=3
+    manager = SubAgentManager(
+        mock_session_service, 
+        mock_registry, 
+        max_nesting_depth=5, 
+        max_sub_agents_per_type=10,  # High per-type limit
+        max_sub_agents_per_session=3  # Low session limit
+    )
+    
+    # Setup parent session with 3 active sub-agents of DIFFERENT types
+    mock_session_service.session_manager.load_session.return_value = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_web_research_001": {
+                    "agent_type": "web_research",
+                    "status": "active",
+                    "created_at": datetime.now(UTC).isoformat()
+                },
+                "sub_financial_analyst_001": {
+                    "agent_type": "financial_analyst",
+                    "status": "active",
+                    "created_at": datetime.now(UTC).isoformat()
+                },
+                "sub_code_reviewer_001": {
+                    "agent_type": "code_reviewer",
+                    "status": "active",
+                    "created_at": datetime.now(UTC).isoformat()
+                }
+            }
+        }
+    }
+    
+    # Attempting to create 4th sub-agent should fail (even though it's a different type)
+    with pytest.raises(ValueError, match="Maximum number of active sub-agents per session"):
+        await manager.create_sub_session(
+            parent_session_id="parent123",
+            agent_type="data_analyst",
+            initial_message="Fourth agent task"
+        )

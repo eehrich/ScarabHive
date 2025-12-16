@@ -190,7 +190,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             session_service, 
             registry, 
             self.max_nesting_depth,
-            self.max_sub_agents_per_type
+            self.max_sub_agents_per_type,
+            self.max_sub_agents
         )
 
     def _extract_registry(self, params: dict[str, Any]):

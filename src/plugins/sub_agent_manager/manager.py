@@ -33,7 +33,8 @@ class SubAgentManager:
         session_service: SessionService, 
         registry: MCPRegistry, 
         max_nesting_depth: int = 5,
-        max_sub_agents_per_type: int = 3
+        max_sub_agents_per_type: int = 3,
+        max_sub_agents_per_session: int = 10
     ):
         """Initialize SubAgentManager.
 
@@ -42,6 +43,7 @@ class SubAgentManager:
             registry: MCP registry for agent lookup
             max_nesting_depth: Maximum recursion depth for nested sub-agents
             max_sub_agents_per_type: Maximum number of active sub-agents per type per session
+            max_sub_agents_per_session: Maximum total number of active sub-agents per session
         """
         self._session_service = session_service
         self._registry = registry
@@ -49,11 +51,13 @@ class SubAgentManager:
         self._lock = asyncio.Lock()
         self.max_nesting_depth = max_nesting_depth
         self.max_sub_agents_per_type = max_sub_agents_per_type
+        self.max_sub_agents_per_session = max_sub_agents_per_session
 
         logger.info(
             f"SubAgentManager initialized ("
             f"max_nesting_depth={max_nesting_depth}, "
-            f"max_sub_agents_per_type={max_sub_agents_per_type})"
+            f"max_sub_agents_per_type={max_sub_agents_per_type}, "
+            f"max_sub_agents_per_session={max_sub_agents_per_session})"
         )
 
     async def create_sub_session(
@@ -129,11 +133,25 @@ class SubAgentManager:
                 f"Parent depth={parent_depth}, attempted child depth={child_depth}"
             )
 
-        # Check per-type limit
+        # Get existing sub-agents
         existing_sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
-        active_agents_of_type = [
+        active_sub_agents = [
             sub_id for sub_id, sub_meta in existing_sub_agents.items()
-            if sub_meta.get("agent_type") == agent_type and sub_meta.get("status") == "active"
+            if sub_meta.get("status") == "active"
+        ]
+        
+        # Check total session limit
+        if len(active_sub_agents) >= self.max_sub_agents_per_session:
+            raise ValueError(
+                f"Maximum number of active sub-agents per session "
+                f"({self.max_sub_agents_per_session}) reached. "
+                f"Active sub-agents: {len(active_sub_agents)}"
+            )
+        
+        # Check per-type limit
+        active_agents_of_type = [
+            sub_id for sub_id in active_sub_agents
+            if existing_sub_agents[sub_id].get("agent_type") == agent_type
         ]
         
         if len(active_agents_of_type) >= self.max_sub_agents_per_type:
