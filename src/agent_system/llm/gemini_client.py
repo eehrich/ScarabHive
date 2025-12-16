@@ -350,12 +350,18 @@ class GeminiClient(LLMClient):
                             # Handle usage metadata (at top level of chunk, not in candidate)
                             usage_metadata = chunk.get("usageMetadata")
                             if usage_metadata:
-                                # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count
+                                # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count, cached_content_token_count
                                 accumulated_usage = {
                                     "prompt_tokens": usage_metadata.get("promptTokenCount", usage_metadata.get("prompt_token_count", 0)),
                                     "completion_tokens": usage_metadata.get("candidatesTokenCount", usage_metadata.get("candidates_token_count", 0)),
                                     "total_tokens": usage_metadata.get("totalTokenCount", usage_metadata.get("total_token_count", 0))
                                 }
+                                
+                                # Extract cached tokens (implicit caching for Gemini 2.5+)
+                                cached_tokens = usage_metadata.get("cachedContentTokenCount", usage_metadata.get("cached_content_token_count", 0))
+                                if cached_tokens > 0:
+                                    # Store in OpenAI-compatible format: prompt_tokens_details.cached_tokens
+                                    accumulated_usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
 
                         # Stream finished successfully
                         logger.debug(f"Gemini streaming complete: {len(accumulated_content)} content parts, {len(accumulated_tool_calls)} tool calls")
@@ -510,12 +516,18 @@ class GeminiClient(LLMClient):
                     # Extract usage from top-level response (not from candidate!)
                     usage_metadata = data.get("usageMetadata", {})
                     
-                    # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count
+                    # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count, cached_content_token_count
                     usage = {
                         "prompt_tokens": usage_metadata.get("promptTokenCount", usage_metadata.get("prompt_token_count", 0)),
                         "completion_tokens": usage_metadata.get("candidatesTokenCount", usage_metadata.get("candidates_token_count", 0)),
                         "total_tokens": usage_metadata.get("totalTokenCount", usage_metadata.get("total_token_count", 0))
                     }
+                    
+                    # Extract cached tokens (implicit caching for Gemini 2.5+)
+                    cached_tokens = usage_metadata.get("cachedContentTokenCount", usage_metadata.get("cached_content_token_count", 0))
+                    if cached_tokens > 0:
+                        # Store in OpenAI-compatible format: prompt_tokens_details.cached_tokens
+                        usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
 
                     return {"assistant": assistant, "usage": usage}
 
