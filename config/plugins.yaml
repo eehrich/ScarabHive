@@ -247,6 +247,25 @@ plugins:
     context_optimizer:
       type: context_optimizer
       enabled: true
+      config:
+        # Token limit: Use X% of LLM context window
+        max_context_percentage: 0.80  # 80% of context window
+        
+        # Message truncation: Max length for individual messages (in chars)
+        max_message_length_chars: 50000
+        
+        # Smart JSON truncation for tool responses
+        # When tool response JSON exceeds max_message_length_chars,
+        # long strings within the JSON are truncated while keeping structure valid
+        max_json_string_length: 10000  # Max chars per string in JSON
+        keep_string_end: true  # Keep END of strings (newest data) vs beginning
+        
+        # Message preservation rules
+        preserve_system_messages: true  # Never remove system messages
+        preserve_last_n_messages: 5  # Always keep last N messages
+        
+        # Remove consecutive duplicate messages (same role + content)
+        remove_duplicates: true
 
     context_usage_tracker:
       type: context_usage_tracker

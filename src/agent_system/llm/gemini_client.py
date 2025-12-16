@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from typing import Dict, List, Optional
 
@@ -18,6 +19,40 @@ from .models import ChatMessage
 from .clients import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_retry_delay(error_msg: str) -> float | None:
+    """Parse retry delay from Gemini 429 error message.
+    
+    Looks for patterns like:
+    - 'Please retry in 32.487019579s'
+    - 'retryDelay': '32s'
+    
+    Returns delay in seconds, or None if not found.
+    """
+    # Try to find "Please retry in Xs" pattern
+    match = re.search(r'retry in ([\d.]+)s', error_msg, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    
+    # Try to find retryDelay JSON pattern
+    match = re.search(r'"retryDelay"\s*:\s*"(\d+)s?"', error_msg)
+    if match:
+        return float(match.group(1))
+    
+    return None
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Check if error is a rate limit (429) error."""
+    error_str = str(error).lower()
+    return (
+        '429' in error_str or
+        'rate limit' in error_str or
+        'resource_exhausted' in error_str or
+        'quota' in error_str or
+        'too many requests' in error_str
+    )
 
 
 class GeminiClient(LLMClient):
@@ -282,6 +317,8 @@ class GeminiClient(LLMClient):
         accumulated_thoughts = []  # Thought summaries (streamed but not saved)
         accumulated_tool_calls = {}  # id -> tool call
         accumulated_usage = None
+        # For parallel function calls: store the first thought_signature to propagate to all calls
+        first_thought_signature = None
 
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -360,7 +397,15 @@ class GeminiClient(LLMClient):
                                     # Extract thoughtSignature if present (Gemini 3 Pro)
                                     thought_signature = part.get("thoughtSignature")
                                     
-                                    logger.debug(f"Gemini function call: {func_name}, has_thought_sig={thought_signature is not None}")
+                                    # For parallel function calls: capture first signature and propagate
+                                    if thought_signature and first_thought_signature is None:
+                                        first_thought_signature = thought_signature
+                                        logger.debug(f"Gemini: captured first thoughtSignature from {func_name}")
+                                    
+                                    # Use effective signature (original or propagated from first)
+                                    effective_signature = thought_signature or first_thought_signature
+                                    
+                                    logger.debug(f"Gemini function call: {func_name}, has_thought_sig={effective_signature is not None}")
                                     
                                     # Generate stable unique ID for this tool call (UUID4 ensures no collisions)
                                     tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
@@ -376,14 +421,18 @@ class GeminiClient(LLMClient):
                                     
                                     # Store thoughtSignature for round-trip (Gemini 3 Pro requirement)
                                     # Using OpenAI-compatible format: extra_content.google.thought_signature
-                                    if thought_signature:
+                                    if effective_signature:
                                         tool_call["extra_content"] = {
                                             "google": {
-                                                "thought_signature": thought_signature
+                                                "thought_signature": effective_signature
                                             }
                                         }
                                         # Also store directly for easier access
-                                        tool_call["thought_signature"] = thought_signature
+                                        tool_call["thought_signature"] = effective_signature
+                                        if thought_signature:
+                                            logger.debug(f"Including thoughtSignature for {func_name} (original)")
+                                        else:
+                                            logger.debug(f"Including thoughtSignature for {func_name} (propagated from first)")
                                     
                                     accumulated_tool_calls[tool_call_id] = tool_call
                                     
@@ -446,6 +495,26 @@ class GeminiClient(LLMClient):
 
             except Exception as e:
                 last_exception = e
+                error_str = str(e)
+                
+                # Check if this is a rate limit error
+                is_rate_limit = _is_rate_limit_error(e)
+                
+                if is_rate_limit:
+                    # Parse retry delay from error message, default to 60s for rate limits
+                    parsed_delay = _parse_retry_delay(error_str)
+                    wait_time = parsed_delay if parsed_delay else 60.0
+                    # Add small buffer to parsed delay
+                    if parsed_delay:
+                        wait_time = parsed_delay + 2.0
+                    
+                    logger.warning(
+                        f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                
                 logger.error(f"Gemini streaming error: {e}", exc_info=True)
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
@@ -535,6 +604,8 @@ class GeminiClient(LLMClient):
                     assistant = {"role": "assistant", "content": ""}
                     tool_calls = []
                     text_parts = []
+                    # For parallel function calls: track first thought_signature
+                    first_thought_signature = None
 
                     for part in parts:
                         if "text" in part:
@@ -548,6 +619,14 @@ class GeminiClient(LLMClient):
                             # Extract thoughtSignature (Gemini 3 Pro requirement)
                             thought_signature = part.get("thoughtSignature")
                             
+                            # For parallel function calls: capture first and propagate
+                            if thought_signature and first_thought_signature is None:
+                                first_thought_signature = thought_signature
+                                logger.debug(f"Non-streaming: captured first thoughtSignature from {func_name}")
+                            
+                            # Use effective signature (original or propagated)
+                            effective_signature = thought_signature or first_thought_signature
+                            
                             # Generate stable unique ID for this tool call (UUID4 ensures no collisions)
                             tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
                             tool_call = {
@@ -560,14 +639,17 @@ class GeminiClient(LLMClient):
                             }
                             
                             # Store thoughtSignature for round-trip
-                            if thought_signature:
+                            if effective_signature:
                                 tool_call["extra_content"] = {
                                     "google": {
-                                        "thought_signature": thought_signature
+                                        "thought_signature": effective_signature
                                     }
                                 }
-                                tool_call["thought_signature"] = thought_signature
-                                logger.debug(f"Non-streaming: stored thought_signature for {func_name}")
+                                tool_call["thought_signature"] = effective_signature
+                                if thought_signature:
+                                    logger.debug(f"Non-streaming: stored thought_signature for {func_name} (original)")
+                                else:
+                                    logger.debug(f"Non-streaming: stored thought_signature for {func_name} (propagated)")
                             
                             tool_calls.append(tool_call)
 
@@ -610,6 +692,26 @@ class GeminiClient(LLMClient):
 
             except Exception as e:
                 last_exception = e
+                error_str = str(e)
+                
+                # Check if this is a rate limit error
+                is_rate_limit = _is_rate_limit_error(e)
+                
+                if is_rate_limit:
+                    # Parse retry delay from error message, default to 60s for rate limits
+                    parsed_delay = _parse_retry_delay(error_str)
+                    wait_time = parsed_delay if parsed_delay else 60.0
+                    # Add small buffer to parsed delay
+                    if parsed_delay:
+                        wait_time = parsed_delay + 2.0
+                    
+                    logger.warning(
+                        f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                
                 logger.error(f"Gemini request error: {e}", exc_info=True)
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt

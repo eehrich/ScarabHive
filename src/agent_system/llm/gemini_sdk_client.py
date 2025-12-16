@@ -25,6 +25,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -35,6 +36,40 @@ from agent_system.llm.models import ChatMessage
 from agent_system.llm.clients import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_retry_delay(error_msg: str) -> float | None:
+    """Parse retry delay from Gemini 429 error message.
+    
+    Looks for patterns like:
+    - 'Please retry in 32.487019579s'
+    - 'retryDelay': '32s'
+    
+    Returns delay in seconds, or None if not found.
+    """
+    # Try to find "Please retry in Xs" pattern
+    match = re.search(r'retry in ([\d.]+)s', error_msg, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    
+    # Try to find retryDelay JSON pattern
+    match = re.search(r'"retryDelay"\s*:\s*"(\d+)s?"', error_msg)
+    if match:
+        return float(match.group(1))
+    
+    return None
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Check if error is a rate limit (429) error."""
+    error_str = str(error).lower()
+    return (
+        '429' in error_str or
+        'rate limit' in error_str or
+        'resource_exhausted' in error_str or
+        'quota' in error_str or
+        'too many requests' in error_str
+    )
 
 
 class GeminiSDKClient(LLMClient):
@@ -148,7 +183,9 @@ class GeminiSDKClient(LLMClient):
                     name=tool_name,
                     response=result_data
                 )
-                contents.append(types.Content(role="tool", parts=[function_response]))
+                content_obj = types.Content(role="tool", parts=[function_response])
+                
+                contents.append(content_obj)
                 continue
             
             # Handle model responses with tool calls
@@ -192,9 +229,14 @@ class GeminiSDKClient(LLMClient):
                         # Convert from base64 back to bytes
                         try:
                             part.thought_signature = base64.b64decode(thought_sig_b64)
-                            logger.debug(f"[GeminiSDK] Restored thought_signature for {func_name}")
                         except Exception as e:
                             logger.warning(f"[GeminiSDK] Failed to decode thought_signature for {func_name}: {e}")
+                    else:
+                        # For Gemini 3 Pro, use skip validator if no signature present
+                        # This allows function calls that were made without thinking enabled
+                        # The string "skip_thought_signature_validator" is a special value recognized by Gemini
+                        part.thought_signature = b"skip_thought_signature_validator"
+                        logger.debug(f"[GeminiSDK] No thought_signature for {func_name}, using skip validator")
                     
                     parts.append(part)
                 
@@ -364,6 +406,8 @@ class GeminiSDKClient(LLMClient):
         accumulated_thoughts = []  # Thought summaries
         accumulated_tool_calls = {}  # id -> tool call
         accumulated_usage = None
+        # For parallel function calls: store the first thought_signature to propagate to all calls
+        first_thought_signature = None
         
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -390,6 +434,13 @@ class GeminiSDKClient(LLMClient):
                         continue
                     
                     candidate = chunk.candidates[0]
+                    
+                    # Log finish_reason only when there's a warning (finish_message)
+                    if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                        finish_msg = getattr(candidate, 'finish_message', None)
+                        if finish_msg:
+                            logger.warning(f"[GeminiSDK] finish_reason: {candidate.finish_reason}, finish_message: {finish_msg}")
+                    
                     if not candidate.content or not candidate.content.parts:
                         continue
                     
@@ -406,11 +457,19 @@ class GeminiSDKClient(LLMClient):
                             func_call = part.function_call
                             tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
                             
-                            # Extract thought signature if present
+                            # Extract thought signature if present on this part
                             thought_signature = None
                             if hasattr(part, 'thought_signature') and part.thought_signature:
                                 # Convert bytes to base64 for JSON serialization
                                 thought_signature = base64.b64encode(part.thought_signature).decode('utf-8')
+                                # Store as the first thought_signature for this turn
+                                # (parallel FC: only first functionCall has the signature)
+                                if first_thought_signature is None:
+                                    first_thought_signature = thought_signature
+                                    logger.debug(f"[GeminiSDK] Captured first thoughtSignature from {func_call.name}")
+                            
+                            # For parallel function calls: use first_thought_signature if this part has none
+                            effective_signature = thought_signature or first_thought_signature
                             
                             tool_call = {
                                 "id": tool_call_id,
@@ -422,12 +481,16 @@ class GeminiSDKClient(LLMClient):
                             }
                             
                             # Store thought signature for round-trip (Gemini 3 Pro requirement)
-                            if thought_signature:
+                            # Use effective_signature to ensure all parallel calls get the signature
+                            if effective_signature:
                                 tool_call["extra_content"] = {
-                                    "google": {"thought_signature": thought_signature}
+                                    "google": {"thought_signature": effective_signature}
                                 }
-                                tool_call["thought_signature"] = thought_signature
-                                logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name}")
+                                tool_call["thought_signature"] = effective_signature
+                                if thought_signature:
+                                    logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (original)")
+                                else:
+                                    logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (propagated from first)")
                             
                             accumulated_tool_calls[tool_call_id] = tool_call
                             
@@ -464,6 +527,13 @@ class GeminiSDKClient(LLMClient):
                     f"{len(accumulated_tool_calls)} tool calls"
                 )
                 
+                # Warn if response is completely empty (MALFORMED_FUNCTION_CALL indicator)
+                if not accumulated_content and not accumulated_tool_calls:
+                    logger.warning(
+                        "[GeminiSDK] Empty response from Gemini (no content, no tool calls). "
+                        "This typically indicates MALFORMED_FUNCTION_CALL or invalid function response format."
+                    )
+                
                 # Build final result in same format as gemini_client.py
                 assistant = {
                     "role": "assistant",
@@ -487,6 +557,31 @@ class GeminiSDKClient(LLMClient):
             
             except Exception as e:
                 last_exception = e
+                error_str = str(e)
+                
+                # Check if this is a rate limit error
+                is_rate_limit = _is_rate_limit_error(e)
+                
+                if is_rate_limit:
+                    # Parse retry delay from error message, default to 60s for rate limits
+                    parsed_delay = _parse_retry_delay(error_str)
+                    wait_time = parsed_delay if parsed_delay else 60.0
+                    # Add small buffer to parsed delay
+                    if parsed_delay:
+                        wait_time = parsed_delay + 2.0
+                    
+                    logger.warning(
+                        f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(wait_time)
+                    # Reset accumulators for retry
+                    accumulated_content = []
+                    accumulated_thoughts = []
+                    accumulated_tool_calls = {}
+                    accumulated_usage = None
+                    continue
+                
                 logger.error(f"[GeminiSDK] Streaming error: {e}", exc_info=True)
                 
                 if attempt < self.max_retries:
@@ -559,6 +654,8 @@ class GeminiSDKClient(LLMClient):
                 assistant = {"role": "assistant", "content": ""}
                 tool_calls = []
                 text_parts = []
+                # For parallel function calls: track first thought_signature
+                first_thought_signature = None
                 
                 for part in candidate.content.parts:
                     # Handle text
@@ -581,15 +678,28 @@ class GeminiSDKClient(LLMClient):
                             }
                         }
                         
-                        # Extract thought signature if present
+                        # Extract thought signature if present on this part
+                        thought_sig_b64 = None
                         if hasattr(part, 'thought_signature') and part.thought_signature:
                             # Convert bytes to base64 for JSON serialization
                             thought_sig_b64 = base64.b64encode(part.thought_signature).decode('utf-8')
+                            # Store as first thought_signature for parallel FC
+                            if first_thought_signature is None:
+                                first_thought_signature = thought_sig_b64
+                                logger.debug(f"[GeminiSDK] Non-streaming: captured first thought_signature from {func_call.name}")
+                        
+                        # For parallel function calls: use first_thought_signature if this part has none
+                        effective_signature = thought_sig_b64 or first_thought_signature
+                        
+                        if effective_signature:
                             tool_call["extra_content"] = {
-                                "google": {"thought_signature": thought_sig_b64}
+                                "google": {"thought_signature": effective_signature}
                             }
-                            tool_call["thought_signature"] = thought_sig_b64
-                            logger.debug(f"[GeminiSDK] Non-streaming: stored thought_signature for {func_call.name}")
+                            tool_call["thought_signature"] = effective_signature
+                            if thought_sig_b64:
+                                logger.debug(f"[GeminiSDK] Non-streaming: stored thought_signature for {func_call.name} (original)")
+                            else:
+                                logger.debug(f"[GeminiSDK] Non-streaming: stored thought_signature for {func_call.name} (propagated)")
                         
                         tool_calls.append(tool_call)
                 
@@ -608,6 +718,26 @@ class GeminiSDKClient(LLMClient):
             
             except Exception as e:
                 last_exception = e
+                error_str = str(e)
+                
+                # Check if this is a rate limit error
+                is_rate_limit = _is_rate_limit_error(e)
+                
+                if is_rate_limit:
+                    # Parse retry delay from error message, default to 60s for rate limits
+                    parsed_delay = _parse_retry_delay(error_str)
+                    wait_time = parsed_delay if parsed_delay else 60.0
+                    # Add small buffer to parsed delay
+                    if parsed_delay:
+                        wait_time = parsed_delay + 2.0
+                    
+                    logger.warning(
+                        f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                
                 logger.error(f"[GeminiSDK] Request error: {e}", exc_info=True)
                 
                 if attempt < self.max_retries:

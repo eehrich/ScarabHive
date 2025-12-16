@@ -90,11 +90,21 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             preserve_last_n = int(config.get('preserve_last_n_messages', 5))
             remove_dupes = bool(config.get('remove_duplicates', True))
             
+            # Smart JSON truncation config
+            max_json_string_length = int(config.get('max_json_string_length', 5000))
+            keep_string_end = bool(config.get('keep_string_end', True))
+            
             # Calculate absolute token limit from percentage
             max_total_tokens = int(context_window * max_context_pct)
             
-            logger.debug(
-                f"[ContextOptimizer] Using {max_context_pct:.0%} of {context_window} tokens = {max_total_tokens} max tokens"
+            # Estimate current token usage
+            estimated_current = estimate_token_count(messages)
+            
+            logger.info(
+                f"[ContextOptimizer] Context window check: "
+                f"estimated_tokens={estimated_current}, "
+                f"max_tokens={max_total_tokens} ({max_context_pct:.0%} of {context_window}), "
+                f"messages={len(messages)}"
             )
             
             # Statistics
@@ -108,7 +118,9 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             
             optimized_messages = self._truncate_messages(
                 optimized_messages,
-                max_message_length
+                max_message_length,
+                max_json_string_length,
+                keep_string_end
             )
             
             optimized_messages = self._enforce_token_limits(
@@ -214,23 +226,133 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             return messages
         
         result = [messages[0]]
-        for msg in messages[1:]:
+        removed_count = 0
+        for i, msg in enumerate(messages[1:], start=1):
             prev_msg = result[-1]
             if (msg.role != prev_msg.role or msg.content != prev_msg.content):
                 result.append(msg)
+            else:
+                removed_count += 1
+                logger.info(
+                    f"[ContextOptimizer] Removed duplicate message at idx {i}: "
+                    f"role={msg.role}, content_len={len(str(msg.content))}"
+                )
+        
+        if removed_count > 0:
+            logger.info(f"[ContextOptimizer] Removed {removed_count} duplicate message(s)")
         
         return result
+    
+    def _smart_truncate_json_strings(
+        self,
+        data: any,
+        max_string_length: int = 5000,
+        keep_end: bool = True
+    ) -> any:
+        """Recursively truncate long strings in JSON data while keeping structure valid.
+        
+        Args:
+            data: JSON-serializable data (dict, list, str, etc.)
+            max_string_length: Max length for string values
+            keep_end: If True, keep end of string (newest data); if False, keep beginning
+        
+        Returns:
+            Truncated data with same structure
+        """
+        if isinstance(data, dict):
+            return {k: self._smart_truncate_json_strings(v, max_string_length, keep_end) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._smart_truncate_json_strings(item, max_string_length, keep_end) for item in data]
+        elif isinstance(data, str) and len(data) > max_string_length:
+            if keep_end:
+                # Keep the END (newest data usually more important)
+                return f"...[{len(data) - max_string_length} chars removed]..." + data[-max_string_length:]
+            else:
+                # Keep the BEGINNING
+                return data[:max_string_length] + f"...[{len(data) - max_string_length} chars removed]..."
+        else:
+            return data
     
     def _truncate_messages(
         self,
         messages: list,
-        max_length: int
+        max_length: int,
+        max_json_string_length: int = 5000,
+        keep_string_end: bool = True
     ) -> list:
-        """Truncate overly long messages."""
+        """Truncate overly long messages.
+        
+        For tool responses with JSON: intelligently truncates long strings within the JSON
+        while keeping structure valid. For other messages: simple truncation with warning.
+        
+        Args:
+            messages: List of messages to truncate
+            max_length: Max length for entire message (chars)
+            max_json_string_length: Max length for strings within JSON (chars)
+            keep_string_end: If True, keep end of strings; if False, keep beginning
+        """
+        import json
+        
         result = []
         for msg in messages:
             content = str(msg.content)
+            
+            # Special handling for tool responses - try smart JSON truncation
+            if msg.role == 'tool' and len(content) > max_length:
+                try:
+                    # Try to parse as JSON
+                    data = json.loads(content)
+                    
+                    # Smart truncate: reduce long strings within JSON, keep structure valid
+                    truncated_data = self._smart_truncate_json_strings(
+                        data,
+                        max_string_length=max_json_string_length,
+                        keep_end=keep_string_end
+                    )
+                    
+                    truncated_content = json.dumps(truncated_data, ensure_ascii=False)
+                    
+                    if len(truncated_content) < len(content):
+                        logger.info(
+                            f"[ContextOptimizer] Smart-truncated tool response JSON: "
+                            f"{len(content)} -> {len(truncated_content)} chars"
+                        )
+                        truncated_msg = msg.model_copy(update={'content': truncated_content})
+                        result.append(truncated_msg)
+                    else:
+                        # Truncation didn't help (structure overhead is large), keep original
+                        result.append(msg)
+                        logger.warning(
+                            f"[ContextOptimizer] Tool response is {len(content)} chars (>{max_length}) "
+                            f"and couldn't be reduced. Consider increasing max_message_length_chars."
+                        )
+                    continue
+                    
+                except (json.JSONDecodeError, Exception) as e:
+                    # Not JSON or error - log and keep original
+                    logger.warning(
+                        f"[ContextOptimizer] Tool response is {len(content)} chars (>{max_length}) "
+                        f"but NOT JSON (parse error: {e}). Keeping original to preserve validity."
+                    )
+                    result.append(msg)
+                    continue
+            
+            # Tool response within limit - keep as-is
+            if msg.role == 'tool':
+                result.append(msg)
+                continue
+            
+            # Non-tool messages: simple truncation
             if len(content) > max_length:
+                # Check if content looks like JSON/structured data
+                is_json_like = content.strip().startswith(('{', '['))
+                
+                if is_json_like:
+                    logger.warning(
+                        f"[ContextOptimizer] Truncating {msg.role} message with JSON-like content "
+                        f"({len(content)} chars). This may break parsing. Consider removing instead."
+                    )
+                
                 truncated_content = content[:max_length] + '... [truncated]'
                 # Create new ChatMessage with truncated content
                 truncated_msg = msg.model_copy(update={'content': truncated_content})
@@ -239,6 +361,122 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                 result.append(msg)
         return result
     
+    def _get_tool_call_ids(self, msg) -> set[str]:
+        """Extract tool_call IDs from an assistant message."""
+        if msg.role != 'assistant' or not msg.tool_calls:
+            return set()
+        return {tc.get('id') for tc in msg.tool_calls if tc.get('id')}
+    
+    def _get_tool_response_id(self, msg) -> str | None:
+        """Extract tool_call_id from a tool response message."""
+        if msg.role != 'tool':
+            return None
+        return getattr(msg, 'tool_call_id', None)
+    
+    def _find_removable_message_groups(
+        self,
+        messages: list,
+        system_msgs: list,
+        preserved: list
+    ) -> list[list[int]]:
+        """
+        Find groups of messages that can be safely removed together.
+        
+        Groups tool_call assistant messages with their tool responses to ensure
+        they are removed together (avoiding orphaned tool_calls/responses).
+        
+        Returns list of message index groups, oldest first.
+        """
+        groups = []
+        i = 0
+        
+        while i < len(messages):
+            msg = messages[i]
+            
+            # Skip system and preserved messages
+            if msg in system_msgs or msg in preserved:
+                i += 1
+                continue
+            
+            # Check if this is an assistant with tool_calls
+            tool_call_ids = self._get_tool_call_ids(msg)
+            
+            if tool_call_ids:
+                # Find all following tool responses that match these tool_calls
+                group = [i]
+                j = i + 1
+                remaining_ids = tool_call_ids.copy()
+                
+                while j < len(messages) and remaining_ids:
+                    next_msg = messages[j]
+                    response_id = self._get_tool_response_id(next_msg)
+                    
+                    if response_id and response_id in remaining_ids:
+                        group.append(j)
+                        remaining_ids.discard(response_id)
+                        j += 1
+                    elif next_msg.role == 'tool':
+                        # Tool response but not matching - still part of sequence
+                        j += 1
+                    else:
+                        # Non-tool message, stop looking
+                        break
+                
+                # Only add as group if we found ALL matching responses (complete pair)
+                # AND all messages in the group are removable
+                all_responses_found = len(remaining_ids) == 0
+                all_removable = all(
+                    messages[idx] not in preserved and messages[idx] not in system_msgs
+                    for idx in group
+                )
+                
+                # Only allow removal if BOTH conditions are met:
+                # 1. All tool responses were found (no missing responses)
+                # 2. All messages in the group are removable (not preserved)
+                if all_responses_found and all_removable:
+                    groups.append(group)
+                else:
+                    # Don't remove incomplete groups - would create orphaned tool_calls
+                    if not all_responses_found:
+                        logger.debug(
+                            f"[ContextOptimizer] Skipping incomplete tool_call group at idx {i}: "
+                            f"missing {len(remaining_ids)} responses (IDs: {remaining_ids})"
+                        )
+                    if not all_removable:
+                        logger.debug(
+                            f"[ContextOptimizer] Skipping tool_call group at idx {i}: "
+                            f"some messages are preserved"
+                        )
+                
+                # Move past this group
+                i = max(group) + 1 if group else i + 1
+            else:
+                # Check if this is an orphan tool response (no matching tool_call found earlier)
+                response_id = self._get_tool_response_id(msg)
+                if response_id:
+                    # This is a tool response - check if its tool_call exists in messages
+                    has_matching_call = False
+                    for prev_msg in messages[:i]:
+                        if response_id in self._get_tool_call_ids(prev_msg):
+                            has_matching_call = True
+                            break
+                    
+                    if not has_matching_call:
+                        # No matching tool_call - this response would be orphaned if we remove anything
+                        # Skip it to avoid creating orphaned tool_response
+                        logger.debug(
+                            f"[ContextOptimizer] Skipping tool response at idx {i} with id {response_id}: "
+                            f"no matching tool_call found - would create orphaned response"
+                        )
+                        i += 1
+                        continue
+                
+                # Regular message (user, assistant without tools) - can be removed alone
+                groups.append([i])
+                i += 1
+        
+        return groups
+    
     def _enforce_token_limits(
         self,
         messages: list,
@@ -246,7 +484,11 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         preserve_system: bool,
         preserve_last_n: int
     ) -> list:
-        """Ensure context stays within token limits."""
+        """Ensure context stays within token limits.
+        
+        IMPORTANT: Removes tool_call/tool_response pairs together to avoid
+        orphaned tool_calls or tool_responses.
+        """
         # Messages are already ChatMessage objects
         estimated_tokens = estimate_token_count(messages)
         
@@ -259,22 +501,29 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         
         # Preserve recent messages
         preserved = other_msgs[-preserve_last_n:] if len(other_msgs) > preserve_last_n else other_msgs
-        removable = other_msgs[:-preserve_last_n] if len(other_msgs) > preserve_last_n else []
         
-        # Remove oldest messages until under limit
-        result = (system_msgs if preserve_system else []) + removable + preserved
+        # Build result list
+        result = messages.copy()
         
-        while len(result) > preserve_last_n:
+        # Find removable message groups (tool_call + responses grouped together)
+        removable_groups = self._find_removable_message_groups(result, system_msgs, preserved)
+        
+        # Remove groups from oldest until under token limit
+        for group in removable_groups:
             estimated_tokens = estimate_token_count(result)
             if estimated_tokens <= max_tokens:
                 break
             
-            # Remove oldest non-system, non-preserved message
-            for i, msg in enumerate(result):
-                if msg not in system_msgs and msg not in preserved:
-                    result.pop(i)
-                    break
-            else:
-                break  # No more removable messages
+            # Remove all messages in this group (in reverse order to preserve indices)
+            for idx in sorted(group, reverse=True):
+                if idx < len(result):
+                    removed_msg = result[idx]
+                    if removed_msg not in system_msgs and removed_msg not in preserved:
+                        logger.info(
+                            f"[ContextOptimizer] Removing message at idx {idx}: "
+                            f"role={removed_msg.role}, has_tool_calls={bool(getattr(removed_msg, 'tool_calls', None))}, "
+                            f"tool_call_id={getattr(removed_msg, 'tool_call_id', None)}"
+                        )
+                        result.pop(idx)
         
         return result

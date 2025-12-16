@@ -425,7 +425,11 @@ class VectorStore:
         """Query ChromaDB collection."""
         coll = self._get_chromadb_collection(collection)
         
-        kwargs: Dict[str, Any] = {"n_results": n_results}
+        # Prevent warning: adjust n_results if collection has fewer items
+        count = coll.count()
+        actual_n_results = min(n_results, max(1, count)) if count > 0 else n_results
+        
+        kwargs: Dict[str, Any] = {"n_results": actual_n_results}
         if query_text:
             kwargs["query_texts"] = [query_text]
         if query_embedding:

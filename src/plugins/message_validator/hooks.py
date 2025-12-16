@@ -259,6 +259,9 @@ class InternalMessageValidator:
         # Track which assistant messages need their tool_calls removed
         messages_to_strip_tool_calls: Set[int] = set()
 
+        # Track consecutive assistant messages to merge (first_idx -> second_idx)
+        consecutive_assistant_merges: Dict[int, int] = {}
+
         for issue in issues:
             if issue.type == "orphaned_tool_call":
                 # Remove tool_calls from assistant message instead of adding fake responses
@@ -271,6 +274,12 @@ class InternalMessageValidator:
 
             elif issue.type == "missing_tool_call_id":
                 remove_indices.add(issue.message_index)
+
+            elif issue.type == "consecutive_assistant_messages":
+                # Merge second assistant message into first
+                first_idx = issue.message_index
+                second_idx = issue.details.get("next_index", first_idx + 1)
+                consecutive_assistant_merges[first_idx] = second_idx
 
             elif issue.type == "invalid_tool_name":
                 # Try to repair invalid tool names
@@ -290,6 +299,44 @@ class InternalMessageValidator:
                                     tool_call.function.name = sanitized_name
                     else:
                         remove_indices.add(msg_idx)
+
+        # FIRST: Merge consecutive assistant messages (before any removals)
+        # Process in reverse order to handle multiple consecutive pairs correctly
+        for first_idx in sorted(consecutive_assistant_merges.keys(), reverse=True):
+            second_idx = consecutive_assistant_merges[first_idx]
+            if 0 <= first_idx < len(repaired) and 0 <= second_idx < len(repaired):
+                first_msg = repaired[first_idx]
+                second_msg = repaired[second_idx]
+                
+                # Merge content: combine both contents with separator
+                first_content = first_msg.content or ""
+                second_content = second_msg.content or ""
+                merged_content = first_content
+                if second_content:
+                    if merged_content:
+                        merged_content = f"{merged_content}\n\n{second_content}"
+                    else:
+                        merged_content = second_content
+                
+                # Merge tool_calls: combine both lists
+                merged_tool_calls = []
+                if first_msg.tool_calls:
+                    merged_tool_calls.extend(first_msg.tool_calls)
+                if second_msg.tool_calls:
+                    merged_tool_calls.extend(second_msg.tool_calls)
+                
+                # Create merged message
+                repaired[first_idx] = ChatMessage(
+                    role="assistant",
+                    content=merged_content if merged_content else None,
+                    tool_calls=merged_tool_calls if merged_tool_calls else None,
+                    name=first_msg.name if hasattr(first_msg, 'name') else None,
+                    timestamp=first_msg.timestamp if hasattr(first_msg, 'timestamp') else None
+                )
+                
+                # Mark second message for removal
+                remove_indices.add(second_idx)
+                logger.debug(f"Merged consecutive assistant messages at indices {first_idx} and {second_idx}")
 
         # Remove problematic messages (in reverse order to preserve indices)
         for idx in sorted(remove_indices, reverse=True):

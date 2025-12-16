@@ -225,6 +225,66 @@ class TestMessageSequence:
         assert result.issues[0].type == "consecutive_assistant_messages"
         assert result.issues[0].severity == "warning"
 
+    def test_consecutive_assistant_messages_merged(self):
+        """Test that consecutive assistant messages are merged into one."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content="Hi there!"),
+            ChatMessage(role="assistant", content="How can I help?")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should have detected the issue
+        assert len(result.issues) == 1
+        assert result.issues[0].type == "consecutive_assistant_messages"
+
+        # Should have merged the messages - now only 2 messages
+        assert len(result.repaired_messages) == 2
+        assert result.repaired_messages[0].role == "user"
+        assert result.repaired_messages[1].role == "assistant"
+        # Content should be merged
+        assert "Hi there!" in result.repaired_messages[1].content
+        assert "How can I help?" in result.repaired_messages[1].content
+
+    def test_consecutive_assistant_messages_with_tool_calls_merged(self):
+        """Test that consecutive assistant messages with tool_calls are merged.
+        
+        Note: Tool calls are properly matched with their responses in this test
+        to avoid orphaned_tool_call issues interfering with the merge test.
+        """
+        messages = [
+            ChatMessage(role="user", content="Do tasks"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "task1", "arguments": "{}"}}]
+            ),
+            ChatMessage(role="tool", content="Result 1", tool_call_id="call_1", name="task1"),
+            ChatMessage(
+                role="assistant",
+                content="First part",
+            ),
+            ChatMessage(
+                role="assistant",
+                content="Second part",
+            )
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should have merged the consecutive assistant messages (indices 3 and 4)
+        # Result should be: user, assistant+tool_call, tool, merged_assistant
+        assert len(result.repaired_messages) == 4
+        
+        # Last message should be merged assistant
+        merged_msg = result.repaired_messages[3]
+        assert merged_msg.role == "assistant"
+        assert "First part" in merged_msg.content
+        assert "Second part" in merged_msg.content
+
     def test_valid_alternating_sequence(self):
         """Test valid alternating user/assistant sequence."""
         messages = [

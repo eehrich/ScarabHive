@@ -392,22 +392,25 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         Tool name: {{ name }} → e.g., 'sequential_thinking'
         Method is called directly (no prefix to strip since tool name = plugin name).
         """
+        # Initialize status early to avoid UnboundLocalError in exception handler
+        status = None
         try:
             # Cleanup old sessions first
             self._cleanup_old_sessions()
 
-            # Extract parameters
-            thought_content = params["thought"]
-            next_thought_needed = params["next_thought_needed"]
-            thought_number = int(params["thought_number"])
-            total_thoughts = int(params["total_thoughts"])
-            session_id = params.get("session_id")
-            is_revision = params.get("is_revision", False)
-            revises_thought = params.get("revises_thought")
-            branch_from_thought = params.get("branch_from_thought")
-            branch_id = params.get("branch_id")
-            needs_more_thoughts = params.get("needs_more_thoughts", False)
-            idempotency_key = params.get("idempotency_key")
+            # Extract parameters - use .get() with defaults for robustness
+            thought_content = params.get("thought", "")
+            # Support both snake_case and camelCase for next_thought_needed
+            next_thought_needed = params.get("next_thought_needed", params.get("nextThoughtNeeded", True))
+            thought_number = int(params.get("thought_number", params.get("thoughtNumber", 1)))
+            total_thoughts = int(params.get("total_thoughts", params.get("totalThoughts", 5)))
+            session_id = params.get("session_id", params.get("sessionId"))
+            is_revision = params.get("is_revision", params.get("isRevision", False))
+            revises_thought = params.get("revises_thought", params.get("revisesThought"))
+            branch_from_thought = params.get("branch_from_thought", params.get("branchFromThought"))
+            branch_id = params.get("branch_id", params.get("branchId"))
+            needs_more_thoughts = params.get("needs_more_thoughts", params.get("needsMoreThoughts", False))
+            idempotency_key = params.get("idempotency_key", params.get("idempotencyKey"))
 
             # Get status context (optional for direct test calls)
             status = params.get("_status")

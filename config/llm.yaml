@@ -289,6 +289,10 @@ llm_system:
       model_ref: gemini-2-5-flash-nostream
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
+    normal-stream:
+      model_ref: gemini-2-5-flash
+      description: "Fast model for medium reasoning tasks"
+      max_steps: 500      
     think:
       model_ref: gemini-3-0-pro-nostream
       description: "Advanced model for complex reasoning"
@@ -342,7 +346,7 @@ llm_system:
       model_ref: gpt-5-nano
       description: "OpenAI model for medium reasoning tasks."
       max_steps: 500    
-            
+
     local:
       model_ref: ollama-gpt-oss-20b
       description: "Model for privacy and offline usage, powerful but slow."
