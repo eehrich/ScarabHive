@@ -243,3 +243,102 @@ def test_extract_user_id_handles_formats(manager):
     # With injected params, uses the provided user_id
     params_with_user = {"_user_id": "test_user"}
     assert manager._extract_user_id("session_123", params_with_user) == "test_user"
+
+
+@pytest.mark.asyncio
+async def test_create_sub_session_enforces_max_per_type_limit(mock_session_service, mock_registry):
+    """Test that create_sub_session enforces max_sub_agents_per_type limit."""
+    # Create manager with max_sub_agents_per_type=2
+    manager = SubAgentManager(mock_session_service, mock_registry, max_nesting_depth=5, max_sub_agents_per_type=2)
+    
+    # Setup parent session with 2 active sub-agents of type 'web_research'
+    mock_session_service.session_manager.load_session.return_value = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_web_research_001": {
+                    "agent_type": "web_research",
+                    "status": "active",
+                    "created_at": datetime.now(UTC).isoformat()
+                },
+                "sub_web_research_002": {
+                    "agent_type": "web_research",
+                    "status": "active",
+                    "created_at": datetime.now(UTC).isoformat()
+                }
+            }
+        }
+    }
+    
+    # Attempting to create 3rd sub-agent of same type should fail
+    with pytest.raises(ValueError, match="Maximum number of active sub-agents of type 'web_research'"):
+        await manager.create_sub_session(
+            parent_session_id="parent123",
+            agent_type="web_research",
+            initial_message="Third research task"
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_sub_session_allows_different_types(mock_session_service, mock_registry):
+    """Test that max_sub_agents_per_type limit only applies per type."""
+    manager = SubAgentManager(mock_session_service, mock_registry, max_nesting_depth=5, max_sub_agents_per_type=2)
+    
+    # Setup parent session with 2 active sub-agents of type 'web_research'
+    mock_session_service.session_manager.load_session.return_value = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_web_research_001": {"agent_type": "web_research", "status": "active"},
+                "sub_web_research_002": {"agent_type": "web_research", "status": "active"}
+            }
+        }
+    }
+    
+    # Mock registry to return agent with llm_profile
+    mock_agent = MagicMock()
+    mock_agent.agent_config.default_llm_profile = "gpt-4"
+    mock_registry.get = MagicMock(return_value=mock_agent)
+    
+    # Creating sub-agent of different type should succeed
+    sub_id = await manager.create_sub_session(
+        parent_session_id="parent123",
+        agent_type="financial_analyst",
+        initial_message="Analyze stocks"
+    )
+    
+    assert sub_id.startswith("sub_financial_analyst_")
+
+
+@pytest.mark.asyncio
+async def test_create_sub_session_ignores_completed_agents_in_limit(mock_session_service, mock_registry):
+    """Test that completed sub-agents don't count towards the limit."""
+    manager = SubAgentManager(mock_session_service, mock_registry, max_nesting_depth=5, max_sub_agents_per_type=2)
+    
+    # Setup parent session with 2 sub-agents: 1 active, 1 completed
+    mock_session_service.session_manager.load_session.return_value = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_web_research_001": {"agent_type": "web_research", "status": "active"},
+                "sub_web_research_002": {"agent_type": "web_research", "status": "completed"}
+            }
+        }
+    }
+    
+    # Mock registry
+    mock_agent = MagicMock()
+    mock_agent.agent_config.default_llm_profile = "gpt-4"
+    mock_registry.get = MagicMock(return_value=mock_agent)
+    
+    # Creating another sub-agent should succeed (only 1 active)
+    sub_id = await manager.create_sub_session(
+        parent_session_id="parent123",
+        agent_type="web_research",
+        initial_message="New research task"
+    )
+    
+    assert sub_id.startswith("sub_web_research_")

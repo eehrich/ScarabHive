@@ -69,7 +69,8 @@ async def sub_agent_manager(session_service, mock_registry):
     return SubAgentManager(
         session_service=session_service,
         registry=mock_registry,
-        max_nesting_depth=5
+        max_nesting_depth=5,
+        max_sub_agents_per_type=20  # High limit for integration tests
     )
 
 

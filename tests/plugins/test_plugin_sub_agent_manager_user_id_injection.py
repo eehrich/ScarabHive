@@ -79,11 +79,14 @@ async def test_extract_user_id_from_session_file(temp_session_storage):
 async def test_extract_user_id_fallback_for_missing_session(temp_session_storage):
     """Test that _extract_user_id falls back to 'anonymous' for non-existent sessions."""
     session_manager = SessionManager(storage_path=str(temp_session_storage))
-    session_service = MagicMock()
-    session_service.session_manager = session_manager
-    registry = MagicMock()
     
-    manager = SubAgentManager(session_service, registry)
+    # Use proper Mock instead of MagicMock to avoid coroutine issues
+    from unittest.mock import Mock
+    session_service = Mock()
+    session_service.session_manager = session_manager
+    registry = Mock()
+    
+    manager = SubAgentManager(session_service, registry, max_nesting_depth=5, max_sub_agents_per_type=3)
     
     # Non-existent session should fall back to 'anonymous' (NOT 'admin' for security)
     user_id = manager._extract_user_id("nonexistent_session_999")

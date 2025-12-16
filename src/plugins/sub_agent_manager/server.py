@@ -51,6 +51,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
         self.max_history = int(getattr(mcp_config, 'max_message_history', 100))
         self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
+        self.max_sub_agents_per_type = int(getattr(mcp_config, 'max_sub_agents_per_type', 3))
 
         # Agent filtering (multi-instance support - by instance name, not type)
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
@@ -185,7 +186,12 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             raise RuntimeError("session_service is required but was not injected")
 
         # Create manager with injected dependencies
-        return SubAgentManager(session_service, registry, self.max_nesting_depth)
+        return SubAgentManager(
+            session_service, 
+            registry, 
+            self.max_nesting_depth,
+            self.max_sub_agents_per_type
+        )
 
     def _extract_registry(self, params: dict[str, Any]):
         """Extract and validate registry from params.

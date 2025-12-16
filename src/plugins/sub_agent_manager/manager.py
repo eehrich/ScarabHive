@@ -28,21 +28,33 @@ class SubAgentManager:
     for all persistence operations.
     """
 
-    def __init__(self, session_service: SessionService, registry: MCPRegistry, max_nesting_depth: int = 5):
+    def __init__(
+        self, 
+        session_service: SessionService, 
+        registry: MCPRegistry, 
+        max_nesting_depth: int = 5,
+        max_sub_agents_per_type: int = 3
+    ):
         """Initialize SubAgentManager.
 
         Args:
             session_service: Session service for persistence
             registry: MCP registry for agent lookup
             max_nesting_depth: Maximum recursion depth for nested sub-agents
+            max_sub_agents_per_type: Maximum number of active sub-agents per type per session
         """
         self._session_service = session_service
         self._registry = registry
         self._global_counter = 0  # Global counter for all sub-agents
         self._lock = asyncio.Lock()
         self.max_nesting_depth = max_nesting_depth
+        self.max_sub_agents_per_type = max_sub_agents_per_type
 
-        logger.info(f"SubAgentManager initialized (max_nesting_depth={max_nesting_depth})")
+        logger.info(
+            f"SubAgentManager initialized ("
+            f"max_nesting_depth={max_nesting_depth}, "
+            f"max_sub_agents_per_type={max_sub_agents_per_type})"
+        )
 
     async def create_sub_session(
         self,
@@ -115,6 +127,20 @@ class SubAgentManager:
             raise ValueError(
                 f"Maximum nesting depth ({self.max_nesting_depth}) exceeded. "
                 f"Parent depth={parent_depth}, attempted child depth={child_depth}"
+            )
+
+        # Check per-type limit
+        existing_sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
+        active_agents_of_type = [
+            sub_id for sub_id, sub_meta in existing_sub_agents.items()
+            if sub_meta.get("agent_type") == agent_type and sub_meta.get("status") == "active"
+        ]
+        
+        if len(active_agents_of_type) >= self.max_sub_agents_per_type:
+            raise ValueError(
+                f"Maximum number of active sub-agents of type '{agent_type}' "
+                f"({self.max_sub_agents_per_type}) reached. "
+                f"Active instances: {active_agents_of_type}"
             )
 
         # Generate unique instance ID (short format)

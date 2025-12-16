@@ -26,6 +26,7 @@ def mock_mcp_config():
     config = Mock(spec=MCPConfig)
     config.max_sub_agents_per_session = 10
     config.max_nesting_depth = 5
+    config.max_sub_agents_per_type = 3
     config.allowed_agents = ["*"]
     config.blocked_agents = []
     return config
@@ -37,6 +38,7 @@ def restricted_mcp_config():
     config = Mock(spec=MCPConfig)
     config.max_sub_agents_per_session = 5
     config.max_nesting_depth = 3
+    config.max_sub_agents_per_type = 2
     config.allowed_agents = ["coding_agent", "testing_agent"]
     config.blocked_agents = ["meta_agent"]
     return config
@@ -773,3 +775,30 @@ class TestSystemPromptIntegration:
         
         assert result["status"] == "completed"
         assert result["instance_id"] == system_prompt_id
+
+
+def test_server_loads_max_sub_agents_per_type_config(mock_config, mock_mcp_config):
+    """Test that SubAgentManagerServer loads max_sub_agents_per_type from config."""
+    mock_mcp_config.max_sub_agents_per_type = 5
+    
+    server = SubAgentManagerServer(
+        name="sub_agent_manager",
+        system_config=mock_config,
+        mcp_config=mock_mcp_config
+    )
+    
+    assert server.max_sub_agents_per_type == 5
+
+
+def test_server_defaults_max_sub_agents_per_type(mock_config):
+    """Test that SubAgentManagerServer defaults max_sub_agents_per_type to 3."""
+    # Config without max_sub_agents_per_type attribute
+    minimal_config = Mock(spec=MCPConfig)
+    
+    server = SubAgentManagerServer(
+        name="sub_agent_manager",
+        system_config=mock_config,
+        mcp_config=minimal_config
+    )
+    
+    assert server.max_sub_agents_per_type == 3
