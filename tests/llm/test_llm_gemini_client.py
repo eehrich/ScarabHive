@@ -257,8 +257,12 @@ class TestGeminiClientMessageConversion:
         assert "thoughtSignature" in part
         assert part["thoughtSignature"] == "direct_signature_xyz"
 
-    def test_convert_tool_calls_without_thought_signature_uses_skip(self, gemini_client):
-        """Test that missing thought signature uses skip validator for Gemini 3 Pro compatibility."""
+    def test_convert_tool_calls_without_thought_signature(self, gemini_client):
+        """Test that missing thought signature is omitted (not set to skip validator).
+        
+        This prevents MALFORMED_FUNCTION_CALL errors with historical function calls.
+        Gemini will handle missing signatures automatically.
+        """
         messages = [
             ChatMessage(
                 role="assistant",
@@ -278,9 +282,8 @@ class TestGeminiClientMessageConversion:
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
         part = contents[0]["parts"][0]
-        assert "thoughtSignature" in part
-        # Should use the skip validator placeholder
-        assert part["thoughtSignature"] == "skip_thought_signature_validator"
+        # Should NOT have thoughtSignature field when not present originally
+        assert "thoughtSignature" not in part
 
 
 class TestGeminiClientToolConversion:

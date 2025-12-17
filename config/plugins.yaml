@@ -281,6 +281,8 @@ plugins:
       config:
         log_level: warning
         strict_mode: false
+        max_tool_response_size_kb: 50
+        warn_tool_response_size_kb: 20
 
     markdown_formatter:
       type: markdown_formatter

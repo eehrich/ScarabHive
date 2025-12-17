@@ -1541,7 +1541,8 @@ async def test_thought_history_has_consistent_fields(server, mock_status):
         assert "content" in thought
         assert "branch" in thought
         assert "is_revision" in thought
-        assert "revises_thought" in thought        # ✅ Always present (v1.0.2)
+        # revises_thought is omitted when None (Gemini compatibility fix)
+        # assert "revises_thought" in thought 
         assert "timestamp" in thought              # ✅ Always present (v1.0.2)
     
     # Add revision
@@ -1558,10 +1559,15 @@ async def test_thought_history_has_consistent_fields(server, mock_status):
     
     # Check revision entry
     for thought in result2["thought_history"]:
-        assert "revises_thought" in thought
         assert "timestamp" in thought
         if thought["is_revision"]:
+            # When is_revision=true, revises_thought must be present and not None
+            assert "revises_thought" in thought
             assert thought["revises_thought"] is not None
+        else:
+            # When is_revision=false, revises_thought should be omitted (Gemini compat fix)
+            # It's ok if it's present but None, but preferred to omit
+            pass
 
 
 @pytest.mark.asyncio

@@ -605,14 +605,15 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                         "content": t.content[:200] + "..." if len(t.content) > 200 else t.content,
                         "branch": t.branch_id,
                         "is_revision": t.is_revision,
-                        "revises_thought": t.revises_thought,  # Consistent with summary
+                        # Omit revises_thought if None - Gemini dislikes null values
+                        **({} if t.revises_thought is None else {"revises_thought": t.revises_thought}),
                         "timestamp": t.timestamp.isoformat()   # Consistent with summary
                     }
                     for t in session.thoughts[-self.max_summary_thoughts:]
-                ],
-                "branch_summary": self._get_branch_tree(session) if self.enable_branching else None,
-                "error": None,
-                "warnings": warnings if warnings else None
+                ]
+                # Omit error/warnings/branch_summary if None - Gemini has issues with null values in tool responses
+                , **({} if not warnings else {"warnings": warnings})
+                , **({} if not self.enable_branching or not self._get_branch_tree(session) else {"branch_summary": self._get_branch_tree(session)})
             }
 
             # END status

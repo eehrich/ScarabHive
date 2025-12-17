@@ -61,8 +61,9 @@ class ValidationResult:
 class InternalMessageValidator:
     """Internal validator for message sequences - contains all validation logic."""
 
-    def __init__(self, log_level: str = "warning"):
+    def __init__(self, log_level: str = "warning", config: Dict[str, Any] = None):
         self.log_level = log_level.lower()
+        self.config = config or {}
 
     def validate_and_repair(
         self,
@@ -93,6 +94,8 @@ class InternalMessageValidator:
         issues.extend(self._check_tool_call_consistency(messages))
         issues.extend(self._check_tool_names(messages))
         issues.extend(self._check_tool_response_json(messages))
+        issues.extend(self._check_tool_response_null_values(messages))  # Gemini compatibility
+        issues.extend(self._check_tool_response_size(messages))  # Prevent oversized responses
         issues.extend(self._check_content_structure(messages))
         issues.extend(self._check_message_sequence(messages))
 
@@ -257,6 +260,116 @@ class InternalMessageValidator:
                 except Exception as e:
                     # Catch any other unexpected errors
                     logger.error(f"Unexpected error parsing tool response at index {i}: {e}")
+
+        return issues
+
+    def _check_tool_response_null_values(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
+        """Check for null values in tool responses (Gemini compatibility issue).
+        
+        Gemini has known issues with null values in tool responses, leading to
+        MALFORMED_FUNCTION_CALL errors. This check warns about such issues.
+        """
+        import json
+        issues = []
+
+        def find_null_values(obj, path=""):
+            """Recursively find null values in a nested structure."""
+            null_paths = []
+            if obj is None:
+                return [path]
+            elif isinstance(obj, dict):
+                for key, value in obj.items():
+                    current_path = f"{path}.{key}" if path else key
+                    null_paths.extend(find_null_values(value, current_path))
+            elif isinstance(obj, list):
+                for idx, item in enumerate(obj):
+                    current_path = f"{path}[{idx}]"
+                    null_paths.extend(find_null_values(item, current_path))
+            return null_paths
+
+        for i, msg in enumerate(messages):
+            if msg.role == "tool":
+                content = msg.content
+                if not content:
+                    continue
+                
+                try:
+                    parsed = json.loads(content)
+                    null_paths = find_null_values(parsed)
+                    
+                    if null_paths:
+                        tool_name = getattr(msg, 'name', 'unknown')
+                        issues.append(ValidationIssue(
+                            type="tool_response_null_values",
+                            severity="warning",
+                            message_index=i,
+                            description=f"Tool response from '{tool_name}' contains {len(null_paths)} null value(s) - may cause MALFORMED_FUNCTION_CALL with Gemini",
+                            details={
+                                "tool_name": tool_name,
+                                "tool_call_id": getattr(msg, 'tool_call_id', None),
+                                "null_paths": null_paths[:5],  # Limit to first 5
+                                "total_nulls": len(null_paths)
+                            }
+                        ))
+                except (json.JSONDecodeError, ValueError):
+                    # Already handled by _check_tool_response_json
+                    pass
+                except Exception as e:
+                    logger.error(f"Error checking null values at index {i}: {e}")
+
+        return issues
+
+    def _check_tool_response_size(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
+        """Check for oversized tool responses that may cause LLM issues.
+        
+        Very large tool responses (>50KB) can cause:
+        - Token limit issues
+        - Parsing errors
+        - MALFORMED_FUNCTION_CALL errors with some LLMs
+        """
+        import json
+        issues = []
+        
+        # Get size limits from config (in KB, convert to bytes)
+        MAX_SIZE_BYTES = self.config.get("max_tool_response_size_kb", 50) * 1024
+        WARN_SIZE_BYTES = self.config.get("warn_tool_response_size_kb", 20) * 1024
+
+        for i, msg in enumerate(messages):
+            if msg.role == "tool":
+                content = msg.content
+                if not content:
+                    continue
+                
+                content_size = len(content.encode('utf-8'))
+                
+                if content_size > MAX_SIZE_BYTES:
+                    tool_name = getattr(msg, 'name', 'unknown')
+                    issues.append(ValidationIssue(
+                        type="tool_response_too_large",
+                        severity="error",
+                        message_index=i,
+                        description=f"Tool response from '{tool_name}' is {content_size/1024:.1f}KB (>{MAX_SIZE_BYTES/1024}KB) - may cause LLM errors",
+                        details={
+                            "tool_name": tool_name,
+                            "size_bytes": content_size,
+                            "size_kb": round(content_size/1024, 1),
+                            "tool_call_id": getattr(msg, 'tool_call_id', None)
+                        }
+                    ))
+                elif content_size > WARN_SIZE_BYTES:
+                    tool_name = getattr(msg, 'name', 'unknown')
+                    issues.append(ValidationIssue(
+                        type="tool_response_large",
+                        severity="warning",
+                        message_index=i,
+                        description=f"Tool response from '{tool_name}' is large ({content_size/1024:.1f}KB) - consider pagination",
+                        details={
+                            "tool_name": tool_name,
+                            "size_bytes": content_size,
+                            "size_kb": round(content_size/1024, 1),
+                            "tool_call_id": getattr(msg, 'tool_call_id', None)
+                        }
+                    ))
 
         return issues
 
@@ -484,8 +597,8 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
         config = self.get_config()
         log_level = config.get('log_level', 'warning')
 
-        # Initialize internal validator
-        self.validator = InternalMessageValidator(log_level=log_level)
+        # Initialize internal validator with config
+        self.validator = InternalMessageValidator(log_level=log_level, config=config)
 
     async def validate_messages(self, context: HookContext) -> HookResult:
         """

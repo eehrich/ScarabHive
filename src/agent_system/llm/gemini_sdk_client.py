@@ -237,14 +237,12 @@ class GeminiSDKClient(LLMClient):
                         # Convert from base64 back to bytes
                         try:
                             part.thought_signature = base64.b64decode(thought_sig_b64)
+                            logger.debug(f"[GeminiSDK] Restored thought_signature for {func_name}")
                         except Exception as e:
                             logger.warning(f"[GeminiSDK] Failed to decode thought_signature for {func_name}: {e}")
-                    else:
-                        # For Gemini 3 Pro, use skip validator if no signature present
-                        # This allows function calls that were made without thinking enabled
-                        # The string "skip_thought_signature_validator" is a special value recognized by Gemini
-                        part.thought_signature = b"skip_thought_signature_validator"
-                        logger.debug(f"[GeminiSDK] No thought_signature for {func_name}, using skip validator")
+                    # IMPORTANT: Do NOT set skip_thought_signature_validator for historical function calls
+                    # Gemini SDK will handle this automatically. Setting it explicitly can cause
+                    # MALFORMED_FUNCTION_CALL errors when the model tries to validate historical calls.
                     
                     parts.append(part)
                 

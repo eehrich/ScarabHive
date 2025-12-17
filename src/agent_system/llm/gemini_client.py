@@ -199,12 +199,10 @@ class GeminiClient(LLMClient):
                     
                     if thought_sig:
                         part["thoughtSignature"] = thought_sig
-                        logger.debug(f"Including thoughtSignature for {func_name}")
-                    else:
-                        # For Gemini 3 Pro, use skip signature if missing
-                        # This allows history transfer from other models
-                        logger.debug(f"No thoughtSignature for {func_name}, using skip validator")
-                        part["thoughtSignature"] = "skip_thought_signature_validator"
+                        logger.debug(f"[Gemini] Restored thoughtSignature for {func_name}")
+                    # IMPORTANT: Do NOT set skip_thought_signature_validator for historical function calls
+                    # Gemini will handle this automatically. Setting it explicitly can cause
+                    # MALFORMED_FUNCTION_CALL errors when the model tries to validate historical calls.
                     
                     parts.append(part)
                 
