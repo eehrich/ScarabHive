@@ -66,6 +66,17 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self._async_jobs: dict[str, dict[str, Any]] = {}
         self._async_jobs_lock = __import__('asyncio').Lock()
 
+    def is_agent_running(self, instance_id: str) -> bool:
+        """Check if sub-agent is actually running (has active async task).
+        
+        Args:
+            instance_id: Sub-agent instance ID
+            
+        Returns:
+            True if agent has active task in _async_jobs, False otherwise
+        """
+        return instance_id in self._async_jobs
+
     def get_template_vars(self) -> dict:
         """Return template variables for schema rendering.
 
@@ -708,6 +719,40 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             instances = []
             for metadata in sub_sessions:
                 instance_id = metadata["instance_id"]
+                sub_status = metadata["status"]
+
+                activity_text = (metadata.get("current_activity") or "")
+                activity_lower = activity_text.lower()
+                looks_running = bool(activity_text) and (
+                    "completed" not in activity_lower
+                    and "cancelled" not in activity_lower
+                    and "canceled" not in activity_lower
+                    and "failed" not in activity_lower
+                    and "error" not in activity_lower
+                )
+                
+                # CRITICAL: If a sub-agent looks like it's running (status OR activity),
+                # but we have no active async job (e.g., after server restart), mark interrupted.
+                if sub_status in ("running", "pending") or (sub_status == "active" and looks_running):
+                    if not self.is_agent_running(instance_id):
+                        logger.warning(
+                            f"Sub-agent {instance_id} has status='{sub_status}' in DB but no active task. "
+                            f"Marking as 'interrupted' (likely server restart or crash)."
+                        )
+                        await manager.update_sub_session_metadata(
+                            parent_session_id=parent_session_id,
+                            sub_session_id=instance_id,
+                            status="interrupted",
+                            completed_at=datetime.now(UTC).isoformat(),
+                            error="Server restarted or crashed while sub-agent was running"
+                        )
+                        # Clear stale activity to prevent WebUI from displaying RUNNING forever.
+                        await manager.update_sub_agent_activity(
+                            parent_session_id=parent_session_id,
+                            sub_session_id=instance_id,
+                            activity=None,
+                        )
+                        sub_status = "interrupted"
                 
                 # Get actual message count from sub-session (not from cached metadata)
                 try:
@@ -720,7 +765,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 instances.append({
                     "instance_id": instance_id,
                     "agent_type": metadata["agent_type"],
-                    "status": metadata["status"],
+                    "status": sub_status,
                     "created_at": metadata["created_at"],
                     "last_used": metadata["last_used"],
                     "task_summary": metadata["task_summary"],

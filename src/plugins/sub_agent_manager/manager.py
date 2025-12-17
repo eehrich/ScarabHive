@@ -286,7 +286,9 @@ class SubAgentManager:
 
         result = []
         for instance_id, metadata in sub_agents.items():
-            if not include_completed and metadata.get("status") != "active":
+            # Treat "interrupted" as still visible by default (session is still present,
+            # but last execution ended unexpectedly).
+            if not include_completed and metadata.get("status") not in ("active", "interrupted"):
                 continue
             result.append(metadata)
 

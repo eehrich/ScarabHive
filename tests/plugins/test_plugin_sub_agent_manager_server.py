@@ -52,8 +52,7 @@ def server(mock_config, mock_mcp_config):
         system_config=mock_config,
         mcp_config=mock_mcp_config
     )
-    # Mock the manager
-    server._manager = AsyncMock()
+    # Don't set _manager here - tests that need it will mock it themselves
     return server
 
 
@@ -65,7 +64,7 @@ def restricted_server(mock_config, restricted_mcp_config):
         system_config=mock_config,
         mcp_config=restricted_mcp_config
     )
-    server._manager = AsyncMock()
+    # Don't set _manager here - tests that need it will mock it themselves
     return server
 
 
@@ -440,6 +439,7 @@ class TestAsyncExecution:
         
         # Mock manager to create sub-session
         mock_manager = server._get_manager.return_value
+        mock_manager._extract_user_id = Mock(return_value="test_user")
         mock_manager.create_sub_session = AsyncMock(return_value="sub_async_001")
         
         result = await server._handle_create({
@@ -516,58 +516,78 @@ class TestAsyncExecution:
     @pytest.mark.asyncio
     async def test_poll_completed_job_from_db(self, server):
         """Test polling a completed job that's not in async tracking (e.g., after restart)."""
-        from plugins.sub_agent_manager.schemas import SubAgentMetadata
         from datetime import datetime, UTC
         
         instance_id = "sub_completed_001"
         
-        # Mock dependencies for DB lookup
-        mock_manager = AsyncMock()
-        mock_manager.list_sub_sessions = AsyncMock(return_value=[
-            SubAgentMetadata(
-                instance_id=instance_id,
-                agent_type="test_agent",
-                created_at=datetime.now(UTC),
-                last_used=datetime.now(UTC),
-                status="active",
-                task_summary="Test task"
-            )
-        ])
+        # Save originals for cleanup
+        orig_extract_registry = server._extract_registry
+        orig_extract_session_service = server._extract_session_service
+        orig_get_manager = server._get_manager
         
-        server._extract_registry = Mock(return_value=Mock())
-        server._extract_session_service = Mock(return_value=Mock())
-        server._get_manager = Mock(return_value=mock_manager)
-        
-        # Not in async jobs (simulating restart)
-        result = await server._handle_poll({
-            "instance_id": instance_id,
-            "_session_id": "parent_session"
-        })
-        
-        assert result["status"] == "completed"
-        assert result["instance_id"] == instance_id
-        assert "Use 'info' operation" in result["message"]
+        try:
+            # Mock dependencies for DB lookup - return as dict (simpler than SubAgentMetadata)
+            mock_manager = AsyncMock()
+            mock_manager.list_sub_sessions = AsyncMock(return_value=[
+                {
+                    "instance_id": instance_id,
+                    "agent_type": "test_agent",
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "last_used": datetime.now(UTC).isoformat(),
+                    "status": "active",  # Session status (active/archived), not execution status
+                    "task_summary": "Test task",
+                    "message_count": 5
+                }
+            ])
+            
+            server._extract_registry = Mock(return_value=Mock())
+            server._extract_session_service = Mock(return_value=Mock())
+            server._get_manager = Mock(return_value=mock_manager)
+            
+            # Not in async jobs (simulating restart where execution completed but session persists)
+            result = await server._handle_poll({
+                "instance_id": instance_id,
+                "_session_id": "parent_session"
+            })
+            
+            # Poll should return "completed" because instance exists in DB but not in _async_jobs
+            assert result["status"] == "completed"
+            assert result["instance_id"] == instance_id
+            assert "Use 'info' operation" in result["message"]
+        finally:
+            # Restore originals
+            server._extract_registry = orig_extract_registry
+            server._extract_session_service = orig_extract_session_service
+            server._get_manager = orig_get_manager
 
     @pytest.mark.asyncio
     async def test_poll_non_existent_instance(self, server):
         """Test polling an instance that doesn't exist."""
-        mock_manager = Mock()
-        mock_manager.list_sub_sessions = AsyncMock(return_value=[])
+        # Save originals for cleanup
+        orig_extract_registry = server._extract_registry
+        orig_extract_session_service = server._extract_session_service
+        orig_get_manager = server._get_manager
         
-        mock_registry = Mock()
-        mock_session_service = Mock()
-        
-        server._extract_registry = Mock(return_value=mock_registry)
-        server._extract_session_service = Mock(return_value=mock_session_service)
-        server._get_manager = Mock(return_value=mock_manager)
-        
-        result = await server._handle_poll({
-            "instance_id": "non_existent_001",
-            "_session_id": "parent_session"
-        })
-        
-        assert result["status"] == "error"
-        assert "not found" in result["error"].lower()
+        try:
+            mock_manager = AsyncMock()
+            mock_manager.list_sub_sessions = AsyncMock(return_value=[])
+            
+            server._extract_registry = Mock(return_value=Mock())
+            server._extract_session_service = Mock(return_value=Mock())
+            server._get_manager = Mock(return_value=mock_manager)
+            
+            result = await server._handle_poll({
+                "instance_id": "non_existent_001",
+                "_session_id": "parent_session"
+            })
+            
+            assert result["status"] == "error"
+            assert "not found" in result["error"].lower()
+        finally:
+            # Restore originals
+            server._extract_registry = orig_extract_registry
+            server._extract_session_service = orig_extract_session_service
+            server._get_manager = orig_get_manager
 
     @pytest.mark.asyncio
     async def test_wait_completed_instance_returns_immediately(self, server):
@@ -931,3 +951,273 @@ def test_server_defaults_max_sub_agents_per_type(mock_config):
     )
     
     assert server.max_sub_agents_per_type == 3
+
+
+class TestOrphanedRunningAgents:
+    """Test cleanup of orphaned 'running' sub-agents after server restart."""
+
+    def test_is_agent_running_returns_false_for_nonexistent(self, server):
+        """Test that is_agent_running() returns False for non-existent agent."""
+        assert server.is_agent_running("nonexistent_id") is False
+
+    @pytest.mark.asyncio
+    async def test_is_agent_running_returns_true_for_active(self, server):
+        """Test that is_agent_running() returns True for active async job."""
+        import asyncio
+        
+        instance_id = "test_running_001"
+        
+        # Add to async jobs
+        task = asyncio.create_task(asyncio.sleep(100))
+        server._async_jobs[instance_id] = {
+            "instance_id": instance_id,
+            "status": "running",
+            "task_handle": task
+        }
+        
+        try:
+            assert server.is_agent_running(instance_id) is True
+        finally:
+            # Cleanup
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            del server._async_jobs[instance_id]
+
+    @pytest.mark.asyncio
+    async def test_list_marks_orphaned_running_as_interrupted(self, server):
+        """Test that listing marks orphaned 'running' sub-agents as 'interrupted'."""
+        parent_session_id = "parent_orphan_001"
+        instance_id = "sub_orphaned_001"
+        
+        # Mock manager with orphaned running agent
+        mock_manager = AsyncMock()
+        mock_manager._extract_user_id = Mock(return_value="test_user")
+        mock_manager.list_sub_sessions = AsyncMock(return_value=[
+            {
+                "instance_id": instance_id,
+                "agent_type": "test_agent",
+                "status": "running",  # Status in DB
+                "created_at": "2025-12-17T10:00:00Z",
+                "last_used": "2025-12-17T10:05:00Z",
+                "task_summary": "Test task",
+                "message_count": 3
+            }
+        ])
+        mock_manager.update_sub_session_metadata = AsyncMock()
+        
+        # Mock session service
+        mock_session_manager = AsyncMock()
+        mock_session_manager.load_session = AsyncMock(return_value={
+            "messages": [1, 2, 3]
+        })
+        mock_session_service = Mock()
+        mock_session_service.session_manager = mock_session_manager
+        
+        server._extract_session_service = Mock(return_value=mock_session_service)
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        # Agent is NOT in _async_jobs (orphaned)
+        assert instance_id not in server._async_jobs
+        
+        # List sub-agents
+        result = await server._handle_list({
+            "_session_id": parent_session_id,
+            "include_completed": False
+        })
+        
+        # Should have marked as interrupted
+        assert result["count"] == 1
+        assert result["instances"][0]["status"] == "interrupted"
+        assert result["instances"][0]["instance_id"] == instance_id
+        
+        # Verify DB update was called
+        mock_manager.update_sub_session_metadata.assert_called_once()
+        call_kwargs = mock_manager.update_sub_session_metadata.call_args.kwargs
+        assert call_kwargs["parent_session_id"] == parent_session_id
+        assert call_kwargs["sub_session_id"] == instance_id
+        assert call_kwargs["status"] == "interrupted"
+        assert "completed_at" in call_kwargs
+        assert "Server restarted" in call_kwargs["error"]
+
+    @pytest.mark.asyncio
+    async def test_list_keeps_actually_running_agents(self, server):
+        """Test that list does NOT mark truly running agents as interrupted."""
+        import asyncio
+        
+        parent_session_id = "parent_active_001"
+        instance_id = "sub_active_001"
+        
+        # Add to async jobs (agent is actually running)
+        server._async_jobs[instance_id] = {
+            "instance_id": instance_id,
+            "status": "running",
+            "task_handle": asyncio.create_task(asyncio.sleep(100))
+        }
+        
+        try:
+            # Mock manager
+            mock_manager = AsyncMock()
+            mock_manager._extract_user_id = Mock(return_value="test_user")
+            mock_manager.list_sub_sessions = AsyncMock(return_value=[
+                {
+                    "instance_id": instance_id,
+                    "agent_type": "test_agent",
+                    "status": "running",
+                    "created_at": "2025-12-17T11:00:00Z",
+                    "last_used": "2025-12-17T11:05:00Z",
+                    "task_summary": "Active task",
+                    "message_count": 5
+                }
+            ])
+            mock_manager.update_sub_session_metadata = AsyncMock()
+            
+            # Mock session service
+            mock_session_manager = AsyncMock()
+            mock_session_manager.load_session = AsyncMock(return_value={
+                "messages": [1, 2, 3, 4, 5]
+            })
+            mock_session_service = Mock()
+            mock_session_service.session_manager = mock_session_manager
+            
+            server._extract_session_service = Mock(return_value=mock_session_service)
+            server._get_manager = Mock(return_value=mock_manager)
+            
+            # List sub-agents
+            result = await server._handle_list({
+                "_session_id": parent_session_id,
+                "include_completed": False
+            })
+            
+            # Should keep status as "running"
+            assert result["count"] == 1
+            assert result["instances"][0]["status"] == "running"
+            assert result["instances"][0]["instance_id"] == instance_id
+            
+            # DB update should NOT be called
+            mock_manager.update_sub_session_metadata.assert_not_called()
+            
+        finally:
+            # Cleanup
+            if instance_id in server._async_jobs:
+                server._async_jobs[instance_id]["task_handle"].cancel()
+                del server._async_jobs[instance_id]
+
+    @pytest.mark.asyncio
+    async def test_list_marks_orphaned_pending_as_interrupted(self, server):
+        """Test that orphaned 'pending' agents are also marked as interrupted."""
+        parent_session_id = "parent_orphan_002"
+        instance_id = "sub_orphaned_002"
+        
+        # Mock manager with orphaned pending agent
+        mock_manager = AsyncMock()
+        mock_manager._extract_user_id = Mock(return_value="test_user")
+        mock_manager.list_sub_sessions = AsyncMock(return_value=[
+            {
+                "instance_id": instance_id,
+                "agent_type": "test_agent",
+                "status": "pending",  # Also check pending status
+                "created_at": "2025-12-17T12:00:00Z",
+                "last_used": "2025-12-17T12:01:00Z",
+                "task_summary": "Pending task",
+                "message_count": 1
+            }
+        ])
+        mock_manager.update_sub_session_metadata = AsyncMock()
+        
+        # Mock session service
+        mock_session_manager = AsyncMock()
+        mock_session_manager.load_session = AsyncMock(return_value={"messages": [1]})
+        mock_session_service = Mock()
+        mock_session_service.session_manager = mock_session_manager
+        
+        server._extract_session_service = Mock(return_value=mock_session_service)
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        # Agent is NOT in _async_jobs
+        assert instance_id not in server._async_jobs
+        
+        # List sub-agents
+        result = await server._handle_list({
+            "_session_id": parent_session_id,
+            "include_completed": False
+        })
+        
+        # Should mark pending as interrupted too
+        assert result["count"] == 1
+        assert result["instances"][0]["status"] == "interrupted"
+        
+        # Verify DB update
+        mock_manager.update_sub_session_metadata.assert_called_once()
+        call_kwargs = mock_manager.update_sub_session_metadata.call_args.kwargs
+        assert call_kwargs["status"] == "interrupted"
+
+    @pytest.mark.asyncio
+    async def test_list_ignores_completed_agents(self, server):
+        """Test that completed/cancelled/failed agents are not touched."""
+        parent_session_id = "parent_completed_001"
+        
+        # Mock manager with various completed agents
+        mock_manager = AsyncMock()
+        mock_manager._extract_user_id = Mock(return_value="test_user")
+        mock_manager.list_sub_sessions = AsyncMock(return_value=[
+            {
+                "instance_id": "sub_completed",
+                "agent_type": "test_agent",
+                "status": "completed",
+                "created_at": "2025-12-17T10:00:00Z",
+                "last_used": "2025-12-17T10:10:00Z",
+                "task_summary": "Done",
+                "message_count": 10
+            },
+            {
+                "instance_id": "sub_cancelled",
+                "agent_type": "test_agent",
+                "status": "cancelled",
+                "created_at": "2025-12-17T11:00:00Z",
+                "last_used": "2025-12-17T11:05:00Z",
+                "task_summary": "Cancelled",
+                "message_count": 5
+            },
+            {
+                "instance_id": "sub_failed",
+                "agent_type": "test_agent",
+                "status": "failed",
+                "created_at": "2025-12-17T12:00:00Z",
+                "last_used": "2025-12-17T12:02:00Z",
+                "task_summary": "Failed",
+                "message_count": 2
+            }
+        ])
+        mock_manager.update_sub_session_metadata = AsyncMock()
+        
+        # Mock session service
+        mock_session_manager = AsyncMock()
+        mock_session_manager.load_session = AsyncMock(side_effect=[
+            {"messages": list(range(10))},
+            {"messages": list(range(5))},
+            {"messages": list(range(2))}
+        ])
+        mock_session_service = Mock()
+        mock_session_service.session_manager = mock_session_manager
+        
+        server._extract_session_service = Mock(return_value=mock_session_service)
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        # List with include_completed=True
+        result = await server._handle_list({
+            "_session_id": parent_session_id,
+            "include_completed": True
+        })
+        
+        # All agents should keep their original status
+        assert result["count"] == 3
+        statuses = [inst["status"] for inst in result["instances"]]
+        assert "completed" in statuses
+        assert "cancelled" in statuses
+        assert "failed" in statuses
+        
+        # No DB updates (no orphaned running/pending agents)
+        mock_manager.update_sub_session_metadata.assert_not_called()

@@ -164,6 +164,11 @@
             background: #6e6e6e;
             color: #d4d4d4;
         }
+
+        .status-interrupted {
+            background: #c74e39;
+            color: #fff;
+        }
         
         .agent-meta {
             display: flex;
@@ -406,6 +411,7 @@
         .status-badge.running { background: #ff9800; }
         .status-badge.active { background: #16825d; }
         .status-badge.archived { background: #6e6e6e; }
+        .status-badge.interrupted { background: #c74e39; }
     </style>
 </head>
 <body>
@@ -701,16 +707,20 @@
             
             // Helper to determine agent's effective status
             function getAgentEffectiveStatus(agent) {
+                const statusLower = (agent.status || '').toLowerCase();
+                if (statusLower === 'interrupted') return 'interrupted';
+                if (statusLower === 'running' || statusLower === 'pending') return 'running';
+
                 const activityLower = (agent.current_activity || '').toLowerCase();
                 const isRunning = agent.current_activity && 
-                                 agent.status === 'active' && 
+                                 statusLower === 'active' && 
                                  !activityLower.includes('completed') &&
                                  !activityLower.includes('cancelled') &&
                                  !activityLower.includes('failed') &&
                                  !activityLower.includes('error');
                 
                 if (isRunning) return 'running';
-                if (agent.status === 'archived') return 'archived';
+                if (statusLower === 'archived') return 'archived';
                 return 'active';  // active but not running (idle)
             }
             
@@ -720,6 +730,8 @@
                 
                 if (effectiveStatus === 'running' && filters.running) return true;
                 if (effectiveStatus === 'active' && filters.active) return true;
+                // Show interrupted under the Active filter by default
+                if (effectiveStatus === 'interrupted' && filters.active) return true;
                 if (effectiveStatus === 'archived' && filters.archived) return true;
                 
                 return false;
@@ -739,8 +751,10 @@
                 // Agent is running only if it has activity AND it's not in a terminal state
                 const effectiveStatus = getAgentEffectiveStatus(agent);
                 const isRunning = effectiveStatus === 'running';
-                const statusClass = isRunning ? 'running' : agent.status;
-                const statusText = isRunning ? '🔄 RUNNING' : agent.status.toUpperCase();
+                const statusClass = isRunning ? 'running' : (agent.status || 'active').toLowerCase();
+                const statusText = isRunning
+                    ? '🔄 RUNNING'
+                    : (statusClass === 'interrupted' ? '⛔ INTERRUPTED' : statusClass.toUpperCase());
                 
                 const activityHtml = agent.current_activity 
                     ? `<div class="agent-activity">

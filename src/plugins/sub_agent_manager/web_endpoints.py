@@ -177,8 +177,8 @@ class SubAgentManagerWebFactory:
 
             # Calculate statistics
             total = len(instances)
-            active = sum(1 for inst in instances if inst.get("status") == "active")
-            archived = sum(1 for inst in instances if inst.get("status") != "active")
+            active = sum(1 for inst in instances if inst.get("status") in ("active", "interrupted"))
+            archived = sum(1 for inst in instances if inst.get("status") not in ("active", "interrupted"))
 
             return JSONResponse({
                 "total": total,
