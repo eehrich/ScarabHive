@@ -34,7 +34,7 @@ class TestToolCallConsistency:
             ),
             ChatMessage(
                 role="tool",
-                content="Sunny, 72°F",
+                content='{"weather": "Sunny", "temperature": "72°F"}',
                 tool_call_id="call_1",
                 name="weather_forecast"
             ),
@@ -110,7 +110,7 @@ class TestToolCallConsistency:
             ChatMessage(role="user", content="Hello"),
             ChatMessage(
                 role="tool",
-                content="Some data",
+                content='{"data": "Some data"}',
                 tool_call_id="call_999",
                 name="unknown_tool"
             ),
@@ -130,7 +130,7 @@ class TestToolCallConsistency:
         """Test detection of tool message without tool_call_id."""
         messages = [
             ChatMessage(role="user", content="Hello"),
-            ChatMessage(role="tool", content="Some data", name="test_tool"),
+            ChatMessage(role="tool", content='{"data": "Some data"}', name="test_tool"),
             ChatMessage(role="assistant", content="Got it!")
         ]
 
@@ -154,8 +154,8 @@ class TestToolCallConsistency:
                     {"id": "call_2", "function": {"name": "get_time"}}
                 ]
             ),
-            ChatMessage(role="tool", content="Sunny", tool_call_id="call_1"),
-            ChatMessage(role="tool", content="3:00 PM", tool_call_id="call_2"),
+            ChatMessage(role="tool", content='{"weather": "Sunny"}', tool_call_id="call_1"),
+            ChatMessage(role="tool", content='{"time": "3:00 PM"}', tool_call_id="call_2"),
             ChatMessage(role="assistant", content="Weather is sunny, time is 3 PM")
         ]
 
@@ -473,8 +473,8 @@ class TestComplexScenarios:
                     {"id": "call_2", "function": {"name": "tool2"}}
                 ]
             ),
-            ChatMessage(role="tool", content="Result 1", tool_call_id="call_1"),
-            ChatMessage(role="tool", content="Result 2", tool_call_id="call_2"),
+            ChatMessage(role="tool", content='{"result": "Result 1"}', tool_call_id="call_1"),
+            ChatMessage(role="tool", content='{"result": "Result 2"}', tool_call_id="call_2"),
             ChatMessage(role="assistant", content="Done!")
         ]
 
@@ -788,3 +788,108 @@ class TestOrphanedToolCallsAdvanced:
 
     # Note: ChatMessage.tool_calls must be list of dicts, not custom objects
     # Test removed as it tests unsupported tool_calls format
+
+
+class TestToolResponseJsonValidation:
+    """Test tool response JSON validation."""
+
+    def test_valid_json_object_response(self):
+        """Test validation passes for valid JSON object in tool response."""
+        messages = [
+            ChatMessage(role="user", content="Get data"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "get_data"}}]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"status": "success", "data": [1, 2, 3]}',
+                tool_call_id="call_1",
+                name="get_data"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        assert result.is_valid
+        json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
+        assert len(json_issues) == 0
+
+    def test_invalid_json_in_tool_response(self):
+        """Test detection of invalid JSON in tool response."""
+        messages = [
+            ChatMessage(role="user", content="Get data"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "get_data"}}]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"invalid json',
+                tool_call_id="call_1",
+                name="get_data"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should have warning but still be valid (warnings don't fail validation)
+        json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
+        assert len(json_issues) == 1
+        assert json_issues[0].severity == "warning"
+        assert "not valid JSON" in json_issues[0].description
+
+    def test_non_object_json_in_tool_response(self):
+        """Test detection of non-object JSON (array, string, etc) in tool response."""
+        messages = [
+            ChatMessage(role="user", content="Get data"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "get_data"}}]
+            ),
+            ChatMessage(
+                role="tool",
+                content='[1, 2, 3]',  # Valid JSON but not an object
+                tool_call_id="call_1",
+                name="get_data"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
+        assert len(json_issues) == 1
+        assert json_issues[0].severity == "warning"
+        assert "not a JSON object" in json_issues[0].description
+        assert json_issues[0].details["content_type"] == "list"
+
+    def test_primitive_json_in_tool_response(self):
+        """Test detection of primitive JSON values in tool response."""
+        messages = [
+            ChatMessage(role="user", content="Get data"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "get_data"}}]
+            ),
+            ChatMessage(
+                role="tool",
+                content='"just a string"',  # Valid JSON but primitive
+                tool_call_id="call_1",
+                name="get_data"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
+        assert len(json_issues) == 1
+        assert json_issues[0].severity == "warning"
+        assert json_issues[0].details["content_type"] == "str"

@@ -92,6 +92,7 @@ class InternalMessageValidator:
         # Run all validation checks
         issues.extend(self._check_tool_call_consistency(messages))
         issues.extend(self._check_tool_names(messages))
+        issues.extend(self._check_tool_response_json(messages))
         issues.extend(self._check_content_structure(messages))
         issues.extend(self._check_message_sequence(messages))
 
@@ -211,6 +212,51 @@ class InternalMessageValidator:
                                 "pattern": "^[a-zA-Z0-9_-]+$"
                             }
                         ))
+
+        return issues
+
+    def _check_tool_response_json(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
+        """Check that tool responses contain valid JSON objects."""
+        import json
+        issues = []
+
+        for i, msg in enumerate(messages):
+            if msg.role == "tool":
+                content = msg.content
+                if not content:
+                    continue
+                
+                # Try to parse content as JSON
+                try:
+                    parsed = json.loads(content)
+                    # Check if it's a valid JSON object (not just a primitive)
+                    if not isinstance(parsed, dict):
+                        issues.append(ValidationIssue(
+                            type="invalid_tool_response_json",
+                            severity="warning",
+                            message_index=i,
+                            description=f"Tool response is not a JSON object (type: {type(parsed).__name__})",
+                            details={
+                                "tool_call_id": getattr(msg, 'tool_call_id', None),
+                                "content_type": type(parsed).__name__,
+                                "content_preview": str(content)[:100]
+                            }
+                        ))
+                except (json.JSONDecodeError, ValueError) as e:
+                    issues.append(ValidationIssue(
+                        type="invalid_tool_response_json",
+                        severity="warning",
+                        message_index=i,
+                        description=f"Tool response is not valid JSON: {str(e)}",
+                        details={
+                            "tool_call_id": getattr(msg, 'tool_call_id', None),
+                            "error": str(e),
+                            "content_preview": str(content)[:100]
+                        }
+                    ))
+                except Exception as e:
+                    # Catch any other unexpected errors
+                    logger.error(f"Unexpected error parsing tool response at index {i}: {e}")
 
         return issues
 
