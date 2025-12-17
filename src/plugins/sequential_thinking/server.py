@@ -374,13 +374,17 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         """Get branch tree visualization."""
         tree = {}
         for branch_id, branch in session.branches.items():
-            tree[branch_id] = {
-                "parent": branch.parent_branch,
+            branch_info = {
                 "branched_from": branch.branched_from_thought,
                 "thoughts_count": len(branch.thoughts),
                 "active": branch.active,
                 "created_at": branch.created_at.isoformat()
             }
+            # Only include parent if it's not None (avoid null values for Gemini compatibility)
+            if branch.parent_branch is not None:
+                branch_info["parent"] = branch.parent_branch
+            
+            tree[branch_id] = branch_info
         return tree
 
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -444,8 +448,6 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                                 "progress": f"Thought {s.actual_thoughts}/{max(s.actual_thoughts, s.total_thoughts_estimate)}",
                                 "branch": s.current_branch,
                                 "thought_history": [],  # Minimal response for cached
-                                "branch_summary": None,
-                                "error": None,
                                 "warnings": ["Idempotent request - returned cached result"]
                             }
 
@@ -600,21 +602,28 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 "branch": session.current_branch,
                 "thought_history": [
                     {
-                        "event_id": t.event_id,
-                        "number": t.number,
-                        "content": t.content[:200] + "..." if len(t.content) > 200 else t.content,
-                        "branch": t.branch_id,
-                        "is_revision": t.is_revision,
-                        # Omit revises_thought if None - Gemini dislikes null values
-                        **({} if t.revises_thought is None else {"revises_thought": t.revises_thought}),
-                        "timestamp": t.timestamp.isoformat()   # Consistent with summary
+                        k: v for k, v in {
+                            "event_id": t.event_id,
+                            "number": t.number,
+                            "content": t.content[:200] + "..." if len(t.content) > 200 else t.content,
+                            "branch": t.branch_id,
+                            "is_revision": t.is_revision,
+                            "revises_thought": t.revises_thought,  # May be None
+                            "timestamp": t.timestamp.isoformat()
+                        }.items() if v is not None  # Filter out None values
                     }
                     for t in session.thoughts[-self.max_summary_thoughts:]
                 ]
-                # Omit error/warnings/branch_summary if None - Gemini has issues with null values in tool responses
-                , **({} if not warnings else {"warnings": warnings})
-                , **({} if not self.enable_branching or not self._get_branch_tree(session) else {"branch_summary": self._get_branch_tree(session)})
             }
+            
+            # Add optional fields only if they have values (avoid None)
+            if warnings:
+                result["warnings"] = warnings
+            
+            if self.enable_branching:
+                branch_tree = self._get_branch_tree(session)
+                if branch_tree:
+                    result["branch_summary"] = branch_tree
 
             # END status
             complete_msg = "✓ Complete" if not next_thought_needed else "Continue reasoning..."
@@ -742,21 +751,28 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 "current_branch": session.current_branch,
                 "thoughts": [
                     {
-                        "event_id": t.event_id,
-                        "number": t.number,
-                        "content": t.content,
-                        "timestamp": t.timestamp.isoformat(),
-                        "branch": t.branch_id,
-                        "is_revision": t.is_revision,
-                        "revises_thought": t.revises_thought,
-                        "revision_count": len(t.revision_history)
+                        k: v for k, v in {
+                            "event_id": t.event_id,
+                            "number": t.number,
+                            "content": t.content,
+                            "timestamp": t.timestamp.isoformat(),
+                            "branch": t.branch_id,
+                            "is_revision": t.is_revision,
+                            "revises_thought": t.revises_thought,  # May be None
+                            "revision_count": len(t.revision_history)
+                        }.items() if v is not None  # Filter out None values
                     }
                     for t in recent_thoughts
                 ],
-                "branches": self._get_branch_tree(session) if include_branches else None,
                 "created_at": session.created_at.isoformat(),
                 "last_accessed": session.last_accessed.isoformat()
             }
+            
+            # Add branches only if requested and available
+            if include_branches:
+                branch_tree = self._get_branch_tree(session)
+                if branch_tree:
+                    summary["branches"] = branch_tree
 
             await safe_status_call(
                 "end",
