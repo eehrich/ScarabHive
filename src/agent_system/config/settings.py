@@ -262,7 +262,9 @@ def _resolve_server_inheritance(
     if server_config is None:
         return (server_name, {})  # Not found, return as-is
     
-    server_dict = server_config.model_dump()
+    # Use exclude_unset=True to only export explicitly set values, not Pydantic defaults
+    # This prevents defaults from overriding parent values during inheritance
+    server_dict = server_config.model_dump(exclude_unset=True)
     typ = server_dict.get("type", "basic_agent")
     
     # Check if server references itself (e.g., writer_content with type: writer_content)
@@ -350,6 +352,8 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     if server_config is None:
         return None
     
+    # Use exclude_unset for default_config too - but this one we want WITH defaults
+    # because it's the base layer. So use regular model_dump() here.
     default_config_dict = config.plugins.default_config.model_dump()
     
     # Resolve inheritance chain (type: writer_agent -> type: basic_agent)

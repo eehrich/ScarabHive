@@ -138,7 +138,7 @@ class TimeoutConfig(BaseModel):
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, first is default, others are available options
-    max_steps: int = 20  # maximum steps for agents that support multi-step reasoning
+    max_steps: int = 20  # maximum steps for agents that support multi-step reasoning (default: 20, used if not set in config)
     tools: ToolConfig = Field(default_factory=ToolConfig)
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
