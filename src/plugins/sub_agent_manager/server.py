@@ -492,12 +492,27 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     async def _handle_continue(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'continue' operation - continue existing sub-agent."""
         # Get status context early (before try block) so it's available in except
-        status = params.get("_status")
+        status = params.get("_status") if params else None
+        
+        # Validate params
+        if not params:
+            if status:
+                await status.error("Continue: params is None")
+            return {"status": "error", "error": "Invalid parameters (None)"}
         
         try:
-            # Extract parameters
-            instance_id = params["instance_id"]
-            message = params["message"]
+            # Extract and validate required parameters
+            instance_id = params.get("instance_id")
+            if not instance_id:
+                if status:
+                    await status.error("Continue: 'instance_id' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
+            
+            message = params.get("message")
+            if not message:
+                if status:
+                    await status.error("Continue: 'message' is required")
+                return {"status": "error", "error": "Missing required parameter: 'message'"}
             use_advanced_model = params.get("use_advanced_model", False)
 
             # Get parent session ID from injected context
@@ -742,13 +757,24 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
     async def _handle_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'delete' operation - archive sub-agent."""
-        status = params.get("_status")
+        status = params.get("_status") if params else None
+        
+        # Validate params
+        if not params:
+            if status:
+                await status.error("Delete: params is None")
+            return {"status": "error", "error": "Invalid parameters (None)"}
+        
         try:
+            instance_id = params.get("instance_id")
+            if not instance_id:
+                if status:
+                    await status.error("Delete: 'instance_id' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
+            
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
                 raise ValueError("No session context available")
-
-            instance_id = params["instance_id"]
 
             # Get manager with injected dependencies (registry optional for delete)
             registry = params.get("_registry")  # Optional
@@ -800,13 +826,24 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
     async def _handle_info(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'info' operation - get detailed sub-agent info."""
-        status = params.get("_status")
+        status = params.get("_status") if params else None
+        
+        # Validate params
+        if not params:
+            if status:
+                await status.error("Info: params is None")
+            return {"status": "error", "error": "Invalid parameters (None)"}
+        
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
                 raise ValueError("No session context available")
 
-            instance_id = params["instance_id"]
+            instance_id = params.get("instance_id")
+            if not instance_id:
+                if status:
+                    await status.error("Info: 'instance_id' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
 
             # Extract dependencies from injected params
             session_service = self._extract_session_service(params)
@@ -991,11 +1028,30 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     self._running_agents.discard(instance_id)
 
         except asyncio.CancelledError:
-            # Job was cancelled
+            # Job was cancelled (e.g., parent agent interrupted)
             async with self._async_jobs_lock:
                 if instance_id in self._async_jobs:
                     self._async_jobs[instance_id]["status"] = "cancelled"
                     self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+            
+            # CRITICAL: Persist cancelled status to DB to prevent polling loops on restart
+            try:
+                registry = self._extract_registry(params)
+                session_service = self._extract_session_service(params)
+                manager = self._get_manager(session_service, registry)
+                parent_session_id = params.get("_session_id")
+                
+                if parent_session_id:
+                    await manager.update_sub_session_metadata(
+                        parent_session_id=parent_session_id,
+                        sub_session_id=instance_id,
+                        status="cancelled",
+                        completed_at=datetime.now(UTC).isoformat()
+                    )
+                    logger.info(f"Persisted cancelled status for {instance_id} in DB after CancelledError")
+            except Exception as persist_error:
+                logger.warning(f"Failed to persist cancelled status for {instance_id}: {persist_error}")
+            
             logger.info(f"Async execution cancelled for {instance_id}")
             raise
 
@@ -1010,9 +1066,20 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
     async def _handle_poll(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'poll' - check status of running sub-agent without blocking."""
-        status = params.get("_status")
+        status = params.get("_status") if params else None
+        
+        # Validate params
+        if not params:
+            if status:
+                await status.error("Poll: params is None")
+            return {"status": "error", "error": "Invalid parameters (None)"}
+        
         try:
-            instance_id = params["instance_id"]
+            instance_id = params.get("instance_id")
+            if not instance_id:
+                if status:
+                    await status.error("Poll: 'instance_id' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
 
             # First check if async execution is tracked
             async with self._async_jobs_lock:
@@ -1082,9 +1149,21 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         """Handle 'wait' - poll instance until completed or timeout."""
         import asyncio
         
-        status_ctx = params.get("_status")
+        status_ctx = params.get("_status") if params else None
+        
+        # Validate params
+        if not params:
+            if status_ctx:
+                await status_ctx.error("Wait: params is None")
+            return {"status": "error", "error": "Invalid parameters (None)"}
+        
         try:
-            instance_id = params["instance_id"]
+            instance_id = params.get("instance_id")
+            if not instance_id:
+                if status_ctx:
+                    await status_ctx.error("Wait: 'instance_id' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
+            
             timeout = params.get("timeout", 3600)  # Default 1 hour
 
             if status_ctx:
@@ -1160,9 +1239,20 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         """Handle 'wait_all' - wait for multiple sub-agents to complete."""
         import asyncio
         
-        status_ctx = params.get("_status")
+        status_ctx = params.get("_status") if params else None
+        
+        # Validate params
+        if not params:
+            if status_ctx:
+                await status_ctx.error("Wait_all: params is None")
+            return {"status": "error", "error": "Invalid parameters (None)"}
+        
         try:
-            instance_ids = params["instance_ids"]
+            instance_ids = params.get("instance_ids")
+            if not instance_ids:
+                if status_ctx:
+                    await status_ctx.error("Wait_all: 'instance_ids' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_ids'"}
             timeout = params.get("timeout", 3600)
 
             if not isinstance(instance_ids, list):
@@ -1220,9 +1310,20 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
     async def _handle_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'cancel' - cancel running async sub-agent."""
-        status_ctx = params.get("_status")
+        status_ctx = params.get("_status") if params else None
+        
+        # Validate params
+        if not params:
+            if status_ctx:
+                await status_ctx.error("Cancel: params is None")
+            return {"status": "error", "error": "Invalid parameters (None)"}
+        
         try:
-            instance_id = params["instance_id"]
+            instance_id = params.get("instance_id")
+            if not instance_id:
+                if status_ctx:
+                    await status_ctx.error("Cancel: 'instance_id' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
 
             async with self._async_jobs_lock:
                 if instance_id not in self._async_jobs:
@@ -1232,6 +1333,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
                 job = self._async_jobs[instance_id]
                 task_handle = job.get("task_handle")
+                parent_session_id = job.get("parent_session_id")
 
                 if job["status"] not in ["pending", "running"]:
                     if status_ctx:
@@ -1247,6 +1349,24 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
                 job["status"] = "cancelled"
                 job["completed_at"] = datetime.now(UTC).isoformat()
+
+            # CRITICAL: Update session metadata in database to persist cancelled status
+            # This prevents polling loops when parent agent restarts
+            if parent_session_id:
+                try:
+                    registry = self._extract_registry(params)
+                    session_service = self._extract_session_service(params)
+                    manager = self._get_manager(session_service, registry)
+                    
+                    await manager.update_sub_session_metadata(
+                        parent_session_id=parent_session_id,
+                        sub_session_id=instance_id,
+                        status="cancelled",
+                        completed_at=datetime.now(UTC).isoformat()
+                    )
+                    logger.info(f"Persisted cancelled status for {instance_id} in DB")
+                except Exception as e:
+                    logger.warning(f"Failed to persist cancelled status for {instance_id}: {e}")
 
             if status_ctx:
                 await status_ctx.end(f"Cancelled {instance_id}")

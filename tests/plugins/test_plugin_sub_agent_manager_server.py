@@ -707,6 +707,87 @@ class TestAsyncExecution:
         assert task.cancelled()
 
     @pytest.mark.asyncio
+    async def test_async_job_cancelled_by_exception_persists_status(self, server):
+        """Test that CancelledError in async job persists 'cancelled' status to DB."""
+        import asyncio
+        from datetime import datetime, UTC
+        
+        instance_id = "sub_cancel_exception_001"
+        parent_session_id = "parent_session_456"
+        
+        # Mock manager to verify update_sub_session_metadata is called
+        mock_manager = AsyncMock()
+        mock_manager.update_sub_session_metadata = AsyncMock()
+        mock_manager._extract_user_id = Mock(return_value="test_user")
+        
+        # Mock agent that will be cancelled
+        mock_agent = AsyncMock()
+        mock_agent.agent_config = Mock()
+        mock_agent.agent_config.default_llm_profile = "normal"
+        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker.set_session_metadata = Mock()
+        
+        # Mock run_events to hang so we can cancel it
+        async def hanging_run_events(*args, **kwargs):
+            await asyncio.sleep(100)  # Hang forever
+            yield  # Never reached
+            
+        mock_agent.run_events = hanging_run_events
+        
+        mock_registry = Mock()
+        mock_registry.get = Mock(return_value=mock_agent)
+        
+        mock_session_service = Mock()
+        
+        server._extract_registry = Mock(return_value=mock_registry)
+        server._extract_session_service = Mock(return_value=mock_session_service)
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        # Trigger CancelledError by calling _execute_async_job and cancelling it
+        params = {
+            "_session_id": parent_session_id,
+            "_request_id": "req_001",
+        }
+        
+        # Create task and let it start
+        task = asyncio.create_task(
+            server._execute_async_job(
+                instance_id=instance_id,
+                params=params,
+                agent_name="test_agent",
+                task="Test task",
+                use_advanced_model=False
+            )
+        )
+        
+        # Give it time to start
+        await asyncio.sleep(0.05)
+        
+        # Cancel it
+        task.cancel()
+        
+        # Wait for cancellation to complete
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        
+        # Verify DB update was called
+        await asyncio.sleep(0.05)  # Give time for cleanup
+        mock_manager.update_sub_session_metadata.assert_called()
+        
+        # Find the call with status="cancelled"
+        calls = mock_manager.update_sub_session_metadata.call_args_list
+        cancelled_call = None
+        for call in calls:
+            if call.kwargs.get("status") == "cancelled":
+                cancelled_call = call
+                break
+        
+        assert cancelled_call is not None, "update_sub_session_metadata should be called with status='cancelled'"
+        assert cancelled_call.kwargs["parent_session_id"] == parent_session_id
+        assert cancelled_call.kwargs["sub_session_id"] == instance_id
+        assert "completed_at" in cancelled_call.kwargs
+
+    @pytest.mark.asyncio
     async def test_cancel_non_existent_job(self, server):
         """Test cancelling a job that doesn't exist."""
         result = await server._handle_cancel({
@@ -715,6 +796,54 @@ class TestAsyncExecution:
         
         assert result["status"] == "error"
         assert "not found" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_persists_status_to_db(self, server):
+        """Test that cancelling a job persists 'cancelled' status to database."""
+        import asyncio
+        from datetime import datetime, UTC
+        
+        instance_id = "sub_cancel_persist_001"
+        parent_session_id = "parent_session_123"
+        
+        # Add running job with task and parent_session_id
+        task = asyncio.create_task(asyncio.sleep(100))
+        async with server._async_jobs_lock:
+            server._async_jobs[instance_id] = {
+                "instance_id": instance_id,
+                "status": "running",
+                "started_at": datetime.now(UTC).isoformat(),
+                "task_handle": task,
+                "parent_session_id": parent_session_id
+            }
+        
+        # Mock manager to verify update_sub_session_metadata is called
+        mock_manager = AsyncMock()
+        mock_manager.update_sub_session_metadata = AsyncMock()
+        
+        server._extract_registry = Mock(return_value=Mock())
+        server._extract_session_service = Mock(return_value=Mock())
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        result = await server._handle_cancel({
+            "instance_id": instance_id,
+            "_session_id": parent_session_id
+        })
+        
+        assert result["status"] == "cancelled"
+        assert result["instance_id"] == instance_id
+        
+        # Verify DB update was called
+        mock_manager.update_sub_session_metadata.assert_called_once()
+        call_args = mock_manager.update_sub_session_metadata.call_args
+        assert call_args.kwargs["parent_session_id"] == parent_session_id
+        assert call_args.kwargs["sub_session_id"] == instance_id
+        assert call_args.kwargs["status"] == "cancelled"
+        assert "completed_at" in call_args.kwargs
+        
+        # Verify task was cancelled
+        await asyncio.sleep(0.01)
+        assert task.cancelled()
 
 
 class TestSystemPromptIntegration:
