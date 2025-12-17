@@ -47,6 +47,54 @@ class TestContextOptimizerToolPairs:
         msg3 = ChatMessage(role="user", content="Hi")
         assert plugin._get_tool_call_ids(msg3) == set()
     
+    def test_remove_duplicates_preserves_tool_responses(self, plugin):
+        """Test that tool responses are never removed as duplicates."""
+        messages = [
+            ChatMessage(role="user", content="Test"),
+            ChatMessage(role="assistant", content="", tool_calls=[
+                {"id": "call_1", "function": {"name": "tool1"}},
+                {"id": "call_2", "function": {"name": "tool1"}},
+                {"id": "call_3", "function": {"name": "tool1"}}
+            ]),
+            # 3 tool responses with IDENTICAL content (common for success responses)
+            ChatMessage(role="tool", content='{"status": "success"}', tool_call_id="call_1"),
+            ChatMessage(role="tool", content='{"status": "success"}', tool_call_id="call_2"),
+            ChatMessage(role="tool", content='{"status": "success"}', tool_call_id="call_3"),
+            ChatMessage(role="assistant", content="Done"),
+        ]
+        
+        result = plugin._remove_duplicates(messages)
+        
+        # All tool responses must be preserved, even though content is identical
+        assert len(result) == 6
+        tool_responses = [msg for msg in result if msg.role == "tool"]
+        assert len(tool_responses) == 3
+        assert tool_responses[0].tool_call_id == "call_1"
+        assert tool_responses[1].tool_call_id == "call_2"
+        assert tool_responses[2].tool_call_id == "call_3"
+    
+    def test_remove_duplicates_preserves_assistant_with_tool_calls(self, plugin):
+        """Test that assistant messages with tool_calls are never removed as duplicates."""
+        messages = [
+            ChatMessage(role="user", content="Test"),
+            # Two assistant messages with empty content but different tool_calls
+            ChatMessage(role="assistant", content="", tool_calls=[
+                {"id": "call_1", "function": {"name": "tool1"}}
+            ]),
+            ChatMessage(role="tool", content='{"result": "ok"}', tool_call_id="call_1"),
+            ChatMessage(role="assistant", content="", tool_calls=[
+                {"id": "call_2", "function": {"name": "tool2"}}
+            ]),
+            ChatMessage(role="tool", content='{"result": "ok"}', tool_call_id="call_2"),
+        ]
+        
+        result = plugin._remove_duplicates(messages)
+        
+        # Both assistant messages must be preserved
+        assert len(result) == 5
+        assistant_msgs = [msg for msg in result if msg.role == "assistant"]
+        assert len(assistant_msgs) == 2
+    
     def test_get_tool_response_id(self, plugin):
         """Test extraction of tool_call_id from tool response."""
         # Tool response

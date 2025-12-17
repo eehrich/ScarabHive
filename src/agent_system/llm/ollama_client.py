@@ -351,14 +351,14 @@ class OllamaNativeAsyncClient(LLMClient):
                     import logging
                     logger = logging.getLogger(__name__)
                     logger.error(f"Ollama streaming failed after {max_retries + 1} attempts: {e}")
-                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
                     return
 
             except Exception as e:
                 import logging
                 logger = logging.getLogger(__name__)
                 logger.exception("Ollama streaming failed: %s", e)
-                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": str(e)}}}
                 return
 
     def supports_streaming(self) -> bool:

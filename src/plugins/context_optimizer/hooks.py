@@ -221,7 +221,11 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             return HookResult(success=False, modified=False, context=context, error=str(e))
     
     def _remove_duplicates(self, messages: list) -> list:
-        """Remove consecutive duplicate messages."""
+        """Remove consecutive duplicate messages.
+        
+        IMPORTANT: Never remove tool responses or assistant messages with tool_calls as duplicates,
+        even if content is identical. Each belongs to a specific interaction that must be preserved.
+        """
         if len(messages) <= 1:
             return messages
         
@@ -229,6 +233,18 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         removed_count = 0
         for i, msg in enumerate(messages[1:], start=1):
             prev_msg = result[-1]
+            
+            # Never treat tool-related messages as duplicates
+            if msg.role == "tool":
+                # Tool responses have unique tool_call_ids
+                result.append(msg)
+                continue
+            
+            if msg.role == "assistant" and getattr(msg, "tool_calls", None):
+                # Assistant messages with tool_calls are unique even if content is same
+                result.append(msg)
+                continue
+            
             if (msg.role != prev_msg.role or msg.content != prev_msg.content):
                 result.append(msg)
             else:

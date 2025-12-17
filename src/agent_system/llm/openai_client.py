@@ -284,7 +284,7 @@ class OpenAIAsyncClient(LLMClient):
                     except Exception as e:
                         logger.debug(f"Failed to extract status code from error response: {e}")
                         status = None
-                err_payload: dict[str, Any] = {"error": True, "message": str(e), "status": status}
+                err_payload: dict[str, Any] = {"error": str(e), "status": status}
                 if resp_obj is not None:
                     try:
                         data = getattr(resp_obj, "json", lambda: None)()
@@ -515,7 +515,7 @@ class OpenAIAsyncClient(LLMClient):
             from .realtime_adapter import RealtimeMessageAdapter
         except ImportError as e:
             logger.error("Failed to import Realtime API modules: %s", e)
-            return {"assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": "Realtime API modules not available"}}}
+            return {"assistant": {"role": "assistant", "content": "", "error": {"error": "Realtime API modules not available"}}}
 
         try:
             # Create and connect session
@@ -581,9 +581,7 @@ class OpenAIAsyncClient(LLMClient):
                                 "role": "assistant",
                                 "content": "",
                                 "error": {
-                                    "error": True,
-                                    "message": error_data.get("message", "Unknown error"),
-                                    "type": error_data.get("type", "unknown")
+                                    "error": f"{error_data.get('type', 'unknown')}: {error_data.get('message', 'Unknown error')}"
                                 }
                             }
                         }
@@ -612,9 +610,7 @@ class OpenAIAsyncClient(LLMClient):
                     "role": "assistant",
                     "content": "",
                     "error": {
-                        "error": True,
-                        "message": str(e),
-                        "type": "realtime_api_error"
+                        "error": f"realtime_api_error: {str(e)}"
                     }
                 }
             }
@@ -799,12 +795,12 @@ class OpenAIAsyncClient(LLMClient):
                     continue
                 else:
                     logger.error(f"OpenAI streaming failed after {max_retries + 1} attempts: {e}")
-                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
                     return
 
             except Exception as e:
                 logger.exception("OpenAI streaming failed: %s", e)
-                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": str(e)}}}
                 return
 
     async def _chat_tools_streaming_realtime(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
@@ -819,7 +815,7 @@ class OpenAIAsyncClient(LLMClient):
             from .realtime_adapter import RealtimeMessageAdapter
         except ImportError as e:
             logger.error("Failed to import Realtime API modules: %s", e)
-            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": "Realtime API modules not available"}}}
+            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": "Realtime API modules not available"}}}
             return
 
         try:
@@ -918,9 +914,7 @@ class OpenAIAsyncClient(LLMClient):
                                 "role": "assistant",
                                 "content": "",
                                 "error": {
-                                    "error": True,
-                                    "message": error_data.get("message", "Unknown error"),
-                                    "type": error_data.get("type", "unknown")
+                                    "error": f"{error_data.get('type', 'unknown')}: {error_data.get('message', 'Unknown error')}"
                                 }
                             }
                         }
@@ -950,9 +944,7 @@ class OpenAIAsyncClient(LLMClient):
                     "role": "assistant",
                     "content": "",
                     "error": {
-                        "error": True,
-                        "message": str(e),
-                        "type": "realtime_api_error"
+                        "error": f"realtime_api_error: {str(e)}"
                     }
                 }
             }

@@ -137,12 +137,23 @@ class GeminiClient(LLMClient):
             if msg.role == "tool":
                 # Tool responses use role="tool" (per Gemini SDK docs)
                 # Note: "function" was the old Gemini 1.5 convention
+                tool_name = msg.name or "unknown"
+                result_data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                
+                # Convert our error format to Gemini's expected format
+                # Our format: {"error": True, "message": "..."}
+                # Gemini format: {"error": "..."}
+                if isinstance(result_data, dict) and result_data.get("error") is True:
+                    error_message = result_data.get("message", "Unknown error")
+                    result_data = {"error": error_message}
+                    logger.warning(f"[Gemini] DEPRECATED: Tool returned old error format. Converted for {tool_name}: {error_message[:100]}")
+                
                 content = {
                     "role": "tool",
                     "parts": [{
                         "functionResponse": {
-                            "name": msg.name or "unknown",
-                            "response": json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                            "name": tool_name,
+                            "response": result_data
                         }
                     }]
                 }

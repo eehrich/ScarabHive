@@ -177,6 +177,14 @@ class GeminiSDKClient(LLMClient):
                 except json.JSONDecodeError:
                     result_data = {"result": content_str}
                 
+                # Convert our error format to Gemini's expected format
+                # Our format: {"error": True, "message": "..."}
+                # Gemini format: {"error": "..."}
+                if isinstance(result_data, dict) and result_data.get("error") is True:
+                    error_message = result_data.get("message", "Unknown error")
+                    result_data = {"error": error_message}
+                    logger.warning(f"[GeminiSDK] DEPRECATED: Tool returned old error format. Converted for {tool_name}: {error_message[:100]}")
+                
                 # Create function response part
                 # NOTE: Must use role="tool" (not "user") per Gemini SDK docs
                 function_response = types.Part.from_function_response(
@@ -408,6 +416,8 @@ class GeminiSDKClient(LLMClient):
         accumulated_usage = None
         # For parallel function calls: store the first thought_signature to propagate to all calls
         first_thought_signature = None
+        # Track MALFORMED_FUNCTION_CALL for auto-retry
+        got_malformed_function_call = False
         
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -435,11 +445,46 @@ class GeminiSDKClient(LLMClient):
                     
                     candidate = chunk.candidates[0]
                     
-                    # Log finish_reason only when there's a warning (finish_message)
+                    # Always log finish_reason (critical for debugging MALFORMED_FUNCTION_CALL)
                     if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                        finish_reason_str = str(candidate.finish_reason)
                         finish_msg = getattr(candidate, 'finish_message', None)
-                        if finish_msg:
-                            logger.warning(f"[GeminiSDK] finish_reason: {candidate.finish_reason}, finish_message: {finish_msg}")
+                        
+                        # Detect MALFORMED_FUNCTION_CALL for auto-retry
+                        if 'MALFORMED' in finish_reason_str:
+                            got_malformed_function_call = True
+                            # Log contents to debug what was sent
+                            contents_json = json.dumps([
+                                {
+                                    "role": c.role,
+                                    "parts": [
+                                        {
+                                            "text": p.text if hasattr(p, 'text') and p.text else None,
+                                            "function_call": {
+                                                "name": p.function_call.name,
+                                                "args": dict(p.function_call.args) if p.function_call.args else {}
+                                            } if hasattr(p, 'function_call') and p.function_call else None,
+                                            "function_response": {
+                                                "name": p.function_response.name if hasattr(p.function_response, 'name') else None,
+                                                "response": p.function_response.response if hasattr(p.function_response, 'response') else None
+                                            } if hasattr(p, 'function_response') and p.function_response else None
+                                        }
+                                        for p in c.parts
+                                    ]
+                                }
+                                for c in contents
+                            ], indent=2, default=str)
+                            logger.warning(f"[GeminiSDK] MALFORMED_FUNCTION_CALL detected. Contents sent:\n{contents_json}")
+                        
+                        # Log at WARNING level if there's a message or if it's a problematic finish_reason
+                        if finish_msg or 'MALFORMED' in finish_reason_str or 'ERROR' in finish_reason_str:
+                            msg = f"[GeminiSDK] finish_reason: {candidate.finish_reason}"
+                            if finish_msg:
+                                msg += f", finish_message: {finish_msg}"
+                            logger.warning(msg)
+                        else:
+                            # Normal STOP etc at DEBUG level
+                            logger.debug(f"[GeminiSDK] finish_reason: {candidate.finish_reason}")
                     
                     if not candidate.content or not candidate.content.parts:
                         continue
@@ -527,6 +572,29 @@ class GeminiSDKClient(LLMClient):
                     f"{len(accumulated_tool_calls)} tool calls"
                 )
                 
+                # Check for MALFORMED_FUNCTION_CALL with empty response - auto-retry
+                if got_malformed_function_call and not accumulated_content and not accumulated_tool_calls:
+                    if attempt < self.max_retries:
+                        wait_time = 1.0 + attempt  # 1s, 2s, 3s
+                        logger.warning(
+                            f"[GeminiSDK] MALFORMED_FUNCTION_CALL with empty response. "
+                            f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await asyncio.sleep(wait_time)
+                        # Reset accumulators for retry
+                        accumulated_content = []
+                        accumulated_thoughts = []
+                        accumulated_tool_calls = {}
+                        accumulated_usage = None
+                        first_thought_signature = None
+                        got_malformed_function_call = False
+                        continue
+                    else:
+                        logger.error(
+                            "[GeminiSDK] MALFORMED_FUNCTION_CALL persisted after all retries. "
+                            "This may indicate invalid tool schema or complex function call arguments."
+                        )
+                
                 # Warn if response is completely empty (MALFORMED_FUNCTION_CALL indicator)
                 if not accumulated_content and not accumulated_tool_calls:
                     logger.warning(
@@ -580,6 +648,8 @@ class GeminiSDKClient(LLMClient):
                     accumulated_thoughts = []
                     accumulated_tool_calls = {}
                     accumulated_usage = None
+                    first_thought_signature = None
+                    got_malformed_function_call = False
                     continue
                 
                 logger.error(f"[GeminiSDK] Streaming error: {e}", exc_info=True)

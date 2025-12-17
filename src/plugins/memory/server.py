@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_serializer
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.utils.vector_store import VectorStore
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -130,14 +131,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         # Storage paths
         self.storage_path = Path("data/memories")
-        self.chroma_path = self.storage_path / "chroma"
+        self.vector_store_path = self.storage_path / "vectors"
 
         # Create directories
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        self.chroma_path.mkdir(parents=True, exist_ok=True)
+        self.vector_store_path.mkdir(parents=True, exist_ok=True)
 
-        # Initialize ChromaDB client
-        self._init_chroma_client()
+        # Initialize vector store
+        self.vector_store = VectorStore(persist_path=str(self.vector_store_path))
 
         # In-memory cache for metadata (session_id -> MemoryCollection)
         self._collections_cache: Dict[str, MemoryCollection] = {}
@@ -147,37 +148,10 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         logger.info(f"MemoryServer initialized with storage_path={self.storage_path}")
 
-    def _init_chroma_client(self):
-        """Initialize ChromaDB persistent client"""
-        try:
-            import chromadb
-            from chromadb.config import Settings
-
-            self.chroma_client = chromadb.PersistentClient(
-                path=str(self.chroma_path),
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
-                )
-            )
-            logger.info(f"ChromaDB client initialized at {self.chroma_path}")
-        except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}")
-            raise ChromaDBError(f"ChromaDB initialization failed: {e}")
-
-    def _get_collection(self, session_id: str):
-        """Get or create ChromaDB collection for session"""
-        try:
-            # Sanitize session_id for collection name (ChromaDB naming rules)
-            collection_name = f"session_{session_id.replace('-', '_')}"
-
-            return self.chroma_client.get_or_create_collection(
-                name=collection_name,
-                metadata={"session_id": session_id}
-            )
-        except Exception as e:
-            logger.error(f"Failed to get/create collection for session {session_id}: {e}")
-            raise ChromaDBError(f"Collection access failed: {e}")
+    def _get_collection_name(self, session_id: str) -> str:
+        """Get collection name for session"""
+        # Sanitize session_id for collection name
+        return f"session_{session_id.replace('-', '_')}"
 
     def _generate_memory_id(self, session_id: str) -> str:
         """
@@ -362,14 +336,15 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         session_id: str,
         memory: Memory
     ):
-        """Store memory content in ChromaDB for vector search"""
+        """Store memory content in vector store for semantic search"""
         try:
-            collection = self._get_collection(session_id)
+            collection_name = self._get_collection_name(session_id)
 
-            # Store in ChromaDB with metadata
-            collection.add(
+            # Store in vector store with metadata
+            self.vector_store.add(
+                collection=collection_name,
                 ids=[memory.memory_id],
-                documents=[memory.content],  # ChromaDB auto-generates embeddings
+                documents=[memory.content],
                 metadatas=[{
                     "title": memory.title,
                     "keywords": ",".join(memory.keywords),
@@ -379,25 +354,25 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 }]
             )
 
-            logger.debug(f"Stored memory {memory.memory_id} in ChromaDB")
+            logger.debug(f"Stored memory {memory.memory_id} in vector store")
 
         except Exception as e:
-            logger.error(f"Failed to store memory in ChromaDB: {e}")
-            raise ChromaDBError(f"ChromaDB storage failed: {e}")
+            logger.error(f"Failed to store memory in vector store: {e}")
+            raise ChromaDBError(f"Vector store storage failed: {e}")
 
     async def _delete_memory_from_chroma(
         self,
         session_id: str,
         memory_id: str
     ):
-        """Delete memory from ChromaDB"""
+        """Delete memory from vector store"""
         try:
-            collection = self._get_collection(session_id)
-            collection.delete(ids=[memory_id])
-            logger.debug(f"Deleted memory {memory_id} from ChromaDB")
+            collection_name = self._get_collection_name(session_id)
+            self.vector_store.delete(collection=collection_name, ids=[memory_id])
+            logger.debug(f"Deleted memory {memory_id} from vector store")
         except Exception as e:
-            logger.error(f"Failed to delete memory from ChromaDB: {e}")
-            # Don't raise - non-critical if ChromaDB delete fails
+            logger.error(f"Failed to delete memory from vector store: {e}")
+            # Don't raise - non-critical if vector store delete fails
 
     # =========================================================================
     # Memory Operations (Tool Implementation)
@@ -491,13 +466,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         query: str,
         n_results: int = 5
     ) -> Dict:
-        """Semantic search using ChromaDB embeddings"""
+        """Semantic search using vector embeddings"""
         try:
-            collection = self._get_collection(session_id)
+            collection_name = self._get_collection_name(session_id)
 
-            # Perform semantic search
-            results = collection.query(
-                query_texts=[query],
+            # Perform semantic search (VectorStore handles n_results adjustment internally)
+            results = self.vector_store.query(
+                collection=collection_name,
+                query_text=query,
                 n_results=n_results,
                 include=["documents", "metadatas", "distances"]
             )
@@ -720,6 +696,21 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         try:
             # Execute operation with informative status updates
             if operation == "store":
+                # Validate required parameters for store operation
+                if "title" not in arguments:
+                    error_msg = "Missing required parameter 'title' for store operation"
+                    if status:
+                        await status.error(error_msg)
+                    logger.error(f"Memory store failed: {error_msg}")
+                    return {"error": error_msg}
+                
+                if "content" not in arguments:
+                    error_msg = "Missing required parameter 'content' for store operation"
+                    if status:
+                        await status.error(error_msg)
+                    logger.error(f"Memory store failed: {error_msg}")
+                    return {"error": error_msg}
+                
                 title = arguments["title"]
                 if status:
                     await status.progress(f"Storing: {title[:50]}...")
@@ -739,6 +730,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 return result
 
             elif operation == "recall":
+                # Validate required parameters for recall operation
+                if "memory_id" not in arguments:
+                    error_msg = "Missing required parameter 'memory_id' for recall operation"
+                    if status:
+                        await status.error(error_msg)
+                    logger.error(f"Memory recall failed: {error_msg}")
+                    return {"error": error_msg}
+                
                 memory_id = arguments["memory_id"]
                 if status:
                     await status.progress(f"Recalling: {memory_id}")
@@ -753,6 +752,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 return result
 
             elif operation == "search":
+                # Validate required parameters for search operation
+                if "query" not in arguments:
+                    error_msg = "Missing required parameter 'query' for search operation"
+                    if status:
+                        await status.error(error_msg)
+                    logger.error(f"Memory search failed: {error_msg}")
+                    return {"error": error_msg}
+                
                 query = arguments["query"]
                 n_results = arguments.get("n_results", 5)
                 if status:
@@ -786,6 +793,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 return result
 
             elif operation == "delete":
+                # Validate required parameters for delete operation
+                if "memory_id" not in arguments:
+                    error_msg = "Missing required parameter 'memory_id' for delete operation"
+                    if status:
+                        await status.error(error_msg)
+                    logger.error(f"Memory delete failed: {error_msg}")
+                    return {"error": error_msg}
+                
                 memory_id = arguments["memory_id"]
                 if status:
                     await status.progress(f"Deleting: {memory_id}")
@@ -800,6 +815,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 return result
 
             elif operation == "update":
+                # Validate required parameters for update operation
+                if "memory_id" not in arguments:
+                    error_msg = "Missing required parameter 'memory_id' for update operation"
+                    if status:
+                        await status.error(error_msg)
+                    logger.error(f"Memory update failed: {error_msg}")
+                    return {"error": error_msg}
+                
                 memory_id = arguments["memory_id"]
                 if status:
                     await status.progress(f"Updating: {memory_id}")
@@ -822,11 +845,11 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 raise ValidationError(f"Unknown operation: {operation}")
 
         except (ValidationError, StorageError, ChromaDBError) as e:
-            logger.error(f"Memory operation failed: {e}")
-            return {"error": True, "message": str(e)}
-        except KeyError as e:
-            logger.error(f"Missing required parameter: {e}")
-            return {"error": True, "message": f"Missing required parameter: {e}"}
+            error_msg = str(e)
+            logger.error(f"Memory operation failed: {error_msg}")
+            if status:
+                await status.error(error_msg)
+            return {"error": error_msg}
 
     # =========================================================================
     # Hook Implementation
