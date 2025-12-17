@@ -9,12 +9,48 @@ llm_system:
 
   models:
     gemini-2-5-flash:
-      provider: gemini_sdk
+      provider: gemini
       model: gemini-2.5-flash
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
-      request_timeout: 180
+      request_timeout: 240
+      include_thoughts: true
+      thinking_budget: 2048
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true  # Streams reasoning tokens via delta.reasoning
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    gemini-2-5-flash-nostream:
+      provider: gemini
+      model: gemini-2.5-flash
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
+      request_timeout: 240
+      include_thoughts: false
+      thinking_budget: 2048
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false  # Streams reasoning tokens via delta.reasoning
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    gemini-3-0-pro:
+      provider: gemini
+      model: gemini-3-pro-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
+      request_timeout: 240
       include_thoughts: true
       thinking_budget: 8192
       capabilities:
@@ -26,49 +62,15 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    gemini-2-5-flash-nostream:
-      provider: gemini_sdk
-      model: gemini-2.5-flash
-      api_key: "***REMOVED***"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
-      request_timeout: 180
-      include_thoughts: false
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: false  # Streams reasoning tokens via delta.reasoning
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
-
-    gemini-3-0-pro:
-      provider: gemini_sdk
-      model: gemini-3-pro-preview
-      api_key: "***REMOVED***"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
-      request_timeout: 180
-      include_thoughts: true
-      thinking_budget: 16384
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: true  # Streams reasoning tokens via delta.reasoning
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
-
     gemini-3-0-pro-nostream:
-      provider: gemini_sdk
+      provider: gemini
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
-      request_timeout: 180
+      request_timeout: 240
       include_thoughts: false
+      thinking_budget: 8192
       capabilities:
         tools: true
         function_calling: true
@@ -83,7 +85,7 @@ llm_system:
       model: gpt-4.1
       api_key: ***REMOVED***
       context_window: 1000000
-      request_timeout: 60
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -103,7 +105,7 @@ llm_system:
       model: gpt-5-nano
       api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 60
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -118,7 +120,7 @@ llm_system:
       model: gpt-5-mini
       api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 180
+      request_timeout: 240
       httpx_timeouts:
         connect: 10.0
         read: 240.0
@@ -141,7 +143,7 @@ llm_system:
       model: gpt-5.1
       api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -161,7 +163,7 @@ llm_system:
       model: gpt-5.1-codex
       api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -181,7 +183,7 @@ llm_system:
       model: gpt-5.1-codex-mini
       api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 180
+      request_timeout: 240
       httpx_timeouts:
         connect: 10.0
         read: 240.0
@@ -204,7 +206,7 @@ llm_system:
       model: gpt-realtime
       api_key: ***REMOVED***
       context_window: 27900
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -219,7 +221,7 @@ llm_system:
       model: gpt-realtime-mini
       api_key: ***REMOVED***
       context_window: 27900
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -235,7 +237,7 @@ llm_system:
       model: gpt-audio
       api_key: ***REMOVED***
       context_window: 100000
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -247,7 +249,7 @@ llm_system:
       model: gpt-oss:20b
       ollama_url: http://192.0.2.64:11434
       ollama_mode: native
-      request_timeout: 180
+      request_timeout: 240
       context_window: 65535
       capabilities:
         tools: true
@@ -260,7 +262,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000 # 128K context size totally
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -273,7 +275,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000 # 128K context size totally
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
