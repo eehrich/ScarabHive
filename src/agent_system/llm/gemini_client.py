@@ -147,7 +147,16 @@ class GeminiClient(LLMClient):
                 # Tool responses use role="tool" (per Gemini SDK docs)
                 # Note: "function" was the old Gemini 1.5 convention
                 tool_name = msg.name or "unknown"
-                result_data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                
+                # Try to parse as JSON, fallback to string content
+                if isinstance(msg.content, str):
+                    try:
+                        result_data = json.loads(msg.content)
+                    except json.JSONDecodeError:
+                        # Content is not valid JSON (e.g., compacted reference like "[Tool:xxx ref:yyy]")
+                        result_data = {"result": msg.content}
+                else:
+                    result_data = msg.content
                 
                 # Convert our error format to Gemini's expected format
                 # Our format: {"error": True, "message": "..."}

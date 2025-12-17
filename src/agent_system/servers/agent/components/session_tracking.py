@@ -65,6 +65,14 @@ class SessionTracker:
         # Track which request owns which session lock: session_id -> request_id
         self._session_lock_owners: Dict[str, str] = {}
 
+        # Compacted messages pending to be applied: session_id -> List[ChatMessage]
+        # When a compaction tool runs mid-request, it stores the compacted messages here.
+        # The agent will use these instead of the request's local messages when persisting.
+        self._compacted_messages: Dict[str, List[ChatMessage]] = {}
+
+        # Appended messages for append-mode requests: request_id -> List[ChatMessage]
+        self._appended_messages: Dict[str, List[ChatMessage]] = {}
+
         # Lock for thread-safe access to internal data structures
         self._lock = asyncio.Lock()
 
@@ -323,6 +331,43 @@ class SessionTracker:
         """
         self._sessions[session_id] = messages
 
+    def set_compacted_messages(self, session_id: str, messages: List[ChatMessage]) -> None:
+        """
+        Set compacted messages to be used instead of request messages when persisting.
+        
+        When a compaction/summarization tool runs mid-request, the local request
+        messages list cannot be directly modified. This stores the compacted messages
+        so the agent can use them when persisting the session at end of request.
+
+        Args:
+            session_id: The session ID
+            messages: The compacted messages to use
+        """
+        self._compacted_messages[session_id] = messages
+        logger.debug(f"Set {len(messages)} compacted messages for session {session_id}")
+
+    def get_compacted_messages(self, session_id: str) -> Optional[List[ChatMessage]]:
+        """
+        Get pending compacted messages for a session.
+
+        Args:
+            session_id: The session ID
+
+        Returns:
+            The compacted messages if any, None otherwise
+        """
+        return self._compacted_messages.get(session_id)
+
+    def clear_compacted_messages(self, session_id: str) -> None:
+        """
+        Clear pending compacted messages for a session.
+        Called after the compacted messages have been applied.
+
+        Args:
+            session_id: The session ID
+        """
+        self._compacted_messages.pop(session_id, None)
+
     def set_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
         """
         Set metadata for a session (e.g., user_id).
@@ -378,6 +423,8 @@ class SessionTracker:
         """
         if session_id in self._sessions:
             del self._sessions[session_id]
+            # Also clear any pending compacted messages
+            self._compacted_messages.pop(session_id, None)
             return True
         return False
 
@@ -389,3 +436,4 @@ class SessionTracker:
         self._sessions.clear()
         self._request_to_session.clear()
         self._appended_messages.clear()
+        self._compacted_messages.clear()

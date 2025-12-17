@@ -1,0 +1,12 @@
+name: context_engineer
+description: Advanced context management with tool result clearing, variable substitution, core memory, and archival storage
+version: 1.0.0
+type:
+  - mcp-server
+  - hooks
+  - web
+author: AgentSystem
+entrypoint: plugin:PLUGIN_FACTORY
+category: hooks
+requires:
+  agent_system: ">=0.4.0"

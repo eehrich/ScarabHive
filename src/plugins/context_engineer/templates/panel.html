@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Context Engineer - Statistics</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            background: #0c0c0c;
+            color: #cccccc;
+            height: 100vh;
+            overflow: hidden;
+            font-size: 14px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #007acc;
+        }
+
+        .header h1 {
+            color: #4fc3f7;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .stats-summary {
+            display: flex;
+            gap: 30px;
+            font-size: 13px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        .stat-label {
+            color: #858585;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            color: #6ee56e;
+            font-size: 18px;
+            font-weight: 600;
+            margin-top: 2px;
+        }
+
+        .stat-value.tokens {
+            color: #ff9800;
+        }
+
+        /* Tab Controls */
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #3c3c3c;
+            padding-bottom: 10px;
+        }
+
+        .tab {
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            color: #858585;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+            border-radius: 4px 4px 0 0;
+        }
+
+        .tab:hover {
+            color: #cccccc;
+            background: #2d2d2d;
+        }
+
+        .tab.active {
+            color: #4fc3f7;
+            background: #2d2d2d;
+            border-bottom: 2px solid #007acc;
+        }
+
+        /* Content Area */
+        .content {
+            flex: 1;
+            overflow-y: auto;
+            background: #1e1e1e;
+            border-radius: 4px;
+            padding: 15px;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* History Table */
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .history-table th,
+        .history-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #2d2d2d;
+        }
+
+        .history-table th {
+            color: #858585;
+            font-weight: 500;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: #252525;
+        }
+
+        .history-table tr:hover {
+            background: #252525;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .badge-layer1 {
+            background: #1b5e20;
+            color: #a5d6a7;
+        }
+
+        .badge-layer2 {
+            background: #e65100;
+            color: #ffcc80;
+        }
+
+        .badge-layer3 {
+            background: #b71c1c;
+            color: #ef9a9a;
+        }
+
+        /* Stats Cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: #252525;
+            border-radius: 8px;
+            padding: 15px;
+            border-left: 3px solid #007acc;
+        }
+
+        .stat-card h3 {
+            color: #858585;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .stat-card .value {
+            color: #cccccc;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .stat-card .subvalue {
+            color: #6ee56e;
+            font-size: 12px;
+            margin-top: 4px;
+        }
+
+        /* Core Memory */
+        .fact-list {
+            list-style: none;
+        }
+
+        .fact-item {
+            background: #252525;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-left: 3px solid #007acc;
+        }
+
+        .fact-item .category {
+            color: #4fc3f7;
+            font-size: 11px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .fact-item .content {
+            color: #cccccc;
+        }
+
+        .fact-item .meta {
+            color: #858585;
+            font-size: 11px;
+            margin-top: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* Variables */
+        .var-list {
+            list-style: none;
+        }
+
+        .var-item {
+            background: #252525;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 8px;
+        }
+
+        .var-item .name {
+            color: #ce9178;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+        }
+
+        .var-item .type {
+            color: #858585;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+
+        .var-item .preview {
+            color: #6a9955;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            margin-top: 8px;
+            padding: 8px;
+            background: #1e1e1e;
+            border-radius: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+        }
+
+        .empty-state svg {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+
+        /* Loading */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            color: #858585;
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 2px solid #3c3c3c;
+            border-top-color: #007acc;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Refresh Button */
+        .refresh-btn {
+            padding: 6px 12px;
+            background: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            color: #cccccc;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:hover {
+            background: #3e3e3e;
+            border-color: #007acc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 Context Engineer</h1>
+            <div class="stats-summary">
+                <div class="stat-item">
+                    <span class="stat-label">Total Compactions</span>
+                    <span class="stat-value" id="total-compactions">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Tokens Saved</span>
+                    <span class="stat-value tokens" id="total-tokens-saved">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Reduction</span>
+                    <span class="stat-value" id="avg-reduction">-</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="history">Compaction History</button>
+            <button class="tab" data-tab="storage">Storage Stats</button>
+            <button class="tab" data-tab="memory">Core Memory</button>
+            <button class="tab" data-tab="variables">Variables</button>
+            <button class="refresh-btn" onclick="refreshAll()">↻ Refresh</button>
+        </div>
+
+        <div class="content">
+            <!-- History Tab -->
+            <div class="tab-content active" id="tab-history">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Session</th>
+                            <th>Before</th>
+                            <th>After</th>
+                            <th>Saved</th>
+                            <th>Reduction</th>
+                            <th>Layers</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-body">
+                        <tr><td colspan="7" class="loading"><div class="spinner"></div>Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Storage Stats Tab -->
+            <div class="tab-content" id="tab-storage">
+                <div class="stats-grid" id="storage-stats">
+                    <div class="loading"><div class="spinner"></div>Loading...</div>
+                </div>
+            </div>
+
+            <!-- Core Memory Tab -->
+            <div class="tab-content" id="tab-memory">
+                <ul class="fact-list" id="memory-list">
+                    <li class="loading"><div class="spinner"></div>Loading...</li>
+                </ul>
+            </div>
+
+            <!-- Variables Tab -->
+            <div class="tab-content" id="tab-variables">
+                <ul class="var-list" id="var-list">
+                    <li class="loading"><div class="spinner"></div>Loading...</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const basePath = '/plugins/{{ plugin_name }}';
+        
+        // Get current session ID from multiple sources
+        function getCurrentSessionId() {
+            // Try to get from parent window's sessionManager
+            try {
+                if (window.parent && window.parent !== window && window.parent.sessionManager) {
+                    const sessionId = window.parent.sessionManager.getCurrentSessionId();
+                    if (sessionId) return sessionId;
+                }
+            } catch (e) {
+                console.log('[Context Engineer] Cannot access parent sessionManager:', e.message);
+            }
+            
+            // Parse from parent's DOM (header element)
+            try {
+                if (window.parent && window.parent !== window) {
+                    const headerEl = window.parent.document.getElementById('headerSessionId');
+                    if (headerEl && headerEl.textContent && headerEl.textContent !== '--') {
+                        return headerEl.textContent;
+                    }
+                }
+            } catch (e) {
+                console.log('[Context Engineer] Cannot access parent DOM:', e.message);
+            }
+            
+            // URL parameter
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlSessionId = urlParams.get('session_id');
+            if (urlSessionId) return urlSessionId;
+            
+            // LocalStorage fallback
+            const storedSessionId = localStorage.getItem('currentSessionId');
+            if (storedSessionId) return storedSessionId;
+            
+            return 'default';
+        }
+        
+        let sessionId = getCurrentSessionId();
+        
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // Format number with commas
+        function formatNumber(num) {
+            return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        }
+
+        // Format timestamp
+        function formatTime(timestamp) {
+            const date = new Date(timestamp * 1000);
+            return date.toLocaleTimeString();
+        }
+
+        // Render layer badges
+        function renderLayers(layers) {
+            return layers.map(l => `<span class="badge badge-layer${l}">L${l}</span>`).join(' ');
+        }
+
+        // Load stats
+        async function loadStats() {
+            try {
+                const response = await fetch(`${basePath}/stats`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('total-compactions').textContent = formatNumber(data.total_events);
+                    document.getElementById('total-tokens-saved').textContent = formatNumber(data.total_tokens_saved);
+                    document.getElementById('avg-reduction').textContent = data.average_reduction_percent + '%';
+                }
+            } catch (e) {
+                console.error('Error loading stats:', e);
+            }
+        }
+
+        // Load history
+        async function loadHistory() {
+            try {
+                const response = await fetch(`${basePath}/history?limit=50`);
+                const data = await response.json();
+                
+                const tbody = document.getElementById('history-body');
+                
+                if (!data.success || !data.events || data.events.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No compaction events yet</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = data.events.map(event => `
+                    <tr>
+                        <td>${formatTime(event.timestamp)}</td>
+                        <td>${event.session_id || '-'}</td>
+                        <td>${formatNumber(event.original_tokens)}</td>
+                        <td>${formatNumber(event.final_tokens)}</td>
+                        <td style="color: #6ee56e">${formatNumber(event.tokens_saved)}</td>
+                        <td>${event.reduction_percent.toFixed(1)}%</td>
+                        <td>${renderLayers(event.layers_applied || [])}</td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error('Error loading history:', e);
+                document.getElementById('history-body').innerHTML = 
+                    `<tr><td colspan="7" class="empty-state">Error loading history</td></tr>`;
+            }
+        }
+
+        // Load session details (storage stats)
+        async function loadSessionDetails() {
+            try {
+                const url = `${basePath}/session_details${sessionId ? '?session_id=' + sessionId : ''}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                const container = document.getElementById('storage-stats');
+                
+                if (!data.success) {
+                    container.innerHTML = `<div class="empty-state">No session data available</div>`;
+                    return;
+                }
+
+                const toolResults = data.tool_results || {};
+                const variables = data.variables || {};
+                const coreMemory = data.core_memory || {};
+                const archival = data.archival_memory || {};
+
+                container.innerHTML = `
+                    <div class="stat-card">
+                        <h3>Tool Results</h3>
+                        <div class="value">${formatNumber(toolResults.total_entries || 0)}</div>
+                        <div class="subvalue">${formatNumber(toolResults.total_tokens_stored || 0)} tokens stored</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Variables</h3>
+                        <div class="value">${formatNumber(variables.total_variables || 0)}</div>
+                        <div class="subvalue">${formatNumber(variables.total_tokens || 0)} tokens</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Core Memory</h3>
+                        <div class="value">${formatNumber(coreMemory.facts || 0)} facts</div>
+                        <div class="subvalue">${formatNumber(coreMemory.token_usage || 0)} / 2000 tokens</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Archived Messages</h3>
+                        <div class="value">${formatNumber(archival.total_messages || 0)}</div>
+                        <div class="subvalue">${formatNumber(archival.total_tokens || 0)} tokens archived</div>
+                    </div>
+                `;
+            } catch (e) {
+                console.error('Error loading session details:', e);
+                document.getElementById('storage-stats').innerHTML = 
+                    `<div class="empty-state">Error loading storage stats</div>`;
+            }
+        }
+
+        // Load core memory facts
+        async function loadMemory() {
+            try {
+                const url = `${basePath}/session_details${sessionId ? '?session_id=' + sessionId : ''}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                const container = document.getElementById('memory-list');
+                
+                if (!data.success || !data.core_memory || !data.core_memory.facts_count) {
+                    container.innerHTML = `<li class="empty-state">No core memory facts stored${sessionId ? ' for this session' : ''}.</li>`;
+                    return;
+                }
+                
+                const memory = data.core_memory;
+                container.innerHTML = `
+                    <li class="empty-state">
+                        <strong>${memory.facts_count || 0}</strong> facts stored<br>
+                        <strong>${memory.token_usage || 0}</strong> / 2000 tokens used<br>
+                        <em>Facts are organized by category and stored in memory persistence files.</em>
+                    </li>
+                `;
+            } catch (e) {
+                console.error('Error loading memory:', e);
+                document.getElementById('memory-list').innerHTML = 
+                    `<li class="empty-state">Error loading memory data</li>`;
+            }
+        }
+
+        // Load variables
+        async function loadVariables() {
+            try {
+                const url = `${basePath}/session_details${sessionId ? '?session_id=' + sessionId : ''}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                const container = document.getElementById('var-list');
+                
+                if (!data.success || !data.variables || !data.variables.total_variables) {
+                    container.innerHTML = `<li class="empty-state">No variables stored${sessionId ? ' for this session' : ''}.</li>`;
+                    return;
+                }
+                
+                const vars = data.variables;
+                const varDetails = vars.variables || [];
+                
+                if (varDetails.length === 0) {
+                    container.innerHTML = `<li class="empty-state">No variable details available.</li>`;
+                    return;
+                }
+                
+                container.innerHTML = varDetails.map(v => `
+                    <li>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong>${v.name}</strong>
+                                <span class="badge" style="margin-left: 8px; background: #007acc;">${v.content_type}</span>
+                            </div>
+                            <div style="color: #ff9800; font-weight: 600;">${formatNumber(v.tokens)} tokens</div>
+                        </div>
+                        <div style="margin-top: 4px; font-size: 12px; color: #858585;">
+                            ${v.preview || 'No preview available'}
+                        </div>
+                    </li>
+                `).join('');
+            } catch (e) {
+                console.error('Error loading variables:', e);
+                document.getElementById('var-list').innerHTML = 
+                    `<li class="empty-state">Error loading variables</li>`;
+            }
+        }
+
+        // Refresh all data
+        function refreshAll() {
+            loadStats();
+            loadHistory();
+            loadSessionDetails();
+            loadMemory();
+            loadVariables();
+        }
+
+        // Initial load
+        refreshAll();
+
+        // Auto-refresh every 30 seconds
+        setInterval(refreshAll, 30000);
+    </script>
+</body>
+</html>

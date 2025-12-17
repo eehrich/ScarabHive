@@ -21,6 +21,8 @@ data/todos/
 data/memories/
 data/workspace/
 data/writer/
+data/context_engineer/
+
 nul
 data/context_usage_tracker.json
 .coverage

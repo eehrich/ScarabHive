@@ -327,7 +327,6 @@ class InternalMessageValidator:
         - Parsing errors
         - MALFORMED_FUNCTION_CALL errors with some LLMs
         """
-        import json
         issues = []
         
         # Get size limits from config (in KB, convert to bytes)

@@ -214,9 +214,12 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
 
-            # Update agent's session with summarized messages
+            # Store summarized messages for end-of-request persistence
+            # We can't modify the request's local messages list directly, so we store
+            # the summarized messages in the session tracker. The agent will use these
+            # when persisting the session at end of request.
             if result.modified and result.context and result.context.messages:
-                agent._session_tracker.set_session_messages(session_id, result.context.messages)
+                agent._session_tracker.set_compacted_messages(session_id, result.context.messages)
 
             summarized_count = len(result.context.messages) if result.context else original_count
 

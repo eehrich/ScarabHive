@@ -794,19 +794,35 @@ data: {"type": "complete"}
 
 **Architecture:**
 ```python
-# Global event bus
-status_bus = StatusBus()
+from agent_system.mcp.status import status_bus, publish_status, StatusPhase, StatusScope
 
-# Emit events
-status_bus.emit(StatusEvent(
+# Method 1: Using publish_status helper (recommended)
+await publish_status(
+    server="my_tool",
+    message="Processing...",
     request_id="req_abc",
-    type="status",
-    status="running",
-    step=1
+    phase=StatusPhase.PROGRESS,
+    level="info"
+)
+
+# Method 2: Using StatusScope for automatic START/END (best practice)
+async with StatusScope(status_bus, "my_tool", request_id="req_abc",
+                       start_msg="Starting...", end_msg="Done"):
+    # Work happens here - automatic START/END messages
+    pass
+
+# Method 3: Direct publish (low-level, rarely needed)
+from agent_system.mcp.status import StatusEvent
+await status_bus.publish(StatusEvent(
+    server="my_tool",
+    request_id="req_abc",
+    message="Processing...",
+    phase=StatusPhase.PROGRESS
 ))
 
 # Subscribe to events
-async for event in status_bus.subscribe(request_id="req_abc"):
+queue = await status_bus.subscribe(request_id="req_abc")
+async for event in queue:
     yield event
 ```
 

@@ -936,32 +936,45 @@ class Agent(MCPServer):
         # Persist session messages and keep the request->session mapping for a while
         if sid and messages:
             try:
-                # CRITICAL: Check if session was already modified (e.g., by context_summarizer)
-                # If so, DON'T overwrite with the full message list!
-                current_session_msgs = self._session_tracker.get_session_messages(sid)
+                # Check if there are pending compacted messages from a tool (context_engineer, context_summarizer)
+                # These take priority over the request's local messages
+                compacted_msgs = self._session_tracker.get_compacted_messages(sid)
                 
-                # Only persist if:
-                # 1. Session is empty (new session)
-                # 2. Current session has MORE messages than stored (normal case: added messages during request)
-                # DO NOT persist if stored has FEWER messages (summarizer reduced them!)
-                should_persist = (
-                    len(current_session_msgs) == 0 or 
-                    len(current_session_msgs) >= len(messages)
-                )
-                
-                if should_persist:
-                    # Filter out system messages - only persist conversation history
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    # Update the persistent session with conversation state (no system messages)
-                    self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
-                    logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
-                else:
+                if compacted_msgs is not None:
+                    # Use compacted messages - they were set by a compaction tool during this request
                     logger.debug(
-                        f"Skipping session persistence for {sid}: "
-                        f"stored has {len(current_session_msgs)} messages, "
-                        f"request has {len(messages)} messages - "
-                        f"preserving summarized state"
+                        f"Using {len(compacted_msgs)} compacted messages for session {sid} "
+                        f"(request had {len(messages)} messages)"
                     )
+                    self._session_tracker.set_session_messages(sid, compacted_msgs)
+                    self._session_tracker.clear_compacted_messages(sid)
+                    logger.debug("Persisted session %s with %d compacted messages", sid, len(compacted_msgs))
+                else:
+                    # Normal case: check if session was already modified
+                    current_session_msgs = self._session_tracker.get_session_messages(sid)
+                    
+                    # Only persist if:
+                    # 1. Session is empty (new session)
+                    # 2. Current session has MORE messages than stored (normal case: added messages during request)
+                    # DO NOT persist if stored has FEWER messages (summarizer reduced them!)
+                    should_persist = (
+                        len(current_session_msgs) == 0 or 
+                        len(current_session_msgs) >= len(messages)
+                    )
+                    
+                    if should_persist:
+                        # Filter out system messages - only persist conversation history
+                        conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                        # Update the persistent session with conversation state (no system messages)
+                        self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
+                        logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
+                    else:
+                        logger.debug(
+                            f"Skipping session persistence for {sid}: "
+                            f"stored has {len(current_session_msgs)} messages, "
+                            f"request has {len(messages)} messages - "
+                            f"preserving summarized state"
+                        )
                 
                 # Keep the request->session mapping (don't pop it immediately)
                 # This allows append requests that arrive shortly after completion to find the session

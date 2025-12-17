@@ -1,0 +1,307 @@
+# Hook definitions for context_engineer plugin
+# Convention: hook name must match method name exactly
+
+hooks:
+  - name: engineer_context
+    type: pre_llm_call
+    enabled: false
+    timeout: 60.0
+    description: "Context engineering: external storage for tool results and large content blocks (reversible optimizations only)"
+    category: "context_engineering"
+    order:
+      after: ["begin"]
+      before: ["context_summarization", "context_optimization", "prompt_injection"]
+
+# MCP Tools - Manual context management controls
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_recall"
+      description: |
+        Search archived conversation history for past interactions and decisions.
+        
+        Use this when:
+        - You need to recall something from earlier in a long conversation
+        - Looking for a decision or fact discussed previously
+        - Context was compacted and you need original details
+        
+        Returns relevant archived messages with timestamps and summaries.
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "What to search for in archived context (semantic search)"
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 5
+            description: "Maximum number of results to return"
+        required:
+          - query
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_store_fact"
+      description: |
+        Store an important fact or decision in core memory for persistent context.
+        
+        Core memory facts are always included in the system prompt, ensuring
+        important information is never lost during context compaction.
+        
+        Use this for:
+        - Key decisions made during conversation
+        - Important user preferences discovered
+        - Critical project facts to remember
+        
+        Facts are organized by category and limited to ~2000 tokens total.
+        Lower importance facts are evicted when limit is reached.
+      parameters:
+        type: object
+        properties:
+          fact:
+            type: string
+            description: "The fact or decision to store (keep concise)"
+          category:
+            type: string
+            enum: ["decisions", "preferences", "facts", "context", "tasks"]
+            default: "facts"
+            description: "Category to organize the fact under"
+          importance:
+            type: number
+            minimum: 0.0
+            maximum: 1.0
+            default: 0.5
+            description: "Importance score (0.0-1.0). Higher = less likely to be evicted"
+        required:
+          - fact
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_variable"
+      description: |
+        Retrieve the full content of a stored variable ($VAR_N).
+        
+        Variables are created automatically when large content blocks are
+        encountered. Use this to get the original content when needed.
+      parameters:
+        type: object
+        properties:
+          variable_name:
+            type: string
+            pattern: "^\\$VAR_\\d+$"
+            description: "Variable name to retrieve (e.g., $VAR_1, $VAR_2)"
+        required:
+          - variable_name
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_tool_result"
+      description: |
+        Retrieve the original output of a cleared tool result.
+        
+        Tool results are cleared (replaced with references) to save tokens.
+        Use this to get the original output when you need the full details.
+      parameters:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: "The reference ID or content hash from the tool result marker"
+        required:
+          - reference
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_stats"
+      description: |
+        Get current context engineering statistics.
+        
+        Returns:
+        - Tool results stored and tokens saved
+        - Variables created and tokens saved
+        - Core memory facts and token usage
+        - Archival memory entries
+        - Overall token reduction percentage
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_compact"
+      description: |
+        Manually trigger context engineering optimizations.
+        
+        When called, optimization will ALWAYS run (ignores thresholds).
+        Use this to proactively reduce token usage before context gets too large.
+        
+        Applies reversible optimizations:
+        - Store large tool results externally with references
+        - Create variables ($VAR_N) for large content blocks
+        
+        Note: For message summarization, use context_summarizer plugin.
+        For dropping old messages, use context_optimizer plugin.
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
+
+# Web UI configuration
+web_ui:
+  # Header button configuration
+  button:
+    enabled: true
+    text: "{{ name }}"
+    icon: "🔧"
+    tooltip: "View context engineering statistics and optimization history"
+
+  # Dropdown menu integration
+  menu:
+    enabled: true
+    items:
+      - id: "context_engineer"
+        menu_id: "user"
+        section: "Context Management"
+        label: "Context Engineer"
+        action: "openPanel"
+        panel_id: "{{ name }}"
+        icon: "🔧"
+        requires_admin: false
+        order: 110
+        tooltip: "Context Engineer - Advanced context optimization"
+
+  # Panel configuration
+  panel:
+    enabled: true
+    title: "Context Engineer"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/panel"
+    type: "iframe"
+    description: "View context engineering statistics including compaction history, core memory, and token savings"
+
+  # API endpoints
+  endpoints:
+    - path: "/panel"
+      methods: ["GET"]
+      handler: "get_panel"
+      response_type: "html"
+      description: "Context engineer dashboard panel"
+    - path: "/history"
+      methods: ["GET"]
+      handler: "get_history"
+      response_type: "json"
+      description: "Get compaction event history with token savings"
+    - path: "/stats"
+      methods: ["GET"]
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get aggregated context engineering statistics"
+    - path: "/session_details"
+      methods: ["GET"]
+      handler: "get_session_details"
+      response_type: "json"
+      description: "Get detailed statistics for a specific session"
+
+# Configuration schema for this plugin
+config:
+  # Tool Result Clearing
+  tool_result_clearing_enabled:
+    type: boolean
+    default: true
+    description: "Enable automatic tool result clearing for old tool outputs"
+
+  keep_recent_tools:
+    type: integer
+    default: 5
+    minimum: 1
+    maximum: 50
+    description: "Number of recent tool results to keep uncleared"
+
+  min_tool_result_size:
+    type: integer
+    default: 100
+    minimum: 10
+    description: "Minimum character count to trigger tool result clearing"
+
+  # Variable Substitution
+  variable_substitution_enabled:
+    type: boolean
+    default: true
+    description: "Enable automatic variable substitution for large content"
+
+  min_content_for_variable:
+    type: integer
+    default: 500
+    minimum: 100
+    description: "Minimum token count to trigger variable creation"
+
+  # Core Memory
+  core_memory_enabled:
+    type: boolean
+    default: true
+    description: "Enable core memory for persistent facts"
+
+  core_memory_max_tokens:
+    type: integer
+    default: 2000
+    minimum: 500
+    maximum: 10000
+    description: "Maximum tokens for core memory section"
+
+  auto_extract_decisions:
+    type: boolean
+    default: true
+    description: "Automatically extract decisions from assistant messages"
+
+  # Archival Memory
+  archival_enabled:
+    type: boolean
+    default: true
+    description: "Enable archival memory for old messages"
+
+  archival_semantic_search:
+    type: boolean
+    default: false
+    description: "Use ChromaDB for semantic search (requires chromadb)"
+
+  # Compaction Strategy
+  compaction_strategy:
+    type: string
+    enum: ["none", "layered", "aggressive"]
+    default: "layered"
+    description: "Compaction strategy: none, layered (progressive), aggressive"
+
+  # Layered thresholds (percentage of context window)
+  layer_tool_clearing:
+    type: number
+    default: 0.40
+    minimum: 0.1
+    maximum: 0.9
+    description: "Trigger tool result clearing at this context usage"
+
+  layer_variable_sub:
+    type: number
+    default: 0.50
+    minimum: 0.1
+    maximum: 0.9
+    description: "Trigger variable substitution at this context usage"
+
+  layer_archival_paging:
+    type: number
+    default: 0.60
+    minimum: 0.1
+    maximum: 0.9
+    description: "Trigger archival paging at this context usage"
+
+  # Storage paths (relative to data_dir)
+  storage_dir:
+    type: string
+    default: "context_engineer"
+    description: "Directory for storing context data (relative to data_dir)"
