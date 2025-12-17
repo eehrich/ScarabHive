@@ -120,6 +120,15 @@ class GeminiClient(LLMClient):
         """
         system_instructions: List[str] = []
         contents = []
+        
+        # Add critical instruction to prevent MALFORMED_FUNCTION_CALL
+        # (Gemini sometimes generates Python code instead of JSON for function calls)
+        system_instructions.append(
+            "CRITICAL: When calling functions, output the function name exactly as defined. "
+            "Do NOT prepend 'default_api.' or any other namespace. "
+            "Always generate valid JSON for function arguments. "
+            "Properly escape all special characters in JSON strings (quotes, backslashes, newlines)."
+        )
 
         for msg in messages:
             if msg.role == "system":
@@ -328,11 +337,21 @@ class GeminiClient(LLMClient):
         accumulated_usage = None
         # For parallel function calls: store the first thought_signature to propagate to all calls
         first_thought_signature = None
+        # Track MALFORMED_FUNCTION_CALL for auto-retry
+        got_malformed_function_call = False
 
         last_exception = None
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
+            
+            # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
+            # This helps the model generate proper JSON instead of Python code
+            if attempt > 0 and got_malformed_function_call:
+                logger.info(f"[Gemini] Retry #{attempt} with forced function calling (mode=ANY)")
+                if "toolConfig" not in payload:
+                    payload["toolConfig"] = {}
+                payload["toolConfig"]["functionCallingConfig"] = {"mode": "ANY"}
 
             try:
                 logger.debug(f"Gemini streaming: Starting request to {self.model}")
@@ -372,6 +391,14 @@ class GeminiClient(LLMClient):
                             candidate = candidates[0]
                             content = candidate.get("content", {})
                             parts = content.get("parts", [])
+                            
+                            # Check for MALFORMED_FUNCTION_CALL finish reason
+                            finish_reason = candidate.get("finishReason")
+                            if finish_reason:
+                                logger.debug(f"Gemini chunk finishReason: {finish_reason}")
+                                if finish_reason == "MALFORMED_FUNCTION_CALL":
+                                    got_malformed_function_call = True
+                                    logger.warning("[Gemini] MALFORMED_FUNCTION_CALL detected in chunk")
                             
                             logger.debug(f"Gemini chunk: {len(parts)} parts")
 
@@ -471,6 +498,30 @@ class GeminiClient(LLMClient):
 
                         # Stream finished successfully
                         logger.debug(f"Gemini streaming complete: {len(accumulated_content)} content parts, {len(accumulated_tool_calls)} tool calls")
+                        
+                        # Check for MALFORMED_FUNCTION_CALL with empty response - auto-retry
+                        if got_malformed_function_call and not accumulated_content and not accumulated_tool_calls:
+                            if attempt < self.max_retries:
+                                wait_time = 1.0 + attempt  # 1s, 2s, 3s
+                                logger.warning(
+                                    f"[Gemini] MALFORMED_FUNCTION_CALL with empty response. "
+                                    f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                                )
+                                await asyncio.sleep(wait_time)
+                                # Reset accumulators for retry (keep got_malformed_function_call=True for mode=ANY)
+                                accumulated_content = []
+                                accumulated_thoughts = []
+                                accumulated_tool_calls = {}
+                                accumulated_usage = None
+                                first_thought_signature = None
+                                # DON'T reset got_malformed_function_call - we need it for mode=ANY in retry
+                                continue
+                            else:
+                                logger.error(
+                                    "[Gemini] MALFORMED_FUNCTION_CALL persisted after all retries. "
+                                    "This may indicate invalid tool schema or complex function call arguments."
+                                )
+                        
                         assistant = {
                             "role": "assistant",
                             "content": "".join(accumulated_content) if accumulated_content else ""
@@ -580,10 +631,19 @@ class GeminiClient(LLMClient):
 
         url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
 
+        # Track MALFORMED_FUNCTION_CALL for auto-retry
+        got_malformed_function_call = False
         last_exception = None
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
+            
+            # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
+            if attempt > 0 and got_malformed_function_call:
+                logger.info(f"[Gemini] Non-streaming retry #{attempt} with forced function calling (mode=ANY)")
+                if "toolConfig" not in payload:
+                    payload["toolConfig"] = {}
+                payload["toolConfig"]["functionCallingConfig"] = {"mode": "ANY"}
 
             try:
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:
@@ -608,6 +668,27 @@ class GeminiClient(LLMClient):
                     candidate = candidates[0]
                     content = candidate.get("content", {})
                     parts = content.get("parts", [])
+                    
+                    # Check for MALFORMED_FUNCTION_CALL finish reason
+                    finish_reason = candidate.get("finishReason")
+                    if finish_reason == "MALFORMED_FUNCTION_CALL":
+                        got_malformed_function_call = True
+                        logger.warning("[Gemini] Non-streaming MALFORMED_FUNCTION_CALL detected")
+                        
+                        # Retry if we have attempts left
+                        if attempt < self.max_retries:
+                            wait_time = 1.0 + attempt  # 1s, 2s, 3s
+                            logger.warning(
+                                f"[Gemini] MALFORMED_FUNCTION_CALL detected. "
+                                f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error(
+                                "[Gemini] MALFORMED_FUNCTION_CALL persisted after all retries. "
+                                "This may indicate invalid tool schema or complex function call arguments."
+                            )
 
                     # Build assistant message
                     assistant = {"role": "assistant", "content": ""}
