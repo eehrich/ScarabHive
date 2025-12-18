@@ -252,6 +252,15 @@ class OllamaNativeAsyncClient(LLMClient):
             try:
                 async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
                     async with client.stream("POST", url, json=body) as response:
+                        # Handle server errors (5xx) - retry with exponential backoff
+                        if response.status_code >= 500 and attempt < max_retries:
+                            backoff_time = retry_backoff * (2 ** attempt)
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.warning(f"Ollama server error {response.status_code}, retrying in {backoff_time}s")
+                            await asyncio.sleep(backoff_time)
+                            continue
+                        
                         response.raise_for_status()
 
                         async for line in response.aiter_lines():

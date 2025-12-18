@@ -366,6 +366,13 @@ class GeminiClient(LLMClient):
                 logger.debug(f"Gemini streaming: Starting request to {self.model}")
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:
                     async with client.stream("POST", url, json=payload) as response:
+                        # Handle server errors (5xx) - retry with exponential backoff
+                        if response.status_code >= 500 and attempt < self.max_retries:
+                            wait_time = 2 ** attempt
+                            logger.warning(f"Gemini server error {response.status_code}, retrying in {wait_time}s")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        
                         if response.status_code != 200:
                             error_bytes = await response.aread()
                             error_text = error_bytes.decode('utf-8', errors='replace')

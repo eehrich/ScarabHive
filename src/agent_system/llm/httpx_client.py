@@ -254,7 +254,7 @@ class HTTPXOpenAIClient(LLMClient):
                     # Make regular POST request (not streaming)
                     response = await client.post(url=url, headers=self._headers, json=payload)
 
-                    # Handle rate limiting
+                    # Handle rate limiting (429)
                     if response.status_code == 429 and attempt < self.max_retries:
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
                         backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
@@ -262,7 +262,14 @@ class HTTPXOpenAIClient(LLMClient):
                         await asyncio.sleep(backoff_time)
                         continue
 
-                    # Check for HTTP errors
+                    # Handle server errors (5xx) - retry with exponential backoff
+                    if response.status_code >= 500 and attempt < self.max_retries:
+                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
+                        await asyncio.sleep(backoff_time)
+                        continue
+
+                    # Check for HTTP errors (4xx client errors or exhausted retries)
                     if response.status_code >= 400:
                         error_text = response.text[:200] if response.text else ""
                         error_msg = f"HTTP {response.status_code}: {error_text}"
@@ -364,6 +371,13 @@ class HTTPXOpenAIClient(LLMClient):
                             backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
 
                             logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                            await asyncio.sleep(backoff_time)
+                            continue
+
+                        # Handle server errors (5xx) - retry with exponential backoff
+                        if response.status_code >= 500 and attempt < self.max_retries:
+                            backoff_time = self.retry_backoff * (2 ** attempt)
+                            logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
                             await asyncio.sleep(backoff_time)
                             continue
 

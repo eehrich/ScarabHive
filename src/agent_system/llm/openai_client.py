@@ -225,6 +225,14 @@ class OpenAIAsyncClient(LLMClient):
                             raise Exception("Request cancelled by user during rate limit backoff")
                         await asyncio.sleep(wait)
                         continue
+                    # Handle server errors (5xx) - retry with exponential backoff
+                    if status is not None and status >= 500 and attempt < max_attempts:
+                        wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
+                        logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
+                        if cancellation_token and cancellation_token.is_cancelled:
+                            raise Exception("Request cancelled by user during server error backoff")
+                        await asyncio.sleep(wait)
+                        continue
                     if status == 400:
                         error_text = str(e)
                         if "context_length_exceeded" in error_text or "Input tokens exceed" in error_text:
@@ -417,6 +425,14 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during rate limit backoff")
+                        await asyncio.sleep(wait)
+                        continue
+                    # Handle server errors (5xx) - retry with exponential backoff
+                    if status is not None and status >= 500 and attempt < max_attempts:
+                        wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
+                        logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
+                        if cancellation_token and cancellation_token.is_cancelled:
+                            raise Exception("Request cancelled by user during server error backoff")
                         await asyncio.sleep(wait)
                         continue
                     if status == 400:
