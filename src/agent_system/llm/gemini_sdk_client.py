@@ -496,6 +496,15 @@ class GeminiSDKClient(LLMClient):
                             if text:
                                 accumulated_thoughts.append(text)
                                 logger.debug(f"[GeminiSDK] Thought delta: {len(text)} chars")
+                                
+                                # Stream thoughts as content_delta (like HTTP Gemini client)
+                                # Thoughts appear before regular content in the accumulated text
+                                all_text = "".join(accumulated_thoughts) + "".join(accumulated_content)
+                                yield {
+                                    "type": "content_delta",
+                                    "delta": text,
+                                    "accumulated": all_text
+                                }
                         
                         # Handle function calls
                         elif hasattr(part, 'function_call') and part.function_call:

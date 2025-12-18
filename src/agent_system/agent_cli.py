@@ -1566,8 +1566,20 @@ def main() -> None:
                         except Exception as e:
                             logger.debug(f"Failed to JSON dump MCP result: {e}")
                             print(str(res))
+                elif t == "thinking_delta":
+                    # Show thinking/reasoning content as it streams (like WebUI)
+                    delta = ev.get("delta", "")
+                    if delta:
+                        # Print without newline for streaming effect
+                        if _supports_color():
+                            print(_colorize(delta, "90"), end="", flush=True)  # Dark gray
+                        else:
+                            print(delta, end="", flush=True)
+                elif t == "thinking_complete":
+                    # Thinking finished - add newline
+                    print()  # Newline after thinking content
                 elif t == "thinking":
-                    # Optionally show LLM progress when verbose
+                    # Optionally show LLM progress when verbose (backward compatibility)
                     if args.verbose:
                         step = ev.get("step")
                         print(f"[LLM] thinking (step {step})")
