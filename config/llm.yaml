@@ -288,15 +288,18 @@ llm_system:
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 500
     normal:
-      model_ref: gemini-2-5-flash-nostream
+      #model_ref: gemini-2-5-flash-nostream
+      model_ref: gpt-5-mini
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
     normal-stream:
-      model_ref: gemini-2-5-flash
+      #model_ref: gemini-2-5-flash
+      model_ref: gpt-5-mini
       description: "Fast model for medium reasoning tasks"
       max_steps: 500      
     think:
-      model_ref: gemini-3-0-pro-nostream
+      #model_ref: gemini-3-0-pro-nostream
+      model_ref: gpt-5.1
       description: "Advanced model for complex reasoning"
       max_steps: 500
     think-stream:

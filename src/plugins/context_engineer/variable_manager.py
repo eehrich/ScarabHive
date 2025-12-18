@@ -255,6 +255,44 @@ class VariableManager:
         
         return "\n".join(lines)
     
+    def cleanup_unused_variables(self, messages: list[dict[str, Any]]) -> int:
+        """Remove variables that are no longer referenced in message history.
+        
+        Args:
+            messages: Current message history to scan for references
+            
+        Returns:
+            Number of variables removed
+        """
+        # Collect all variable references in messages
+        referenced_vars = set()
+        var_pattern = r'\$VAR_\d+'
+        
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                matches = re.findall(var_pattern, content)
+                referenced_vars.update(matches)
+        
+        # Find unreferenced variables
+        all_vars = set(self.variables.keys())
+        unreferenced = all_vars - referenced_vars
+        
+        # Remove unreferenced variables
+        removed_count = 0
+        for var_name in unreferenced:
+            if var_name in self.variables:
+                del self.variables[var_name]
+                removed_count += 1
+                logger.debug(f"Removed unreferenced variable: {var_name}")
+        
+        # Persist changes if any variables were removed
+        if removed_count > 0:
+            self._save()
+            logger.info(f"Cleaned up {removed_count} unreferenced variables")
+        
+        return removed_count
+    
     def get_stats(self) -> dict[str, Any]:
         """Get statistics about stored variables.
         

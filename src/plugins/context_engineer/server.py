@@ -277,22 +277,22 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             return {"status": "error", "error": str(e)}
     
     async def get_variable(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Retrieve content stored as a variable.
+        """Retrieve content stored as a variable with pagination support.
         
         Tool name: {{ name }}_get_variable → e.g., 'context_engineer_get_variable'
         
         Args:
             params: {
-                "variable_name": Variable name (e.g., $VAR_1)
+                "variable_name": Variable name (e.g., $VAR_1),
+                "mode": "preview" | "chunk" | "search" | "full" (default: preview),
+                "offset": Start position for chunk mode (default: 0),
+                "limit": Max chars for chunk mode (default: 1000),
+                "search": Search query for search mode,
+                "context_chars": Context around search matches (default: 150)
             }
             
         Returns:
-            {
-                "found": bool,
-                "variable_name": str,
-                "content": str,
-                "content_type": str
-            }
+            Mode-dependent response with content/matches and metadata
         """
         status = params.get("_status")
         
@@ -305,18 +305,25 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 return {"status": "error", "error": error_msg}
             
             session_id = params.get("_session_id", "default")
+            mode = params.get("mode", "preview")
             
             if status:
-                await status.progress(f"Retrieving variable {variable_name}")
+                await status.progress(f"Retrieving variable {variable_name} (mode={mode})")
             
             result = await self._hooks_impl._handle_get_variable(
                 variable_name=variable_name,
-                session_id=session_id
+                session_id=session_id,
+                mode=mode,
+                offset=params.get("offset", 0),
+                limit=params.get("limit", 1000),
+                search=params.get("search"),
+                context_chars=params.get("context_chars", 150)
             )
             
             if result.get("found"):
+                chars_info = f"{result.get('returned_chars', 0)}/{result.get('total_chars', 0)} chars"
                 if status:
-                    await status.end(f"Retrieved {variable_name} ({result.get('token_count', 0)} tokens)")
+                    await status.end(f"Retrieved {variable_name} ({chars_info})")
             else:
                 if status:
                     await status.error(f"Variable {variable_name} not found")
@@ -333,21 +340,22 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             return {"status": "error", "error": str(e)}
     
     async def get_tool_result(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Retrieve a stored tool result.
+        """Retrieve a stored tool result with pagination support.
         
         Tool name: {{ name }}_get_tool_result → e.g., 'context_engineer_get_tool_result'
         
         Args:
             params: {
-                "reference": Reference ID or content hash
+                "reference": Reference ID or content hash,
+                "mode": "preview" | "chunk" | "search" | "full" (default: preview),
+                "offset": Start position for chunk mode (default: 0),
+                "limit": Max chars for chunk mode (default: 1000),
+                "search": Search query for search mode,
+                "context_chars": Context around search matches (default: 150)
             }
             
         Returns:
-            {
-                "found": bool,
-                "tool_name": str,
-                "result": str
-            }
+            Mode-dependent response with content/matches and metadata
         """
         status = params.get("_status")
         
@@ -360,18 +368,25 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 return {"status": "error", "error": error_msg}
             
             session_id = params.get("_session_id", "default")
+            mode = params.get("mode", "preview")
             
             if status:
-                await status.progress(f"Retrieving tool result {reference}")
+                await status.progress(f"Retrieving tool result {reference} (mode={mode})")
             
             result = await self._hooks_impl._handle_get_tool_result(
                 reference=reference,
-                session_id=session_id
+                session_id=session_id,
+                mode=mode,
+                offset=params.get("offset", 0),
+                limit=params.get("limit", 1000),
+                search=params.get("search"),
+                context_chars=params.get("context_chars", 150)
             )
             
             if result.get("found"):
+                chars_info = f"{result.get('returned_chars', 0)}/{result.get('total_chars', 0)} chars"
                 if status:
-                    await status.end(f"Retrieved tool result from {result.get('tool_name', 'unknown')}")
+                    await status.end(f"Retrieved tool result ({chars_info})")
             else:
                 if status:
                     await status.error(f"Tool result '{reference}' not found")

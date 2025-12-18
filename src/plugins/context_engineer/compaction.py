@@ -316,6 +316,11 @@ class LayeredCompactionStrategy:
         logger.debug(
             f"Layer 2 complete: archived {result.messages_archived} messages"
         )
+        
+        # Cleanup unreferenced variables after archiving messages
+        removed = self.variable_manager.cleanup_unused_variables(messages)
+        if removed > 0:
+            logger.debug(f"Cleaned up {removed} unreferenced variables")
     
     def _apply_layer3(self, result: CompactionResult) -> None:
         """Layer 3: Irreversible compaction.
@@ -370,6 +375,11 @@ class LayeredCompactionStrategy:
         logger.debug(
             f"Layer 3 complete: dropped {result.messages_dropped} messages"
         )
+        
+        # Cleanup unreferenced variables after dropping messages
+        removed = self.variable_manager.cleanup_unused_variables(messages)
+        if removed > 0:
+            logger.debug(f"Cleaned up {removed} unreferenced variables")
     
     def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate total tokens in messages."""

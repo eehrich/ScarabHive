@@ -295,6 +295,79 @@ class TestVariableManager:
         
         assert content in expanded
         assert var_name not in expanded
+    
+    def test_cleanup_unused_variables(self, temp_var_file):
+        """Test cleanup of unreferenced variables."""
+        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
+        
+        # Create multiple variables
+        content1 = "Content 1 " * 50
+        content2 = "Content 2 " * 50
+        content3 = "Content 3 " * 50
+        
+        var1, _ = manager.create_variable(content1)
+        var2, _ = manager.create_variable(content2)
+        var3, _ = manager.create_variable(content3)
+        
+        # Verify all created
+        assert manager.get_stats()["total_variables"] == 3
+        
+        # Create message history that only references var1 and var3
+        messages = [
+            {"role": "user", "content": f"Check {var1}"},
+            {"role": "assistant", "content": f"Result in {var3}"},
+            {"role": "user", "content": "Something else"}
+        ]
+        
+        # Cleanup - should remove var2
+        removed = manager.cleanup_unused_variables(messages)
+        
+        assert removed == 1
+        assert manager.get_stats()["total_variables"] == 2
+        assert manager.get_variable(var1) is not None
+        assert manager.get_variable(var2) is None  # Removed
+        assert manager.get_variable(var3) is not None
+    
+    def test_cleanup_all_variables_referenced(self, temp_var_file):
+        """Test cleanup when all variables are referenced."""
+        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
+        
+        var1, _ = manager.create_variable("Content 1 " * 50)
+        var2, _ = manager.create_variable("Content 2 " * 50)
+        
+        messages = [
+            {"role": "user", "content": f"See {var1} and {var2}"}
+        ]
+        
+        removed = manager.cleanup_unused_variables(messages)
+        
+        assert removed == 0
+        assert manager.get_stats()["total_variables"] == 2
+    
+    def test_cleanup_no_variables(self, temp_var_file):
+        """Test cleanup with no variables stored."""
+        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
+        
+        messages = [{"role": "user", "content": "No variables here"}]
+        
+        removed = manager.cleanup_unused_variables(messages)
+        
+        assert removed == 0
+    
+    def test_cleanup_empty_messages(self, temp_var_file):
+        """Test cleanup with empty message list removes all variables."""
+        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
+        
+        var1, _ = manager.create_variable("Content 1 " * 50)
+        var2, _ = manager.create_variable("Content 2 " * 50)
+        
+        assert manager.get_stats()["total_variables"] == 2
+        
+        # Empty messages means no references
+        removed = manager.cleanup_unused_variables([])
+        
+        assert removed == 2
+        assert manager.get_stats()["total_variables"] == 0
 
 
 # =============================================================================
@@ -581,3 +654,298 @@ class TestPluginIntegration:
         assert "variables" in result
         assert "core_memory" in result
         assert "archival_memory" in result
+
+
+# =============================================================================
+# Pagination & Search Tests
+# =============================================================================
+
+
+class TestVariablePagination:
+    """Tests for get_variable pagination and search modes."""
+    
+    @pytest.fixture
+    def hooks_impl(self, tmp_path):
+        """Create hooks implementation with test storage."""
+        from plugins.context_engineer.hooks import ContextEngineerPlugin
+        
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "context_engineer"
+        hooks = ContextEngineerPlugin(plugin_dir)
+        hooks._storage_base = tmp_path
+        return hooks
+    
+    @pytest.fixture
+    async def large_variable(self, hooks_impl):
+        """Create a large variable for testing pagination."""
+        session_id = "test-pagination"
+        components = hooks_impl._get_session_components(session_id)
+        var_manager = components["variable_manager"]
+        
+        # Create large content (~2000 chars)
+        large_content = "Line {}: This is a test line with some content.\n" * 50
+        large_content = large_content.format(*range(50))
+        
+        # create_variable returns (var_name, summary) tuple
+        var_name, _ = var_manager.create_variable(large_content, content_type="text", force=True)
+        return session_id, var_name, large_content
+    
+    @pytest.mark.asyncio
+    async def test_get_variable_preview_mode(self, hooks_impl, large_variable):
+        """Test preview mode returns truncated content."""
+        session_id, var_name, original_content = large_variable
+        
+        result = await hooks_impl._handle_get_variable(
+            variable_name=var_name,
+            session_id=session_id,
+            mode="preview"
+        )
+        
+        assert result["found"] is True
+        assert result["mode"] == "preview"
+        assert result["truncated"] is True
+        assert result["returned_chars"] == 500
+        assert len(result["content"]) == 500
+        assert result["total_chars"] == len(original_content)
+        assert "hint" in result
+    
+    @pytest.mark.asyncio
+    async def test_get_variable_chunk_mode(self, hooks_impl, large_variable):
+        """Test chunk mode with pagination."""
+        session_id, var_name, original_content = large_variable
+        
+        # First chunk
+        result1 = await hooks_impl._handle_get_variable(
+            variable_name=var_name,
+            session_id=session_id,
+            mode="chunk",
+            offset=0,
+            limit=500
+        )
+        
+        assert result1["found"] is True
+        assert result1["mode"] == "chunk"
+        assert result1["offset"] == 0
+        assert result1["limit"] == 500
+        assert result1["returned_chars"] == 500
+        assert result1["has_more"] is True
+        assert result1["next_offset"] == 500
+        assert result1["content"] == original_content[0:500]
+        
+        # Second chunk
+        result2 = await hooks_impl._handle_get_variable(
+            variable_name=var_name,
+            session_id=session_id,
+            mode="chunk",
+            offset=500,
+            limit=500
+        )
+        
+        assert result2["offset"] == 500
+        assert result2["content"] == original_content[500:1000]
+        
+        # Combined chunks should match original up to offset
+        combined = result1["content"] + result2["content"]
+        assert combined == original_content[0:1000]
+    
+    @pytest.mark.asyncio
+    async def test_get_variable_search_mode(self, hooks_impl, large_variable):
+        """Test search mode finds matches."""
+        session_id, var_name, original_content = large_variable
+        
+        result = await hooks_impl._handle_get_variable(
+            variable_name=var_name,
+            session_id=session_id,
+            mode="search",
+            search="Line 5:",
+            context_chars=50
+        )
+        
+        assert result["found"] is True
+        assert result["mode"] == "search"
+        assert result["query"] == "Line 5:"
+        assert result["match_count"] > 0
+        assert len(result["matches"]) > 0
+        
+        # Check first match structure
+        first_match = result["matches"][0]
+        assert "position" in first_match
+        assert "snippet" in first_match
+        assert "Line 5:" in first_match["snippet"]
+    
+    @pytest.mark.asyncio
+    async def test_get_variable_search_no_matches(self, hooks_impl, large_variable):
+        """Test search mode with no matches."""
+        session_id, var_name, original_content = large_variable
+        
+        result = await hooks_impl._handle_get_variable(
+            variable_name=var_name,
+            session_id=session_id,
+            mode="search",
+            search="NONEXISTENT_PATTERN"
+        )
+        
+        assert result["found"] is True
+        assert result["match_count"] == 0
+        assert len(result["matches"]) == 0
+    
+    @pytest.mark.asyncio
+    async def test_get_variable_search_missing_query(self, hooks_impl, large_variable):
+        """Test search mode without search parameter."""
+        session_id, var_name, original_content = large_variable
+        
+        result = await hooks_impl._handle_get_variable(
+            variable_name=var_name,
+            session_id=session_id,
+            mode="search",
+            search=None
+        )
+        
+        assert result["found"] is True
+        assert "error" in result
+        assert "search parameter required" in result["error"]
+    
+    @pytest.mark.asyncio
+    async def test_get_variable_full_mode(self, hooks_impl, large_variable):
+        """Test full mode returns complete content."""
+        session_id, var_name, original_content = large_variable
+        
+        result = await hooks_impl._handle_get_variable(
+            variable_name=var_name,
+            session_id=session_id,
+            mode="full"
+        )
+        
+        assert result["found"] is True
+        assert result["mode"] == "full"
+        assert result["content"] == original_content
+        assert result["total_chars"] == len(original_content)
+        assert "warning" in result
+    
+    @pytest.mark.asyncio
+    async def test_get_variable_not_found(self, hooks_impl):
+        """Test getting non-existent variable."""
+        result = await hooks_impl._handle_get_variable(
+            variable_name="$VAR_999",
+            session_id="test-session",
+            mode="preview"
+        )
+        
+        assert result["found"] is False
+        assert "error" in result
+
+
+class TestToolResultPagination:
+    """Tests for get_tool_result pagination and search modes."""
+    
+    @pytest.fixture
+    def hooks_impl(self, tmp_path):
+        """Create hooks implementation with test storage."""
+        from plugins.context_engineer.hooks import ContextEngineerPlugin
+        
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "context_engineer"
+        hooks = ContextEngineerPlugin(plugin_dir)
+        hooks._storage_base = tmp_path
+        return hooks
+    
+    @pytest.fixture
+    async def large_tool_result(self, hooks_impl):
+        """Create a large tool result for testing pagination."""
+        session_id = "test-tool-pagination"
+        components = hooks_impl._get_session_components(session_id)
+        tool_store = components["tool_store"]
+        
+        # Create large result (~3000 chars)
+        large_result = "Result line {}: Some detailed output here.\n" * 80
+        large_result = large_result.format(*range(80))
+        
+        # Store tool result using store_and_reference
+        tool_call_id = "test_call_12345678"
+        reference = tool_store.store_and_reference(
+            tool_call_id=tool_call_id,
+            tool_name="test_tool",
+            content=large_result,
+            session_id=session_id
+        )
+        
+        return session_id, tool_call_id, large_result
+    
+    @pytest.mark.asyncio
+    async def test_get_tool_result_preview_mode(self, hooks_impl, large_tool_result):
+        """Test preview mode for tool results."""
+        session_id, reference, original_result = large_tool_result
+        
+        result = await hooks_impl._handle_get_tool_result(
+            reference=reference,
+            session_id=session_id,
+            mode="preview"
+        )
+        
+        assert result["found"] is True
+        assert result["mode"] == "preview"
+        assert result["truncated"] is True
+        assert len(result["content"]) == 500
+        assert result["total_chars"] == len(original_result)
+    
+    @pytest.mark.asyncio
+    async def test_get_tool_result_chunk_mode(self, hooks_impl, large_tool_result):
+        """Test chunk mode for tool results."""
+        session_id, reference, original_result = large_tool_result
+        
+        result = await hooks_impl._handle_get_tool_result(
+            reference=reference,
+            session_id=session_id,
+            mode="chunk",
+            offset=0,
+            limit=1000
+        )
+        
+        assert result["found"] is True
+        assert result["mode"] == "chunk"
+        assert result["returned_chars"] == 1000
+        assert result["content"] == original_result[0:1000]
+        assert result["has_more"] is True
+    
+    @pytest.mark.asyncio
+    async def test_get_tool_result_search_mode(self, hooks_impl, large_tool_result):
+        """Test search mode for tool results."""
+        session_id, reference, original_result = large_tool_result
+        
+        result = await hooks_impl._handle_get_tool_result(
+            reference=reference,
+            session_id=session_id,
+            mode="search",
+            search="line 10:"
+        )
+        
+        assert result["found"] is True
+        assert result["mode"] == "search"
+        assert result["match_count"] >= 1
+        assert len(result["matches"]) >= 1
+    
+    @pytest.mark.asyncio
+    async def test_get_tool_result_full_mode(self, hooks_impl, large_tool_result):
+        """Test full mode for tool results."""
+        session_id, reference, original_result = large_tool_result
+        
+        result = await hooks_impl._handle_get_tool_result(
+            reference=reference,
+            session_id=session_id,
+            mode="full"
+        )
+        
+        assert result["found"] is True
+        assert result["mode"] == "full"
+        assert result["content"] == original_result
+        assert "warning" in result
+    
+    @pytest.mark.asyncio
+    async def test_get_tool_result_not_found(self, hooks_impl):
+        """Test getting non-existent tool result."""
+        result = await hooks_impl._handle_get_tool_result(
+            reference="nonexistent",
+            session_id="test-session",
+            mode="preview"
+        )
+        
+        assert result["found"] is False
+        assert "error" in result

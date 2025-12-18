@@ -466,51 +466,162 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
     async def _handle_get_variable(
         self,
         variable_name: str,
-        session_id: str = "default"
+        session_id: str = "default",
+        mode: str = "preview",
+        offset: int = 0,
+        limit: int = 1000,
+        search: str | None = None,
+        context_chars: int = 150
     ) -> dict[str, Any]:
-        """Handle get_variable tool - retrieve stored variable.
+        """Handle get_variable tool - retrieve stored variable with pagination.
         
         Args:
             variable_name: Variable name (e.g., $VAR_1)
             session_id: Session ID
+            mode: Retrieval mode (preview, chunk, search, full)
+            offset: Start position for chunk mode
+            limit: Max chars for chunk mode
+            search: Search query for search mode
+            context_chars: Context around search matches
             
         Returns:
-            Variable content or error
+            Variable content (possibly truncated) or error
         """
         components = self._get_session_components(session_id)
         variable_manager: VariableManager = components["variable_manager"]
         
         entry = variable_manager.get_variable(variable_name)
         
-        if entry:
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "content": entry.content,
-                "content_type": entry.content_type,
-                "token_count": entry.token_count,
-                "created_at": entry.created_at.isoformat()
-            }
-        else:
+        if not entry:
             return {
                 "found": False,
                 "variable_name": variable_name,
                 "error": f"Variable {variable_name} not found"
             }
+        
+        content = entry.content
+        total_chars = len(content)
+        
+        # Apply mode-specific content extraction
+        if mode == "preview":
+            # Return first ~500 chars with truncation indicator
+            preview_limit = 500
+            extracted = content[:preview_limit]
+            truncated = total_chars > preview_limit
+            return {
+                "found": True,
+                "variable_name": variable_name,
+                "mode": "preview",
+                "content": extracted,
+                "truncated": truncated,
+                "total_chars": total_chars,
+                "returned_chars": len(extracted),
+                "content_type": entry.content_type,
+                "hint": "Use mode='chunk' with offset/limit or mode='search' to access more content" if truncated else None
+            }
+        
+        elif mode == "chunk":
+            # Paginated access
+            extracted = content[offset:offset + limit]
+            has_more = (offset + limit) < total_chars
+            return {
+                "found": True,
+                "variable_name": variable_name,
+                "mode": "chunk",
+                "content": extracted,
+                "offset": offset,
+                "limit": limit,
+                "returned_chars": len(extracted),
+                "total_chars": total_chars,
+                "has_more": has_more,
+                "next_offset": offset + limit if has_more else None,
+                "content_type": entry.content_type
+            }
+        
+        elif mode == "search":
+            # Search within content
+            if not search:
+                return {
+                    "found": True,
+                    "variable_name": variable_name,
+                    "mode": "search",
+                    "error": "search parameter required for mode='search'"
+                }
+            
+            matches = []
+            search_lower = search.lower()
+            content_lower = content.lower()
+            pos = 0
+            
+            while len(matches) < 10:  # Limit to 10 matches
+                idx = content_lower.find(search_lower, pos)
+                if idx == -1:
+                    break
+                
+                # Extract context around match
+                start = max(0, idx - context_chars)
+                end = min(total_chars, idx + len(search) + context_chars)
+                snippet = content[start:end]
+                
+                # Add ellipsis indicators
+                prefix = "..." if start > 0 else ""
+                suffix = "..." if end < total_chars else ""
+                
+                matches.append({
+                    "position": idx,
+                    "snippet": f"{prefix}{snippet}{suffix}"
+                })
+                pos = idx + 1
+            
+            return {
+                "found": True,
+                "variable_name": variable_name,
+                "mode": "search",
+                "query": search,
+                "match_count": len(matches),
+                "matches": matches,
+                "total_chars": total_chars,
+                "content_type": entry.content_type,
+                "hint": "Use mode='chunk' with offset near match position for more context" if matches else None
+            }
+        
+        else:  # mode == "full"
+            # Return everything (use sparingly!)
+            return {
+                "found": True,
+                "variable_name": variable_name,
+                "mode": "full",
+                "content": content,
+                "total_chars": total_chars,
+                "content_type": entry.content_type,
+                "token_count": entry.token_count,
+                "created_at": entry.created_at.isoformat(),
+                "warning": "Full content returned - consider using preview/chunk/search to save tokens"
+            }
     
     async def _handle_get_tool_result(
         self,
         reference: str,
-        session_id: str = "default"
+        session_id: str = "default",
+        mode: str = "preview",
+        offset: int = 0,
+        limit: int = 1000,
+        search: str | None = None,
+        context_chars: int = 150
     ) -> dict[str, Any]:
-        """Handle get_tool_result tool - retrieve stored tool output.
+        """Handle get_tool_result tool - retrieve stored tool output with pagination.
         
         Args:
             reference: Reference ID or hash
             session_id: Session ID
+            mode: Retrieval mode (preview, chunk, search, full)
+            offset: Start position for chunk mode
+            limit: Max chars for chunk mode
+            search: Search query for search mode
+            context_chars: Context around search matches
             
         Returns:
-            Tool result content or error
+            Tool result content (possibly truncated) or error
         """
         components = self._get_session_components(session_id)
         tool_store: ToolResultStore = components["tool_store"]
@@ -520,19 +631,106 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         if not entry:
             entry = tool_store.retrieve_by_hash(reference)
         
-        if entry:
-            return {
-                "found": True,
-                "tool_name": entry.tool_name,
-                "result": entry.result,
-                "token_count": entry.token_count,
-                "stored_at": entry.timestamp.isoformat()
-            }
-        else:
+        if not entry:
             return {
                 "found": False,
                 "reference": reference,
                 "error": f"Tool result with reference '{reference}' not found"
+            }
+        
+        content = entry.content
+        total_chars = len(content)
+        
+        # Apply mode-specific content extraction
+        if mode == "preview":
+            preview_limit = 500
+            extracted = content[:preview_limit]
+            truncated = total_chars > preview_limit
+            return {
+                "found": True,
+                "reference": reference,
+                "tool_name": entry.tool_name,
+                "mode": "preview",
+                "content": extracted,
+                "truncated": truncated,
+                "total_chars": total_chars,
+                "returned_chars": len(extracted),
+                "hint": "Use mode='chunk' with offset/limit or mode='search' to access more content" if truncated else None
+            }
+        
+        elif mode == "chunk":
+            extracted = content[offset:offset + limit]
+            has_more = (offset + limit) < total_chars
+            return {
+                "found": True,
+                "reference": reference,
+                "tool_name": entry.tool_name,
+                "mode": "chunk",
+                "content": extracted,
+                "offset": offset,
+                "limit": limit,
+                "returned_chars": len(extracted),
+                "total_chars": total_chars,
+                "has_more": has_more,
+                "next_offset": offset + limit if has_more else None
+            }
+        
+        elif mode == "search":
+            if not search:
+                return {
+                    "found": True,
+                    "reference": reference,
+                    "tool_name": entry.tool_name,
+                    "mode": "search",
+                    "error": "search parameter required for mode='search'"
+                }
+            
+            matches = []
+            search_lower = search.lower()
+            content_lower = content.lower()
+            pos = 0
+            
+            while len(matches) < 10:
+                idx = content_lower.find(search_lower, pos)
+                if idx == -1:
+                    break
+                
+                start = max(0, idx - context_chars)
+                end = min(total_chars, idx + len(search) + context_chars)
+                snippet = content[start:end]
+                
+                prefix = "..." if start > 0 else ""
+                suffix = "..." if end < total_chars else ""
+                
+                matches.append({
+                    "position": idx,
+                    "snippet": f"{prefix}{snippet}{suffix}"
+                })
+                pos = idx + 1
+            
+            return {
+                "found": True,
+                "reference": reference,
+                "tool_name": entry.tool_name,
+                "mode": "search",
+                "query": search,
+                "match_count": len(matches),
+                "matches": matches,
+                "total_chars": total_chars,
+                "hint": "Use mode='chunk' with offset near match position for more context" if matches else None
+            }
+        
+        else:  # mode == "full"
+            return {
+                "found": True,
+                "reference": reference,
+                "tool_name": entry.tool_name,
+                "mode": "full",
+                "content": content,
+                "total_chars": total_chars,
+                "token_count": entry.token_count,
+                "stored_at": entry.timestamp.isoformat(),
+                "warning": "Full content returned - consider using preview/chunk/search to save tokens"
             }
     
     async def _handle_stats(

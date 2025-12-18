@@ -83,10 +83,15 @@ tools:
     function:
       name: "{{ name }}_get_variable"
       description: |
-        Retrieve the full content of a stored variable ($VAR_N).
+        Retrieve content from a stored variable ($VAR_N).
         
         Variables are created automatically when large content blocks are
-        encountered. Use this to get the original content when needed.
+        encountered. Use modes to control how much content is returned:
+        
+        - preview: First ~500 chars (default, saves tokens)
+        - chunk: Paginated access with offset/limit
+        - search: Find specific content within the variable
+        - full: Complete content (use sparingly!)
       parameters:
         type: object
         properties:
@@ -94,6 +99,31 @@ tools:
             type: string
             pattern: "^\\$VAR_\\d+$"
             description: "Variable name to retrieve (e.g., $VAR_1, $VAR_2)"
+          mode:
+            type: string
+            enum: ["preview", "chunk", "search", "full"]
+            default: "preview"
+            description: "Retrieval mode: preview (default), chunk (paginated), search, or full"
+          offset:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "Start position in characters (for mode=chunk)"
+          limit:
+            type: integer
+            minimum: 100
+            maximum: 10000
+            default: 1000
+            description: "Maximum characters to return (for mode=chunk)"
+          search:
+            type: string
+            description: "Search query to find within variable (for mode=search)"
+          context_chars:
+            type: integer
+            minimum: 50
+            maximum: 500
+            default: 150
+            description: "Characters of context around search matches"
         required:
           - variable_name
         additionalProperties: false
@@ -102,16 +132,46 @@ tools:
     function:
       name: "{{ name }}_get_tool_result"
       description: |
-        Retrieve the original output of a cleared tool result.
+        Retrieve content from a stored tool result.
         
         Tool results are cleared (replaced with references) to save tokens.
-        Use this to get the original output when you need the full details.
+        Use modes to control how much content is returned:
+        
+        - preview: First ~500 chars (default, saves tokens)
+        - chunk: Paginated access with offset/limit  
+        - search: Find specific content within the result
+        - full: Complete content (use sparingly!)
       parameters:
         type: object
         properties:
           reference:
             type: string
             description: "The reference ID or content hash from the tool result marker"
+          mode:
+            type: string
+            enum: ["preview", "chunk", "search", "full"]
+            default: "preview"
+            description: "Retrieval mode: preview (default), chunk (paginated), search, or full"
+          offset:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "Start position in characters (for mode=chunk)"
+          limit:
+            type: integer
+            minimum: 100
+            maximum: 10000
+            default: 1000
+            description: "Maximum characters to return (for mode=chunk)"
+          search:
+            type: string
+            description: "Search query to find within result (for mode=search)"
+          context_chars:
+            type: integer
+            minimum: 50
+            maximum: 500
+            default: 150
+            description: "Characters of context around search matches"
         required:
           - reference
         additionalProperties: false
