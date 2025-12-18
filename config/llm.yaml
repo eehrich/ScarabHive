@@ -293,8 +293,8 @@ llm_system:
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
     normal-stream:
-      #model_ref: gemini-2-5-flash
-      model_ref: gpt-5-mini
+      model_ref: gemini-2-5-flash
+      #model_ref: gpt-5-mini
       description: "Fast model for medium reasoning tasks"
       max_steps: 500      
     think:
