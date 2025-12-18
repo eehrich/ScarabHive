@@ -347,7 +347,7 @@
             <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
                 ⏱️
             </button>
-            <button class="icon-only active" id="session-filter-btn" onclick="toggleSessionFilter()" title="Showing: Current Session">
+            <button class="icon-only active" id="session-filter-btn" onclick="toggleSessionFilter()" title="Showing: Current Session Only" style="display: none;">
                 🎯
             </button>
         </div>
@@ -706,12 +706,12 @@
             const btn = document.getElementById('session-filter-btn');
             currentSessionOnly = !currentSessionOnly;
             
-            if (currentSessionOnly) {
-                btn.classList.add('active');
-                btn.title = 'Showing: Current Session';
-            } else {
+            if (!currentSessionOnly) {
                 btn.classList.remove('active');
-                btn.title = 'Showing: All Sessions';
+                btn.title = 'Showing: Global Storage (no session filter)';
+            } else {
+                btn.classList.add('active');
+                btn.title = 'Showing: Current Session Only';
             }
             
             refreshData();
