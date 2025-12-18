@@ -841,10 +841,14 @@ class TestToolResponseJsonValidation:
         json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
         assert len(json_issues) == 1
         assert json_issues[0].severity == "warning"
-        assert "not valid JSON" in json_issues[0].description
+        assert "malformed JSON" in json_issues[0].description
 
     def test_non_object_json_in_tool_response(self):
-        """Test detection of non-object JSON (array, string, etc) in tool response."""
+        """Test that non-object JSON (array, string, etc) in tool response is OK.
+        
+        Tool responses can legitimately be JSON arrays or strings, not just objects.
+        This is valid for tools like writer_content that return paginated JSON as strings.
+        """
         messages = [
             ChatMessage(role="user", content="Get data"),
             ChatMessage(
@@ -854,7 +858,7 @@ class TestToolResponseJsonValidation:
             ),
             ChatMessage(
                 role="tool",
-                content='[1, 2, 3]',  # Valid JSON but not an object
+                content='[1, 2, 3]',  # Valid JSON array - should be OK
                 tool_call_id="call_1",
                 name="get_data"
             ),
@@ -863,14 +867,15 @@ class TestToolResponseJsonValidation:
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
 
+        # Arrays are now valid - no issues expected
         json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
-        assert len(json_issues) == 1
-        assert json_issues[0].severity == "warning"
-        assert "not a JSON object" in json_issues[0].description
-        assert json_issues[0].details["content_type"] == "list"
+        assert len(json_issues) == 0
 
     def test_primitive_json_in_tool_response(self):
-        """Test detection of primitive JSON values in tool response."""
+        """Test that primitive JSON values in tool response are OK.
+        
+        Tool responses can be JSON strings (e.g., paginated JSON content).
+        """
         messages = [
             ChatMessage(role="user", content="Get data"),
             ChatMessage(
@@ -880,7 +885,7 @@ class TestToolResponseJsonValidation:
             ),
             ChatMessage(
                 role="tool",
-                content='"just a string"',  # Valid JSON but primitive
+                content='"just a string"',  # Valid JSON string - should be OK
                 tool_call_id="call_1",
                 name="get_data"
             ),
@@ -889,7 +894,6 @@ class TestToolResponseJsonValidation:
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
 
+        # String JSON values are now valid - no issues expected
         json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
-        assert len(json_issues) == 1
-        assert json_issues[0].severity == "warning"
-        assert json_issues[0].details["content_type"] == "str"
+        assert len(json_issues) == 0

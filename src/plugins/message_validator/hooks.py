@@ -94,7 +94,7 @@ class InternalMessageValidator:
         issues.extend(self._check_tool_call_consistency(messages))
         issues.extend(self._check_tool_names(messages))
         issues.extend(self._check_tool_response_json(messages))
-        issues.extend(self._check_tool_response_null_values(messages))  # Gemini compatibility
+        # NOTE: Removed _check_tool_response_null_values - null values are legitimate
         issues.extend(self._check_tool_response_size(messages))  # Prevent oversized responses
         issues.extend(self._check_content_structure(messages))
         issues.extend(self._check_message_sequence(messages))
@@ -219,8 +219,15 @@ class InternalMessageValidator:
         return issues
 
     def _check_tool_response_json(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
-        """Check that tool responses contain valid JSON objects."""
-        import json
+        """Check that tool responses are well-formed.
+        
+        Note: Tool response content can be:
+        - A JSON object (most common)
+        - A JSON string (e.g., paginated JSON content from writer_content)
+        - A plain string (descriptive text)
+        
+        We only flag truly malformed content, not valid strings.
+        """
         issues = []
 
         for i, msg in enumerate(messages):
@@ -229,95 +236,44 @@ class InternalMessageValidator:
                 if not content:
                     continue
                 
-                # Try to parse content as JSON
-                try:
-                    parsed = json.loads(content)
-                    # Check if it's a valid JSON object (not just a primitive)
-                    if not isinstance(parsed, dict):
+                # Tool response content can be:
+                # 1. Valid JSON object/array -> OK
+                # 2. Valid JSON string -> OK (e.g., paginated JSON as string)
+                # 3. Plain string that's not JSON -> OK (descriptive text)
+                # 4. Malformed (e.g., truncated JSON, encoding issues) -> Warning
+                
+                # We only check for obvious malformation patterns, not JSON validity
+                # because string content is perfectly valid for tool responses
+                
+                # Check for common malformation indicators
+                content_str = str(content)
+                
+                # Check for truncated JSON (starts with { or [ but doesn't close)
+                if content_str.strip().startswith('{') or content_str.strip().startswith('['):
+                    # Looks like JSON - check if it's valid
+                    import json
+                    try:
+                        json.loads(content_str)
+                        # Valid JSON - OK
+                    except json.JSONDecodeError as e:
+                        # Only warn if it LOOKS like JSON but is malformed
+                        # (truncated, missing quotes, etc.)
                         issues.append(ValidationIssue(
                             type="invalid_tool_response_json",
                             severity="warning",
                             message_index=i,
-                            description=f"Tool response is not a JSON object (type: {type(parsed).__name__})",
+                            description=f"Tool response appears to be malformed JSON: {str(e)}",
                             details={
                                 "tool_call_id": getattr(msg, 'tool_call_id', None),
-                                "content_type": type(parsed).__name__,
-                                "content_preview": str(content)[:100]
+                                "error": str(e),
+                                "content_preview": content_str[:100]
                             }
                         ))
-                except (json.JSONDecodeError, ValueError) as e:
-                    issues.append(ValidationIssue(
-                        type="invalid_tool_response_json",
-                        severity="warning",
-                        message_index=i,
-                        description=f"Tool response is not valid JSON: {str(e)}",
-                        details={
-                            "tool_call_id": getattr(msg, 'tool_call_id', None),
-                            "error": str(e),
-                            "content_preview": str(content)[:100]
-                        }
-                    ))
-                except Exception as e:
-                    # Catch any other unexpected errors
-                    logger.error(f"Unexpected error parsing tool response at index {i}: {e}")
+                # Non-JSON string content is perfectly valid - no issue
 
         return issues
 
-    def _check_tool_response_null_values(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
-        """Check for null values in tool responses (Gemini compatibility issue).
-        
-        Gemini has known issues with null values in tool responses, leading to
-        MALFORMED_FUNCTION_CALL errors. This check warns about such issues.
-        """
-        import json
-        issues = []
-
-        def find_null_values(obj, path=""):
-            """Recursively find null values in a nested structure."""
-            null_paths = []
-            if obj is None:
-                return [path]
-            elif isinstance(obj, dict):
-                for key, value in obj.items():
-                    current_path = f"{path}.{key}" if path else key
-                    null_paths.extend(find_null_values(value, current_path))
-            elif isinstance(obj, list):
-                for idx, item in enumerate(obj):
-                    current_path = f"{path}[{idx}]"
-                    null_paths.extend(find_null_values(item, current_path))
-            return null_paths
-
-        for i, msg in enumerate(messages):
-            if msg.role == "tool":
-                content = msg.content
-                if not content:
-                    continue
-                
-                try:
-                    parsed = json.loads(content)
-                    null_paths = find_null_values(parsed)
-                    
-                    if null_paths:
-                        tool_name = getattr(msg, 'name', 'unknown')
-                        issues.append(ValidationIssue(
-                            type="tool_response_null_values",
-                            severity="warning",
-                            message_index=i,
-                            description=f"Tool response from '{tool_name}' contains {len(null_paths)} null value(s) - may cause MALFORMED_FUNCTION_CALL with Gemini",
-                            details={
-                                "tool_name": tool_name,
-                                "tool_call_id": getattr(msg, 'tool_call_id', None),
-                                "null_paths": null_paths[:5],  # Limit to first 5
-                                "total_nulls": len(null_paths)
-                            }
-                        ))
-                except (json.JSONDecodeError, ValueError):
-                    # Already handled by _check_tool_response_json
-                    pass
-                except Exception as e:
-                    logger.error(f"Error checking null values at index {i}: {e}")
-
-        return issues
+    # NOTE: _check_tool_response_null_values was removed - null values are legitimate JSON values
 
     def _check_tool_response_size(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
         """Check for oversized tool responses that may cause LLM issues.
