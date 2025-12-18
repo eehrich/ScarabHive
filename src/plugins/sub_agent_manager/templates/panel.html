@@ -779,7 +779,7 @@
                     <div class="agent-task">"${agent.task_summary || 'No task summary'}"</div>
                     ${activityHtml}
                     <div class="agent-actions">
-                        ${agent.status === 'active' ? `
+                        ${(agent.status === 'active' || effectiveStatus === 'interrupted') ? `
                             <button onclick="viewDetails('${agent.instance_id}')">ℹ️ Details</button>
                             <button class="danger" onclick="archiveAgent('${agent.instance_id}')">🗑️ Archive</button>
                         ` : ''}
