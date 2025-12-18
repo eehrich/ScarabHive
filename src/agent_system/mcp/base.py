@@ -71,7 +71,12 @@ class MCPServer(ABC):
         # Prefer request_id (Python convention) but fallback to requestId (JS convention)
         request_id = params.get("request_id") or params.get("requestId")
 
-        async with status_scope(status_bus, self.name, request_id=request_id) as status:
+        # Extract method name from action (remove plugin prefix if present)
+        # Example: "writer_path_validate" -> "validate()"
+        method_name = action.replace(f"{self.name}_", "") if action.startswith(f"{self.name}_") else action
+        scope_name = f"{self.name}.{method_name}()"
+
+        async with status_scope(status_bus, scope_name, request_id=request_id) as status:
             # Create a copy to avoid mutating the original params
             params_with_status = params.copy()
             
