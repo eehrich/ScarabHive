@@ -282,7 +282,8 @@ plugins:
         
         # Tool result storage settings
         tool_result_min_size: 500      # Min tokens to store tool result externally
-        tool_result_keep_last: 3       # Keep last N tool results inline (don't store)
+        tool_result_keep_last: 3       # Keep last N tool results inline (unless too large)
+        tool_result_max_inline_size: 5000  # ALWAYS archive results > this size (even if last N)
         
         # Variable substitution settings
         variable_min_size: 500         # Min tokens to create $VAR_N variable

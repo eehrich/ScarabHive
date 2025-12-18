@@ -50,7 +50,8 @@ class CompactionConfig:
     
     # Tool result settings
     tool_result_min_size: int = 500  # Min tokens to store externally
-    tool_result_keep_last: int = 3   # Keep last N tool results inline
+    tool_result_keep_last: int = 3   # Keep last N tool results inline (unless too large)
+    tool_result_max_inline_size: int = 5000  # Max tokens before auto-archive (even if in last N)
     
     # Variable settings
     variable_min_size: int = 200     # Min tokens to create variable
@@ -202,14 +203,14 @@ class LayeredCompactionStrategy:
     def _apply_layer1(self, result: CompactionResult) -> None:
         """Layer 1: Reversible compaction.
         
-        - Store tool outputs with references
+        - Store tool outputs with references (auto-archives large results > max_size)
         - Create variables for large content blocks
         """
         logger.debug("Applying Layer 1: Reversible compaction")
         
         messages = result.modified_messages
         
-        # Process messages in reverse (newer first, but skip last N tool results)
+        # Process messages in reverse (newer first, but skip last N tool results UNLESS too large)
         tool_results_seen = 0
         
         for i in range(len(messages) - 1, -1, -1):
@@ -219,14 +220,15 @@ class LayeredCompactionStrategy:
             if msg.get("role") == "tool":
                 tool_results_seen += 1
                 
-                # Skip last N tool results
-                if tool_results_seen <= self.config.tool_result_keep_last:
-                    continue
-                
                 content = msg.get("content", "")
                 token_count = estimate_content_tokens(content)
                 
-                if token_count >= self.config.tool_result_min_size:
+                # Always archive if exceeds max size (even if in last N)
+                is_too_large = token_count >= self.config.tool_result_max_inline_size
+                is_old_enough = tool_results_seen > self.config.tool_result_keep_last
+                should_archive = token_count >= self.config.tool_result_min_size and (is_too_large or is_old_enough)
+                
+                if should_archive:
                     # Store and replace with reference
                     tool_name = msg.get("name", "unknown")
                     tool_call_id = msg.get("tool_call_id", "")
@@ -240,6 +242,12 @@ class LayeredCompactionStrategy:
                     messages[i] = {**msg, "content": reference}
                     result.tool_results_stored += 1
                     result.tokens_saved += token_count - estimate_content_tokens(reference)
+                    
+                    if is_too_large:
+                        logger.debug(
+                            f"Auto-archived large tool result '{tool_name}' "
+                            f"({token_count} tokens, exceeds max_inline_size)"
+                        )
             
             # Process assistant messages with large content
             elif msg.get("role") == "assistant":

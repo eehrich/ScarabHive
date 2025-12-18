@@ -112,7 +112,7 @@ tools:
           limit:
             type: integer
             minimum: 100
-            maximum: 10000
+            maximum: 5000
             default: 1000
             description: "Maximum characters to return (for mode=chunk)"
           search:
@@ -160,7 +160,7 @@ tools:
           limit:
             type: integer
             minimum: 100
-            maximum: 10000
+            maximum: 5000
             default: 1000
             description: "Maximum characters to return (for mode=chunk)"
           search:
@@ -271,7 +271,28 @@ web_ui:
 
 # Configuration schema for this plugin
 config:
-  # Tool Result Clearing
+  # Tool Result Storage Settings
+  tool_result_min_size:
+    type: integer
+    default: 500
+    minimum: 10
+    description: "Minimum token count to store tool results externally"
+
+  tool_result_keep_last:
+    type: integer
+    default: 3
+    minimum: 0
+    maximum: 20
+    description: "Keep last N tool results inline (unless they exceed max_inline_size)"
+
+  tool_result_max_inline_size:
+    type: integer
+    default: 5000
+    minimum: 1000
+    maximum: 50000
+    description: "Maximum token size for inline tool results. Results exceeding this are ALWAYS archived, even if in last N."
+
+  # Tool Result Clearing (Legacy - kept for compatibility)
   tool_result_clearing_enabled:
     type: boolean
     default: true

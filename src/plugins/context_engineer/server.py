@@ -70,6 +70,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         # Feature settings
         self.tool_result_min_size = int(config_dict.get("tool_result_min_size", 500))
         self.tool_result_keep_last = int(config_dict.get("tool_result_keep_last", 3))
+        self.tool_result_max_inline_size = int(config_dict.get("tool_result_max_inline_size", 5000))
         self.variable_min_size = int(config_dict.get("variable_min_size", 200))
         self.archive_after_turns = int(config_dict.get("archive_after_turns", 10))
         self.enable_semantic_search = bool(config_dict.get("enable_semantic_search", False))
@@ -96,6 +97,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl.target_tokens = self.target_tokens
         self._hooks_impl.tool_result_min_size = self.tool_result_min_size
         self._hooks_impl.tool_result_keep_last = self.tool_result_keep_last
+        self._hooks_impl.tool_result_max_inline_size = self.tool_result_max_inline_size
         self._hooks_impl.variable_min_size = self.variable_min_size
         self._hooks_impl.archive_after_turns = self.archive_after_turns
         self._hooks_impl.enable_semantic_search = self.enable_semantic_search

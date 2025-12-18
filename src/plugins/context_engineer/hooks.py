@@ -73,6 +73,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # Tool result settings
         self.tool_result_min_size = int(config.get("tool_result_min_size", 500))
         self.tool_result_keep_last = int(config.get("tool_result_keep_last", 3))
+        self.tool_result_max_inline_size = int(config.get("tool_result_max_inline_size", 5000))
         
         # Variable settings
         self.variable_min_size = int(config.get("variable_min_size", 200))
@@ -134,6 +135,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 target_tokens=self.target_tokens,
                 tool_result_min_size=self.tool_result_min_size,
                 tool_result_keep_last=self.tool_result_keep_last,
+                tool_result_max_inline_size=self.tool_result_max_inline_size,
                 variable_min_size=self.variable_min_size,
                 archive_after_turns=self.archive_after_turns,
                 drop_after_turns=self.drop_after_turns,
@@ -480,13 +482,22 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             session_id: Session ID
             mode: Retrieval mode (preview, chunk, search, full)
             offset: Start position for chunk mode
-            limit: Max chars for chunk mode
+            limit: Max chars for chunk mode (max 10000 per request)
             search: Search query for search mode
             context_chars: Context around search matches
             
         Returns:
             Variable content (possibly truncated) or error
         """
+        # Validate pagination limit
+        max_limit = 5000
+        if limit > max_limit:
+            return {
+                "found": False,
+                "variable_name": variable_name,
+                "error": f"Limit {limit} exceeds maximum allowed {max_limit}. Use multiple requests with offset to retrieve large content."
+            }
+        
         components = self._get_session_components(session_id)
         variable_manager: VariableManager = components["variable_manager"]
         
@@ -616,13 +627,22 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             session_id: Session ID
             mode: Retrieval mode (preview, chunk, search, full)
             offset: Start position for chunk mode
-            limit: Max chars for chunk mode
+            limit: Max chars for chunk mode (max 10000 per request)
             search: Search query for search mode
             context_chars: Context around search matches
             
         Returns:
             Tool result content (possibly truncated) or error
         """
+        # Validate pagination limit
+        max_limit = 5000
+        if limit > max_limit:
+            return {
+                "found": False,
+                "reference": reference,
+                "error": f"Limit {limit} exceeds maximum allowed {max_limit}. Use multiple requests with offset to retrieve large content."
+            }
+        
         components = self._get_session_components(session_id)
         tool_store: ToolResultStore = components["tool_store"]
         
