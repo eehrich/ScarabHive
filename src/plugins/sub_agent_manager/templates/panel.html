@@ -57,6 +57,26 @@
             background: #1177bb;
         }
         
+        button.icon-only {
+            padding: 8px;
+            min-width: 36px;
+            justify-content: center;
+            font-size: 18px;
+            background: #3c3c3c;
+        }
+        
+        button.icon-only:hover {
+            background: #505050;
+        }
+        
+        button.icon-only.active {
+            background: #0e639c;
+        }
+        
+        button.icon-only.active:hover {
+            background: #1177bb;
+        }
+        
         button.danger {
             background: #c72e2e;
         }
@@ -452,8 +472,12 @@
                 </div>
             </div>
             
-            <button onclick="loadAgents()">🔄 Refresh</button>
-            <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="background: #3c3c3c;">⏸️ Auto-Refresh: OFF</button>
+            <button class="icon-only" onclick="loadAgents()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (10s) - Inactive" style="background: #3c3c3c;">
+                ⏱️
+            </button>
         </div>
         
         <div class="stats-grid" id="statsGrid">
@@ -653,7 +677,11 @@
         function startAutoRefresh() {
             if (autoRefreshInterval) return;
             autoRefreshInterval = setInterval(() => {
-                loadAgents();
+                // Only refresh if we have a session ID
+                const sessionId = getSessionId();
+                if (sessionId) {
+                    loadAgents();
+                }
             }, 10000);
             updateAutoRefreshButton(true);
         }
@@ -669,8 +697,13 @@
         function updateAutoRefreshButton(isActive) {
             const btn = document.getElementById('autoRefreshBtn');
             if (btn) {
-                btn.textContent = isActive ? '⏸️ Auto-Refresh: ON' : '▶️ Auto-Refresh: OFF';
+                btn.title = isActive ? 'Auto-Refresh (10s) - Active' : 'Auto-Refresh (10s) - Inactive';
                 btn.style.background = isActive ? '#0e639c' : '#3c3c3c';
+                if (isActive) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
             }
         }
         
