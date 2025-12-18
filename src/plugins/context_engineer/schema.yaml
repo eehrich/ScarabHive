@@ -176,22 +176,23 @@ tools:
           - reference
         additionalProperties: false
 
-  - type: function
-    function:
-      name: "{{ name }}_stats"
-      description: |
-        Get current context engineering statistics.
-        
-        Returns:
-        - Tool results stored and tokens saved
-        - Variables created and tokens saved
-        - Core memory facts and token usage
-        - Archival memory entries
-        - Overall token reduction percentage
-      parameters:
-        type: object
-        properties: {}
-        additionalProperties: false
+# No need to expose stats function for now to the LLM
+#  - type: function
+#    function:
+#      name: "{{ name }}_stats"
+#      description: |
+#        Get current context engineering statistics.
+#        
+#        Returns:
+#        - Tool results stored and tokens saved
+#        - Variables created and tokens saved
+#        - Core memory facts and token usage
+#        - Archival memory entries
+#        - Overall token reduction percentage
+#      parameters:
+#        type: object
+#        properties: {}
+#        additionalProperties: false
 
   - type: function
     function:
