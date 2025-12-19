@@ -311,8 +311,9 @@ plugins:
       config:
         log_level: warning
         strict_mode: false
-        max_tool_response_size_kb: 50  # Hard limit: 50 KB (≈12.5k tokens)
-        warn_tool_response_size_kb: 30  # Warn at 30 KB (≈7.5k tokens)
+        # disable it
+        max_tool_response_size_kb: 9999  # Hard limit: 50 KB (≈12.5k tokens)
+        warn_tool_response_size_kb: 9998  # Warn at 30 KB (≈7.5k tokens)
 
     markdown_formatter:
       type: markdown_formatter
