@@ -18,8 +18,9 @@ Hook definitions are loaded from schema.yaml.
 - Adds optimization metadata to hook results
 """
 
-from pathlib import Path
 import logging
+from pathlib import Path
+from typing import Any
 
 from agent_system.hooks import (
     SchemaBasedPluginHook,
@@ -38,13 +39,19 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
     loaded from schema.yaml with default values.
     """
     
-    def __init__(self, plugin_dir: Path | str):
+    def __init__(self, plugin_dir: Path | str, mcp_config: Any = None):
         """Initialize the context optimizer plugin.
         
         Args:
             plugin_dir: Directory containing schema.yaml
+            mcp_config: MCP configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
+        
+        # Merge mcp_config.config if provided (overrides schema defaults)
+        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
+            self._config.update(mcp_config.config)
+        
         logger.info("ContextOptimizerPlugin initialized with schema-based hooks")
     
     # Handler for 'context_optimizer' hook (referenced in schema.yaml as 'optimize_context')

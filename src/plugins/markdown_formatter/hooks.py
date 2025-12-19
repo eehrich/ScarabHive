@@ -6,9 +6,10 @@ Injects system prompt to guide LLM to generate Markdown output.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import re
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 from agent_system.hooks import HookContext, HookResult
 from agent_system.hooks.schema_based import SchemaBasedPluginHook
@@ -20,16 +21,21 @@ logger = logging.getLogger(__name__)
 class MarkdownFormatterPlugin(SchemaBasedPluginHook):
     """Hook plugin for Markdown formatting and HTML conversion."""
     
-    def __init__(self, plugin_dir: Path):
+    def __init__(self, plugin_dir: Path, mcp_config: Any = None):
         """Initialize the markdown formatter plugin.
         
         Args:
             plugin_dir: Directory containing plugin configuration files
+            mcp_config: MCP configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
         
-        # Get config from schema with proper dict handling
+        # Get config from schema defaults
         config = self.config or {}
+        
+        # Merge with mcp_config.config if provided (overrides schema defaults)
+        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
+            config.update(mcp_config.config)
         
         def get_config_value(key: str, default):
             val = config.get(key, default)

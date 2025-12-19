@@ -28,10 +28,10 @@ def PLUGIN_FACTORY(name: str = None, system_config: "AgentSystemConfig" = None, 
     Args:
         name: Plugin name (ignored, for compatibility)
         system_config: System configuration (ignored, for compatibility)
-        mcp_config: MCP configuration (ignored, for compatibility)
+        mcp_config: MCP configuration (contains config from plugins.yaml)
     
     Returns:
         ContextOptimizerPlugin instance
     """
     plugin_dir = Path(__file__).parent
-    return ContextOptimizerPlugin(plugin_dir)
+    return ContextOptimizerPlugin(plugin_dir, mcp_config)

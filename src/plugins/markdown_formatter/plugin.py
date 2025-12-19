@@ -16,10 +16,10 @@ def PLUGIN_FACTORY(name: str, system_config: Any, mcp_config: Any) -> MarkdownFo
     Args:
         name: Plugin instance name
         system_config: System configuration
-        mcp_config: MCP-specific configuration
+        mcp_config: MCP-specific configuration (contains config from plugins.yaml)
         
     Returns:
         MarkdownFormatterPlugin instance
     """
     plugin_dir = Path(__file__).parent
-    return MarkdownFormatterPlugin(plugin_dir)
+    return MarkdownFormatterPlugin(plugin_dir, mcp_config)

@@ -540,19 +540,25 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
     Hook definitions and configuration are loaded from schema.yaml.
     """
 
-    def __init__(self, plugin_dir: Path | str):
+    def __init__(self, plugin_dir: Path | str, mcp_config: Any = None):
         """Initialize the message validator plugin.
 
         Args:
             plugin_dir: Directory containing schema.yaml
+            mcp_config: MCP configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
 
-        # Get config
+        # Get config from schema defaults
         config = self.get_config()
+        
+        # Merge with mcp_config.config if provided (overrides schema defaults)
+        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
+            config.update(mcp_config.config)
+        
         log_level = config.get('log_level', 'warning')
 
-        # Initialize internal validator with config
+        # Initialize internal validator with merged config
         self.validator = InternalMessageValidator(log_level=log_level, config=config)
 
     async def validate_messages(self, context: HookContext) -> HookResult:

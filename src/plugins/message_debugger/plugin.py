@@ -29,8 +29,8 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         # Shared message history for both hooks and web UI
         self._message_history: List[Dict[str, Any]] = []
         
-        # Create hooks plugin with history tracking
-        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, message_history=self._message_history)
+        # Create hooks plugin with history tracking and config
+        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, message_history=self._message_history, mcp_config=mcp_config)
         
         # Create web UI factory with plugin name for dynamic routing
         self.web_factory = MessageDebuggerWebFactory(self._message_history, name=name, server=self)
