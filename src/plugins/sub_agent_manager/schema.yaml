@@ -9,8 +9,8 @@ tools:
 
         Operations:
         - create: Spawn+execute (blocking=true default, false=async)
-        - continue: Send new message to existing agent (BLOCKING)
-        - poll: Check async status (NON-BLOCKING)
+        - continue: Send new message to existing agent (blocking=true default, false=async)
+        - poll: Check async status (NON-BLOCKING) -> Do not poll too frequently!
         - wait/wait_all: Wait for completion (BLOCKING)
         - cancel: Stop running agent
         - list: Active sub-agents
@@ -20,6 +20,8 @@ tools:
         Async: create(blocking=false) + wait_all for parallel execution.
         Same instance_id cannot run concurrently.
 
+        Important!: Do **not** recreate agents (delete+create) - use existing ones via continue. They have the useful history. Recreate only on Major-Errors.
+
       parameters:
         type: object
         properties:
@@ -28,37 +30,36 @@ tools:
             enum: [create, continue, poll, wait, wait_all, cancel, list, info, delete]
             description: "create|continue|poll|wait|wait_all|cancel|list|info|delete"
 
-          # Parameters for 'create' operation
           agent_type:
             type: string
-            description: "Agent type (create). Available: {{ allowed_agents }}"
+            description: "Agent to spawn (create). Available: {{ allowed_agents }}"
 
           task:
             type: string
-            description: "Initial task (create). First message in sub-agent session."
+            description: "Initial message (create)"
 
           instance_label:
             type: string
-            description: "Custom label (create, optional). Auto-generated if omitted."
+            description: "Optional label (create). Response contains instance_id for follow-ups."
 
           blocking:
             type: boolean
-            description: "Wait for completion (create, default=true). false=async."
+            description: "Wait for completion (create, default=true). false=async"
             default: true
 
           use_advanced_model:
             type: boolean
-            description: "Use advanced LLM (create/continue, default=false). More capable but slower/costlier."
+            description: "Use better LLM (create/continue, default=false)"
             default: false
 
           timeout:
             type: number
-            description: "Timeout seconds (wait/wait_all)."
+            description: "Timeout seconds (wait/wait_all)"
             default: 3600
 
           instance_id:
             type: string
-            description: "Instance ID (continue/poll/wait/cancel/info/delete). From system prompt or create result."
+            description: "Instance ID (continue/poll/wait/cancel/info/delete). Use 'instance_id' from create response, NOT instance_label."
 
           instance_ids:
             type: array
