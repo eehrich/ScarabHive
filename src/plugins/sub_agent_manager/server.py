@@ -305,13 +305,29 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             manager = self._get_manager(session_service, registry)
 
             # Create sub-session (pass params for user_id extraction)
-            sub_session_id = await manager.create_sub_session(
-                parent_session_id=parent_session_id,
-                agent_type=agent_name,
-                initial_message=task,
-                instance_label=instance_label,
-                params=params  # Pass params for user_id extraction
-            )
+            try:
+                sub_session_id = await manager.create_sub_session(
+                    parent_session_id=parent_session_id,
+                    agent_type=agent_name,
+                    initial_message=task,
+                    instance_label=instance_label,
+                    params=params  # Pass params for user_id extraction
+                )
+            except ValueError as e:
+                # Handle max sub-agents limit gracefully
+                if "Maximum number of active sub-agents" in str(e):
+                    msg = str(e).split("Active sub-agents:")[0].strip()
+                    logger.warning(f"Sub-agent limit reached: {msg}")
+                    if status:
+                        await status.error(msg)
+                    return {
+                        "instance_id": None,
+                        "status": "limit_reached",
+                        "error": msg,
+                        "agent_type": agent_name
+                    }
+                # Re-raise other ValueErrors (invalid agent, etc.)
+                raise
 
             logger.info(f"Created sub-session {sub_session_id} for parent {parent_session_id}")
 

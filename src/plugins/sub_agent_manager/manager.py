@@ -158,7 +158,7 @@ class SubAgentManager:
             raise ValueError(
                 f"Maximum number of active sub-agents of type '{agent_type}' "
                 f"({self.max_sub_agents_per_type}) reached. "
-                f"Active instances: {active_agents_of_type}"
+                f"Active sub-agents: {active_agents_of_type}"
             )
 
         # Generate unique instance ID (short format)
