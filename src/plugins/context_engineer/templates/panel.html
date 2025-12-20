@@ -364,6 +364,7 @@
                     <thead>
                         <tr>
                             <th>Time</th>
+                            <th>Agent</th>
                             <th>Session</th>
                             <th>Before</th>
                             <th>After</th>
@@ -373,7 +374,7 @@
                         </tr>
                     </thead>
                     <tbody id="history-body">
-                        <tr><td colspan="7" class="loading"><div class="spinner"></div>Loading...</td></tr>
+                        <tr><td colspan="8" class="loading"><div class="spinner"></div>Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -493,13 +494,14 @@
                 const tbody = document.getElementById('history-body');
                 
                 if (!data.success || !data.events || data.events.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No compaction events yet</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No compaction events yet</td></tr>`;
                     return;
                 }
 
                 tbody.innerHTML = data.events.map(event => `
                     <tr>
                         <td>${formatTime(event.timestamp)}</td>
+                        <td style="color: #4fc3f7">${event.agent_name || '-'}</td>
                         <td>${event.session_id || '-'}</td>
                         <td>${formatNumber(event.original_tokens)}</td>
                         <td>${formatNumber(event.final_tokens)}</td>
@@ -511,7 +513,7 @@
             } catch (e) {
                 console.error('Error loading history:', e);
                 document.getElementById('history-body').innerHTML = 
-                    `<tr><td colspan="7" class="empty-state">Error loading history</td></tr>`;
+                    `<tr><td colspan="8" class="empty-state">Error loading history</td></tr>`;
             }
         }
 

@@ -272,6 +272,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 self.stats_history.append({
                     "timestamp": time.time(),
                     "session_id": session_id,
+                    "agent_name": context.agent_name or "unknown",
                     "original_tokens": result.original_tokens,
                     "final_tokens": result.final_tokens,
                     "tokens_saved": result.tokens_saved,
