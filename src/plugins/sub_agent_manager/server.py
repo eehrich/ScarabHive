@@ -73,9 +73,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             instance_id: Sub-agent instance ID
             
         Returns:
-            True if agent has active task in _async_jobs, False otherwise
+            True if agent has active task in _async_jobs with running/pending status, False otherwise
         """
-        return instance_id in self._async_jobs
+        if instance_id not in self._async_jobs:
+            return False
+        
+        job_status = self._async_jobs[instance_id].get("status", "unknown")
+        return job_status in ("pending", "running")
 
     def get_template_vars(self) -> dict:
         """Return template variables for schema rendering.
