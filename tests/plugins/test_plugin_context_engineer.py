@@ -141,9 +141,13 @@ class TestToolResultStore:
             content=result
         )
         
-        assert "[Tool:read_file" in reference
-        assert "ref:" in reference
-        assert "hash:" in reference
+        # Reference should be valid JSON
+        import json
+        ref_data = json.loads(reference)
+        assert ref_data["type"] == "tool_result_ref"
+        assert ref_data["tool_name"] == "read_file"
+        assert "ref_id" in ref_data
+        assert "content_hash" in ref_data
     
     def test_retrieve_by_id(self, temp_db_path):
         """Test retrieving tool result by ID."""
@@ -156,10 +160,10 @@ class TestToolResultStore:
             content=result
         )
         
-        # Extract ID from reference
-        import re
-        match = re.search(r"ref:(\w+)", reference)
-        ref_id = match.group(1) if match else None
+        # Extract ID from JSON reference
+        import json
+        ref_data = json.loads(reference)
+        ref_id = ref_data["ref_id"]
         
         entry = store.retrieve(ref_id)
         
@@ -178,10 +182,10 @@ class TestToolResultStore:
             content=result
         )
         
-        # Extract hash from reference
-        import re
-        match = re.search(r"hash:(\w+)", reference)
-        content_hash = match.group(1) if match else None
+        # Extract hash from JSON reference
+        import json
+        ref_data = json.loads(reference)
+        content_hash = ref_data["content_hash"]
         
         entry = store.retrieve_by_hash(content_hash)
         

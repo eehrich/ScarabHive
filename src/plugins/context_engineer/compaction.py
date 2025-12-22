@@ -133,6 +133,38 @@ class LayeredCompactionStrategy:
         self.archival_memory = archival_memory
         self.config = config or CompactionConfig()
     
+    def _build_tool_call_map(self, messages: list[dict[str, Any]]) -> dict[str, list[int]]:
+        """Build map of tool_call_id to related message indices.
+        
+        Returns dict mapping tool_call_id to list of [assistant_idx, tool_result_idx]
+        This ensures tool calls and results are always handled together.
+        """
+        tool_map: dict[str, list[int]] = {}
+        
+        for i, msg in enumerate(messages):
+            role = msg.get("role")
+            
+            # Track assistant messages with tool_calls
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls", [])
+                if tool_calls:
+                    for tc in tool_calls:
+                        tc_id = tc.get("id")
+                        if tc_id:
+                            if tc_id not in tool_map:
+                                tool_map[tc_id] = []
+                            tool_map[tc_id].append(i)
+            
+            # Track tool results
+            elif role == "tool":
+                tc_id = msg.get("tool_call_id")
+                if tc_id:
+                    if tc_id not in tool_map:
+                        tool_map[tc_id] = []
+                    tool_map[tc_id].append(i)
+        
+        return tool_map
+    
     def compact(
         self,
         messages: list[dict[str, Any]],
@@ -276,11 +308,14 @@ class LayeredCompactionStrategy:
         """Layer 2: Semi-reversible compaction.
         
         - Archive old messages with summaries
-        - Truncate very old tool results
+        - Ensures tool_calls and tool_results are archived together
         """
         logger.debug("Applying Layer 2: Semi-reversible compaction")
         
         messages = result.modified_messages
+        
+        # Build tool_call mapping to keep pairs together
+        tool_map = self._build_tool_call_map(messages)
         
         # Find turn boundaries (user messages)
         user_indices = [
@@ -290,8 +325,8 @@ class LayeredCompactionStrategy:
         # Calculate turn number for each message
         current_turn = len(user_indices)
         
-        # Archive messages older than threshold
-        archived_indices = []
+        # Collect indices to archive (including tool_call pairs)
+        indices_to_archive = set()
         
         for i, msg in enumerate(messages):
             role = msg.get("role")
@@ -305,24 +340,40 @@ class LayeredCompactionStrategy:
             turns_old = current_turn - message_turn
             
             if turns_old >= self.config.archive_after_turns:
-                # Archive this message
-                archive_id = self.archival_memory.store(msg)
-                archived_indices.append(i)
+                indices_to_archive.add(i)
                 
-                # Create compact reference
-                summary = self.archival_memory._generate_summary(msg)
-                if len(summary) > self.config.max_summary_tokens * 4:  # ~4 chars per token
-                    summary = summary[:self.config.max_summary_tokens * 4] + "..."
+                # If this is a tool call or result, add related messages
+                if role == "assistant" and msg.get("tool_calls"):
+                    for tc in msg.get("tool_calls", []):
+                        tc_id = tc.get("id")
+                        if tc_id and tc_id in tool_map:
+                            indices_to_archive.update(tool_map[tc_id])
                 
-                messages[i] = {
-                    "role": "system",
-                    "content": f"[Archived: {summary}] (ref: {archive_id})"
-                }
-                result.messages_archived += 1
+                elif role == "tool":
+                    tc_id = msg.get("tool_call_id")
+                    if tc_id and tc_id in tool_map:
+                        indices_to_archive.update(tool_map[tc_id])
+        
+        # Archive collected messages
+        for i in indices_to_archive:
+            msg = messages[i]
+            archive_id = self.archival_memory.store(msg)
+            
+            # Create compact reference
+            summary = self.archival_memory._generate_summary(msg)
+            if len(summary) > self.config.max_summary_tokens * 4:  # ~4 chars per token
+                summary = summary[:self.config.max_summary_tokens * 4] + "..."
+            
+            messages[i] = {
+                "role": "system",
+                "content": f"[Archived: {summary}] (ref: {archive_id})"
+            }
+            result.messages_archived += 1
         
         result.final_tokens = self._estimate_messages_tokens(messages)
         logger.debug(
-            f"Layer 2 complete: archived {result.messages_archived} messages"
+            f"Layer 2 complete: archived {result.messages_archived} messages "
+            f"(including tool_call pairs)"
         )
         
         # Cleanup unreferenced variables after archiving messages
@@ -334,11 +385,15 @@ class LayeredCompactionStrategy:
         """Layer 3: Irreversible compaction.
         
         - Drop old messages entirely
+        - Ensures tool_calls and tool_results are dropped together
         - Compress remaining summaries
         """
         logger.debug("Applying Layer 3: Irreversible compaction")
         
         messages = result.modified_messages
+        
+        # Build tool_call mapping to keep pairs together
+        tool_map = self._build_tool_call_map(messages)
         
         # Find turn boundaries
         user_indices = [
@@ -346,8 +401,8 @@ class LayeredCompactionStrategy:
         ]
         current_turn = len(user_indices)
         
-        # Drop very old messages
-        indices_to_remove = []
+        # Collect indices to remove (including tool_call pairs)
+        indices_to_remove = set()
         
         for i, msg in enumerate(messages):
             role = msg.get("role")
@@ -361,11 +416,23 @@ class LayeredCompactionStrategy:
             turns_old = current_turn - message_turn
             
             if turns_old >= self.config.drop_after_turns:
-                indices_to_remove.append(i)
-                result.messages_dropped += 1
+                indices_to_remove.add(i)
+                
+                # If this is a tool call or result, add related messages
+                if role == "assistant" and msg.get("tool_calls"):
+                    for tc in msg.get("tool_calls", []):
+                        tc_id = tc.get("id")
+                        if tc_id and tc_id in tool_map:
+                            indices_to_remove.update(tool_map[tc_id])
+                
+                elif role == "tool":
+                    tc_id = msg.get("tool_call_id")
+                    if tc_id and tc_id in tool_map:
+                        indices_to_remove.update(tool_map[tc_id])
         
         # Remove in reverse order to preserve indices
-        for i in reversed(indices_to_remove):
+        result.messages_dropped = len(indices_to_remove)
+        for i in sorted(indices_to_remove, reverse=True):
             del messages[i]
         
         # Compress archive references
@@ -381,7 +448,8 @@ class LayeredCompactionStrategy:
         
         result.final_tokens = self._estimate_messages_tokens(messages)
         logger.debug(
-            f"Layer 3 complete: dropped {result.messages_dropped} messages"
+            f"Layer 3 complete: dropped {result.messages_dropped} messages "
+            f"(including tool_call pairs)"
         )
         
         # Cleanup unreferenced variables after dropping messages

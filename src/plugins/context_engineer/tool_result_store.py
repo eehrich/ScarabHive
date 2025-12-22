@@ -197,8 +197,15 @@ class ToolResultStore:
             f"tokens={token_count}, hash={content_hash}"
         )
         
-        # Return compact reference
-        return f"[Tool:{tool_name} ref:{short_id} hash:{content_hash}]"
+        # Return compact reference as JSON (preserves structure, valid for tool messages)
+        import json
+        return json.dumps({
+            "type": "tool_result_ref",
+            "tool_name": tool_name,
+            "ref_id": short_id,
+            "content_hash": content_hash,
+            "token_count": token_count
+        })
     
     def retrieve(self, reference_id: str) -> ToolResultEntry | None:
         """Retrieve full tool result by reference ID.
