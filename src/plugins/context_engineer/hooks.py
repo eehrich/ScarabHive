@@ -195,8 +195,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 else:
                     messages_as_dicts.append(msg)
             
-            # Estimate current token usage
-            current_tokens = self._estimate_total_tokens(messages_as_dicts)
+            # Get actual or estimated token usage (prefer actual from usage_tracker)
+            current_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts)
             
             # Check if compaction needed
             is_manual = context.metadata.get("manual_trigger", False) if context.metadata else False
@@ -382,6 +382,60 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     total += estimate_content_tokens(func.get("arguments", ""))
         
         return total
+    
+    def _get_actual_or_estimated_tokens(self, context: HookContext, messages: list[dict[str, Any]]) -> int:
+        """Get actual token count from last LLM response or estimate from messages.
+
+        Uses the MAXIMUM of:
+        1. Actual prompt_tokens from last LLM response (via context_usage_tracker)
+        2. Estimated tokens from current messages
+
+        This ensures we trigger compaction if either metric exceeds threshold,
+        preventing context overflow.
+
+        Args:
+            context: Hook context with session_id
+            messages: Current message list
+
+        Returns:
+            Maximum of actual or estimated token count
+        """
+        estimated_tokens = self._estimate_total_tokens(messages)
+        actual_tokens = 0
+
+        # Try to get actual tokens from context_usage_tracker's latest snapshot
+        try:
+            # Access the plugin registry via agent's system_config
+            if context.agent and hasattr(context.agent, 'system_config'):
+                system_config = context.agent.system_config
+                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
+                    registry = system_config.mcp_registry
+
+                    # Get context_usage_tracker plugin
+                    usage_tracker_plugin = registry.get_server('context_usage_tracker')
+                    if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
+                        tracker = usage_tracker_plugin.tracker
+
+                        # Get latest snapshot for this session
+                        if tracker._latest_snapshot and tracker._latest_snapshot.session_id == context.session_id:
+                            actual_tokens = tracker._latest_snapshot.prompt_tokens
+                            logger.debug(
+                                f"[ContextEngineer] Got actual tokens from usage_tracker: {actual_tokens} "
+                                f"(estimated: {estimated_tokens})"
+                            )
+        except Exception as e:
+            logger.debug(f"[ContextEngineer] Could not get actual tokens from usage_tracker: {e}")
+
+        # Return the MAXIMUM to ensure we trigger on either metric
+        max_tokens = max(actual_tokens, estimated_tokens)
+
+        if actual_tokens > 0 and estimated_tokens > 0:
+            logger.debug(
+                f"[ContextEngineer] Session {context.session_id}: Using max tokens - "
+                f"actual={actual_tokens}, estimated={estimated_tokens}, using={max_tokens}"
+            )
+
+        return max_tokens
     
     # === MCP Tool Handlers ===
     # These are called by the MCP server when tools are invoked
