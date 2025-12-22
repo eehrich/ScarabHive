@@ -1,5 +1,5 @@
 name: script_interpreter
-author: AgentSystem
+author: Enrico Ehrich
 version: 1.0.0
 description: Secure Python script execution plugin with sandboxed environment for
   mathematical expressions, basic operations, and simple programming constructs

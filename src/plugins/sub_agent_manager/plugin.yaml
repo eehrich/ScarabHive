@@ -1,7 +1,7 @@
 name: sub_agent_manager
 version: 1.0.0
 description: Manages persistent sub-agent instances for coordinator agents
-author: AgentSystem Team
+author: Enrico Ehrich
 type:
 - mcp-server
 - web

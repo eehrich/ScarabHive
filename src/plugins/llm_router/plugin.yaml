@@ -2,7 +2,7 @@ name: llm_router
 description: Route requests to different LLM providers for specialized tasks or alternative
   AI models
 version: 1.0.0
-author: AgentSystem
+author: Enrico Ehrich
 entrypoint: plugin:PLUGIN_FACTORY
 type:
 - mcp-server

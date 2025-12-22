@@ -1,6 +1,6 @@
 name: example
 version: 1.0.0
-author: AgentSystem Team
+author: Enrico Ehrich
 description: Reference implementation demonstrating MCP plugin best practices with
   calculator, formatter, and status tools
 entrypoint: plugin:PLUGIN_FACTORY

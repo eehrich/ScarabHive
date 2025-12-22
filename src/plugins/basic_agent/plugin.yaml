@@ -1,6 +1,6 @@
 name: basic_agent
 version: 1.0.0
-author: AgentSystem Team
+author: Enrico Ehrich
 description: Basic agent plugin providing agent execution capabilities as MCP tools
 entrypoint: plugin:PLUGIN_FACTORY
 type:

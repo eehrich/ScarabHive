@@ -29,7 +29,7 @@ plugins:
               enabled: true            
       
       metadata:
-        author: "AgentSystem"
+        author: "Enrico Ehrich"
         version: "1.1.0"
         tags: ["code", "review", "quality", "security"]
         category: "development"

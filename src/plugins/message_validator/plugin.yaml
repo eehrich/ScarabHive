@@ -4,7 +4,7 @@ description: 'Validates and sanitizes messages before LLM calls to ensure safety
   proper formatting, and compliance with content policies.
 
   '
-author: AgentSystem Team
+author: Enrico Ehrich
 type:
 - hooks
 entrypoint: plugin:PLUGIN_FACTORY

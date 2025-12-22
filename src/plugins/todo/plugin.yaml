@@ -1,7 +1,7 @@
 name: todo_management
 version: 1.0.0
 description: Task lifecycle tracking and workflow orchestration for agent systems
-author: AgentSystem
+author: Enrico Ehrich
 entrypoint: plugin:PLUGIN_FACTORY
 type:
 - mcp-server

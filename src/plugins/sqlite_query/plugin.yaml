@@ -1,7 +1,7 @@
 name: sqlite_query
 version: 1.0.0
 description: Simple SQL execution for debugging SQLite databases
-author: AgentSystem Team
+author: Enrico Ehrich
 entrypoint: plugin:PLUGIN_FACTORY
 type:
 - mcp-server

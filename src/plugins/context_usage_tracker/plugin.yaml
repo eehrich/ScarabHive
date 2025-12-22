@@ -3,7 +3,7 @@ version: 1.0.0
 type:
 - web
 - hooks
-author: AgentSystem
+author: Enrico Ehrich
 description: Tracks LLM context usage and token consumption with web UI
 entrypoint: plugin:PLUGIN_FACTORY
 category: monitoring

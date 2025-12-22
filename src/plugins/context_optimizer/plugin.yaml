@@ -4,7 +4,7 @@ description: 'Optimizes conversation context before LLM calls by removing redund
   information, truncating long messages, and ensuring context stays within token limits.
 
   '
-author: AgentSystem Team
+author: Enrico Ehrich
 type:
 - hooks
 entrypoint: plugin:PLUGIN_FACTORY

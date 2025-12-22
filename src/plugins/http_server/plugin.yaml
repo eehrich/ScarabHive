@@ -1,7 +1,7 @@
 name: http_server
 version: 1.0.0
 description: HTTP adapter for MCP servers - exposes MCP servers via REST API endpoints
-author: AgentSystem
+author: Enrico Ehrich
 entrypoint: plugin:PLUGIN_FACTORY
 type:
 - mcp-server

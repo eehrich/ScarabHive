@@ -43,7 +43,7 @@ plugins:
               enabled: true
 
       metadata:
-        author: "AgentSystem"
+        author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["meta", "orchestration", "management"]
         category: "meta"

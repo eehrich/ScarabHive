@@ -1,6 +1,6 @@
 name: request_logger
 version: 1.0.0
-author: AgentSystem Team
+author: Enrico Ehrich
 description: Example hook plugin that logs agent requests and responses
 entrypoint: plugin:PLUGIN_FACTORY
 type:

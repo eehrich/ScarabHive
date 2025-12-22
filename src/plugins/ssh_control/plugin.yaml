@@ -1,6 +1,6 @@
 name: ssh_control
 version: 1.0.0
-author: AgentSystem Team
+author: Enrico Ehrich
 description: SSH-based control for multiple remote Linux machines with command execution,
   file transfers, and system monitoring
 entrypoint: plugin:PLUGIN_FACTORY

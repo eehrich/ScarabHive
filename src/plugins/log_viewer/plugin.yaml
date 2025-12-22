@@ -1,6 +1,6 @@
 name: log_viewer
 version: 1.0.0
-author: AgentSystem Team
+author: Enrico Ehrich
 description: Real-time log streaming and viewing plugin with web UI
 entrypoint: plugin:PLUGIN_FACTORY
 type:

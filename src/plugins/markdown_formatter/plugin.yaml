@@ -5,7 +5,7 @@ description: 'Formats LLM output as Markdown and converts to HTML. Injects syste
   HTML for frontend display.
 
   '
-author: AgentSystem Team
+author: Enrico Ehrich
 type:
 - hooks
 entrypoint: plugin:PLUGIN_FACTORY

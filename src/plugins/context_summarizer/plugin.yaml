@@ -5,7 +5,7 @@ version: 1.0.0
 type:
 - web
 - hooks
-author: AgentSystem
+author: Enrico Ehrich
 entrypoint: plugin:PLUGIN_FACTORY
 category: hooks
 requires:

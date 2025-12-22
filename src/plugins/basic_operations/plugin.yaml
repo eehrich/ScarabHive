@@ -1,7 +1,7 @@
 name: basic_operations
 version: 1.0.0
 description: Basic utility operations including wait and ping
-author: AgentSystem Team
+author: Enrico Ehrich
 entrypoint: server:BasicOperationsServer
 type:
 - mcp-server

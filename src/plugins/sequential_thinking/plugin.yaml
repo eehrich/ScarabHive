@@ -2,7 +2,7 @@ name: sequential_thinking
 version: 1.0.0
 description: Step-by-step reasoning tool with branching and revision support for complex
   problem-solving
-author: AgentSystem Team
+author: Enrico Ehrich
 entrypoint: server:SequentialThinkingServer
 type:
 - mcp-server
