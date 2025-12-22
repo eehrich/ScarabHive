@@ -936,45 +936,26 @@ class Agent(MCPServer):
         # Persist session messages and keep the request->session mapping for a while
         if sid and messages:
             try:
-                # Check if there are pending compacted messages from a tool (context_engineer, context_summarizer)
-                # These take priority over the request's local messages
+                # Check if ANY tool modified the session messages during this request
+                # Tools can call session_tracker.set_compacted_messages() to replace the history
                 compacted_msgs = self._session_tracker.get_compacted_messages(sid)
                 
                 if compacted_msgs is not None:
-                    # Use compacted messages - they were set by a compaction tool during this request
+                    # A tool replaced the message history - use those messages for persistence
                     logger.debug(
-                        f"Using {len(compacted_msgs)} compacted messages for session {sid} "
+                        f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
                         f"(request had {len(messages)} messages)"
                     )
                     self._session_tracker.set_session_messages(sid, compacted_msgs)
                     self._session_tracker.clear_compacted_messages(sid)
-                    logger.debug("Persisted session %s with %d compacted messages", sid, len(compacted_msgs))
+                    logger.debug("Persisted session %s with %d modified messages", sid, len(compacted_msgs))
                 else:
-                    # Normal case: check if session was already modified
-                    current_session_msgs = self._session_tracker.get_session_messages(sid)
-                    
-                    # Only persist if:
-                    # 1. Session is empty (new session)
-                    # 2. Current session has MORE messages than stored (normal case: added messages during request)
-                    # DO NOT persist if stored has FEWER messages (summarizer reduced them!)
-                    should_persist = (
-                        len(current_session_msgs) == 0 or 
-                        len(current_session_msgs) >= len(messages)
-                    )
-                    
-                    if should_persist:
-                        # Filter out system messages - only persist conversation history
-                        conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                        # Update the persistent session with conversation state (no system messages)
-                        self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
-                        logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
-                    else:
-                        logger.debug(
-                            f"Skipping session persistence for {sid}: "
-                            f"stored has {len(current_session_msgs)} messages, "
-                            f"request has {len(messages)} messages - "
-                            f"preserving summarized state"
-                        )
+                    # Normal case: no tool modified messages, persist request's messages
+                    # Filter out system messages - only persist conversation history
+                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                    # Update the persistent session with conversation state (no system messages)
+                    self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
+                    logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
                 
                 # Keep the request->session mapping (don't pop it immediately)
                 # This allows append requests that arrive shortly after completion to find the session
@@ -1515,29 +1496,40 @@ class Agent(MCPServer):
                 # Add tool results to the results dictionary
                 results["calls"].extend(tool_results)
 
-                # CRITICAL: Check if a tool (e.g., context_summarizer) modified the session messages
-                # If so, we need to use the modified messages instead of extending the old ones
-                # This handles the case where context_summarizer_summarize tool was called
+                # CRITICAL: Check if ANY tool modified the session messages during execution.
+                # Tools can set modified messages via session_tracker.set_compacted_messages()
+                # This is a generic mechanism - any tool can use it to replace the message history.
+                #
+                # Examples of tools that use this:
+                # - context_engineer.compact() - Compresses messages to save tokens
+                # - context_summarizer - Summarizes old conversation history
+                # - Any custom tool that wants to modify conversation state
                 #
                 # The session tracker stores conversation messages WITHOUT system message.
-                # So we compare: stored_messages vs (messages - system_message)
-                stored_messages = self._session_tracker.get_session_messages(session_id)
-                local_conversation = [m for m in messages if m.role != "system"]
+                compacted_messages = self._session_tracker.get_compacted_messages(session_id)
                 
-                if stored_messages and len(stored_messages) < len(local_conversation):
-                    # Session was summarized! The stored messages are shorter than our current list
+                if compacted_messages is not None:
+                    # A tool replaced the message history - use the new messages
+                    local_conversation = [m for m in messages if m.role != "system"]
                     logger.info(
-                        f"Detected summarized session: stored {len(stored_messages)} msgs, "
-                        f"local conversation {len(local_conversation)} msgs. Using summarized messages."
+                        f"Tool modified session: {len(compacted_messages)} new msgs replacing "
+                        f"{len(local_conversation)} old msgs. Reconstructing conversation."
                     )
-                    # Reconstruct messages: system + summarized conversation + tool results
+                    
+                    # Reconstruct messages: system + modified conversation + tool results
                     system_msg = messages[0] if messages and messages[0].role == "system" else None
                     if system_msg:
-                        messages = [system_msg] + list(stored_messages) + tool_messages
+                        messages = [system_msg] + list(compacted_messages) + tool_messages
                     else:
-                        messages = list(stored_messages) + tool_messages
+                        messages = list(compacted_messages) + tool_messages
+                    
+                    # Clear compacted messages - they've been applied
+                    self._session_tracker.clear_compacted_messages(session_id)
+                    
+                    # Update session storage to match
+                    self._session_tracker.set_session_messages(session_id, list(compacted_messages))
                 else:
-                    # Normal case: just extend with tool messages
+                    # Normal case: no tool modified messages, just extend with tool results
                     messages.extend(tool_messages)
 
                 # Sync context.messages with the updated messages list

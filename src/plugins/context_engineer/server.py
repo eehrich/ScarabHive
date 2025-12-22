@@ -504,6 +504,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 session_id=session_id,
                 messages=messages,
                 agent=agent,
+                agent_name=agent.name if hasattr(agent, "name") else "unknown",
                 llm=agent.llm if hasattr(agent, "llm") else None,
                 metadata={"manual_trigger": True}
             )
