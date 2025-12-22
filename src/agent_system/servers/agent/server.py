@@ -1258,9 +1258,29 @@ class Agent(MCPServer):
                 for status_event in yield_pending_status_events():
                     yield status_event
 
-                if modified_messages is not None:
+                # Check if hook set compacted_messages (e.g., context_summarizer)
+                compacted_messages = self._session_tracker.get_compacted_messages(session_id)
+                
+                if compacted_messages is not None:
+                    # Hook used compaction mechanism - reconstruct message list
+                    logger.debug(f"Pre-LLM hook set compacted_messages with {len(compacted_messages)} messages")
+                    
+                    # Build: [system] + compacted + [current_step_messages]
+                    reconstructed = []
+                    if messages and messages[0].get("role") == "system":
+                        reconstructed.append(messages[0])
+                    
+                    reconstructed.extend(compacted_messages)
+                    
+                    messages = reconstructed
+                    context.messages = reconstructed
+                    
+                    # Clear compacted_messages for next iteration
+                    self._session_tracker.set_compacted_messages(session_id, None)
+                    
+                elif modified_messages is not None:
+                    # Hook returned modified messages directly (old mechanism)
                     messages = modified_messages
-                    # Also update context.messages so changes persist to session!
                     context.messages = modified_messages
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
