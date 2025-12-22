@@ -234,7 +234,7 @@ class TestLogViewerPluginFactory:
     
     def test_plugin_factory_export(self):
         """Test that PLUGIN_FACTORY is properly exported"""
-        from plugins.log_viewer.plugin import PLUGIN_FACTORY
+        from plugins.log_viewer.plugin import PLUGIN_FACTORY, LogViewerHybridPlugin as PluginClass
         from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
         
         assert PLUGIN_FACTORY is not None
@@ -244,5 +244,6 @@ class TestLogViewerPluginFactory:
         mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
         
         plugin = PLUGIN_FACTORY("test", system_config, mcp_config)
-        assert isinstance(plugin, LogViewerHybridPlugin)
+        # Use class from same import to avoid isinstance issues with reimports
+        assert isinstance(plugin, PluginClass)
         assert plugin.name == "test"

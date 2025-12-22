@@ -9,6 +9,15 @@ from agent_system.llm.gemini_client import GeminiClient
 from agent_system.llm.models import ChatMessage
 
 
+# The CRITICAL instruction is always prepended to system messages to prevent MALFORMED_FUNCTION_CALL
+CRITICAL_INSTRUCTION = (
+    "CRITICAL: When calling functions, output the function name exactly as defined. "
+    "Do NOT prepend 'default_api.' or any other namespace. Always generate valid JSON "
+    "for function arguments. Properly escape all special characters in JSON strings "
+    "(quotes, backslashes, newlines)."
+)
+
+
 @pytest.fixture
 def gemini_client():
     """Create a GeminiClient instance for testing."""
@@ -32,7 +41,8 @@ class TestGeminiClientMessageConversion:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction is None
+        # CRITICAL instruction always present to prevent MALFORMED_FUNCTION_CALL
+        assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 1
         assert contents[0]["role"] == "user"
         assert contents[0]["parts"] == [{"text": "Hello, how are you?"}]
@@ -46,7 +56,9 @@ class TestGeminiClientMessageConversion:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction == "You are a helpful assistant."
+        # CRITICAL instruction prepended to user system message
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert "You are a helpful assistant." in system_instruction
         assert len(contents) == 1  # Only user message
         assert contents[0]["role"] == "user"
         assert contents[0]["parts"][0]["text"] == "Hello"
@@ -59,7 +71,8 @@ class TestGeminiClientMessageConversion:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction is None
+        # CRITICAL instruction always present
+        assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 1
         assert contents[0]["role"] == "model"  # Gemini uses "model" instead of "assistant"
         assert contents[0]["parts"] == [{"text": "I'm doing well, thank you!"}]
@@ -81,7 +94,8 @@ class TestGeminiClientMessageConversion:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction is None
+        # CRITICAL instruction always present
+        assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 1
         # Must be "tool" per current Gemini API (not "function" which was old convention)
         assert contents[0]["role"] == "tool", "Function responses must use role='tool' not 'function'"
@@ -112,7 +126,8 @@ class TestGeminiClientMessageConversion:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction is None
+        # CRITICAL instruction always present
+        assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 1
         assert contents[0]["role"] == "model"
         assert len(contents[0]["parts"]) == 2  # Text + function call
@@ -188,7 +203,9 @@ class TestGeminiClientMessageConversion:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction == "You are a weather assistant."
+        # CRITICAL instruction prepended
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert "You are a weather assistant." in system_instruction
         assert len(contents) == 4  # User, Assistant, Function Response, Assistant
         
         assert contents[0]["role"] == "user"

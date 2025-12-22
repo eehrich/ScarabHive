@@ -756,10 +756,16 @@ class FileSearchEngine:
                     "message": "No files found"
                 }
 
-            # Format results - VectorStore returns flat lists, not nested
-            ids = results.get("ids", [])
-            metadatas = results.get("metadatas", [])
-            distances = results.get("distances", [])
+            # Format results - VectorStore returns list-of-lists for batch query interface
+            # Extract first batch since we only query once
+            raw_ids = results.get("ids", [])
+            raw_metadatas = results.get("metadatas", [])
+            raw_distances = results.get("distances", [])
+            
+            # Handle nested format: [[id1, id2], ...] -> [id1, id2]
+            ids = raw_ids[0] if raw_ids and isinstance(raw_ids[0], list) else raw_ids
+            metadatas = raw_metadatas[0] if raw_metadatas and isinstance(raw_metadatas[0], list) else raw_metadatas
+            distances = raw_distances[0] if raw_distances and isinstance(raw_distances[0], list) else raw_distances
             
             matches = []
             for i in range(len(ids)):

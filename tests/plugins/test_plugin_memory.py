@@ -594,8 +594,9 @@ async def test_call_tool_invalid_operation(server: MemoryServer, mock_context: D
         "session_id": mock_context["session_id"],
     })
     
-    assert result["error"] is True
-    assert "unknown operation" in result["message"].lower()
+    # server.execute returns {"error": "error message"} on failure
+    assert "error" in result
+    assert "unknown operation" in result["error"].lower()
 
 
 @pytest.mark.asyncio

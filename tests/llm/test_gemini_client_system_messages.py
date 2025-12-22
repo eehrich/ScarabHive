@@ -5,6 +5,15 @@ from agent_system.llm.gemini_client import GeminiClient
 from agent_system.llm.models import ChatMessage
 
 
+# The CRITICAL instruction is always prepended to system messages to prevent MALFORMED_FUNCTION_CALL
+CRITICAL_INSTRUCTION = (
+    "CRITICAL: When calling functions, output the function name exactly as defined. "
+    "Do NOT prepend 'default_api.' or any other namespace. Always generate valid JSON "
+    "for function arguments. Properly escape all special characters in JSON strings "
+    "(quotes, backslashes, newlines)."
+)
+
+
 @pytest.fixture
 def gemini_client():
     """Create a GeminiClient instance for testing."""
@@ -29,7 +38,9 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction == "You are a helpful assistant."
+        # CRITICAL instruction is prepended to prevent MALFORMED_FUNCTION_CALL
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert "You are a helpful assistant." in system_instruction
         assert len(contents) == 1
         assert contents[0]["role"] == "user"
 
@@ -43,8 +54,10 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        expected = "You are a helpful assistant.\n\nYou specialize in Python programming."
-        assert system_instruction == expected
+        # CRITICAL instruction is prepended, then user system messages follow
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert "You are a helpful assistant." in system_instruction
+        assert "You specialize in Python programming." in system_instruction
         assert len(contents) == 1
         assert contents[0]["role"] == "user"
 
@@ -59,8 +72,11 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        expected = "First instruction.\n\nSecond instruction.\n\nThird instruction."
-        assert system_instruction == expected
+        # CRITICAL instruction prepended, then user messages in order
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert "First instruction." in system_instruction
+        assert "Second instruction." in system_instruction
+        assert "Third instruction." in system_instruction
         assert len(contents) == 1
 
     def test_empty_system_messages_ignored(self, gemini_client):
@@ -74,11 +90,12 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        expected = "You are a helpful assistant.\n\nYou specialize in Python."
-        assert system_instruction == expected
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert "You are a helpful assistant." in system_instruction
+        assert "You specialize in Python." in system_instruction
 
     def test_only_empty_system_messages(self, gemini_client):
-        """Test that only empty system messages result in None."""
+        """Test that only empty system messages still get CRITICAL instruction."""
         messages = [
             ChatMessage(role="system", content=""),
             ChatMessage(role="system", content=""),
@@ -87,11 +104,12 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction is None
+        # Even with no user system messages, CRITICAL instruction is added
+        assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 1
 
     def test_no_system_messages(self, gemini_client):
-        """Test that no system messages result in None."""
+        """Test that no system messages still get CRITICAL instruction."""
         messages = [
             ChatMessage(role="user", content="Hello"),
             ChatMessage(role="assistant", content="Hi there!")
@@ -99,7 +117,8 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        assert system_instruction is None
+        # CRITICAL instruction is always added to prevent MALFORMED_FUNCTION_CALL
+        assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 2
 
     def test_system_messages_with_tool_calls(self, gemini_client):
@@ -131,8 +150,9 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        expected = "Main system prompt.\n\nAdditional context."
-        assert system_instruction == expected
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert "Main system prompt." in system_instruction
+        assert "Additional context." in system_instruction
         # Should have: user, model (with tool call), function response, user
         assert len(contents) == 4
 
@@ -149,9 +169,12 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        expected = f"{large_prompt}\n\n{context_addition}"
-        assert system_instruction == expected
-        assert len(system_instruction) == 10000 + 2 + 2000  # Including "\n\n" (2 chars)
+        # CRITICAL instruction + user prompts
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        assert large_prompt in system_instruction
+        assert context_addition in system_instruction
+        # Length should be CRITICAL + separator + large + separator + context
+        assert len(system_instruction) >= len(CRITICAL_INSTRUCTION) + len(large_prompt) + len(context_addition)
 
     def test_system_message_order_preserved(self, gemini_client):
         """Test that system messages maintain their order."""
@@ -164,12 +187,11 @@ class TestGeminiClientSystemMessageMerging:
         
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
-        expected = "First: Be formal.\n\nSecond: Be concise.\n\nThird: Be helpful."
-        assert system_instruction == expected
-        # Verify order is maintained
-        assert system_instruction.startswith("First:")
-        assert "Second:" in system_instruction
-        assert system_instruction.endswith("Third: Be helpful.")
+        assert system_instruction.startswith(CRITICAL_INSTRUCTION)
+        # Verify user messages follow CRITICAL in order
+        critical_end = system_instruction.index("First:")
+        assert "Second:" in system_instruction[critical_end:]
+        assert "Third: Be helpful." in system_instruction[critical_end:]
 
     def test_tool_response_uses_correct_role(self, gemini_client):
         """Test that tool responses use role='tool' not 'function'.

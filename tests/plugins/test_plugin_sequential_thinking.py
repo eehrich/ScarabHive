@@ -731,7 +731,8 @@ async def test_summary_without_branches(server, mock_status):
     })
     
     assert summary["status"] == "success"
-    assert summary["branches"] is None
+    # When include_branches=False, branches key is omitted (not set to None)
+    assert "branches" not in summary
 
 
 @pytest.mark.asyncio

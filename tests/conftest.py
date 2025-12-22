@@ -129,7 +129,7 @@ try:
             yield {"delta": {"content": txt}, "done": False}
             yield {"delta": {}, "done": True}
 
-    def _fake_make_llm(provider, model, openai_api_key, ollama_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None, capabilities=None):
+    def _fake_make_llm(provider, model, api_key=None, base_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None, capabilities=None, parallel_tool_calls=True, include_thoughts=None, thinking_budget=None, **kwargs):
         return _FakeLLMClient(provider=provider, model=model, context_window=context_window)
 
     # Preserve original for debugging if needed

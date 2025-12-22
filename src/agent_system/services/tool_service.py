@@ -118,7 +118,9 @@ class ToolService:
                     return {"error": f"Failed to list tools: {str(e)}"}
             
             # Calculate effective tools based on filtering
-            if allowed_tools is not None:
+            # Note: Empty allowed_tools list means no filtering (pass through)
+            # Non-empty allowed_tools list means whitelist filtering
+            if allowed_tools:  # Only filter if allowed list has items
                 effective_tools = [t for t in available_tools if t in allowed_tools]
             elif blocked_tools:
                 effective_tools = [t for t in available_tools if t not in blocked_tools]
