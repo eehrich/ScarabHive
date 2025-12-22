@@ -386,7 +386,15 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             )
             
             if result.get("found"):
-                chars_info = f"{result.get('returned_chars', 0)}/{result.get('total_chars', 0)} chars"
+                # Format status message based on mode
+                if result.get("mode") == "chunk":
+                    offset = result.get("offset", 0)
+                    returned = result.get("returned_chars", 0)
+                    total = result.get("total_chars", 0)
+                    chars_info = f"offset {offset}-{offset+returned}/{total} chars"
+                else:
+                    chars_info = f"{result.get('returned_chars', 0)}/{result.get('total_chars', 0)} chars"
+                
                 if status:
                     await status.end(f"Retrieved tool result ({chars_info})")
             else:
