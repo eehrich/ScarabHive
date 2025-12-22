@@ -272,29 +272,29 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction
-        layer1_threshold: 50000   # Start reversible compaction (tool refs, variables)
-        layer2_threshold: 90000  # Start semi-reversible compaction (archival with summaries)
-        layer3_threshold: 120000  # Start irreversible compaction (drop old messages)
-        target_tokens: 30000      # Target token count after compaction
+        layer1_threshold: 40000   # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 70000   # Start semi-reversible compaction (archival with summaries)
+        layer3_threshold: 100000  # Start irreversible compaction (drop old messages)
+        target_tokens: 20000      # Target token count after compaction
         
         # Core memory settings
-        core_memory_max_tokens: 2000  # Max tokens for always-present facts
+        core_memory_max_tokens: 2000   # Max tokens for always-present facts
         
         # Tool result storage settings
         tool_result_min_size: 500      # Min tokens to store tool result externally
-        tool_result_keep_last: 3       # Keep last N tool results inline (unless too large)
+        tool_result_keep_last: 5       # Keep last N tool results inline (unless too large)
         tool_result_max_inline_size: 5000  # ALWAYS archive results > this size (even if last N)
         
         # Variable substitution settings
         variable_min_size: 500         # Min tokens to create $VAR_N variable
         
         # Archival memory settings
-        archive_after_turns: 20        # Archive messages older than N turns
+        archive_after_turns: 15        # Archive messages older than N turns
         keep_system_messages: true     # Never archive/drop system messages
         semantic_search: true          # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
         
         # Irreversible compaction settings
-        drop_after_turns: 50           # Drop messages older than N turns (Layer 3 only)
+        drop_after_turns: 30           # Drop messages older than N turns (Layer 3 only)
         max_summary_tokens: 100        # Max tokens for archived message summaries
 
     context_usage_tracker:
