@@ -359,14 +359,19 @@ class LayeredCompactionStrategy:
             msg = messages[i]
             archive_id = self.archival_memory.store(msg)
             
-            # Create compact reference
+            # Create compact reference as JSON (preserves structure, valid for tool messages)
             summary = self.archival_memory._generate_summary(msg)
             if len(summary) > self.config.max_summary_tokens * 4:  # ~4 chars per token
                 summary = summary[:self.config.max_summary_tokens * 4] + "..."
             
+            import json
             messages[i] = {
                 "role": "system",
-                "content": f"[Archived: {summary}] (ref: {archive_id})"
+                "content": json.dumps({
+                    "type": "archived_ref",
+                    "ref_id": archive_id,
+                    "summary": summary
+                })
             }
             result.messages_archived += 1
         
@@ -436,15 +441,21 @@ class LayeredCompactionStrategy:
             del messages[i]
         
         # Compress archive references
+        import json
         for i, msg in enumerate(messages):
             content = msg.get("content", "")
-            if isinstance(content, str) and content.startswith("[Archived:"):
-                # Shorten archive reference
-                if len(content) > 100:
-                    # Keep just the ref ID
-                    ref_start = content.find("(ref:")
-                    if ref_start != -1:
-                        messages[i] = {**msg, "content": content[ref_start:]}
+            if isinstance(content, str):
+                # Check for JSON archived_ref format
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and parsed.get("type") == "archived_ref":
+                        # Shorten to minimal reference
+                        messages[i] = {**msg, "content": json.dumps({
+                            "type": "archived_ref",
+                            "ref_id": parsed.get("ref_id")
+                        })}
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Not JSON, skip
         
         result.final_tokens = self._estimate_messages_tokens(messages)
         logger.debug(
@@ -510,9 +521,9 @@ class LayeredCompactionStrategy:
             sections.append(
                 "## Tool Results\n"
                 f"There are {tool_stats['total_entries']} stored tool results. "
-                "When you see a reference like `[Tool:name ref:xxx hash:yyy]`, "
+                "When you see a JSON reference with `type: tool_result_ref`, "
                 "you can retrieve the full result using the `get_tool_result` tool "
-                "with the reference ID or hash."
+                "with the ref_id."
             )
         
         # Variables
@@ -527,7 +538,7 @@ class LayeredCompactionStrategy:
                 "## Conversation Archive\n"
                 f"There are {archive_stats['total_messages']} archived messages "
                 f"({archive_stats['total_tokens']} tokens). "
-                "When you see `[Archived: summary] (ref: xxx)`, the full message "
+                "When you see a JSON reference with `type: archived_ref`, the full message "
                 "has been stored and can be retrieved using the `recall` tool."
             )
         
