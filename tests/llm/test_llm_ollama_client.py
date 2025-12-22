@@ -615,7 +615,8 @@ class TestOllamaClientStreamingUsageTracking:
                 for line in streaming_data:
                     yield line
             
-            mock_response.aiter_lines = mock_aiter_lines
+            # Must set return_value for callable mocks
+            mock_response.aiter_lines = MagicMock(return_value=mock_aiter_lines())
             
             mock_stream_context = MagicMock()
             mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)
@@ -671,7 +672,8 @@ class TestOllamaClientStreamingUsageTracking:
                 for line in streaming_data:
                     yield line
             
-            mock_response.aiter_lines = mock_aiter_lines
+            # Must set return_value for callable mocks
+            mock_response.aiter_lines = MagicMock(return_value=mock_aiter_lines())
             
             mock_stream_context = MagicMock()
             mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)

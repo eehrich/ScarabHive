@@ -381,9 +381,22 @@ class GeminiClient(LLMClient):
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                         logger.debug("Gemini streaming: Response started, reading chunks...")
-                        async for line in response.aiter_lines():
+                        
+                        # Use timeout from config for chunk-level timeout
+                        chunk_timeout = self.timeouts.read if hasattr(self.timeouts, 'read') else self.request_timeout
+                        line_iter = response.aiter_lines().__aiter__()
+                        
+                        while True:
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
+                            
+                            try:
+                                line = await asyncio.wait_for(line_iter.__anext__(), timeout=chunk_timeout)
+                            except StopAsyncIteration:
+                                break  # Stream completed
+                            except asyncio.TimeoutError:
+                                logger.warning(f"Gemini stream chunk timeout after {chunk_timeout}s")
+                                raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
 
                             if not line or not line.startswith("data: "):
                                 continue

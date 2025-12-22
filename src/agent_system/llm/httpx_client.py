@@ -390,10 +390,21 @@ class HTTPXOpenAIClient(LLMClient):
                             logger.error(f"HTTPX streaming request failed: {error_msg}")
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                        # Parse SSE stream
-                        async for line in response.aiter_lines():
+                        # Parse SSE stream with chunk timeout from config
+                        chunk_timeout = self.timeout_config.read
+                        line_iter = response.aiter_lines().__aiter__()
+                        
+                        while True:
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
+                            
+                            try:
+                                line = await asyncio.wait_for(line_iter.__anext__(), timeout=chunk_timeout)
+                            except StopAsyncIteration:
+                                break  # Stream completed
+                            except asyncio.TimeoutError:
+                                logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
+                                raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
 
                             if not line or not line.startswith("data: "):
                                 continue

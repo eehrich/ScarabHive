@@ -263,9 +263,23 @@ class OllamaNativeAsyncClient(LLMClient):
                         
                         response.raise_for_status()
 
-                        async for line in response.aiter_lines():
+                        # Use timeout from config for chunk-level timeout
+                        chunk_timeout = self._timeout
+                        line_iter = response.aiter_lines().__aiter__()
+                        
+                        while True:
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise Exception("Request cancelled by user")
+                            
+                            try:
+                                line = await asyncio.wait_for(line_iter.__anext__(), timeout=chunk_timeout)
+                            except StopAsyncIteration:
+                                break  # Stream completed
+                            except asyncio.TimeoutError:
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.warning(f"Ollama stream chunk timeout after {chunk_timeout}s")
+                                raise Exception(f"Stream stalled - no data for {chunk_timeout}s")
 
                             if not line.strip():
                                 continue

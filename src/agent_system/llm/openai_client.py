@@ -244,7 +244,7 @@ class OpenAIAsyncClient(LLMClient):
                     raise
             # Check if resp is None after retry loop (e.g., all attempts failed with rate limiting)
             if resp is None:
-                raise Exception(f"OpenAI API request failed after {max_attempts} attempts (rate limiting or other errors)")
+                return json.dumps({"_llm_error": {"error": True, "message": f"OpenAI API request failed after {max_attempts} attempts (rate limiting or other errors)"}}, ensure_ascii=False)
             
             try:
                 logger.debug("OpenAI resp id=%s choices=%d", getattr(resp, "id", None), len(getattr(resp, "choices", []) or []))
@@ -698,10 +698,21 @@ class OpenAIAsyncClient(LLMClient):
                 # OpenAI SDK's create() is async and returns AsyncStream when awaited
                 stream = await client_any.chat.completions.create(**opts)
 
-                # Process stream chunks
-                async for chunk in stream:
+                # Process stream chunks with timeout per chunk from config
+                chunk_timeout = self._timeout if isinstance(self._timeout, (int, float)) else (self._timeout.read if hasattr(self._timeout, 'read') else 60.0)
+                stream_iter = stream.__aiter__()
+                
+                while True:
                     if cancellation_token and cancellation_token.is_cancelled:
                         raise Exception("Request cancelled by user")
+                    
+                    try:
+                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_timeout)
+                    except StopAsyncIteration:
+                        break  # Stream completed normally
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Stream chunk timeout after {chunk_timeout}s (attempt {attempt + 1}/{max_retries + 1})")
+                        raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
 
                     # Extract usage if available (appears in final chunk when stream_options={'include_usage': True})
                     if hasattr(chunk, 'usage') and chunk.usage:
@@ -811,7 +822,7 @@ class OpenAIAsyncClient(LLMClient):
                     continue
                 else:
                     logger.error(f"OpenAI streaming failed after {max_retries + 1} attempts: {e}")
-                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
                     return
 
             except Exception as e:

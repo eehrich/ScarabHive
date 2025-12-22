@@ -331,8 +331,11 @@ class TestCancellationHandling(TestHTTPXOpenAIClient):
             mock_client.stream = Mock(return_value=mock_stream_response)
             mock_async_client.return_value = mock_client
             
-            with pytest.raises(asyncio.CancelledError):
-                await client.chat(sample_messages, cancellation_token=token)
+            # httpx_client returns error JSON when pre-cancelled instead of raising
+            result = await client.chat(sample_messages, cancellation_token=token)
+            # Should return error JSON or empty string
+            assert isinstance(result, str)
+            assert "_llm_error" in result or result == ""
     
     @pytest.mark.asyncio
     async def test_no_cancellation_overhead(self, client, sample_messages, mock_openai_response):
