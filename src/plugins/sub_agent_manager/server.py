@@ -67,14 +67,21 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self._async_jobs_lock = __import__('asyncio').Lock()
 
     def is_agent_running(self, instance_id: str) -> bool:
-        """Check if sub-agent is actually running (has active async task).
+        """Check if sub-agent is actually running (has active async task OR synchronous execution).
         
         Args:
             instance_id: Sub-agent instance ID
             
         Returns:
-            True if agent has active task in _async_jobs with running/pending status, False otherwise
+            True if agent has active task in _async_jobs with running/pending status,
+            OR if agent is in _running_agents (synchronous continue/spawn execution),
+            False otherwise
         """
+        # Check synchronous running agents first (continue operation uses this)
+        if instance_id in self._running_agents:
+            return True
+        
+        # Check async jobs (async spawn operation uses this)
         if instance_id not in self._async_jobs:
             return False
         
