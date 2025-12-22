@@ -281,12 +281,12 @@ plugins:
         core_memory_max_tokens: 2000   # Max tokens for always-present facts
         
         # Tool result storage settings
-        tool_result_min_size: 500      # Min tokens to store tool result externally
+        tool_result_min_size: 300      # Min tokens to store tool result externally
         tool_result_keep_last: 5       # Keep last N tool results inline (unless too large)
         tool_result_max_inline_size: 5000  # ALWAYS archive results > this size (even if last N)
         
         # Variable substitution settings
-        variable_min_size: 500         # Min tokens to create $VAR_N variable
+        variable_min_size: 300         # Min tokens to create $VAR_N variable
         
         # Archival memory settings
         archive_after_turns: 15        # Archive messages older than N turns
