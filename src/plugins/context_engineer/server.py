@@ -486,8 +486,20 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
             
-            # Get current messages
-            messages = agent._session_tracker.get_session_messages(session_id)
+            # Get current messages from the agent's LIVE messages list, not persisted session
+            # This ensures we include the current assistant message (with tool_calls) that
+            # triggered this compact() call. Without this, the compacted messages would not
+            # include the current turn, causing orphaned tool responses.
+            messages = None
+            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+                messages = agent._current_messages.copy()
+            
+            # Fallback to session tracker if live messages not available
+            if not messages:
+                messages = agent._session_tracker.get_session_messages(session_id)
+            
+            # Filter out system messages - we compact conversation only
+            messages = [m for m in messages if getattr(m, 'role', m.get('role') if isinstance(m, dict) else None) != 'system']
             if not messages:
                 if status:
                     await status.end("No messages to compact")

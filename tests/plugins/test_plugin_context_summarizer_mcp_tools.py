@@ -77,6 +77,7 @@ def mock_agent_with_session():
     # get_session_messages is SYNCHRONOUS, not async
     session_tracker.get_session_messages = Mock(return_value=test_messages)
     session_tracker.set_session_messages = Mock()
+    session_tracker.set_compacted_messages = Mock()  # Used by summarize tool
 
     agent._session_tracker = session_tracker
 
@@ -187,8 +188,8 @@ async def test_summarize_tool_basic(plugin, mock_agent_with_session):
     # Should have saved tokens
     assert result['tokens_saved'] > 0
 
-    # Session tracker should have been updated
-    mock_agent_with_session._session_tracker.set_session_messages.assert_called_once()
+    # Session tracker should have been updated with compacted messages
+    mock_agent_with_session._session_tracker.set_compacted_messages.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -282,11 +283,11 @@ async def test_summarize_preserves_system_messages(plugin, mock_agent_with_sessi
 
     assert result['status'] == 'success'
 
-    # Check that set_session_messages was called
-    assert mock_agent_with_session._session_tracker.set_session_messages.called
+    # Check that set_compacted_messages was called
+    assert mock_agent_with_session._session_tracker.set_compacted_messages.called
 
     # Get the updated messages
-    updated_messages = mock_agent_with_session._session_tracker.set_session_messages.call_args[0][1]
+    updated_messages = mock_agent_with_session._session_tracker.set_compacted_messages.call_args[0][1]
 
     # First message should still be system message
     first_msg = updated_messages[0]

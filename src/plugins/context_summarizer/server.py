@@ -155,8 +155,19 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
 
-            # Get current messages from agent's session
-            messages = agent._session_tracker.get_session_messages(session_id)
+            # Get current messages from the agent's LIVE messages list, not persisted session
+            # This ensures we include the current assistant message (with tool_calls) that
+            # triggered this summarize() call. Without this, orphaned tool responses occur.
+            messages = None
+            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+                messages = agent._current_messages.copy()
+            
+            # Fallback to session tracker if live messages not available
+            if not messages:
+                messages = agent._session_tracker.get_session_messages(session_id)
+            
+            # Note: We do NOT filter system messages here - the hook implementation
+            # preserves them according to preserve_system_messages config
             if not messages:
                 if status:
                     await status.end("No messages to summarize")
@@ -287,8 +298,17 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
 
-            # Get current messages
-            messages = agent._session_tracker.get_session_messages(session_id)
+            # Get current messages from the agent's LIVE messages list
+            # This ensures we include the current assistant message (with tool_calls)
+            messages = None
+            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+                messages = agent._current_messages.copy()
+            
+            # Fallback to session tracker if live messages not available
+            if not messages:
+                messages = agent._session_tracker.get_session_messages(session_id)
+            
+            # Note: We include system messages in stats for accurate context window calculation
             message_count = len(messages) if messages else 0
 
             if message_count == 0:
