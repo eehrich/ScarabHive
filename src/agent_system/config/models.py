@@ -59,6 +59,23 @@ class ModelCapabilitiesConfig(BaseModel):
     supports_file_uploads: bool = False
 
 
+class BatchAPIConfig(BaseModel):
+    """Configuration for LLM Batch API support (OpenAI/Gemini).
+    
+    Batch APIs provide 50% cost reduction and separate rate limits
+    for non-time-critical workloads. Requests are collected, submitted
+    as batch jobs, and results are polled asynchronously.
+    """
+    enabled: bool = False  # Enable batch mode for this model
+    collection_window_seconds: float = 60.0  # Time to collect requests before submitting batch
+    max_requests_per_batch: int = 1000  # Max requests per batch (OpenAI: unlimited, Gemini: 200k)
+    poll_interval_seconds: float = 30.0  # Interval between status polls
+    max_wait_hours: float = 24.0  # Max time to wait for batch completion
+    cancel_on_startup: bool = True  # Cancel obsolete batches on app startup
+    fallback_to_sync: bool = True  # Fallback to sync API on timeout/failure
+    storage_path: Optional[str] = None  # Path for temp JSONL files (default: data/batch/)
+
+
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
     provider: Literal["ollama", "openai", "openai_httpx", "gemini", "gemini_sdk", "mock"] = "ollama"
@@ -73,6 +90,7 @@ class LLMModelConfig(BaseModel):
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
     thinking_budget: Optional[int] = None  # Token budget for thinking process (Gemini 2.5+, default: 8192)
+    batch: Optional[BatchAPIConfig] = None  # Batch API configuration
 
 
 class LLMProfile(BaseModel):

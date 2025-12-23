@@ -80,6 +80,33 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
+    gemini-2-5-flash-batch:
+      provider: gemini
+      model: gemini-2.5-flash
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000  # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
+      request_timeout: 240
+      include_thoughts: false
+      thinking_budget: 2048
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+      batch:
+        enabled: true
+        collection_window_seconds: 300  # 5 minutes collection window
+        max_requests_per_batch: 100     # Up to 100 requests per batch
+        poll_interval_seconds: 60       # Check status every minute
+        max_wait_hours: 24              # Max 24 hours for batch completion
+        cancel_on_startup: false        # Don't cancel existing batches on startup
+        fallback_to_sync: true          # Fall back to sync if batch fails
+        storage_path: "data/batch_jobs" # Where to store batch job data
+
     gpt-4.1:
       provider: openai_httpx
       model: gpt-4.1
@@ -200,6 +227,38 @@ llm_system:
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
+
+    gpt-5-mini-batch:
+      provider: openai_httpx
+      model: gpt-5-mini
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      httpx_timeouts:
+        connect: 10.0
+        read: 240.0
+        write: 10.0
+        pool: 5.0
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
+        max_image_size: 20971520  # 20MB
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+      batch:
+        enabled: true
+        collection_window_seconds: 300  # 5 minutes collection window
+        max_requests_per_batch: 50000   # Up to 50k requests per batch
+        poll_interval_seconds: 60       # Check status every minute
+        max_wait_hours: 24              # Max 24 hours for batch completion
+        cancel_on_startup: false        # Don't cancel existing batches on startup
+        fallback_to_sync: true          # Fall back to sync if batch fails
+        storage_path: "data/batch_jobs" # Where to store batch job data
 
     gpt-realtime:
       provider: openai
@@ -339,6 +398,11 @@ llm_system:
       model_ref: gemini-3-0-pro
       description: "Google Gemini model for advanced reasoning tasks."
       max_steps: 500
+    gemini-flash-batch:
+      model_ref: gemini-2-5-flash-batch
+      description: "Google Gemini model for advanced reasoning tasks with batch processing."
+      max_steps: 500
+
     gpt-full:
       model_ref: gpt-5.1
       description: "OpenAI Powerful model for complex reasoning tasks."
@@ -351,7 +415,10 @@ llm_system:
       model_ref: gpt-5-nano
       description: "OpenAI model for medium reasoning tasks."
       max_steps: 500    
-
+    gpt-mini-batch:
+      model_ref: gpt-5-mini-batch
+      description: "OpenAI model for medium reasoning tasks with batch processing."
+      max_steps: 500
     local:
       model_ref: ollama-gpt-oss-20b
       description: "Model for privacy and offline usage, powerful but slow."
