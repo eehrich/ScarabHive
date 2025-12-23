@@ -291,3 +291,135 @@ Available characters: 3 characters"""
             f"Function responses must use role='tool' not '{tool_response.role}'. "
             "Using role='user' causes MALFORMED_FUNCTION_CALL errors!"
         )
+
+
+class TestGeminiSDKClientMultimodalMessages:
+    """Test multimodal message support in SDK client."""
+
+    def test_convert_multimodal_message_with_image_dict(self, gemini_sdk_client):
+        """Test conversion of multimodal message with image (dict format)."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "What's in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+                        }
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        # CRITICAL instruction always present
+        assert system_instruction == CRITICAL_INSTRUCTION
+        assert len(contents) == 1
+        assert contents[0].role == "user"
+        assert len(contents[0].parts) == 2
+        
+        # Check text part
+        assert contents[0].parts[0].text == "What's in this image?"
+        
+        # Check image part (converted to SDK Blob format)
+        image_part = contents[0].parts[1]
+        assert hasattr(image_part, 'inline_data')
+        assert image_part.inline_data.mime_type == "image/jpeg"
+        # SDK expects bytes, not base64 string
+        assert isinstance(image_part.inline_data.data, bytes)
+
+    def test_convert_multimodal_message_with_image_pydantic(self, gemini_sdk_client):
+        """Test conversion of multimodal message with Pydantic ImageContent model."""
+        from agent_system.llm.models import TextContent, ImageContent
+        
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    TextContent(type="text", text="Analyze this chart"),
+                    ImageContent(
+                        type="image_url",
+                        image_url={"url": "data:image/png;base64,iVBORw0KGgo="}
+                    )
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        assert len(contents) == 1
+        assert len(contents[0].parts) == 2
+        
+        # Check text part
+        assert contents[0].parts[0].text == "Analyze this chart"
+        
+        # Check image part
+        image_part = contents[0].parts[1]
+        assert hasattr(image_part, 'inline_data')
+        assert image_part.inline_data.mime_type == "image/png"
+        assert isinstance(image_part.inline_data.data, bytes)
+
+    def test_convert_multimodal_message_anthropic_format(self, gemini_sdk_client):
+        """Test conversion of Anthropic-style image format."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Describe this"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/webp",
+                            "data": "UklGRiQAAABXRUJQ"
+                        }
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        assert len(contents) == 1
+        parts = contents[0].parts
+        assert len(parts) == 2
+        
+        # Check image conversion from Anthropic format
+        image_part = parts[1]
+        assert hasattr(image_part, 'inline_data')
+        assert image_part.inline_data.mime_type == "image/webp"
+        assert isinstance(image_part.inline_data.data, bytes)
+
+    def test_convert_multimodal_message_multiple_images(self, gemini_sdk_client):
+        """Test conversion of message with multiple images."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Compare these images"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="}
+                    },
+                    {"type": "text", "text": "and"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        assert len(contents) == 1
+        assert len(contents[0].parts) == 4
+        
+        # Check structure
+        assert contents[0].parts[0].text == "Compare these images"
+        assert hasattr(contents[0].parts[1], 'inline_data')
+        assert contents[0].parts[2].text == "and"
+        assert hasattr(contents[0].parts[3], 'inline_data')

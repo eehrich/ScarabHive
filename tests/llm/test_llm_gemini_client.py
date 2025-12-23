@@ -274,6 +274,102 @@ class TestGeminiClientMessageConversion:
         assert "thoughtSignature" in part
         assert part["thoughtSignature"] == "direct_signature_xyz"
 
+    def test_convert_multimodal_message_with_image_dict(self, gemini_client):
+        """Test conversion of multimodal message with image (dict format)."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "What's in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+                        }
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        # CRITICAL instruction always present
+        assert system_instruction == CRITICAL_INSTRUCTION
+        assert len(contents) == 1
+        assert contents[0]["role"] == "user"
+        assert len(contents[0]["parts"]) == 2
+        
+        # Check text part
+        assert contents[0]["parts"][0] == {"text": "What's in this image?"}
+        
+        # Check image part (converted to Gemini inlineData format)
+        image_part = contents[0]["parts"][1]
+        assert "inlineData" in image_part
+        assert image_part["inlineData"]["mimeType"] == "image/jpeg"
+        assert image_part["inlineData"]["data"] == "/9j/4AAQSkZJRg=="
+
+    def test_convert_multimodal_message_with_image_pydantic(self, gemini_client):
+        """Test conversion of multimodal message with Pydantic ImageContent model."""
+        from agent_system.llm.models import TextContent, ImageContent
+        
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    TextContent(type="text", text="Analyze this chart"),
+                    ImageContent(
+                        type="image_url",
+                        image_url={"url": "data:image/png;base64,iVBORw0KGgo="}
+                    )
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert len(contents) == 1
+        assert len(contents[0]["parts"]) == 2
+        
+        # Check text part
+        assert contents[0]["parts"][0] == {"text": "Analyze this chart"}
+        
+        # Check image part
+        image_part = contents[0]["parts"][1]
+        assert "inlineData" in image_part
+        assert image_part["inlineData"]["mimeType"] == "image/png"
+        assert image_part["inlineData"]["data"] == "iVBORw0KGgo="
+
+    def test_convert_multimodal_message_anthropic_format(self, gemini_client):
+        """Test conversion of Anthropic-style image format."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Describe this"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/webp",
+                            "data": "UklGRiQAAABXRUJQ"
+                        }
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert len(contents) == 1
+        parts = contents[0]["parts"]
+        assert len(parts) == 2
+        
+        # Check image conversion from Anthropic format
+        image_part = parts[1]
+        assert "inlineData" in image_part
+        assert image_part["inlineData"]["mimeType"] == "image/webp"
+        assert image_part["inlineData"]["data"] == "UklGRiQAAABXRUJQ"
+
     def test_convert_tool_calls_without_thought_signature(self, gemini_client):
         """Test that missing thought signature is omitted (not set to skip validator).
         

@@ -227,13 +227,120 @@ class GeminiClient(LLMClient):
                 contents.append({"role": role, "parts": parts})
                 continue
 
-            # Regular message
-            content_text = msg.content if isinstance(msg.content, str) else ""
-            if content_text:
-                contents.append({
-                    "role": role,
-                    "parts": [{"text": content_text}]
-                })
+            # Regular message - handle both string and multimodal content
+            if isinstance(msg.content, str):
+                # Simple text message
+                if msg.content:
+                    contents.append({
+                        "role": role,
+                        "parts": [{"text": msg.content}]
+                    })
+            elif isinstance(msg.content, list):
+                # Multimodal content (text + images/etc.)
+                parts = []
+                for item in msg.content:
+                    # Handle dict format (direct JSON)
+                    if isinstance(item, dict):
+                        content_type = item.get("type")
+                        
+                        if content_type == "text":
+                            text_val = item.get("text", "")
+                            if text_val:
+                                parts.append({"text": text_val})
+                        
+                        elif content_type in ("image", "image_url"):
+                            # Extract image data
+                            image_url = item.get("image_url")
+                            image_source = item.get("source")
+                            
+                            # Handle OpenAI format: image_url can be string or dict with "url" key
+                            data_url = None
+                            if isinstance(image_url, str):
+                                data_url = image_url
+                            elif isinstance(image_url, dict):
+                                data_url = image_url.get("url")
+                            
+                            # Handle Anthropic format: source with base64 data
+                            if not data_url and image_source:
+                                if isinstance(image_source, dict):
+                                    source_type = image_source.get("type")
+                                    if source_type == "base64":
+                                        media_type = image_source.get("media_type", "image/jpeg")
+                                        data = image_source.get("data", "")
+                                        if data:
+                                            data_url = f"data:{media_type};base64,{data}"
+                                    elif source_type == "url":
+                                        data_url = image_source.get("url")
+                            
+                            # Convert data URL to Gemini inlineData format
+                            if data_url:
+                                if data_url.startswith("data:"):
+                                    # Parse data URL: data:image/png;base64,iVBORw0KG...
+                                    try:
+                                        header, base64_data = data_url.split(",", 1)
+                                        mime_type = header.split(":")[1].split(";")[0]
+                                        parts.append({
+                                            "inlineData": {
+                                                "mimeType": mime_type,
+                                                "data": base64_data
+                                            }
+                                        })
+                                    except (ValueError, IndexError) as e:
+                                        logger.warning(f"[Gemini] Failed to parse data URL: {e}")
+                                else:
+                                    # External URL - Gemini doesn't support external URLs directly
+                                    # Would need to download and convert to base64
+                                    logger.warning(f"[Gemini] External image URLs not yet supported: {data_url[:100]}")
+                    
+                    # Handle Pydantic model objects (TextContent, ImageContent, etc.)
+                    elif hasattr(item, "type"):
+                        if item.type == "text" and hasattr(item, "text"):
+                            if item.text:
+                                parts.append({"text": item.text})
+                        
+                        elif item.type in ("image", "image_url"):
+                            # Extract from Pydantic ImageContent model
+                            image_url = getattr(item, "image_url", None)
+                            image_source = getattr(item, "source", None)
+                            
+                            data_url = None
+                            if isinstance(image_url, str):
+                                data_url = image_url
+                            elif isinstance(image_url, dict):
+                                data_url = image_url.get("url")
+                            
+                            if not data_url and image_source:
+                                if hasattr(image_source, "type"):
+                                    if image_source.type == "base64":
+                                        media_type = getattr(image_source, "media_type", "image/jpeg")
+                                        data = getattr(image_source, "data", "")
+                                        if data:
+                                            data_url = f"data:{media_type};base64,{data}"
+                                    elif image_source.type == "url":
+                                        data_url = getattr(image_source, "url", None)
+                            
+                            # Convert to Gemini format
+                            if data_url:
+                                if data_url.startswith("data:"):
+                                    try:
+                                        header, base64_data = data_url.split(",", 1)
+                                        mime_type = header.split(":")[1].split(";")[0]
+                                        parts.append({
+                                            "inlineData": {
+                                                "mimeType": mime_type,
+                                                "data": base64_data
+                                            }
+                                        })
+                                    except (ValueError, IndexError) as e:
+                                        logger.warning(f"[Gemini] Failed to parse data URL from Pydantic model: {e}")
+                                else:
+                                    logger.warning(f"[Gemini] External image URLs not yet supported: {data_url[:100]}")
+                
+                if parts:
+                    contents.append({
+                        "role": role,
+                        "parts": parts
+                    })
 
         # Merge all system instructions (first one is the main prompt, others are context additions)
         system_instruction = None
