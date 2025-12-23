@@ -31,6 +31,7 @@ from .cli_utils.common import (
     print_agent_response,
     format_error
 )
+from .llm.batch.initialization import init_batch_system, shutdown_batch_system
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ async def initialize_system(config):
         init_service = InitializationService(config)
         registry, session_service = init_service.initialize_for_cli()
         logger.info(f"Initialization completed. Registry has {len(registry.list())} servers: {registry.list()}")
+        
+        # Initialize batch queue manager if any LLM models have batch enabled
+        await init_batch_system(config)
+        
         return registry, session_service
     except Exception as e:
         logger.warning(f"Initialization failed: {e}", exc_info=True)
@@ -230,19 +235,18 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 raise ValueError(error_msg)
 
             try:
-                # Resolve profile to model config using the factory
-                from .llm.factory import resolve_llm_config_for_agent
+                # Use factory function that properly handles batch mode
+                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
                 from .config.models import AgentConfig
 
-                # Create temporary agent config with override profile
+                llm_override = create_llm_from_profile(
+                    config=config,
+                    llm_profile=llm_profile,
+                )
+
+                # Get profile info for status display
                 temp_agent_config = AgentConfig(llm_profile=llm_profile)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-
-                # Create new LLM with resolved config
-                from .llm.clients import make_llm
-                llm_override = make_llm(**llm_kwargs)
-
-                # Build profile info string for status display
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
                 llm_profile_info = f"{llm_profile}:{provider}/{model}"
@@ -356,6 +360,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        # Shutdown batch queue manager if it was started
+        await shutdown_batch_system()
 
 
 def main() -> None:

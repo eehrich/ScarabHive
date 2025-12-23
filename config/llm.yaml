@@ -99,12 +99,12 @@ llm_system:
         default_api_type: chat_completions
       batch:
         enabled: true
-        collection_window_seconds: 300  # 5 minutes collection window
+        collection_window_seconds: 60   # 1 minutes collection window
         max_requests_per_batch: 100     # Up to 100 requests per batch
         poll_interval_seconds: 60       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: false        # Don't cancel existing batches on startup
-        fallback_to_sync: true          # Fall back to sync if batch fails
+        cancel_on_startup: true        
+        fallback_to_sync: false         # Fall back to sync if batch fails
         storage_path: "data/batch_jobs" # Where to store batch job data
 
     gpt-4.1:
@@ -252,12 +252,12 @@ llm_system:
         image_detail_control: true
       batch:
         enabled: true
-        collection_window_seconds: 300  # 5 minutes collection window
+        collection_window_seconds: 60   # 1 minutes collection window
         max_requests_per_batch: 50000   # Up to 50k requests per batch
         poll_interval_seconds: 60       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: false        # Don't cancel existing batches on startup
-        fallback_to_sync: true          # Fall back to sync if batch fails
+        cancel_on_startup: true        
+        fallback_to_sync: false         # Fall back to sync if batch fails
         storage_path: "data/batch_jobs" # Where to store batch job data
 
     gpt-realtime:

@@ -23,6 +23,7 @@ from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .mcp.integration import MCPIntegration, initialize_mcp, shutdown_mcp
+from .llm.batch.initialization import init_batch_system, shutdown_batch_system
 from .utils.logging import setup_logging
 from .servers.agent.server import Agent
 
@@ -1237,6 +1238,16 @@ def main() -> None:
         logger.warning("Failed to initialize MCP integration: %s", e)
         vprint(f"[cli] Warning: MCP integration failed: {e}")
 
+    # Initialize batch queue manager if any LLM models have batch enabled
+    vprint("[cli] initializing batch queue manager...")
+    try:
+        asyncio.run(init_batch_system(config))
+        vprint("[cli] batch queue manager initialized")
+        logger.info("Batch queue manager initialized successfully")
+    except Exception as e:
+        logger.warning("Failed to initialize batch queue manager: %s", e)
+        vprint(f"[cli] Warning: batch queue manager failed: {e}")
+
     # Note: SessionManager, SessionService, and dependency injection
     # are now handled by InitializationService.initialize_for_cli() above
 
@@ -1709,19 +1720,18 @@ def main() -> None:
                 return
 
             try:
-                # Resolve profile to model config using the factory
-                from .llm.factory import resolve_llm_config_for_agent
+                # Use factory function that properly handles batch mode
+                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
                 from .config.models import AgentConfig
-                from .llm.clients import make_llm
 
-                # Create temporary agent config with override profile
+                llm_override = create_llm_from_profile(
+                    config=config,
+                    llm_profile=llm_profile_override,
+                )
+
+                # Get profile info for logging
                 temp_agent_config = AgentConfig(llm_profile=llm_profile_override)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-
-                # Create new LLM with resolved config
-                llm_override = make_llm(**llm_kwargs)
-
-                # Build profile info string for logging
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
                 llm_profile_info = f"{llm_profile_override}:{provider}/{model}"
@@ -1798,6 +1808,14 @@ def main() -> None:
             asyncio.run(save_session_after_task())
 
     finally:
+        # Shutdown batch queue manager first
+        try:
+            asyncio.run(shutdown_batch_system())
+            vprint("[cli] batch queue manager shut down")
+            logger.info("Batch queue manager shut down successfully")
+        except Exception as e:
+            logger.warning("Failed to shutdown batch queue manager: %s", e)
+        
         # Ensure MCP integration is properly shut down to close aiohttp sessions
         try:
             asyncio.run(shutdown_mcp())

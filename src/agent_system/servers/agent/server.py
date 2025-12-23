@@ -159,7 +159,7 @@ class Agent(MCPServer):
                 # Create LLM using the new profile-based system (now required)
                 try:
                     # Lazy import to avoid circular imports when testing
-                    from ...llm.factory import resolve_llm_config_for_agent
+                    from ...llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
 
                     # Use new profile-based resolution with agent config
                     llm_kwargs = resolve_llm_config_for_agent(system_config, self.agent_config)
@@ -167,18 +167,14 @@ class Agent(MCPServer):
                     # Store profile information for status display
                     self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
 
-                    from ...llm.clients import make_llm
-                    self.llm = make_llm(
-                        llm_kwargs["provider"],
-                        llm_kwargs["model"],
-                        llm_kwargs["api_key"],
-                        llm_kwargs["base_url"],
-                        llm_kwargs["context_window"],
-                        llm_kwargs["ollama_mode"],
-                        llm_kwargs["request_timeout"],
-                        ssl_verify=getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None,
-                        httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-                        capabilities=llm_kwargs.get("capabilities"),
+                    # Get SSL verify setting
+                    ssl_verify = getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None
+
+                    # Use factory function that properly handles batch mode
+                    self.llm = create_llm_from_profile(
+                        config=system_config,
+                        llm_profile=self.agent_config.default_llm_profile,
+                        ssl_verify=ssl_verify,
                     )
                 except Exception as e:
                     # Missing API key is an expected situation in test/dev
@@ -668,9 +664,7 @@ class Agent(MCPServer):
 
         # Handle use_advanced_model if no llm_override provided
         if use_advanced_model and not llm_override:
-            from agent_system.config.models import AgentConfig
-            from agent_system.llm.factory import resolve_llm_config_for_agent
-            from agent_system.llm.clients import make_llm
+            from agent_system.llm.factory import create_llm_from_profile
 
             available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
             if available_profiles and len(available_profiles) > 1:
@@ -678,25 +672,14 @@ class Agent(MCPServer):
                 advanced_profile = available_profiles[-1]
 
                 try:
-                    # Create temporary agent config with advanced profile
-                    temp_agent_config = AgentConfig(llm_profile=advanced_profile)
-                    llm_kwargs = resolve_llm_config_for_agent(self.system_config, temp_agent_config)
-
                     # Get SSL verify setting
                     ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
 
-                    # Create LLM client override
-                    llm_override = make_llm(
-                        llm_kwargs["provider"],
-                        llm_kwargs["model"],
-                        llm_kwargs["api_key"],
-                        llm_kwargs["base_url"],
-                        llm_kwargs["context_window"],
-                        llm_kwargs["ollama_mode"],
-                        llm_kwargs["request_timeout"],
+                    # Create LLM client override using factory
+                    llm_override = create_llm_from_profile(
+                        config=self.system_config,
+                        llm_profile=advanced_profile,
                         ssl_verify=ssl_verify,
-                        httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-                        capabilities=llm_kwargs.get("capabilities"),
                     )
 
                     # Create profile info for logging

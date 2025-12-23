@@ -378,7 +378,17 @@ class BatchQueueManager:
             # Update job status
             new_status = status_info.get("status")
             if new_status:
+                old_status = job.status
                 job.status = BatchStatus(new_status)
+                if old_status != job.status:
+                    logger.info(
+                        f"Batch job {job.job_id} status changed: "
+                        f"{old_status.value} -> {job.status.value}"
+                    )
+                else:
+                    logger.debug(
+                        f"Batch job {job.job_id} status: {job.status.value}"
+                    )
             
             # Check if completed
             if job.status == BatchStatus.COMPLETED:

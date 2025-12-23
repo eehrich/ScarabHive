@@ -8,12 +8,110 @@ Uses the new profile-based configuration system.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from ..config.models import AgentSystemConfig, AgentConfig
+from ..config.models import AgentSystemConfig, AgentConfig, BatchAPIConfig
 from .clients import make_llm, LLMClient
 
+if TYPE_CHECKING:
+    from .batch.queue_manager import BatchQueueManager
+
 logger = logging.getLogger(__name__)
+
+
+# Global batch queue manager - set by app startup
+_batch_queue_manager: Optional["BatchQueueManager"] = None
+
+
+def set_batch_queue_manager(manager: Optional["BatchQueueManager"]) -> None:
+    """Set the global batch queue manager (called during app startup)."""
+    global _batch_queue_manager
+    _batch_queue_manager = manager
+    if manager:
+        logger.info("Batch queue manager registered globally")
+
+
+def get_batch_queue_manager() -> Optional["BatchQueueManager"]:
+    """Get the global batch queue manager."""
+    return _batch_queue_manager
+
+
+def create_llm_from_profile(
+    config: AgentSystemConfig,
+    llm_profile: str,
+    ssl_verify: Optional[bool] = None,
+) -> LLMClient:
+    """Create an LLM client from a profile name.
+    
+    This is the recommended way to create LLM clients when you need to
+    override the default profile. It properly handles batch mode wrapping.
+    
+    Args:
+        config: The system configuration
+        llm_profile: Name of the LLM profile to use
+        ssl_verify: Optional SSL verification override
+        
+    Returns:
+        LLMClient (possibly wrapped with BatchLLMClient if batch mode enabled)
+    """
+    from .clients import make_llm
+    
+    # Create temporary agent config with override profile
+    temp_agent_config = AgentConfig(llm_profile=llm_profile)
+    llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
+    
+    # Extract batch config before passing to make_llm
+    batch_config: Optional[BatchAPIConfig] = llm_kwargs.pop("batch_config", None)
+    model_ref: Optional[str] = llm_kwargs.pop("model_ref", None)
+    
+    # Use provided ssl_verify or get from config
+    if ssl_verify is None:
+        ssl_verify = getattr(config.network, "ssl_verify", None) if config.network else None
+    
+    # Build make_kwargs
+    make_kwargs = {
+        "ssl_verify": ssl_verify,
+        "httpx_timeouts": llm_kwargs.get("httpx_timeouts"),
+        "capabilities": llm_kwargs.get("capabilities"),
+    }
+    
+    if llm_kwargs.get("include_thoughts") is not None:
+        make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
+    
+    # Create the underlying LLM client
+    underlying_client = make_llm(
+        llm_kwargs["provider"],
+        llm_kwargs["model"],
+        llm_kwargs["api_key"],
+        llm_kwargs["base_url"],
+        llm_kwargs["context_window"],
+        llm_kwargs["ollama_mode"],
+        llm_kwargs["request_timeout"],
+        **make_kwargs,
+    )
+    
+    # Wrap with batch client if batch mode is enabled
+    if batch_config and batch_config.enabled:
+        queue_manager = get_batch_queue_manager()
+        if queue_manager:
+            from .batch.client_wrapper import BatchLLMClient
+            logger.info("Wrapping LLM client with batch support: model=%s", model_ref)
+            return BatchLLMClient(
+                underlying_client=underlying_client,
+                queue_manager=queue_manager,
+                batch_config=batch_config,
+                # Use the actual model name from config, not the config key
+                model_name=llm_kwargs["model"],
+                provider=llm_kwargs["provider"],
+            )
+        else:
+            logger.warning(
+                "Batch mode enabled for model %s but no queue manager registered. "
+                "Falling back to sync mode.",
+                model_ref
+            )
+    
+    return underlying_client
 
 
 def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentConfig) -> dict:
@@ -75,6 +173,13 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
 
     if httpx_timeouts:
         llm_kwargs["httpx_timeouts"] = httpx_timeouts
+    
+    # Add batch config if present
+    if model_config.batch and model_config.batch.enabled:
+        llm_kwargs["batch_config"] = model_config.batch
+        llm_kwargs["model_ref"] = model_ref  # For batch grouping
+        logger.info("Batch mode enabled for model %s (collection_window=%ss)",
+                    model_ref, model_config.batch.collection_window_seconds)
 
     logger.debug("Resolved LLM config: profile=%s, model_ref=%s, provider=%s, model=%s",
                  profile_name, model_ref, model_config.provider, model_config.model)
@@ -88,6 +193,10 @@ class LLMFactory:
     This wrapper centralizes the logic for creating an LLM client so that
     callers (for example bootstrap code) can explicitly create an LLM
     without relying on import-time side effects.
+    
+    When batch mode is enabled in the model config, the factory wraps
+    the underlying LLM client with a BatchLLMClient that routes requests
+    through the global BatchQueueManager for 50% cost reduction.
     """
 
     def __init__(self, config: Optional[AgentSystemConfig] = None, agent_config: Optional[AgentConfig] = None):
@@ -100,12 +209,20 @@ class LLMFactory:
         Returns an LLMClient instance or raises the underlying error from
         `make_llm`. Callers may catch exceptions if they want a fallback
         behavior (for example, running without an LLM in tests).
+        
+        If batch mode is enabled in the model config AND a global batch
+        queue manager is registered, the client will be wrapped with
+        BatchLLMClient for automatic request batching.
         """
         if not self.config or not self.agent_config:
             return None
 
         # Use new profile-based resolution
         llm_kwargs = resolve_llm_config_for_agent(self.config, self.agent_config)
+        
+        # Extract batch config before passing to make_llm
+        batch_config: Optional[BatchAPIConfig] = llm_kwargs.pop("batch_config", None)
+        model_ref: Optional[str] = llm_kwargs.pop("model_ref", None)
 
         # Propagate network SSL verification setting into the LLM client creation
         ssl_verify = None
@@ -123,7 +240,8 @@ class LLMFactory:
         if llm_kwargs.get("include_thoughts") is not None:
             make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
 
-        return make_llm(
+        # Create the underlying LLM client
+        underlying_client = make_llm(
             llm_kwargs["provider"],
             llm_kwargs["model"],
             llm_kwargs["api_key"],
@@ -133,3 +251,26 @@ class LLMFactory:
             llm_kwargs["request_timeout"],
             **make_kwargs,
         )
+        
+        # Wrap with batch client if batch mode is enabled
+        if batch_config and batch_config.enabled:
+            queue_manager = get_batch_queue_manager()
+            if queue_manager:
+                from .batch.client_wrapper import BatchLLMClient
+                logger.info("Wrapping LLM client with batch support: model=%s", model_ref)
+                return BatchLLMClient(
+                    underlying_client=underlying_client,
+                    queue_manager=queue_manager,
+                    batch_config=batch_config,
+                    # Use the actual model name from config, not the config key
+                    model_name=llm_kwargs["model"],
+                    provider=llm_kwargs["provider"],
+                )
+            else:
+                logger.warning(
+                    "Batch mode enabled for model %s but no queue manager registered. "
+                    "Falling back to sync mode.",
+                    model_ref
+                )
+        
+        return underlying_client

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,15 @@ import httpx
 from .models import BatchJob, BatchStatus
 
 logger = logging.getLogger(__name__)
+
+
+class _DateTimeEncoder(json.JSONEncoder):
+    """JSON encoder that handles datetime objects."""
+    
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 class OpenAIBatchClient:
@@ -64,11 +74,12 @@ class OpenAIBatchClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         
+        # Don't set Content-Type in default headers - let httpx set it per request
+        # (multipart/form-data for file uploads, application/json for JSON requests)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
             headers={
                 "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
             },
         )
     
@@ -144,7 +155,8 @@ class OpenAIBatchClient:
                     "body": body,
                 }
                 
-                f.write(json.dumps(line) + "\n")
+                # Use custom encoder to handle datetime objects
+                f.write(json.dumps(line, cls=_DateTimeEncoder) + "\n")
         
         logger.debug(f"Created input file with {len(job.requests)} requests: {file_path}")
     
@@ -160,21 +172,23 @@ class OpenAIBatchClient:
         with open(file_path, "rb") as f:
             files = {
                 "file": (file_path.name, f, "application/jsonl"),
-                "purpose": (None, "batch"),
+            }
+            data = {
+                "purpose": "batch",
             }
             
-            # Need to update headers for multipart
+            # Don't override headers - let httpx set multipart/form-data automatically
             response = await self._client.post(
                 url,
                 files=files,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                data=data,
             )
         
         if response.status_code != 200:
             raise RuntimeError(f"File upload failed: {response.status_code} {response.text}")
         
-        data = response.json()
-        return data.get("id")
+        result = response.json()
+        return result.get("id")
     
     async def _create_batch(self, input_file_id: str) -> Dict[str, Any]:
         """Create a batch job.
@@ -231,12 +245,27 @@ class OpenAIBatchClient:
             "cancelling": BatchStatus.CANCELLING.value,
         }
         
+        # Extract error message from various possible locations
+        error_message = None
+        if data.get("errors"):
+            errors = data["errors"]
+            if isinstance(errors, dict):
+                error_message = errors.get("message") or str(errors.get("data", errors))
+            elif isinstance(errors, list) and errors:
+                error_message = "; ".join(str(e.get("message", e)) for e in errors if e)
+            else:
+                error_message = str(errors)
+        
+        # Log full response for debugging on failure
+        if openai_status == "failed":
+            logger.error(f"OpenAI batch {batch_id} failed. Full response: {data}")
+        
         return {
             "status": status_mapping.get(openai_status, openai_status),
             "output_file_id": data.get("output_file_id"),
             "error_file_id": data.get("error_file_id"),
             "request_counts": data.get("request_counts", {}),
-            "error": data.get("errors", {}).get("message") if data.get("errors") else None,
+            "error": error_message,
         }
     
     async def get_batch_results(self, job: BatchJob) -> List[Dict[str, Any]]:

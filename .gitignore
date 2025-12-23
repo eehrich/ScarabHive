@@ -22,6 +22,8 @@ data/memories/
 data/workspace/
 data/writer/
 data/context_engineer/
+data/batch_jobs/
+data/batch/
 
 nul
 data/context_usage_tracker.json

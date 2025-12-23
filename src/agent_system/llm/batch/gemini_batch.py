@@ -113,42 +113,52 @@ class GeminiBatchClient:
             return await self._submit_batch_rest(job, storage_path)
     
     async def _submit_batch_sdk(self, job: BatchJob) -> str:
-        """Submit batch using Google GenAI SDK."""
-        # Convert requests to SDK format
-        requests = []
+        """Submit batch using Google GenAI SDK with inline requests.
+        
+        Uses the SDK's batches.create() with inline requests format.
+        Reference: https://ai.google.dev/gemini-api/docs/batch-api
+        """
+        # Convert requests to SDK inline request format
+        # Each request is a dict with 'contents' key
+        inline_requests = []
         for req in job.requests:
-            # Convert messages to Gemini content format
             contents = self._convert_messages_to_contents(req.messages)
             
-            # Create GenerateContentConfig if tools present
-            config = None
-            if req.tools:
-                config = types.GenerateContentConfig(
-                    tools=self._convert_tools_to_sdk(req.tools),
-                )
-            
-            # SDK batch request format
-            batch_request = {
-                "model": f"models/{req.model}",
-                "contents": contents,
+            request_dict: Dict[str, Any] = {
+                'contents': contents,
             }
-            if config:
-                batch_request["config"] = config
             
-            requests.append(batch_request)
+            # Add tools if present
+            if req.tools:
+                request_dict['tools'] = self._convert_tools_to_rest(req.tools)
+            
+            inline_requests.append(request_dict)
         
-        # Submit batch using SDK
-        # Note: The actual SDK method may vary - this is based on documented API
+        # Submit batch using SDK with inline requests
         try:
+            # Use full model path for SDK
+            model_name = job.model
+            if not model_name.startswith("models/"):
+                model_name = f"models/{model_name}"
+            
             batch_job = self._sdk_client.batches.create(
-                model=f"models/{job.model}",
-                requests=requests,
+                model=model_name,
+                src=inline_requests,
+                config={
+                    'display_name': f"batch_{job.job_id}",
+                },
             )
+            logger.info("Created Gemini batch job: %s", batch_job.name)
             return batch_job.name
-        except AttributeError:
-            # Fallback to REST if SDK doesn't have batch support yet
-            logger.warning("SDK batch not available, falling back to REST")
+        except Exception as e:
+            # Fallback to REST if SDK fails
+            logger.warning("SDK batch failed (%s), falling back to REST", e)
             self.use_sdk = False
+            # Initialize HTTP client if needed
+            if not hasattr(self, '_http_client') or self._http_client is None:
+                self._http_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(self.timeout),
+                )
             return await self._submit_batch_rest(job, Path("data/batch"))
     
     async def _submit_batch_rest(
@@ -335,7 +345,10 @@ class GeminiBatchClient:
             job = self._sdk_client.batches.get(name=job_name)
             
             # Map Gemini status to our BatchStatus
-            state = job.state
+            # The state is an enum, access .name for string comparison
+            state_name = job.state.name if hasattr(job.state, 'name') else str(job.state)
+            logger.debug(f"Gemini batch status for {job_name}: {state_name}")
+            
             status_mapping = {
                 "STATE_UNSPECIFIED": BatchStatus.PENDING.value,
                 "JOB_STATE_PENDING": BatchStatus.PENDING.value,
@@ -343,15 +356,31 @@ class GeminiBatchClient:
                 "JOB_STATE_SUCCEEDED": BatchStatus.COMPLETED.value,
                 "JOB_STATE_FAILED": BatchStatus.FAILED.value,
                 "JOB_STATE_CANCELLED": BatchStatus.CANCELLED.value,
+                "JOB_STATE_EXPIRED": BatchStatus.FAILED.value,
             }
             
+            mapped_status = status_mapping.get(state_name, BatchStatus.IN_PROGRESS.value)
+            logger.debug(f"Gemini batch {job_name}: state={state_name} -> status={mapped_status}")
+            
             return {
-                "status": status_mapping.get(state, BatchStatus.IN_PROGRESS.value),
-                "error": job.error.message if hasattr(job, "error") and job.error else None,
+                "status": mapped_status,
+                "error": str(job.error) if hasattr(job, "error") and job.error else None,
             }
         except Exception as e:
-            logger.error(f"Failed to get batch status: {e}")
-            return {"status": BatchStatus.FAILED.value, "error": str(e)}
+            # Don't mark as failed for transient errors - keep polling
+            error_msg = str(e)
+            logger.error(f"Failed to get batch status (will retry): {e}")
+            
+            # Check if this is a transient network error
+            transient_errors = ["getaddrinfo", "timeout", "connection", "ConnectionError"]
+            is_transient = any(err.lower() in error_msg.lower() for err in transient_errors)
+            
+            if is_transient:
+                # Keep status as in_progress for transient errors
+                return {"status": BatchStatus.IN_PROGRESS.value, "error": None}
+            else:
+                # For other errors, mark as failed
+                return {"status": BatchStatus.FAILED.value, "error": error_msg}
     
     async def _get_status_rest(self, job_name: str) -> Dict[str, Any]:
         """Get status using REST API."""
@@ -466,47 +495,77 @@ class GeminiBatchClient:
         return "".join(texts)
     
     async def _get_results_sdk(self, job: BatchJob) -> List[Dict[str, Any]]:
-        """Get results using SDK."""
+        """Get results using SDK.
+        
+        According to the Gemini Batch API, results are in:
+        - batch_job.dest.inlined_responses for inline requests
+        - batch_job.dest.file_name for file-based requests (needs download)
+        """
         try:
             batch_job = self._sdk_client.batches.get(name=job.provider_job_id)
             
             results = []
-            for i, response in enumerate(batch_job.responses):
-                if i < len(job.requests):
-                    custom_id = job.requests[i].custom_id
-                else:
-                    custom_id = f"request_{i}"
-                
-                if hasattr(response, "error") and response.error:
-                    results.append({
-                        "custom_id": custom_id,
-                        "response": None,
-                        "error": {"message": response.error.message},
-                    })
-                else:
-                    # Convert SDK response to dict
-                    content = ""
-                    if hasattr(response, "candidates") and response.candidates:
-                        candidate = response.candidates[0]
-                        if hasattr(candidate, "content") and candidate.content:
-                            for part in candidate.content.parts:
-                                if hasattr(part, "text"):
-                                    content += part.text
-                    
-                    results.append({
-                        "custom_id": custom_id,
-                        "response": {
-                            "choices": [{
-                                "message": {
-                                    "role": "assistant",
-                                    "content": content,
-                                }
-                            }],
-                        },
-                        "error": None,
-                    })
             
-            return results
+            # Check for inline responses
+            if hasattr(batch_job, 'dest') and batch_job.dest:
+                responses = []
+                
+                # Try inline responses first
+                if hasattr(batch_job.dest, 'inlined_responses') and batch_job.dest.inlined_responses:
+                    responses = batch_job.dest.inlined_responses
+                
+                for i, inline_response in enumerate(responses):
+                    if i < len(job.requests):
+                        custom_id = job.requests[i].custom_id
+                    else:
+                        custom_id = f"request_{i}"
+                    
+                    # Check for error in response
+                    if hasattr(inline_response, "error") and inline_response.error:
+                        results.append({
+                            "custom_id": custom_id,
+                            "response": None,
+                            "error": {"message": str(inline_response.error)},
+                        })
+                    elif hasattr(inline_response, "response") and inline_response.response:
+                        # Extract content from response
+                        content = ""
+                        response_obj = inline_response.response
+                        
+                        # Try .text shortcut first
+                        if hasattr(response_obj, 'text'):
+                            content = response_obj.text
+                        elif hasattr(response_obj, "candidates") and response_obj.candidates:
+                            candidate = response_obj.candidates[0]
+                            if hasattr(candidate, "content") and candidate.content:
+                                for part in candidate.content.parts:
+                                    if hasattr(part, "text"):
+                                        content += part.text
+                        
+                        results.append({
+                            "custom_id": custom_id,
+                            "response": {
+                                "choices": [{
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": content,
+                                    }
+                                }],
+                            },
+                            "error": None,
+                        })
+                    else:
+                        results.append({
+                            "custom_id": custom_id,
+                            "response": None,
+                            "error": {"message": "No response or error in batch result"},
+                        })
+            
+            return results if results else [{
+                "custom_id": req.custom_id,
+                "response": None,
+                "error": {"message": "No results found in batch job"},
+            } for req in job.requests]
             
         except Exception as e:
             logger.error(f"Failed to get batch results: {e}")

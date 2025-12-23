@@ -25,6 +25,7 @@ from .mcp.base import MCPRegistry
 from .utils.logging import setup_logging
 from .mcp.status import get_status_metrics
 from .mcp.integration import initialize_mcp, shutdown_mcp
+from .llm.batch.initialization import init_batch_system, shutdown_batch_system
 
 # Import services
 from .services import ConfigService, MCPService, ToolService, AgentService
@@ -132,6 +133,28 @@ static_path = Path(__file__).parents[2] / "static"
 # Global application state
 _app_start_time = None
 
+# Batch queue manager - uses centralized initialization from llm.batch.initialization
+
+
+async def _init_batch_queue_manager(config, logger):
+    """Initialize batch queue manager if any model has batch enabled.
+    
+    Delegates to the centralized init_batch_system() utility function
+    which can be reused by CLI and other entry points.
+    """
+    await init_batch_system(config, custom_logger=logger)
+
+
+# Note: _register_batch_clients is now in llm.batch.initialization module
+
+
+async def _shutdown_batch_queue_manager(logger):
+    """Stop the batch queue manager during shutdown.
+    
+    Delegates to the centralized shutdown_batch_system() utility function.
+    """
+    await shutdown_batch_system(custom_logger=logger)
+
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
@@ -199,6 +222,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Initialize services
             _mcp_service = MCPService(mcp_integration, config)
             _tool_service = ToolService(mcp_integration, config)
+            
+            # Initialize Batch Queue Manager if any model has batch enabled
+            await _init_batch_queue_manager(config, logger)
 
             # CRITICAL: Inject session_service into ALL agents in plugin_registry
             # This ensures hooks and tools can access session management
@@ -243,6 +269,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         yield
         # Shutdown
         try:
+            # Shutdown batch queue manager first
+            await _shutdown_batch_queue_manager(logger)
+            
             await shutdown_mcp()
             logger.info("MCP integration shut down during lifespan")
         except Exception as e:
@@ -708,22 +737,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail=f"LLM profile '{llm_profile}' not found")
 
             try:
-                # Resolve profile to model config using the factory
-                from .llm.factory import resolve_llm_config_for_agent
+                # Use factory function that properly handles batch mode
+                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
                 from .config.models import AgentConfig
 
-                # Create temporary agent config with override profile
-                temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-
-                # Create new LLM with resolved config, including SSL verification setting
-                from .llm.clients import make_llm
-                llm_override = make_llm(
-                    **llm_kwargs,
+                llm_override = create_llm_from_profile(
+                    config=config,
+                    llm_profile=llm_profile,
                     ssl_verify=getattr(config.network, "ssl_verify", None)
                 )
 
-                # Build profile info string for status display (matching agent's format)
+                # Get profile info for status display
+                temp_agent_config = AgentConfig(llm_profile=llm_profile)
+                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
                 llm_profile_info = f"{llm_profile}:{provider}/{model}"

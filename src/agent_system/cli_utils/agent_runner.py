@@ -89,18 +89,17 @@ def get_agent_with_llm_override(
             raise ValueError(error_msg)
         
         try:
-            # Resolve profile to model config using the factory
-            from ..llm.factory import resolve_llm_config_for_agent
-            from ..llm.clients import make_llm
+            # Use factory function that properly handles batch mode
+            from ..llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
             
-            # Create temporary agent config with override profile
+            llm_override = create_llm_from_profile(
+                config=config,
+                llm_profile=llm_profile,
+            )
+            
+            # Get profile info for status display
             temp_agent_config = AgentConfig(llm_profile=llm_profile)
             llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-            
-            # Create new LLM with resolved config
-            llm_override = make_llm(**llm_kwargs)
-            
-            # Build profile info string for status display
             model = llm_kwargs.get('model', 'unknown')
             provider = llm_kwargs.get('provider', 'unknown')
             llm_profile_info = f"{llm_profile}:{provider}/{model}"
