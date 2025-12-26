@@ -135,6 +135,18 @@ async def init_batch_system(
                  batch_config.collection_window_seconds, 
                  batch_config.poll_interval_seconds)
         
+        # Handle existing jobs from providers
+        if batch_config.cancel_on_startup:
+            # Cancel any pending jobs from previous runs
+            cancelled = await _cancel_all_provider_batches(_batch_queue_manager, log)
+            if cancelled > 0:
+                log.info("Cancelled %d pending batch jobs from previous runs", cancelled)
+        else:
+            # Recover active jobs for monitoring
+            recovered = await _batch_queue_manager.recover_jobs()
+            if recovered > 0:
+                log.info("Recovered %d active batch jobs from providers", recovered)
+        
         return _batch_queue_manager
                     
     except Exception as e:
@@ -200,6 +212,34 @@ async def _register_batch_clients(
                 
         except Exception as e:
             log.error(f"Failed to register batch client for {provider}: {e}")
+
+
+async def _cancel_all_provider_batches(
+    queue_manager: "BatchQueueManager",
+    log: logging.Logger,
+) -> int:
+    """Cancel all pending batches from all registered providers.
+    
+    Args:
+        queue_manager: BatchQueueManager instance
+        log: Logger instance
+        
+    Returns:
+        Total number of batches cancelled
+    """
+    total_cancelled = 0
+    
+    for provider, client in queue_manager._batch_clients.items():
+        try:
+            if hasattr(client, 'cancel_all_pending_batches'):
+                cancelled = await client.cancel_all_pending_batches()
+                total_cancelled += cancelled
+                if cancelled > 0:
+                    log.info(f"Cancelled {cancelled} pending batches from {provider}")
+        except Exception as e:
+            log.warning(f"Failed to cancel batches from {provider}: {e}")
+    
+    return total_cancelled
 
 
 async def shutdown_batch_system(

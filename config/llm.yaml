@@ -103,7 +103,7 @@ llm_system:
         max_requests_per_batch: 100     # Up to 100 requests per batch
         poll_interval_seconds: 10       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: true        
+        cancel_on_startup: false        
         fallback_to_sync: false         # Fall back to sync if batch fails
         storage_path: "data/batch_jobs" # Where to store batch job data
 
@@ -256,7 +256,7 @@ llm_system:
         max_requests_per_batch: 100     # Up to 50k requests per batch
         poll_interval_seconds: 10       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: true        
+        cancel_on_startup: false        
         fallback_to_sync: false         # Fall back to sync if batch fails
         storage_path: "data/batch_jobs" # Where to store batch job data
 

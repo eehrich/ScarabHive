@@ -632,8 +632,18 @@ class GeminiBatchClient:
         """
         if self.use_sdk:
             try:
-                batches = self._sdk_client.batches.list(page_size=limit)
-                return [{"name": b.name, "state": b.state} for b in batches]
+                # SDK's list() doesn't take page_size, just iterate
+                batches = self._sdk_client.batches.list()
+                result = []
+                for i, b in enumerate(batches):
+                    if i >= limit:
+                        break
+                    # b.state is an enum, get its name (e.g., "JOB_STATE_SUCCEEDED")
+                    state_str = b.state.name if hasattr(b.state, 'name') else str(b.state)
+                    logger.debug(f"Batch {b.name}: state={b.state}, state_str={state_str}")
+                    result.append({"name": b.name, "state": state_str})
+                logger.debug(f"Listed {len(result)} batches from Gemini")
+                return result
             except Exception as e:
                 logger.error(f"Failed to list batches: {e}")
                 return []

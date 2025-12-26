@@ -159,6 +159,125 @@ class BatchQueueManager:
         
         logger.info("BatchQueueManager started")
     
+    async def recover_jobs(self) -> int:
+        """Recover active jobs from providers after server restart.
+        
+        This method queries each registered provider for their active batch jobs
+        and adds them to the internal tracking. This allows monitoring of jobs
+        that were submitted before a server restart.
+        
+        Note: Recovered jobs won't have their original request futures, so
+        results cannot be delivered to waiting callers. They will still be
+        polled and tracked for monitoring purposes.
+        
+        Returns:
+            Number of jobs recovered
+        """
+        recovered_count = 0
+        
+        logger.info(f"Starting job recovery, checking {len(self._batch_clients)} providers: {list(self._batch_clients.keys())}")
+        
+        for provider, client in self._batch_clients.items():
+            try:
+                if not hasattr(client, 'list_batches'):
+                    logger.debug(f"Provider {provider} doesn't support list_batches")
+                    continue
+                
+                logger.debug(f"Listing batches from {provider}...")
+                batches = await client.list_batches(limit=50)
+                logger.info(f"Found {len(batches)} batches from {provider}")
+                
+                for batch_info in batches:
+                    logger.debug(f"Processing batch: {batch_info}")
+                    
+                    # Extract job info based on provider format
+                    if provider == "gemini":
+                        job_id = batch_info.get("name", "")
+                        state = batch_info.get("state", "")
+                        logger.debug(f"Gemini batch: {job_id}, state={state}")
+                        # Map Gemini states to our BatchStatus
+                        if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
+                            logger.debug(f"Skipping completed Gemini job: {job_id}")
+                            continue  # Skip completed jobs
+                        status = self._map_gemini_state(state)
+                        model = "gemini-2.5-flash"  # Default, can't determine from list
+                    else:  # openai
+                        job_id = batch_info.get("id", "")
+                        status_str = batch_info.get("status", "")
+                        logger.debug(f"OpenAI batch: {job_id}, status={status_str}")
+                        if status_str in ("completed", "failed", "expired", "cancelled"):
+                            logger.debug(f"Skipping completed OpenAI job: {job_id}")
+                            continue  # Skip completed jobs
+                        status = self._map_openai_status(status_str)
+                        # Try to extract model from metadata (metadata can be None)
+                        metadata = batch_info.get("metadata") or {}
+                        model = metadata.get("model", "gpt-4o")
+                    
+                    # Check if we're already tracking this job
+                    already_tracked = any(
+                        job.provider_job_id == job_id 
+                        for job in self._active_jobs.values()
+                    )
+                    if already_tracked:
+                        logger.debug(f"Skipping already tracked job: {job_id}")
+                        continue
+                    
+                    # Create a recovery job (no original requests/futures)
+                    from .models import BatchJob
+                    recovery_job = BatchJob(
+                        job_id=f"recovered_{job_id[:16]}",
+                        provider=provider,
+                        model=model,
+                        status=status,
+                        requests=[],  # No original requests available
+                    )
+                    recovery_job.provider_job_id = job_id
+                    
+                    async with self._jobs_lock:
+                        self._active_jobs[recovery_job.job_id] = recovery_job
+                    
+                    recovered_count += 1
+                    logger.info(f"Recovered batch job from {provider}: {job_id} (status: {status.value})")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to recover jobs from {provider}: {e}", exc_info=True)
+        
+        if recovered_count > 0:
+            logger.info(f"Recovered {recovered_count} active batch jobs from providers")
+            # Start polling if we have recovered jobs
+            self._ensure_polling_started()
+        else:
+            logger.info("No active batch jobs found to recover")
+        
+        return recovered_count
+    
+    def _map_gemini_state(self, state: str) -> "BatchStatus":
+        """Map Gemini job state to BatchStatus."""
+        from .models import BatchStatus
+        mapping = {
+            "JOB_STATE_PENDING": BatchStatus.PENDING,
+            "JOB_STATE_RUNNING": BatchStatus.IN_PROGRESS,
+            "JOB_STATE_SUCCEEDED": BatchStatus.COMPLETED,
+            "JOB_STATE_FAILED": BatchStatus.FAILED,
+            "JOB_STATE_CANCELLED": BatchStatus.CANCELLED,
+        }
+        return mapping.get(state, BatchStatus.PENDING)
+    
+    def _map_openai_status(self, status: str) -> "BatchStatus":
+        """Map OpenAI batch status to BatchStatus."""
+        from .models import BatchStatus
+        mapping = {
+            "validating": BatchStatus.VALIDATING,
+            "in_progress": BatchStatus.IN_PROGRESS,
+            "finalizing": BatchStatus.FINALIZING,
+            "completed": BatchStatus.COMPLETED,
+            "failed": BatchStatus.FAILED,
+            "expired": BatchStatus.EXPIRED,
+            "cancelled": BatchStatus.CANCELLED,
+            "cancelling": BatchStatus.CANCELLING,
+        }
+        return mapping.get(status, BatchStatus.PENDING)
+    
     async def stop(self) -> None:
         """Stop the batch queue manager and cleanup."""
         self._running = False
@@ -453,6 +572,9 @@ class BatchQueueManager:
         results: List[Dict[str, Any]],
     ) -> None:
         """Process batch results and distribute to waiting callers."""
+        # Recovered jobs have no original requests - skip result processing
+        is_recovered = job.job_id.startswith("recovered_")
+        
         for result in results:
             custom_id = result.get("custom_id")
             if not custom_id:
@@ -461,7 +583,9 @@ class BatchQueueManager:
             # Find the original request
             request = job.get_request_by_custom_id(custom_id)
             if not request:
-                logger.warning(f"No request found for custom_id: {custom_id}")
+                # Only warn for non-recovered jobs (recovered jobs have no requests by design)
+                if not is_recovered:
+                    logger.warning(f"No request found for custom_id: {custom_id}")
                 continue
             
             # Store result on request
