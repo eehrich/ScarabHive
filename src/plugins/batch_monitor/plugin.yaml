@@ -1,0 +1,11 @@
+name: batch_monitor
+version: "1.0.0"
+description: "Monitor and query batch queue status"
+author: "AgentSystem"
+type:
+- web
+entrypoint: plugin:PLUGIN_FACTORY
+
+requires:
+  agent_system: '>=0.4.0'
+

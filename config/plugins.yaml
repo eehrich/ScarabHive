@@ -129,6 +129,11 @@ plugins:
       host: 127.0.0.1
       port: 9000
 
+    batch_monitor:
+      type: batch_monitor
+      enabled: true
+      description: "Monitor and query batch queue status"
+
     twitter_search:
       type: twitter_search
       enabled: false

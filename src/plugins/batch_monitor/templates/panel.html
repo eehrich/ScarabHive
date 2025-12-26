@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Batch Queue Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .refresh-controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #1177bb;
+        }
+        
+        button:disabled {
+            background: #3c3c3c;
+            cursor: not-allowed;
+        }
+        
+        .auto-refresh-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #252526;
+            padding: 8px 12px;
+            border-radius: 4px;
+        }
+        
+        .auto-refresh-toggle input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        .last-update {
+            margin-left: auto;
+            color: #858585;
+            font-size: 13px;
+        }
+        
+        .summary-bar {
+            display: flex;
+            gap: 20px;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .summary-item {
+            flex: 1;
+        }
+        
+        .summary-label {
+            font-size: 12px;
+            color: #858585;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        
+        .summary-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: #d4d4d4;
+        }
+        
+        .queue-list {
+            display: grid;
+            gap: 15px;
+        }
+        
+        .queue-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            transition: border-color 0.2s;
+        }
+        
+        .queue-card:hover {
+            border-color: #569cd6;
+        }
+        
+        .queue-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .queue-key {
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            font-weight: 600;
+            color: #dcdcaa;
+        }
+        
+        .queue-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-idle {
+            background: #3a3a3a;
+            color: #858585;
+        }
+        
+        .status-pending {
+            background: #4d3800;
+            color: #ffcc00;
+        }
+        
+        .status-submitted {
+            background: #1a4a5c;
+            color: #4fc3f7;
+        }
+        
+        .status-in_progress {
+            background: #0d47a1;
+            color: #64b5f6;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        
+        .status-completed {
+            background: #1b5e20;
+            color: #81c784;
+        }
+        
+        .status-failed {
+            background: #b71c1c;
+            color: #e57373;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.7;
+            }
+        }
+        
+        .queue-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .detail-item {
+            padding: 12px;
+            background: #1e1e1e;
+            border-radius: 4px;
+        }
+        
+        .detail-label {
+            font-size: 11px;
+            color: #858585;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        
+        .detail-value {
+            font-size: 14px;
+            color: #d4d4d4;
+            font-weight: 500;
+        }
+        
+        .detail-value.monospace {
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+        
+        .error-count {
+            color: #e57373;
+            font-weight: 600;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #858585;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+        
+        .error-state {
+            background: #3c1f1f;
+            border: 1px solid #5c3030;
+            border-radius: 6px;
+            padding: 20px;
+            text-align: center;
+            color: #e57373;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border: 3px solid #3c3c3c;
+            border-top: 3px solid #569cd6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚡ Batch Queue Monitor</h1>
+        
+        <div class="refresh-controls">
+            <button id="refreshBtn" onclick="refresh()">
+                🔄 Refresh
+            </button>
+            <div class="auto-refresh-toggle">
+                <input type="checkbox" id="autoRefreshCheck" onchange="toggleAutoRefresh()">
+                <label for="autoRefreshCheck">Auto-refresh (5s)</label>
+            </div>
+            <div class="last-update" id="lastUpdate">Never</div>
+        </div>
+        
+        <div class="summary-bar" id="summaryBar" style="display: none;">
+            <div class="summary-item">
+                <div class="summary-label">Total Queues</div>
+                <div class="summary-value" id="totalQueues">0</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">Active Jobs</div>
+                <div class="summary-value" id="activeJobs">0</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">Total Completed</div>
+                <div class="summary-value" id="totalCompleted">—</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">Total Failed</div>
+                <div class="summary-value" id="totalFailed">—</div>
+            </div>
+        </div>
+        
+        <div id="queueList">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p style="margin-top: 15px;">Loading batch queues...</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let autoRefreshInterval = null;
+        let metrics = null;
+        
+        async function refresh() {
+            const refreshBtn = document.getElementById('refreshBtn');
+            refreshBtn.disabled = true;
+            
+            try {
+                // Fetch queues
+                const response = await fetch('/plugins/batch_monitor/queues');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Fetch metrics
+                try {
+                    const metricsResponse = await fetch('/plugins/batch_monitor/metrics');
+                    if (metricsResponse.ok) {
+                        metrics = await metricsResponse.json();
+                    }
+                } catch (e) {
+                    console.warn('Failed to fetch metrics:', e);
+                }
+                
+                renderQueues(data, metrics);
+                updateLastUpdate();
+                
+            } catch (error) {
+                console.error('Failed to refresh:', error);
+                renderError(error.message);
+            } finally {
+                refreshBtn.disabled = false;
+            }
+        }
+        
+        function renderQueues(data, metricsData) {
+            const queueList = document.getElementById('queueList');
+            const summaryBar = document.getElementById('summaryBar');
+            
+            if (data.status === 'unavailable') {
+                queueList.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">⚠️</div>
+                        <h2>Batch System Unavailable</h2>
+                        <p>${data.message || 'Batch queue manager not initialized'}</p>
+                        <p style="margin-top: 10px; font-size: 13px;">Enable batch processing in llm.yaml</p>
+                    </div>
+                `;
+                summaryBar.style.display = 'none';
+                return;
+            }
+            
+            // Update summary
+            document.getElementById('totalQueues').textContent = data.queue_count || 0;
+            const activeCount = data.queues.filter(q => q.active_job).length;
+            document.getElementById('activeJobs').textContent = activeCount;
+            
+            if (metricsData && metricsData.status === 'success') {
+                document.getElementById('totalCompleted').textContent = metricsData.total_completed;
+                document.getElementById('totalFailed').textContent = metricsData.total_failed;
+            }
+            
+            summaryBar.style.display = 'flex';
+            
+            // Render queue cards
+            if (data.queues.length === 0) {
+                queueList.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📋</div>
+                        <h2>No Batch Queues</h2>
+                        <p>No batch queues are currently configured</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            queueList.innerHTML = data.queues.map(queue => renderQueueCard(queue, data.collection_window_seconds)).join('');
+        }
+        
+        function renderQueueCard(queue, collectionWindow) {
+            const statusClass = `status-${queue.status.replace('_', '-')}`;
+            const statusIcon = getStatusIcon(queue.status);
+            
+            let detailsHTML = '';
+            
+            if (queue.status === 'idle' && queue.pending_requests > 0) {
+                detailsHTML = `
+                    <div class="queue-details">
+                        <div class="detail-item">
+                            <div class="detail-label">Pending Requests</div>
+                            <div class="detail-value">${queue.pending_requests}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Next Submit</div>
+                            <div class="detail-value">~${collectionWindow}s</div>
+                        </div>
+                    </div>
+                `;
+            } else if (queue.active_job) {
+                const job = queue.active_job;
+                const elapsed = formatDuration(job.elapsed_seconds);
+                const progress = job.total_requests > 0
+                    ? `${job.completed_count} / ${job.total_requests}`
+                    : '—';
+                
+                detailsHTML = `
+                    <div class="queue-details">
+                        <div class="detail-item">
+                            <div class="detail-label">Job ID</div>
+                            <div class="detail-value monospace">${escapeHtml(job.job_id.substring(0, 8))}...</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Progress</div>
+                            <div class="detail-value">${progress}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Elapsed Time</div>
+                            <div class="detail-value">${elapsed}</div>
+                        </div>
+                        ${job.failed_count > 0 ? `
+                        <div class="detail-item">
+                            <div class="detail-label">Failed</div>
+                            <div class="detail-value error-count">${job.failed_count}</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+            } else if (queue.status === 'idle') {
+                detailsHTML = `
+                    <div class="queue-details">
+                        <div class="detail-item">
+                            <div class="detail-label">Status</div>
+                            <div class="detail-value">No active jobs</div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            return `
+                <div class="queue-card">
+                    <div class="queue-header">
+                        <div class="queue-key">${escapeHtml(queue.queue_key)}</div>
+                        <span class="queue-status-badge ${statusClass}">${statusIcon} ${queue.status}</span>
+                    </div>
+                    ${detailsHTML}
+                </div>
+            `;
+        }
+        
+        function getStatusIcon(status) {
+            const icons = {
+                'idle': '○',
+                'pending': '◐',
+                'submitted': '◑',
+                'in_progress': '●',
+                'completed': '✓',
+                'failed': '✗',
+            };
+            return icons[status] || '?';
+        }
+        
+        function formatDuration(seconds) {
+            if (!seconds) return '—';
+            if (seconds < 60) return `${seconds}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+            const hours = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            return `${hours}h ${mins}m`;
+        }
+        
+        function escapeHtml(unsafe) {
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+        
+        function renderError(message) {
+            const queueList = document.getElementById('queueList');
+            queueList.innerHTML = `
+                <div class="error-state">
+                    <h2>⚠️ Error Loading Queues</h2>
+                    <p style="margin-top: 10px;">${escapeHtml(message)}</p>
+                </div>
+            `;
+            document.getElementById('summaryBar').style.display = 'none';
+        }
+        
+        function updateLastUpdate() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString();
+            document.getElementById('lastUpdate').textContent = `Last update: ${timeStr}`;
+        }
+        
+        function toggleAutoRefresh() {
+            const checked = document.getElementById('autoRefreshCheck').checked;
+            
+            if (checked) {
+                autoRefreshInterval = setInterval(refresh, 5000);
+                console.log('Auto-refresh enabled');
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+                console.log('Auto-refresh disabled');
+            }
+        }
+        
+        // Initial load
+        refresh();
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

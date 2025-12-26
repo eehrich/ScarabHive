@@ -1,0 +1,52 @@
+# Web UI configuration for Batch Monitor Plugin
+
+web_ui:
+  # Dropdown menu integration
+  menu:
+    enabled: true
+    items:
+      - id: "batch_queues"
+        menu_id: "user"
+        section: "Monitoring"
+        label: "Batch Queues"
+        action: "openPanel"
+        panel_id: "batch_monitor"
+        icon: "⚡"
+        requires_admin: false
+        order: 200
+        tooltip: "Monitor batch queue status"
+
+  panel:
+    enabled: true
+    title: "Batch Queues"
+    endpoint: "/plugins/batch_monitor/"
+    type: "iframe"
+    width: "900px"
+    height: "600px"
+
+  # Access control
+  requires_auth: false  # Public monitoring
+  requires_role: null
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "get_panel"
+      response_type: "html"
+      description: "Batch queue monitoring panel"
+    - path: "/queues"
+      method: "GET"
+      handler: "get_queues"
+      response_type: "json"
+      description: "Get all queue statuses as JSON"
+    - path: "/queues/{queue_key}"
+      method: "GET"
+      handler: "get_queue_detail"
+      response_type: "json"
+      description: "Get detailed status of specific queue"
+    - path: "/metrics"
+      method: "GET"
+      handler: "get_metrics"
+      response_type: "json"
+      description: "Get overall batch system metrics"
+
