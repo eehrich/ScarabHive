@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
-from ...mcp.status import publish_status, StatusPhase, current_request_id
+from ...mcp.status import publish_status, status_scope, StatusPhase, current_request_id
 
 if TYPE_CHECKING:
     from agent_system.config.models import BatchAPIConfig
@@ -269,13 +269,17 @@ class BatchQueueManager:
                     self._collection_window_task(queue_key, provider, model),
                     name=f"batch_collection_{queue_key}"
                 )
-                # Publish status update about batch collection starting
-                await publish_status(
-                    server="batch_queue",
-                    message=f"Batch: Collecting requests for {self._collection_window}s before submission",
-                    phase=StatusPhase.PROGRESS,
-                    meta={"queue": queue_key, "collection_window": self._collection_window}
-                )
+                # Send status message using agent_request_id so it shows up in web client
+                # Use extended request_id format: {agent_request_id}_queue_{queue_key}
+                if agent_request_id:
+                    extended_request_id = f"{agent_request_id}_queue_{queue_key.replace(':', '_')}"
+                    await publish_status(
+                        server="batch_queue",
+                        message=f"Batch: Collecting requests for {self._collection_window}s before submission",
+                        phase=StatusPhase.PROGRESS,
+                        request_id=extended_request_id,
+                        meta={"queue": queue_key, "collection_window": self._collection_window}
+                    )
         
         # Wait for result
         timeout = timeout or (self._max_wait_hours * 3600)
@@ -299,11 +303,13 @@ class BatchQueueManager:
         model: str,
     ) -> None:
         """Background task that waits for collection window then submits batch."""
+        # During collection, we don't have a request_id yet (requests haven't been queued)
+        # So we just wait silently - the status messages will start once we submit
         await asyncio.sleep(self._collection_window)
         
         if not self._running:
             return
-        
+            
         await self._submit_batch(queue_key, provider, model)
     
     async def _submit_batch(
@@ -336,13 +342,25 @@ class BatchQueueManager:
             f"Submitting batch for {queue_key} with {len(batch_requests)} requests"
         )
         
-        # Create batch job
+        # Create batch job and store extended request_id for status messages
+        # Get agent_request_id from first request (if any) and extend with queue_key
+        agent_request_id = None
+        if batch_requests:
+            agent_request_id = batch_requests[0].metadata.get("agent_request_id")
+        
+        # Create extended request_id for this batch queue
+        if agent_request_id:
+            extended_request_id = f"{agent_request_id}_queue_{queue_key.replace(':', '_')}"
+        else:
+            extended_request_id = f"batch_{queue_key.replace(':', '_')}"
+        
         job = BatchJob(
             job_id=str(uuid.uuid4()),
             provider=provider,
             model=model,
             status=BatchStatus.PENDING,
             requests=batch_requests,
+            metadata={"extended_request_id": extended_request_id},  # Store for later use in polling
         )
         
         # Store job
@@ -374,11 +392,13 @@ class BatchQueueManager:
                 f"Batch job {job.job_id} submitted to {provider} as {provider_job_id}"
             )
             
-            # Publish status update about batch submission
+            # Send one-time status message about submission using extended_request_id
+            extended_request_id = job.metadata.get("extended_request_id")
             await publish_status(
                 server="batch_queue",
-                message=f"Batch: Job submitted to {provider}, waiting for results (poll interval: {self._poll_interval}s)",
+                message=f"Batch: Job submitted to {provider} ({len(batch_requests)} requests), polling every {self._poll_interval}s",
                 phase=StatusPhase.PROGRESS,
+                request_id=extended_request_id,
                 meta={"provider": provider, "job_id": provider_job_id, "request_count": len(batch_requests)}
             )
             
@@ -454,7 +474,7 @@ class BatchQueueManager:
                         server="batch_queue",
                         message=f"Batch: Job status changed to {job.status.value}",
                         phase=StatusPhase.PROGRESS,
-                        request_id=agent_request_id,
+                        request_id=extended_request_id,
                         meta={"provider": job.provider, "job_id": job.provider_job_id, "status": job.status.value}
                     )
                 else:
@@ -469,7 +489,7 @@ class BatchQueueManager:
                         server="batch_queue",
                         message=f"Batch: Polling... status={job.status.value}, elapsed={elapsed}s",
                         phase=StatusPhase.PROGRESS,
-                        request_id=agent_request_id,
+                        request_id=extended_request_id,
                         meta={"provider": job.provider, "status": job.status.value, "elapsed_seconds": elapsed}
                     )
             
@@ -480,27 +500,30 @@ class BatchQueueManager:
                 await self._process_results(job, results)
                 await self._complete_job(job)
                 
-                # Publish status update about batch completion
-                await publish_status(
-                    server="batch_queue",
-                    message=f"Batch: Results received ({job.completed_count} completed, {job.failed_count} failed)",
-                    phase=StatusPhase.PROGRESS,
-                    request_id=agent_request_id,
-                    meta={"provider": job.provider, "completed": job.completed_count, "failed": job.failed_count}
-                )
+                # Send completion status with proper END phase
+                async with status_scope(
+                    status_bus,
+                    "batch_queue",
+                    request_id=extended_request_id,
+                    start_msg=f"Batch: Processing {job.completed_count + job.failed_count} results",
+                    end_msg=f"Batch: Completed - {job.completed_count} succeeded, {job.failed_count} failed"
+                ) as status:
+                    await status.progress(f"Results received from {job.provider}", 
+                                        meta={"provider": job.provider, "completed": job.completed_count, "failed": job.failed_count})
                 
             elif job.status in (BatchStatus.FAILED, BatchStatus.EXPIRED, BatchStatus.CANCELLED):
                 job.error_message = status_info.get("error", "Unknown error")
                 await self._complete_job(job)
                 
-                # Publish error status
-                await publish_status(
-                    server="batch_queue",
-                    message=f"Batch: Job {job.status.value}: {job.error_message}",
-                    phase=StatusPhase.ERROR,
-                    request_id=agent_request_id,
-                    meta={"provider": job.provider, "status": job.status.value}
-                )
+                # Send error status with proper ERROR phase
+                async with status_scope(
+                    status_bus,
+                    "batch_queue",
+                    request_id=extended_request_id,
+                    start_msg=f"Batch: Job {job.status.value}"
+                ) as status:
+                    await status.error(f"Batch failed: {job.error_message}", 
+                                     meta={"provider": job.provider, "status": job.status.value})
                 
             # Check for timeout
             elif job.submitted_at:
