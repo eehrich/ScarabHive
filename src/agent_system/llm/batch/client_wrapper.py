@@ -239,6 +239,11 @@ class BatchLLMClient(LLMClient):
         Returns:
             Result dict or None if failed
         """
+        # Check cancellation before starting
+        if cancellation_token and cancellation_token.is_cancelled:
+            logger.info("Batch request cancelled before submission")
+            raise asyncio.CancelledError("Cancelled before batch submission")
+        
         # Convert messages to JSON-serializable format
         # Use mode='json' to ensure datetime objects are converted to ISO strings
         messages_data = []
@@ -255,12 +260,13 @@ class BatchLLMClient(LLMClient):
                 })
         
         try:
-            # Submit to queue and get future
+            # Submit to queue and get future with cancellation support
             result = await self.queue_manager.submit_request(
                 model=self.model_name,
                 provider=self.provider,
                 messages=messages_data,
                 tools=tools,
+                cancellation_token=cancellation_token,
             )
             return result
             

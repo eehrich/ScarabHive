@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
+from agent_system.utils.id import short_id
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
 
 if TYPE_CHECKING:
@@ -225,7 +226,7 @@ class BatchQueueManager:
                     # Create a recovery job (no original requests/futures)
                     from .models import BatchJob
                     recovery_job = BatchJob(
-                        job_id=f"recovered_{job_id[:16]}",
+                        job_id=f"rec_{short_id()}",
                         provider=provider,
                         model=model,
                         status=status,
@@ -313,6 +314,7 @@ class BatchQueueManager:
         agent_name: Optional[str] = None,
         custom_id: Optional[str] = None,
         timeout: Optional[float] = None,
+        cancellation_token: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Submit a request for batch processing.
         
@@ -328,6 +330,7 @@ class BatchQueueManager:
             agent_name: Optional agent name
             custom_id: Optional custom ID for correlation
             timeout: Optional timeout in seconds (default: max_wait_hours * 3600)
+            cancellation_token: Optional cancellation token
             
         Returns:
             Response dict when batch completes
@@ -335,6 +338,7 @@ class BatchQueueManager:
         Raises:
             asyncio.TimeoutError: If batch doesn't complete within timeout
             RuntimeError: If batch fails
+            asyncio.CancelledError: If request is cancelled
         """
         # Ensure polling task is started in this event loop
         # This is critical for CLI which uses multiple asyncio.run() calls
@@ -382,16 +386,41 @@ class BatchQueueManager:
                     name=f"batch_collection_{queue_key}"
                 )
         
-        # Wait for result
+        # Wait for result with cancellation support
         timeout = timeout or (self._max_wait_hours * 3600)
+        check_interval = 0.5  # Check cancellation every 0.5 seconds
+        elapsed = 0.0
+        
         try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-            return result
-        except asyncio.TimeoutError:
+            while elapsed < timeout:
+                # Check cancellation token
+                if cancellation_token and cancellation_token.is_cancelled:
+                    logger.info(f"Request {request.request_id} cancelled via token")
+                    self._request_futures.pop(request.request_id, None)
+                    # Remove from queue if not yet submitted
+                    async with self._queue_locks[queue_key]:
+                        self._queues[queue_key] = [
+                            r for r in self._queues[queue_key] 
+                            if r.request_id != request.request_id
+                        ]
+                    raise asyncio.CancelledError("Cancelled by user")
+                
+                # Wait for result with short timeout
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.shield(future), 
+                        timeout=check_interval
+                    )
+                    return result
+                except asyncio.TimeoutError:
+                    elapsed += check_interval
+                    continue
+                    
+            # Total timeout exceeded
             logger.error(f"Request {request.request_id} timed out after {timeout}s")
-            # Clean up
             self._request_futures.pop(request.request_id, None)
-            raise
+            raise asyncio.TimeoutError(f"Batch request timed out after {timeout}s")
+            
         except asyncio.CancelledError:
             logger.warning(f"Request {request.request_id} was cancelled")
             self._request_futures.pop(request.request_id, None)
@@ -444,7 +473,7 @@ class BatchQueueManager:
         )
         
         job = BatchJob(
-            job_id=str(uuid.uuid4()),
+            job_id=short_id(),
             provider=provider,
             model=model,
             status=BatchStatus.PENDING,
@@ -573,7 +602,7 @@ class BatchQueueManager:
     ) -> None:
         """Process batch results and distribute to waiting callers."""
         # Recovered jobs have no original requests - skip result processing
-        is_recovered = job.job_id.startswith("recovered_")
+        is_recovered = job.job_id.startswith("rec_")
         
         for result in results:
             custom_id = result.get("custom_id")
