@@ -99,9 +99,9 @@ llm_system:
         default_api_type: chat_completions
       batch:
         enabled: true
-        collection_window_seconds: 60   # 1 minutes collection window
+        collection_window_seconds: 30   # 1 minutes collection window
         max_requests_per_batch: 100     # Up to 100 requests per batch
-        poll_interval_seconds: 60       # Check status every minute
+        poll_interval_seconds: 10       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
         cancel_on_startup: true        
         fallback_to_sync: false         # Fall back to sync if batch fails
@@ -252,9 +252,9 @@ llm_system:
         image_detail_control: true
       batch:
         enabled: true
-        collection_window_seconds: 60   # 1 minutes collection window
-        max_requests_per_batch: 50000   # Up to 50k requests per batch
-        poll_interval_seconds: 60       # Check status every minute
+        collection_window_seconds: 30   # 1 minutes collection window
+        max_requests_per_batch: 100     # Up to 50k requests per batch
+        poll_interval_seconds: 10       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
         cancel_on_startup: true        
         fallback_to_sync: false         # Fall back to sync if batch fails

@@ -103,12 +103,63 @@ class BatchLLMClient(LLMClient):
                 return await self.underlying_client.chat(messages, cancellation_token)
             raise RuntimeError("Batch request failed and fallback is disabled")
             
-        # Extract text from result
+        # Extract text from result - support both OpenAI batch format and native format
+        return self._extract_content(result)
+    
+    def _extract_content(self, result: Any) -> str:
+        """Extract content from batch response.
+        
+        Supports both OpenAI batch format (choices[0].message.content)
+        and native format (assistant.content).
+        """
         if isinstance(result, dict):
+            # Try OpenAI batch format first: {"choices": [{"message": {"content": "..."}}]}
+            choices = result.get("choices")
+            if choices and isinstance(choices, list) and len(choices) > 0:
+                message = choices[0].get("message", {})
+                content = message.get("content", "")
+                if content:
+                    return content if isinstance(content, str) else str(content)
+            
+            # Try native format: {"assistant": {"content": "..."}}
             assistant = result.get("assistant", {})
-            content = assistant.get("content", "")
-            return content if isinstance(content, str) else str(content)
-        return str(result)
+            if isinstance(assistant, dict):
+                content = assistant.get("content", "")
+                if content:
+                    return content if isinstance(content, str) else str(content)
+            
+            # Try direct content
+            content = result.get("content", "")
+            if content:
+                return content if isinstance(content, str) else str(content)
+                
+        return str(result) if result else ""
+    
+    def _convert_to_native_format(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert OpenAI batch format to native format expected by agent.
+        
+        OpenAI batch format: {"choices": [{"message": {"role": "assistant", "content": "..."}}]}
+        Native format: {"assistant": {"role": "assistant", "content": "..."}}
+        """
+        if not isinstance(result, dict):
+            return {"assistant": {"role": "assistant", "content": str(result)}}
+        
+        # Already in native format
+        if "assistant" in result:
+            return result
+            
+        # Convert from OpenAI batch format
+        choices = result.get("choices")
+        if choices and isinstance(choices, list) and len(choices) > 0:
+            message = choices[0].get("message", {})
+            return {"assistant": message}
+        
+        # If we have direct content, wrap it
+        if "content" in result:
+            return {"assistant": {"role": "assistant", "content": result["content"]}}
+            
+        # Return as-is if we can't determine the format
+        return result
     
     async def chat_tools(
         self,
@@ -141,7 +192,8 @@ class BatchLLMClient(LLMClient):
                 )
             raise RuntimeError("Batch request failed and fallback is disabled")
             
-        return result
+        # Convert from OpenAI batch format to native format
+        return self._convert_to_native_format(result)
     
     async def chat_tools_streaming(
         self,
