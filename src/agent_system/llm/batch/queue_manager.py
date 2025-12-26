@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
+from ...mcp.status import publish_status, StatusPhase, current_request_id
 
 if TYPE_CHECKING:
     from agent_system.config.models import BatchAPIConfig
@@ -99,6 +100,7 @@ class BatchQueueManager:
         self._submission_tasks: Dict[str, asyncio.Task] = {}
         self._polling_task: Optional[asyncio.Task] = None
         self._running = False
+        self._polling_started = False  # Track if polling task was started
         
         # Batch client callbacks (set by register_batch_client)
         self._batch_clients: Dict[str, Any] = {}  # provider -> client
@@ -123,24 +125,45 @@ class BatchQueueManager:
         self._batch_clients[provider] = client
         logger.info(f"Registered batch client for provider: {provider}")
     
+    def _ensure_polling_started(self) -> None:
+        """Ensure polling task is started in the current event loop.
+        
+        This is called lazily on first request to ensure the polling task
+        runs in the same event loop as the agent. This is necessary because
+        the CLI uses multiple asyncio.run() calls which create separate
+        event loops.
+        """
+        if self._polling_started:
+            return
+        
+        self._polling_started = True
+        self._polling_task = asyncio.create_task(
+            self._poll_active_jobs(),
+            name="batch_polling"
+        )
+        logger.debug("Polling task started lazily in current event loop")
+    
     async def start(self) -> None:
-        """Start the batch queue manager background tasks."""
+        """Start the batch queue manager background tasks.
+        
+        Note: The polling task is now started lazily on first request
+        to ensure it runs in the correct event loop.
+        """
         if self._running:
             return
         
         self._running = True
         
-        # Start the polling task
-        self._polling_task = asyncio.create_task(
-            self._poll_active_jobs(),
-            name="batch_polling"
-        )
+        # Note: Polling task is started lazily in _ensure_polling_started()
+        # to ensure it runs in the same event loop as the agent.
+        # This is necessary for CLI which uses multiple asyncio.run() calls.
         
         logger.info("BatchQueueManager started")
     
     async def stop(self) -> None:
         """Stop the batch queue manager and cleanup."""
         self._running = False
+        self._polling_started = False  # Reset for potential restart
         
         # Cancel submission tasks
         for task in self._submission_tasks.values():
@@ -153,6 +176,7 @@ class BatchQueueManager:
                 await self._polling_task
             except asyncio.CancelledError:
                 pass
+            self._polling_task = None
         
         # Cancel any waiting futures
         for future in self._request_futures.values():
@@ -194,7 +218,17 @@ class BatchQueueManager:
             asyncio.TimeoutError: If batch doesn't complete within timeout
             RuntimeError: If batch fails
         """
+        # Ensure polling task is started in this event loop
+        # This is critical for CLI which uses multiple asyncio.run() calls
+        self._ensure_polling_started()
+        
         # Create request
+        # Capture current_request_id for status updates during polling
+        try:
+            agent_request_id = current_request_id.get()
+        except Exception:
+            agent_request_id = None
+            
         request = BatchRequest(
             request_id=str(uuid.uuid4()),
             custom_id=custom_id or str(uuid.uuid4()),
@@ -203,7 +237,7 @@ class BatchQueueManager:
             tools=tools,
             session_id=session_id,
             agent_name=agent_name,
-            metadata={"provider": provider},
+            metadata={"provider": provider, "agent_request_id": agent_request_id},
         )
         
         # Create future for this request
@@ -234,6 +268,13 @@ class BatchQueueManager:
                 self._submission_tasks[queue_key] = asyncio.create_task(
                     self._collection_window_task(queue_key, provider, model),
                     name=f"batch_collection_{queue_key}"
+                )
+                # Publish status update about batch collection starting
+                await publish_status(
+                    server="batch_queue",
+                    message=f"Batch: Collecting requests for {self._collection_window}s before submission",
+                    phase=StatusPhase.PROGRESS,
+                    meta={"queue": queue_key, "collection_window": self._collection_window}
                 )
         
         # Wait for result
@@ -333,6 +374,14 @@ class BatchQueueManager:
                 f"Batch job {job.job_id} submitted to {provider} as {provider_job_id}"
             )
             
+            # Publish status update about batch submission
+            await publish_status(
+                server="batch_queue",
+                message=f"Batch: Job submitted to {provider}, waiting for results (poll interval: {self._poll_interval}s)",
+                phase=StatusPhase.PROGRESS,
+                meta={"provider": provider, "job_id": provider_job_id, "request_count": len(batch_requests)}
+            )
+            
         except Exception as e:
             logger.error(f"Failed to submit batch job {job.job_id}: {e}")
             job.status = BatchStatus.FAILED
@@ -343,11 +392,16 @@ class BatchQueueManager:
     
     async def _poll_active_jobs(self) -> None:
         """Background task that polls active batch jobs for status updates."""
+        logger.debug("Batch polling task started, interval=%ss", self._poll_interval)
+        poll_cycle = 0
         while self._running:
             try:
+                poll_cycle += 1
+                logger.debug("Batch polling: sleeping for %ss (cycle %d)", self._poll_interval, poll_cycle)
                 await asyncio.sleep(self._poll_interval)
                 
                 if not self._running:
+                    logger.debug("Batch polling task stopping (not running)")
                     break
                 
                 # Get list of active jobs
@@ -356,6 +410,9 @@ class BatchQueueManager:
                         job for job in self._active_jobs.values()
                         if not job.is_terminal and job.provider_job_id
                     ]
+                
+                if jobs_to_poll:
+                    logger.debug("Batch polling: found %d active jobs to poll", len(jobs_to_poll))
                 
                 for job in jobs_to_poll:
                     await self._poll_job(job)
@@ -367,9 +424,16 @@ class BatchQueueManager:
     
     async def _poll_job(self, job: BatchJob) -> None:
         """Poll a single batch job for status updates."""
+        logger.debug("Polling batch job %s (provider: %s)", job.job_id[:8], job.provider)
         client = self._batch_clients.get(job.provider)
         if not client:
+            logger.warning("No batch client for provider: %s", job.provider)
             return
+        
+        # Get agent_request_id from the first request in the job for status updates
+        agent_request_id = None
+        if job.requests:
+            agent_request_id = job.requests[0].metadata.get("agent_request_id")
         
         try:
             # Get status from provider
@@ -385,9 +449,28 @@ class BatchQueueManager:
                         f"Batch job {job.job_id} status changed: "
                         f"{old_status.value} -> {job.status.value}"
                     )
+                    # Publish status update about job progress
+                    await publish_status(
+                        server="batch_queue",
+                        message=f"Batch: Job status changed to {job.status.value}",
+                        phase=StatusPhase.PROGRESS,
+                        request_id=agent_request_id,
+                        meta={"provider": job.provider, "job_id": job.provider_job_id, "status": job.status.value}
+                    )
                 else:
                     logger.debug(
                         f"Batch job {job.job_id} status: {job.status.value}"
+                    )
+                    # Publish status update for every poll cycle to show we're still waiting
+                    elapsed = 0
+                    if job.submitted_at:
+                        elapsed = int((_utc_now() - job.submitted_at).total_seconds())
+                    await publish_status(
+                        server="batch_queue",
+                        message=f"Batch: Polling... status={job.status.value}, elapsed={elapsed}s",
+                        phase=StatusPhase.PROGRESS,
+                        request_id=agent_request_id,
+                        meta={"provider": job.provider, "status": job.status.value, "elapsed_seconds": elapsed}
                     )
             
             # Check if completed
@@ -397,9 +480,27 @@ class BatchQueueManager:
                 await self._process_results(job, results)
                 await self._complete_job(job)
                 
+                # Publish status update about batch completion
+                await publish_status(
+                    server="batch_queue",
+                    message=f"Batch: Results received ({job.completed_count} completed, {job.failed_count} failed)",
+                    phase=StatusPhase.PROGRESS,
+                    request_id=agent_request_id,
+                    meta={"provider": job.provider, "completed": job.completed_count, "failed": job.failed_count}
+                )
+                
             elif job.status in (BatchStatus.FAILED, BatchStatus.EXPIRED, BatchStatus.CANCELLED):
                 job.error_message = status_info.get("error", "Unknown error")
                 await self._complete_job(job)
+                
+                # Publish error status
+                await publish_status(
+                    server="batch_queue",
+                    message=f"Batch: Job {job.status.value}: {job.error_message}",
+                    phase=StatusPhase.ERROR,
+                    request_id=agent_request_id,
+                    meta={"provider": job.provider, "status": job.status.value}
+                )
                 
             # Check for timeout
             elif job.submitted_at:
