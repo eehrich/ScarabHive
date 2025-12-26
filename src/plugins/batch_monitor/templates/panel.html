@@ -412,14 +412,17 @@
         function renderQueueCard(queue, collectionWindow) {
             const statusClass = `status-${queue.status.replace('_', '-')}`;
             const statusIcon = getStatusIcon(queue.status);
+            const activeJobs = queue.active_jobs || [];
+            const jobCount = activeJobs.length;
             
             let detailsHTML = '';
             
-            if (queue.status === 'idle' && queue.pending_requests > 0) {
-                detailsHTML = `
-                    <div class="queue-details">
+            // Show pending requests info if any
+            if (queue.pending_requests > 0) {
+                detailsHTML += `
+                    <div class="queue-details" style="margin-bottom: 10px;">
                         <div class="detail-item">
-                            <div class="detail-label">Pending Requests</div>
+                            <div class="detail-label">Queued Requests</div>
                             <div class="detail-value">${queue.pending_requests}</div>
                         </div>
                         <div class="detail-item">
@@ -428,36 +431,46 @@
                         </div>
                     </div>
                 `;
-            } else if (queue.active_job) {
-                const job = queue.active_job;
-                const elapsed = formatDuration(job.elapsed_seconds);
-                const progress = job.total_requests > 0
-                    ? `${job.completed_count} / ${job.total_requests}`
-                    : '—';
-                
-                detailsHTML = `
-                    <div class="queue-details">
-                        <div class="detail-item">
-                            <div class="detail-label">Job ID</div>
-                            <div class="detail-value monospace">${escapeHtml(job.job_id)}</div>
+            }
+            
+            // Show all active jobs
+            if (jobCount > 0) {
+                for (let i = 0; i < activeJobs.length; i++) {
+                    const job = activeJobs[i];
+                    const elapsed = formatDuration(job.elapsed_seconds);
+                    const progress = job.total_requests > 0
+                        ? `${job.completed_count} / ${job.total_requests}`
+                        : '—';
+                    const jobStatusClass = `status-${job.status.replace('_', '-')}`;
+                    const jobStatusIcon = getStatusIcon(job.status);
+                    
+                    detailsHTML += `
+                        <div class="job-section" style="${i > 0 ? 'margin-top: 12px; padding-top: 12px; border-top: 1px solid #3e3e42;' : ''}">
+                            ${jobCount > 1 ? `<div style="font-size: 11px; color: #858585; margin-bottom: 8px;">Job ${i + 1} of ${jobCount} <span class="queue-status-badge ${jobStatusClass}" style="font-size: 10px; padding: 2px 6px;">${jobStatusIcon} ${job.status}</span></div>` : ''}
+                            <div class="queue-details">
+                                <div class="detail-item">
+                                    <div class="detail-label">Job ID</div>
+                                    <div class="detail-value monospace">${escapeHtml(job.job_id)}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">Progress</div>
+                                    <div class="detail-value">${progress}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">Elapsed Time</div>
+                                    <div class="detail-value">${elapsed}</div>
+                                </div>
+                                ${job.failed_count > 0 ? `
+                                <div class="detail-item">
+                                    <div class="detail-label">Failed</div>
+                                    <div class="detail-value error-count">${job.failed_count}</div>
+                                </div>
+                                ` : ''}
+                            </div>
                         </div>
-                        <div class="detail-item">
-                            <div class="detail-label">Progress</div>
-                            <div class="detail-value">${progress}</div>
-                        </div>
-                        <div class="detail-item">
-                            <div class="detail-label">Elapsed Time</div>
-                            <div class="detail-value">${elapsed}</div>
-                        </div>
-                        ${job.failed_count > 0 ? `
-                        <div class="detail-item">
-                            <div class="detail-label">Failed</div>
-                            <div class="detail-value error-count">${job.failed_count}</div>
-                        </div>
-                        ` : ''}
-                    </div>
-                `;
-            } else if (queue.status === 'idle') {
+                    `;
+                }
+            } else if (queue.status === 'idle' && queue.pending_requests === 0) {
                 detailsHTML = `
                     <div class="queue-details">
                         <div class="detail-item">
@@ -468,10 +481,13 @@
                 `;
             }
             
+            // Show job count in header if multiple
+            const jobCountBadge = jobCount > 1 ? `<span style="font-size: 12px; color: #858585; margin-left: 10px;">(${jobCount} jobs)</span>` : '';
+            
             return `
                 <div class="queue-card">
                     <div class="queue-header">
-                        <div class="queue-key">${escapeHtml(queue.queue_key)}</div>
+                        <div class="queue-key">${escapeHtml(queue.queue_key)}${jobCountBadge}</div>
                         <span class="queue-status-badge ${statusClass}">${statusIcon} ${queue.status}</span>
                     </div>
                     ${detailsHTML}

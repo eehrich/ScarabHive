@@ -132,42 +132,51 @@ class BatchMonitorWebFactory:
             # Get pending requests for this queue
             pending_requests = manager._queues.get(queue_key, [])
             
+            # Find ALL active jobs for this queue (can be multiple parallel)
+            active_jobs = []
+            for job in manager._active_jobs.values():
+                if f"{job.provider}:{job.model}" == queue_key:
+                    elapsed_seconds = None
+                    if job.submitted_at:
+                        elapsed_seconds = int((now - job.submitted_at).total_seconds())
+                    
+                    active_jobs.append({
+                        "job_id": job.job_id,
+                        "provider_job_id": job.provider_job_id,
+                        "status": job.status.value,
+                        "total_requests": len(job.requests),
+                        "completed_count": job.completed_count,
+                        "failed_count": job.failed_count,
+                        "submitted_at": job.submitted_at.isoformat() if job.submitted_at else None,
+                        "elapsed_seconds": elapsed_seconds,
+                    })
+            
+            # Determine queue status from jobs
+            if active_jobs:
+                # Use the "most active" status (in_progress > submitted > pending)
+                statuses = [j["status"] for j in active_jobs]
+                if "in_progress" in statuses:
+                    queue_status = "in_progress"
+                elif "submitted" in statuses:
+                    queue_status = "submitted"
+                else:
+                    queue_status = statuses[0]
+            else:
+                queue_status = "idle"
+            
             queue_data = {
                 "queue_key": queue_key,
                 "provider": provider,
                 "model": model,
                 "pending_requests": len(pending_requests),
-                "status": "idle",
-                "active_job": None,
+                "status": queue_status,
+                "active_jobs": active_jobs,
+                # Keep backward compat: active_job = first job or None
+                "active_job": active_jobs[0] if active_jobs else None,
             }
             
-            # Find active job for this queue
-            active_job = None
-            for job in manager._active_jobs.values():
-                if f"{job.provider}:{job.model}" == queue_key:
-                    active_job = job
-                    break
-            
-            if active_job:
-                queue_data["status"] = active_job.status.value
-                
-                elapsed_seconds = None
-                if active_job.submitted_at:
-                    elapsed_seconds = int((now - active_job.submitted_at).total_seconds())
-                
-                queue_data["active_job"] = {
-                    "job_id": active_job.job_id,
-                    "provider_job_id": active_job.provider_job_id,
-                    "status": active_job.status.value,
-                    "total_requests": len(active_job.requests),
-                    "completed_count": active_job.completed_count,
-                    "failed_count": active_job.failed_count,
-                    "submitted_at": active_job.submitted_at.isoformat() if active_job.submitted_at else None,
-                    "elapsed_seconds": elapsed_seconds,
-                }
-            
-            # Skip empty idle queues (no pending requests and no active job)
-            if not active_job and len(pending_requests) == 0:
+            # Skip empty idle queues (no pending requests and no active jobs)
+            if not active_jobs and len(pending_requests) == 0:
                 continue
             
             queues.append(queue_data)
