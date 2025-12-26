@@ -166,6 +166,10 @@ class BatchMonitorWebFactory:
                     "elapsed_seconds": elapsed_seconds,
                 }
             
+            # Skip empty idle queues (no pending requests and no active job)
+            if not active_job and len(pending_requests) == 0:
+                continue
+            
             queues.append(queue_data)
         
         return JSONResponse({
@@ -259,26 +263,29 @@ class BatchMonitorWebFactory:
                 "message": "Batch queue manager not initialized"
             })
         
-        # Count unique queue keys from both pending queues and active jobs
-        all_queue_keys: set[str] = set(manager._queues.keys())
-        for job in manager._active_jobs.values():
-            all_queue_keys.add(f"{job.provider}:{job.model}")
+        # Use manager._metrics for cumulative totals (survives job completion)
+        metrics = manager._metrics
         
-        total_queues = len(all_queue_keys)
-        active_queues = len(manager._active_jobs)
-        idle_queues = total_queues - active_queues
+        # Count active queues (queues with pending requests or active jobs)
+        active_queue_keys: set[str] = set()
+        for job in manager._active_jobs.values():
+            active_queue_keys.add(f"{job.provider}:{job.model}")
+        for queue_key, requests in manager._queues.items():
+            if requests:  # has pending requests
+                active_queue_keys.add(queue_key)
+        
         total_pending = sum(len(requests) for requests in manager._queues.values())
-        total_completed = sum(job.completed_count for job in manager._active_jobs.values())
-        total_failed = sum(job.failed_count for job in manager._active_jobs.values())
         
         return JSONResponse({
             "status": "success",
-            "total_queues": total_queues,
-            "active_queues": active_queues,
-            "idle_queues": idle_queues,
+            "total_queues": len(active_queue_keys),
+            "active_jobs": len(manager._active_jobs),
             "total_pending_requests": total_pending,
-            "total_completed_requests": total_completed,
-            "total_failed_requests": total_failed,
+            "total_completed_requests": metrics.completed_requests,
+            "total_failed_requests": metrics.failed_requests,
+            "total_jobs": metrics.total_jobs,
+            "completed_jobs": metrics.completed_jobs,
+            "failed_jobs": metrics.failed_jobs,
         })
 
 

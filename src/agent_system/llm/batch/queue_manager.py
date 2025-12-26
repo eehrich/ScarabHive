@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
-from ...mcp.status import publish_status, status_scope, StatusPhase, current_request_id
 
 if TYPE_CHECKING:
     from agent_system.config.models import BatchAPIConfig
@@ -223,12 +222,6 @@ class BatchQueueManager:
         self._ensure_polling_started()
         
         # Create request
-        # Capture current_request_id for status updates during polling
-        try:
-            agent_request_id = current_request_id.get()
-        except Exception:
-            agent_request_id = None
-            
         request = BatchRequest(
             request_id=str(uuid.uuid4()),
             custom_id=custom_id or str(uuid.uuid4()),
@@ -237,7 +230,7 @@ class BatchQueueManager:
             tools=tools,
             session_id=session_id,
             agent_name=agent_name,
-            metadata={"provider": provider, "agent_request_id": agent_request_id},
+            metadata={"provider": provider},
         )
         
         # Create future for this request
@@ -257,7 +250,7 @@ class BatchQueueManager:
             
             # Check if we should submit immediately (max_requests reached)
             if queue_size >= self._max_requests:
-                logger.info(
+                logger.debug(
                     f"Queue {queue_key} reached max_requests ({self._max_requests}), "
                     f"triggering immediate submission"
                 )
@@ -269,17 +262,6 @@ class BatchQueueManager:
                     self._collection_window_task(queue_key, provider, model),
                     name=f"batch_collection_{queue_key}"
                 )
-                # Send status message using agent_request_id so it shows up in web client
-                # Use extended request_id format: {agent_request_id}_queue_{queue_key}
-                if agent_request_id:
-                    extended_request_id = f"{agent_request_id}_queue_{queue_key.replace(':', '_')}"
-                    await publish_status(
-                        server="batch_queue",
-                        message=f"Batch: Collecting requests for {self._collection_window}s before submission",
-                        phase=StatusPhase.PROGRESS,
-                        request_id=extended_request_id,
-                        meta={"queue": queue_key, "collection_window": self._collection_window}
-                    )
         
         # Wait for result
         timeout = timeout or (self._max_wait_hours * 3600)
@@ -338,21 +320,9 @@ class BatchQueueManager:
             batch_requests = list(requests)
             requests.clear()
         
-        logger.info(
+        logger.debug(
             f"Submitting batch for {queue_key} with {len(batch_requests)} requests"
         )
-        
-        # Create batch job and store extended request_id for status messages
-        # Get agent_request_id from first request (if any) and extend with queue_key
-        agent_request_id = None
-        if batch_requests:
-            agent_request_id = batch_requests[0].metadata.get("agent_request_id")
-        
-        # Create extended request_id for this batch queue
-        if agent_request_id:
-            extended_request_id = f"{agent_request_id}_queue_{queue_key.replace(':', '_')}"
-        else:
-            extended_request_id = f"batch_{queue_key.replace(':', '_')}"
         
         job = BatchJob(
             job_id=str(uuid.uuid4()),
@@ -360,7 +330,6 @@ class BatchQueueManager:
             model=model,
             status=BatchStatus.PENDING,
             requests=batch_requests,
-            metadata={"extended_request_id": extended_request_id},  # Store for later use in polling
         )
         
         # Store job
@@ -388,18 +357,8 @@ class BatchQueueManager:
             provider_job_id = await client.submit_batch(job, self.storage_path)
             job.provider_job_id = provider_job_id
             
-            logger.info(
+            logger.debug(
                 f"Batch job {job.job_id} submitted to {provider} as {provider_job_id}"
-            )
-            
-            # Send one-time status message about submission using extended_request_id
-            extended_request_id = job.metadata.get("extended_request_id")
-            await publish_status(
-                server="batch_queue",
-                message=f"Batch: Job submitted to {provider} ({len(batch_requests)} requests), polling every {self._poll_interval}s",
-                phase=StatusPhase.PROGRESS,
-                request_id=extended_request_id,
-                meta={"provider": provider, "job_id": provider_job_id, "request_count": len(batch_requests)}
             )
             
         except Exception as e:
@@ -450,9 +409,6 @@ class BatchQueueManager:
             logger.warning("No batch client for provider: %s", job.provider)
             return
         
-        # Get extended_request_id from job metadata for status forwarding
-        extended_request_id = job.metadata.get("extended_request_id")
-        
         try:
             # Get status from provider
             status_info = await client.get_batch_status(job.provider_job_id)
@@ -463,32 +419,9 @@ class BatchQueueManager:
                 old_status = job.status
                 job.status = BatchStatus(new_status)
                 if old_status != job.status:
-                    logger.info(
+                    logger.debug(
                         f"Batch job {job.job_id} status changed: "
                         f"{old_status.value} -> {job.status.value}"
-                    )
-                    # Publish status update about job progress
-                    await publish_status(
-                        server="batch_queue",
-                        message=f"Batch: Job status changed to {job.status.value}",
-                        phase=StatusPhase.PROGRESS,
-                        request_id=extended_request_id,
-                        meta={"provider": job.provider, "job_id": job.provider_job_id, "status": job.status.value}
-                    )
-                else:
-                    logger.debug(
-                        f"Batch job {job.job_id} status: {job.status.value}"
-                    )
-                    # Publish status update for every poll cycle to show we're still waiting
-                    elapsed = 0
-                    if job.submitted_at:
-                        elapsed = int((_utc_now() - job.submitted_at).total_seconds())
-                    await publish_status(
-                        server="batch_queue",
-                        message=f"Batch: Polling... status={job.status.value}, elapsed={elapsed}s",
-                        phase=StatusPhase.PROGRESS,
-                        request_id=extended_request_id,
-                        meta={"provider": job.provider, "status": job.status.value, "elapsed_seconds": elapsed}
                     )
             
             # Check if completed
@@ -498,29 +431,9 @@ class BatchQueueManager:
                 await self._process_results(job, results)
                 await self._complete_job(job)
                 
-                # Send completion status with END phase
-                await publish_status(
-                    server="batch_queue",
-                    message=f"Batch: Completed - {job.completed_count} succeeded, {job.failed_count} failed",
-                    phase=StatusPhase.END,
-                    request_id=extended_request_id,
-                    meta={"provider": job.provider, "job_id": job.provider_job_id, 
-                          "completed": job.completed_count, "failed": job.failed_count}
-                )
-                
             elif job.status in (BatchStatus.FAILED, BatchStatus.EXPIRED, BatchStatus.CANCELLED):
                 job.error_message = status_info.get("error", "Unknown error")
                 await self._complete_job(job)
-                
-                # Send error status with ERROR phase
-                await publish_status(
-                    server="batch_queue",
-                    message=f"Batch: {job.status.value} - {job.error_message}",
-                    phase=StatusPhase.ERROR,
-                    request_id=extended_request_id,
-                    meta={"provider": job.provider, "job_id": job.provider_job_id,
-                          "status": job.status.value, "error": job.error_message}
-                )
                 
             # Check for timeout
             elif job.submitted_at:
@@ -596,7 +509,7 @@ class BatchQueueManager:
                         RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
                     )
         
-        logger.info(
+        logger.debug(
             f"Batch job {job.job_id} completed with status {job.status.value}, "
             f"completed={job.completed_count}, failed={job.failed_count}"
         )

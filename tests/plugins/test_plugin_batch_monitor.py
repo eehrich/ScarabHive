@@ -74,7 +74,10 @@ def mock_batch_manager() -> MagicMock:
     - _active_jobs: Dict[str, BatchJob] - active jobs by job_id
     - _collection_window: float - seconds to collect requests
     - _poll_interval: float - seconds between polling
+    - _metrics: BatchMetrics - cumulative metrics
     """
+    from agent_system.llm.batch.models import BatchMetrics
+    
     manager = MagicMock()
     manager._collection_window = 60.0
     manager._poll_interval = 30.0
@@ -82,12 +85,15 @@ def mock_batch_manager() -> MagicMock:
     # _queues contains only pending requests (List[BatchRequest])
     # Empty for gemini, 2 pending for openai
     manager._queues = {
-        "gemini:gemini-2.5-flash": [],  # Empty list
-        "openai:gpt-4o": [MagicMock(), MagicMock()],  # 2 pending
+        "gemini:gemini-2.5-flash": [],  # Empty list - will be filtered out
+        "openai:gpt-4o": [MagicMock(), MagicMock()],  # 2 pending - will show
     }
     
     # No active jobs initially
     manager._active_jobs = {}
+    
+    # Add metrics
+    manager._metrics = BatchMetrics()
     
     return manager
 
@@ -190,8 +196,8 @@ async def test_get_panel_contains_expected_content(web_factory, mock_request: Ma
     
     html_content = response.body.decode('utf-8')
     assert "Batch Queue Monitor" in html_content
-    assert "Refresh" in html_content
-    assert "Auto-refresh" in html_content
+    assert "icon-only" in html_content  # Refresh/auto-refresh buttons
+    assert "stats-grid" in html_content  # Stats section
 
 
 # =============================================================================
@@ -220,7 +226,7 @@ async def test_get_queues_with_idle_queues(
     mock_request: MagicMock,
     mock_batch_manager: MagicMock
 ):
-    """Test get_queues with idle queues"""
+    """Test get_queues with idle queues (empty queues filtered)"""
     with patch('agent_system.llm.batch.initialization.get_batch_queue_manager', return_value=mock_batch_manager):
         response = await web_factory.get_queues(mock_request)
         
@@ -230,15 +236,16 @@ async def test_get_queues_with_idle_queues(
         result = json.loads(data)
         
         assert result["status"] == "success"
-        assert result["queue_count"] == 2
-        assert len(result["queues"]) == 2
+        # Only openai queue shows (has pending), gemini filtered (empty idle)
+        assert result["queue_count"] == 1
+        assert len(result["queues"]) == 1
         assert result["collection_window_seconds"] == 60.0
         assert result["poll_interval_seconds"] == 30.0
         
-        # Check queue details
+        # Check queue details - only openai with pending requests
         queue_keys = [q["queue_key"] for q in result["queues"]]
-        assert "gemini:gemini-2.5-flash" in queue_keys
         assert "openai:gpt-4o" in queue_keys
+        assert "gemini:gemini-2.5-flash" not in queue_keys  # filtered out
 
 
 @pytest.mark.asyncio
@@ -360,15 +367,20 @@ async def test_get_metrics_success(
     # Add active job to _active_jobs dict
     mock_batch_manager._active_jobs[mock_active_job.job_id] = mock_active_job
     
+    # Update metrics to reflect completed requests
+    mock_batch_manager._metrics.completed_requests = 12
+    mock_batch_manager._metrics.failed_requests = 0
+    mock_batch_manager._metrics.total_jobs = 1
+    mock_batch_manager._metrics.completed_jobs = 0
+    
     with patch('agent_system.llm.batch.initialization.get_batch_queue_manager', return_value=mock_batch_manager):
         response = await web_factory.get_metrics(mock_request)
         
         result = json.loads(response.body.decode('utf-8'))
         
         assert result["status"] == "success"
-        assert result["total_queues"] == 2
-        assert result["active_queues"] == 1
-        assert result["idle_queues"] == 1
+        assert result["total_queues"] == 2  # openai (pending) + gemini (active job)
+        assert result["active_jobs"] == 1
         assert result["total_pending_requests"] == 2
         assert result["total_completed_requests"] == 12
         assert result["total_failed_requests"] == 0
@@ -430,24 +442,26 @@ async def test_integration_idle_to_active_transition(
     mock_batch_manager: MagicMock,
     mock_active_job
 ):
-    """Test queue status transitions from idle to active"""
-    # First request - queue is idle
+    """Test queue appears when job becomes active"""
+    # First request - gemini queue is empty/idle so not shown
     with patch('agent_system.llm.batch.initialization.get_batch_queue_manager', return_value=mock_batch_manager):
         response1 = await web_factory.get_queues(mock_request)
         result1 = json.loads(response1.body.decode('utf-8'))
         
-        gemini_queue = next(q for q in result1["queues"] if q["queue_key"] == "gemini:gemini-2.5-flash")
-        assert gemini_queue["status"] == "idle"
-        assert gemini_queue["active_job"] is None
+        # Only openai queue shows (has pending requests)
+        assert len(result1["queues"]) == 1
+        assert result1["queues"][0]["queue_key"] == "openai:gpt-4o"
     
     # Add active job to _active_jobs dict
     mock_batch_manager._active_jobs[mock_active_job.job_id] = mock_active_job
     
-    # Second request - queue is now active
+    # Second request - gemini queue now shows because it has an active job
     with patch('agent_system.llm.batch.initialization.get_batch_queue_manager', return_value=mock_batch_manager):
         response2 = await web_factory.get_queues(mock_request)
         result2 = json.loads(response2.body.decode('utf-8'))
         
+        # Now both queues show
+        assert len(result2["queues"]) == 2
         gemini_queue = next(q for q in result2["queues"] if q["queue_key"] == "gemini:gemini-2.5-flash")
         assert gemini_queue["status"] == "in_progress"
         assert gemini_queue["active_job"] is not None

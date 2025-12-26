@@ -62,19 +62,24 @@
             cursor: not-allowed;
         }
         
-        .auto-refresh-toggle {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: #252526;
-            padding: 8px 12px;
-            border-radius: 4px;
+        button.icon-only {
+            padding: 8px;
+            min-width: 36px;
+            justify-content: center;
+            font-size: 18px;
+            background: #3c3c3c;
         }
         
-        .auto-refresh-toggle input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
+        button.icon-only:hover {
+            background: #505050;
+        }
+        
+        button.icon-only.active {
+            background: #0e639c;
+        }
+        
+        button.icon-only.active:hover {
+            background: #1177bb;
         }
         
         .last-update {
@@ -83,31 +88,39 @@
             font-size: 13px;
         }
         
-        .summary-bar {
-            display: flex;
-            gap: 20px;
-            background: #252526;
-            border: 1px solid #3e3e42;
-            border-radius: 6px;
-            padding: 15px;
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
             margin-bottom: 20px;
         }
         
-        .summary-item {
-            flex: 1;
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 12px 15px;
         }
         
-        .summary-label {
-            font-size: 12px;
+        .stat-label {
+            font-size: 11px;
             color: #858585;
             text-transform: uppercase;
             margin-bottom: 4px;
         }
         
-        .summary-value {
-            font-size: 20px;
+        .stat-value {
+            font-size: 24px;
             font-weight: 600;
-            color: #d4d4d4;
+            color: #4ec9b0;
+        }
+        
+        .stat-value.warning {
+            color: #ffcc00;
+        }
+        
+        .stat-value.error {
+            color: #e57373;
         }
         
         .queue-list {
@@ -275,32 +288,35 @@
         <h1>⚡ Batch Queue Monitor</h1>
         
         <div class="refresh-controls">
-            <button id="refreshBtn" onclick="refresh()">
-                🔄 Refresh
+            <button class="icon-only" onclick="refresh()" title="Refresh">
+                🔄
             </button>
-            <div class="auto-refresh-toggle">
-                <input type="checkbox" id="autoRefreshCheck" onchange="toggleAutoRefresh()">
-                <label for="autoRefreshCheck">Auto-refresh (5s)</label>
-            </div>
+            <button class="icon-only" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Inactive">
+                ⏱️
+            </button>
             <div class="last-update" id="lastUpdate">Never</div>
         </div>
         
-        <div class="summary-bar" id="summaryBar" style="display: none;">
-            <div class="summary-item">
-                <div class="summary-label">Total Queues</div>
-                <div class="summary-value" id="totalQueues">0</div>
+        <div class="stats-grid" id="statsGrid" style="display: none;">
+            <div class="stat-card">
+                <div class="stat-label">Queues</div>
+                <div class="stat-value" id="totalQueues">0</div>
             </div>
-            <div class="summary-item">
-                <div class="summary-label">Active Jobs</div>
-                <div class="summary-value" id="activeJobs">0</div>
+            <div class="stat-card">
+                <div class="stat-label">Jobs</div>
+                <div class="stat-value" id="activeJobs">0</div>
             </div>
-            <div class="summary-item">
-                <div class="summary-label">Total Completed</div>
-                <div class="summary-value" id="totalCompleted">—</div>
+            <div class="stat-card">
+                <div class="stat-label">Queued</div>
+                <div class="stat-value warning" id="pendingRequests">0</div>
             </div>
-            <div class="summary-item">
-                <div class="summary-label">Total Failed</div>
-                <div class="summary-value" id="totalFailed">—</div>
+            <div class="stat-card">
+                <div class="stat-label">Completed</div>
+                <div class="stat-value" id="totalCompleted">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Failed</div>
+                <div class="stat-value error" id="totalFailed">0</div>
             </div>
         </div>
         
@@ -317,9 +333,6 @@
         let metrics = null;
         
         async function refresh() {
-            const refreshBtn = document.getElementById('refreshBtn');
-            refreshBtn.disabled = true;
-            
             try {
                 // Fetch queues
                 const response = await fetch('/plugins/batch_monitor/queues');
@@ -345,14 +358,12 @@
             } catch (error) {
                 console.error('Failed to refresh:', error);
                 renderError(error.message);
-            } finally {
-                refreshBtn.disabled = false;
             }
         }
         
         function renderQueues(data, metricsData) {
             const queueList = document.getElementById('queueList');
-            const summaryBar = document.getElementById('summaryBar');
+            const statsGrid = document.getElementById('statsGrid');
             
             if (data.status === 'unavailable') {
                 queueList.innerHTML = `
@@ -363,21 +374,25 @@
                         <p style="margin-top: 10px; font-size: 13px;">Enable batch processing in llm.yaml</p>
                     </div>
                 `;
-                summaryBar.style.display = 'none';
+                statsGrid.style.display = 'none';
                 return;
             }
             
-            // Update summary
+            // Update stats
             document.getElementById('totalQueues').textContent = data.queue_count || 0;
             const activeCount = data.queues.filter(q => q.active_job).length;
             document.getElementById('activeJobs').textContent = activeCount;
             
+            // Calculate pending from queues data
+            const pendingCount = data.queues.reduce((sum, q) => sum + (q.pending_requests || 0), 0);
+            document.getElementById('pendingRequests').textContent = pendingCount;
+            
             if (metricsData && metricsData.status === 'success') {
-                document.getElementById('totalCompleted').textContent = metricsData.total_completed;
-                document.getElementById('totalFailed').textContent = metricsData.total_failed;
+                document.getElementById('totalCompleted').textContent = metricsData.total_completed_requests || 0;
+                document.getElementById('totalFailed').textContent = metricsData.total_failed_requests || 0;
             }
             
-            summaryBar.style.display = 'flex';
+            statsGrid.style.display = 'grid';
             
             // Render queue cards
             if (data.queues.length === 0) {
@@ -424,7 +439,7 @@
                     <div class="queue-details">
                         <div class="detail-item">
                             <div class="detail-label">Job ID</div>
-                            <div class="detail-value monospace">${escapeHtml(job.job_id.substring(0, 8))}...</div>
+                            <div class="detail-value monospace">${escapeHtml(job.job_id)}</div>
                         </div>
                         <div class="detail-item">
                             <div class="detail-label">Progress</div>
@@ -502,7 +517,7 @@
                     <p style="margin-top: 10px;">${escapeHtml(message)}</p>
                 </div>
             `;
-            document.getElementById('summaryBar').style.display = 'none';
+            document.getElementById('statsGrid').style.display = 'none';
         }
         
         function updateLastUpdate() {
@@ -512,17 +527,17 @@
         }
         
         function toggleAutoRefresh() {
-            const checked = document.getElementById('autoRefreshCheck').checked;
+            const btn = document.getElementById('autoRefreshBtn');
             
-            if (checked) {
-                autoRefreshInterval = setInterval(refresh, 5000);
-                console.log('Auto-refresh enabled');
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Inactive';
             } else {
-                if (autoRefreshInterval) {
-                    clearInterval(autoRefreshInterval);
-                    autoRefreshInterval = null;
-                }
-                console.log('Auto-refresh disabled');
+                autoRefreshInterval = setInterval(refresh, 5000);
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
             }
         }
         
