@@ -450,10 +450,8 @@ class BatchQueueManager:
             logger.warning("No batch client for provider: %s", job.provider)
             return
         
-        # Get agent_request_id from the first request in the job for status updates
-        agent_request_id = None
-        if job.requests:
-            agent_request_id = job.requests[0].metadata.get("agent_request_id")
+        # Get extended_request_id from job metadata for status forwarding
+        extended_request_id = job.metadata.get("extended_request_id")
         
         try:
             # Get status from provider
@@ -500,30 +498,29 @@ class BatchQueueManager:
                 await self._process_results(job, results)
                 await self._complete_job(job)
                 
-                # Send completion status with proper END phase
-                async with status_scope(
-                    status_bus,
-                    "batch_queue",
+                # Send completion status with END phase
+                await publish_status(
+                    server="batch_queue",
+                    message=f"Batch: Completed - {job.completed_count} succeeded, {job.failed_count} failed",
+                    phase=StatusPhase.END,
                     request_id=extended_request_id,
-                    start_msg=f"Batch: Processing {job.completed_count + job.failed_count} results",
-                    end_msg=f"Batch: Completed - {job.completed_count} succeeded, {job.failed_count} failed"
-                ) as status:
-                    await status.progress(f"Results received from {job.provider}", 
-                                        meta={"provider": job.provider, "completed": job.completed_count, "failed": job.failed_count})
+                    meta={"provider": job.provider, "job_id": job.provider_job_id, 
+                          "completed": job.completed_count, "failed": job.failed_count}
+                )
                 
             elif job.status in (BatchStatus.FAILED, BatchStatus.EXPIRED, BatchStatus.CANCELLED):
                 job.error_message = status_info.get("error", "Unknown error")
                 await self._complete_job(job)
                 
-                # Send error status with proper ERROR phase
-                async with status_scope(
-                    status_bus,
-                    "batch_queue",
+                # Send error status with ERROR phase
+                await publish_status(
+                    server="batch_queue",
+                    message=f"Batch: {job.status.value} - {job.error_message}",
+                    phase=StatusPhase.ERROR,
                     request_id=extended_request_id,
-                    start_msg=f"Batch: Job {job.status.value}"
-                ) as status:
-                    await status.error(f"Batch failed: {job.error_message}", 
-                                     meta={"provider": job.provider, "status": job.status.value})
+                    meta={"provider": job.provider, "job_id": job.provider_job_id,
+                          "status": job.status.value, "error": job.error_message}
+                )
                 
             # Check for timeout
             elif job.submitted_at:
