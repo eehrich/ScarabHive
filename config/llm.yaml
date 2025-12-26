@@ -80,6 +80,33 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
+    gemini-3-0-pro-batch:
+      provider: gemini
+      model: gemini-3-pro-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000  # Gemini 3 Pro: 1M context, limit to 200k
+      request_timeout: 240
+      include_thoughts: false
+      thinking_budget: 8192
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+      batch:
+        enabled: true
+        collection_window_seconds: 10   # 10 seconds collection window
+        max_requests_per_batch: 100     # Up to 100 requests per batch
+        poll_interval_seconds: 10       # Check status every 10 seconds
+        max_wait_hours: 24              # Max 24 hours for batch completion
+        cancel_on_startup: true        
+        fallback_to_sync: false         # Fall back to sync if batch fails
+        storage_path: "data/batch_jobs" # Where to store batch job data
+
     gemini-2-5-flash-batch:
       provider: gemini
       model: gemini-2.5-flash
@@ -99,11 +126,11 @@ llm_system:
         default_api_type: chat_completions
       batch:
         enabled: true
-        collection_window_seconds: 30   # 1 minutes collection window
+        collection_window_seconds: 10   # 1 minutes collection window
         max_requests_per_batch: 100     # Up to 100 requests per batch
         poll_interval_seconds: 10       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: false        
+        cancel_on_startup: true        
         fallback_to_sync: false         # Fall back to sync if batch fails
         storage_path: "data/batch_jobs" # Where to store batch job data
 
@@ -252,11 +279,11 @@ llm_system:
         image_detail_control: true
       batch:
         enabled: true
-        collection_window_seconds: 30   # 1 minutes collection window
+        collection_window_seconds: 10   # 1 minutes collection window
         max_requests_per_batch: 100     # Up to 50k requests per batch
         poll_interval_seconds: 10       # Check status every minute
         max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: false        
+        cancel_on_startup: true        
         fallback_to_sync: false         # Fall back to sync if batch fails
         storage_path: "data/batch_jobs" # Where to store batch job data
 
@@ -347,8 +374,9 @@ llm_system:
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 500
     normal:
-      #model_ref: gemini-2-5-flash-nostream
-      model_ref: gpt-5-mini
+      model_ref: gemini-2-5-flash-batch
+      #model_ref: gpt-5-mini-batch
+      #model_ref: gpt-5-mini
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
     normal-stream:
@@ -359,6 +387,7 @@ llm_system:
     think:
       #model_ref: gemini-3-0-pro-nostream
       model_ref: gpt-5.1
+      #model_ref: gemini-3-0-pro-batch
       description: "Advanced model for complex reasoning"
       max_steps: 500
     think-stream:

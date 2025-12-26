@@ -1216,6 +1216,11 @@ def main() -> None:
     vprint("[cli] bootstrapping servers...")
     logger.info("Bootstrapping servers")
 
+    # Store config for lazy batch queue manager initialization
+    # This allows LLMFactory to create the manager when first needed
+    from .llm.factory import set_batch_config
+    set_batch_config(config)
+
     # Use InitializationService for consistent bootstrap + injection
     from .services.initialization_service import InitializationService
     init_service = InitializationService(config)

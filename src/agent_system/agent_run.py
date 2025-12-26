@@ -55,13 +55,18 @@ async def initialize_system(config):
     """Initialize the MCP registry and load plugins using InitializationService."""
     # Use centralized initialization service
     from .services.initialization_service import InitializationService
+    from .llm.factory import set_batch_config
 
     try:
+        # Store config for lazy batch queue manager initialization
+        # This allows LLMFactory to create the manager when first needed
+        set_batch_config(config)
+        
         init_service = InitializationService(config)
         registry, session_service = init_service.initialize_for_cli()
         logger.info(f"Initialization completed. Registry has {len(registry.list())} servers: {registry.list()}")
         
-        # Initialize batch queue manager if any LLM models have batch enabled
+        # Start batch queue manager async tasks (if it was created)
         await init_batch_system(config)
         
         return registry, session_service

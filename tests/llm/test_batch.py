@@ -436,6 +436,87 @@ class TestGeminiBatchClient:
         assert "functionDeclarations" in converted[0]
         assert converted[0]["functionDeclarations"][0]["name"] == "get_weather"
     
+    def test_convert_messages_with_tool_calls(self):
+        """Test converting assistant messages with tool calls."""
+        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
+        
+        messages = [
+            {"role": "user", "content": "What's the weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": "Let me check that for you.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}'
+                        }
+                    }
+                ]
+            }
+        ]
+        
+        contents = client._convert_messages_to_contents(messages)
+        
+        assert len(contents) == 2
+        # User message
+        assert contents[0]["role"] == "user"
+        assert contents[0]["parts"][0]["text"] == "What's the weather in Paris?"
+        
+        # Assistant with tool call
+        assert contents[1]["role"] == "model"
+        assert len(contents[1]["parts"]) == 2
+        assert contents[1]["parts"][0]["text"] == "Let me check that for you."
+        assert "functionCall" in contents[1]["parts"][1]
+        assert contents[1]["parts"][1]["functionCall"]["name"] == "get_weather"
+        assert contents[1]["parts"][1]["functionCall"]["args"]["city"] == "Paris"
+    
+    def test_convert_messages_with_tool_results(self):
+        """Test converting tool response messages."""
+        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
+        
+        messages = [
+            {"role": "user", "content": "What's the weather?"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}'
+                        }
+                    }
+                ]
+            },
+            {
+                "role": "tool",
+                "name": "get_weather",
+                "content": '{"temperature": 20, "condition": "sunny"}'
+            },
+            {
+                "role": "assistant",
+                "content": "It's 20°C and sunny in Paris."
+            }
+        ]
+        
+        contents = client._convert_messages_to_contents(messages)
+        
+        assert len(contents) == 4
+        
+        # Tool response
+        assert contents[2]["role"] == "tool"
+        assert "functionResponse" in contents[2]["parts"][0]
+        assert contents[2]["parts"][0]["functionResponse"]["name"] == "get_weather"
+        assert contents[2]["parts"][0]["functionResponse"]["response"]["temperature"] == 20
+        
+        # Final assistant response
+        assert contents[3]["role"] == "model"
+        assert contents[3]["parts"][0]["text"] == "It's 20°C and sunny in Paris."
+    
     @pytest.mark.asyncio
     async def test_submit_batch_rest(self, sample_job, tmp_path):
         """Test batch submission via REST API."""
@@ -866,3 +947,415 @@ class TestBatchLLMClient:
             provider="openai",
         )
         assert client2.supports_streaming() is False
+
+
+# ==============================================================================
+# Schema Sanitization Tests
+# ==============================================================================
+
+class TestSchemaSanitization:
+    """Tests for JSON Schema sanitization in Gemini batch client."""
+    
+    @pytest.fixture
+    def gemini_client(self) -> GeminiBatchClient:
+        """Create a Gemini batch client for testing."""
+        with patch.object(GeminiBatchClient, '__init__', lambda self, *args, **kwargs: None):
+            client = object.__new__(GeminiBatchClient)
+            client.api_key = "test-key"
+            client.use_sdk = False  # Avoid SDK initialization
+            return client
+    
+    def test_sanitize_removes_oneof(self, gemini_client):
+        """Test that oneOf is removed from schemas."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "integer"}
+                    ]
+                }
+            }
+        }
+        
+        result = gemini_client._sanitize_schema_for_sdk(schema)
+        
+        assert "oneOf" not in result.get("properties", {}).get("value", {})
+        # First option should be merged
+        assert result["properties"]["value"].get("type") == "string"
+    
+    def test_sanitize_removes_anyof(self, gemini_client):
+        """Test that anyOf is removed from schemas."""
+        schema = {
+            "type": "object", 
+            "properties": {
+                "score": {
+                    "anyOf": [
+                        {"type": "number"},
+                        {"type": "null"}
+                    ]
+                }
+            }
+        }
+        
+        result = gemini_client._sanitize_schema_for_sdk(schema)
+        
+        assert "anyOf" not in result.get("properties", {}).get("score", {})
+    
+    def test_sanitize_nested_properties(self, gemini_client):
+        """Test that nested properties are sanitized recursively."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "outer": {
+                    "type": "object",
+                    "properties": {
+                        "inner": {
+                            "oneOf": [
+                                {"type": "boolean"},
+                                {"type": "string"}
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        
+        result = gemini_client._sanitize_schema_for_sdk(schema)
+        
+        inner_prop = result["properties"]["outer"]["properties"]["inner"]
+        assert "oneOf" not in inner_prop
+        assert inner_prop.get("type") == "boolean"
+    
+    def test_sanitize_array_items(self, gemini_client):
+        """Test that array items are sanitized."""
+        schema = {
+            "type": "array",
+            "items": {
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "number"}
+                ]
+            }
+        }
+        
+        result = gemini_client._sanitize_schema_for_sdk(schema)
+        
+        assert "oneOf" not in result.get("items", {})
+    
+    def test_sanitize_removes_additional_properties(self, gemini_client):
+        """Test that additionalProperties is removed from schemas."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+            },
+            "additionalProperties": False,
+            "required": ["name"]
+        }
+        
+        result = gemini_client._sanitize_schema_for_sdk(schema)
+        
+        assert "additionalProperties" not in result
+        assert result["type"] == "object"
+        assert result["required"] == ["name"]
+    
+    def test_sanitize_removes_default_and_examples(self, gemini_client):
+        """Test that default and examples are removed from schemas."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "default": 10,
+                    "examples": [1, 5, 10]
+                },
+            }
+        }
+        
+        result = gemini_client._sanitize_schema_for_sdk(schema)
+        
+        assert "default" not in result["properties"]["count"]
+        assert "examples" not in result["properties"]["count"]
+        assert result["properties"]["count"]["type"] == "integer"
+    
+    def test_sanitize_preserves_valid_keywords(self, gemini_client):
+        """Test that valid JSON Schema keywords are preserved."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "A name"},
+                "age": {"type": "integer", "minimum": 0},
+            },
+            "required": ["name"]
+        }
+        
+        result = gemini_client._sanitize_schema_for_sdk(schema)
+        
+        assert result["type"] == "object"
+        assert result["required"] == ["name"]
+        assert result["properties"]["name"]["type"] == "string"
+        assert result["properties"]["name"]["description"] == "A name"
+        assert result["properties"]["age"]["minimum"] == 0
+
+
+class TestSDKToolConversion:
+    """Tests for SDK tool conversion in Gemini batch client."""
+    
+    @pytest.fixture
+    def gemini_client(self) -> GeminiBatchClient:
+        """Create a Gemini batch client for testing."""
+        # Use SDK mode for this test
+        client = GeminiBatchClient(api_key="test-key", use_sdk=True)
+        return client
+    
+    def test_convert_tools_creates_sdk_types(self, gemini_client):
+        """Test that tools are converted to SDK types.Tool objects."""
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search for items",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    }
+                }
+            }
+        }]
+        
+        from google.genai import types
+        
+        result = gemini_client._convert_tools_to_sdk(tools)
+        
+        assert len(result) == 1
+        assert isinstance(result[0], types.Tool)
+        assert len(result[0].function_declarations) == 1
+        assert result[0].function_declarations[0].name == "search"
+    
+    def test_convert_tools_sanitizes_schemas(self, gemini_client):
+        """Test that tool schemas are sanitized during conversion."""
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "update_record",
+                "description": "Update a record",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_ids": {
+                            "oneOf": [
+                                {"type": "array", "items": {"type": "string"}},
+                                {"type": "null"}
+                            ]
+                        },
+                        "score": {
+                            "oneOf": [
+                                {"type": "number"},
+                                {"type": "null"}
+                            ]
+                        }
+                    }
+                }
+            }
+        }]
+        
+        result = gemini_client._convert_tools_to_sdk(tools)
+        
+        assert len(result) == 1
+        func_decl = result[0].function_declarations[0]
+        params = func_decl.parameters
+        
+        # oneOf should be removed from the parameters
+        if params and "properties" in params:
+            for prop_name, prop_def in params["properties"].items():
+                assert "oneOf" not in prop_def, f"oneOf found in {prop_name}"
+
+
+class TestSDKResultsExtraction:
+    """Tests for SDK results extraction with function calls."""
+    
+    @pytest.fixture
+    def gemini_client_sdk(self) -> GeminiBatchClient:
+        """Create a Gemini batch client in SDK mode."""
+        client = GeminiBatchClient(api_key="test-key", use_sdk=True)
+        return client
+    
+    @pytest.mark.asyncio
+    async def test_get_results_sdk_with_function_calls(self, gemini_client_sdk):
+        """Test extracting results with function calls from SDK batch job."""
+        from google.genai import types
+        
+        # Mock batch job
+        job = BatchJob(
+            job_id="test_job",
+            model="gemini-2.5-flash-preview-05-20",
+            provider="google",
+            requests=[
+                BatchRequest(
+                    request_id="req_1",
+                    custom_id="test_1",
+                    model="gemini-2.5-flash-preview-05-20",
+                    messages=[{"role": "user", "content": "What's the weather?"}],
+                )
+            ],
+            status=BatchStatus.COMPLETED,
+            provider_job_id="batch_123",
+        )
+        
+        # Mock SDK response with function_call
+        mock_fc = MagicMock()
+        mock_fc.name = "get_weather"
+        mock_fc.args = {"location": "Berlin"}
+        
+        mock_fc_part = MagicMock()
+        mock_fc_part.function_call = mock_fc
+        mock_fc_part.text = None
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content.parts = [mock_fc_part]
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_inline_response = MagicMock()
+        mock_inline_response.response = mock_response
+        mock_inline_response.error = None
+        
+        # Mock SDK batch job with dest.inlined_responses
+        mock_dest = MagicMock()
+        mock_dest.inlined_responses = [mock_inline_response]
+        
+        mock_sdk_batch = MagicMock()
+        mock_sdk_batch.dest = mock_dest
+        
+        with patch.object(gemini_client_sdk._sdk_client.batches, 'get', return_value=mock_sdk_batch):
+            results = await gemini_client_sdk._get_results_sdk(job)
+        
+        assert len(results) == 1
+        assert results[0]["custom_id"] == "test_1"
+        assert results[0]["error"] is None
+        
+        # Check function call extraction
+        message = results[0]["response"]["choices"][0]["message"]
+        assert "tool_calls" in message
+        assert len(message["tool_calls"]) == 1
+        assert message["tool_calls"][0]["function"]["name"] == "get_weather"
+        
+        # Verify arguments are JSON serialized
+        args = json.loads(message["tool_calls"][0]["function"]["arguments"])
+        assert args["location"] == "Berlin"
+    
+    @pytest.mark.asyncio
+    async def test_get_results_sdk_with_text_and_function_call(self, gemini_client_sdk):
+        """Test extracting results with both text and function calls."""
+        from google.genai import types
+        
+        job = BatchJob(
+            job_id="test_job",
+            model="gemini-2.5-flash-preview-05-20",
+            provider="google",
+            requests=[
+                BatchRequest(
+                    request_id="req_1",
+                    custom_id="test_1",
+                    model="gemini-2.5-flash-preview-05-20",
+                    messages=[{"role": "user", "content": "Search for cats"}],
+                )
+            ],
+            status=BatchStatus.COMPLETED,
+            provider_job_id="batch_123",
+        )
+        
+        # Mock SDK response with both text and function_call
+        mock_text_part = MagicMock()
+        mock_text_part.text = "Let me search for that."
+        mock_text_part.function_call = None
+        
+        mock_fc = MagicMock()
+        mock_fc.name = "web_search"
+        mock_fc.args = {"query": "cats"}
+        
+        mock_fc_part = MagicMock()
+        mock_fc_part.text = None
+        mock_fc_part.function_call = mock_fc
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content.parts = [mock_text_part, mock_fc_part]
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_inline_response = MagicMock()
+        mock_inline_response.response = mock_response
+        mock_inline_response.error = None
+        
+        mock_dest = MagicMock()
+        mock_dest.inlined_responses = [mock_inline_response]
+        
+        mock_sdk_batch = MagicMock()
+        mock_sdk_batch.dest = mock_dest
+        
+        with patch.object(gemini_client_sdk._sdk_client.batches, 'get', return_value=mock_sdk_batch):
+            results = await gemini_client_sdk._get_results_sdk(job)
+        
+        assert len(results) == 1
+        message = results[0]["response"]["choices"][0]["message"]
+        
+        # Should have both content and tool_calls
+        assert message["content"] == "Let me search for that."
+        assert "tool_calls" in message
+        assert len(message["tool_calls"]) == 1
+        assert message["tool_calls"][0]["function"]["name"] == "web_search"
+    
+    @pytest.mark.asyncio
+    async def test_get_results_sdk_text_only(self, gemini_client_sdk):
+        """Test extracting results with text only (no function calls)."""
+        job = BatchJob(
+            job_id="test_job",
+            model="gemini-2.5-flash-preview-05-20",
+            provider="google",
+            requests=[
+                BatchRequest(
+                    request_id="req_1",
+                    custom_id="test_1",
+                    model="gemini-2.5-flash-preview-05-20",
+                    messages=[{"role": "user", "content": "Hello"}],
+                )
+            ],
+            status=BatchStatus.COMPLETED,
+            provider_job_id="batch_123",
+        )
+        
+        # Mock SDK response with text only
+        mock_text_part = MagicMock()
+        mock_text_part.text = "Hello! How can I help you?"
+        mock_text_part.function_call = None
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content.parts = [mock_text_part]
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_inline_response = MagicMock()
+        mock_inline_response.response = mock_response
+        mock_inline_response.error = None
+        
+        mock_dest = MagicMock()
+        mock_dest.inlined_responses = [mock_inline_response]
+        
+        mock_sdk_batch = MagicMock()
+        mock_sdk_batch.dest = mock_dest
+        
+        with patch.object(gemini_client_sdk._sdk_client.batches, 'get', return_value=mock_sdk_batch):
+            results = await gemini_client_sdk._get_results_sdk(job)
+        
+        assert len(results) == 1
+        message = results[0]["response"]["choices"][0]["message"]
+        
+        # Should have content but no tool_calls
+        assert message["content"] == "Hello! How can I help you?"
+        assert "tool_calls" not in message or not message.get("tool_calls")

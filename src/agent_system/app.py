@@ -25,7 +25,7 @@ from .mcp.base import MCPRegistry
 from .utils.logging import setup_logging
 from .mcp.status import get_status_metrics
 from .mcp.integration import initialize_mcp, shutdown_mcp
-from .llm.batch.initialization import init_batch_system, shutdown_batch_system
+from .llm.batch.initialization import init_batch_system, shutdown_batch_system, start_batch_queue_manager
 
 # Import services
 from .services import ConfigService, MCPService, ToolService, AgentService
@@ -177,6 +177,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Get logger AFTER logging is configured
     logger = logging.getLogger(__name__)
 
+    # Store config for lazy batch queue manager initialization
+    # This allows LLMFactory to create the manager on first use
+    from .llm.factory import set_batch_config
+    set_batch_config(config)
+
     # Configure status bus with config values
     from .mcp.status import status_bus
     if hasattr(config, 'status') and config.status:
@@ -213,6 +218,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger = logging.getLogger(__name__)
         logger.info("Starting MCP integration initialization...")
         try:
+            # Start the Batch Queue Manager (async operations: register providers, start background tasks)
+            # The manager was already created and registered in build_app() sync section
+            await start_batch_queue_manager(config, custom_logger=logger)
+            
             mcp_integration = await initialize_mcp(config, app)
             _mcp_integration = mcp_integration
 
@@ -222,9 +231,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Initialize services
             _mcp_service = MCPService(mcp_integration, config)
             _tool_service = ToolService(mcp_integration, config)
-            
-            # Initialize Batch Queue Manager if any model has batch enabled
-            await _init_batch_queue_manager(config, logger)
 
             # CRITICAL: Inject session_service into ALL agents in plugin_registry
             # This ensures hooks and tools can access session management
@@ -388,6 +394,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Bootstrap MCP servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
+    # Note: Batch queue manager is created lazily by LLMFactory when first needed
     registry = MCPRegistry()
     if not _mcp_integration or not _mcp_integration.servers_bootstrapped:
         # Use InitializationService for consistent bootstrap + injection

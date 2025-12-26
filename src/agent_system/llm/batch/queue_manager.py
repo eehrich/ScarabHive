@@ -160,7 +160,7 @@ class BatchQueueManager:
         
         logger.info("BatchQueueManager started")
     
-    async def recover_jobs(self) -> int:
+    async def recover_jobs(self, providers: Optional[set] = None) -> int:
         """Recover active jobs from providers after server restart.
         
         This method queries each registered provider for their active batch jobs
@@ -171,14 +171,27 @@ class BatchQueueManager:
         results cannot be delivered to waiting callers. They will still be
         polled and tracked for monitoring purposes.
         
+        Args:
+            providers: Optional set of provider names to recover from.
+                      If None, recovers from all registered providers.
+        
         Returns:
             Number of jobs recovered
         """
         recovered_count = 0
         
-        logger.info(f"Starting job recovery, checking {len(self._batch_clients)} providers: {list(self._batch_clients.keys())}")
+        # Determine which providers to recover from
+        providers_to_check = self._batch_clients.items()
+        if providers:
+            providers_to_check = [
+                (p, c) for p, c in self._batch_clients.items() 
+                if p in providers
+            ]
         
-        for provider, client in self._batch_clients.items():
+        provider_names = [p for p, _ in providers_to_check]
+        logger.info(f"Starting job recovery, checking {len(provider_names)} providers: {provider_names}")
+        
+        for provider, client in providers_to_check:
             try:
                 if not hasattr(client, 'list_batches'):
                     logger.debug(f"Provider {provider} doesn't support list_batches")

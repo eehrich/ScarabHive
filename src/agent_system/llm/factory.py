@@ -8,6 +8,7 @@ Uses the new profile-based configuration system.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from ..config.models import AgentSystemConfig, AgentConfig, BatchAPIConfig
@@ -19,21 +20,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Global batch queue manager - set by app startup
+# Global batch queue manager - lazy initialized on first use
 _batch_queue_manager: Optional["BatchQueueManager"] = None
+_batch_manager_config: Optional[AgentSystemConfig] = None  # Config for lazy init
 
 
 def set_batch_queue_manager(manager: Optional["BatchQueueManager"]) -> None:
-    """Set the global batch queue manager (called during app startup)."""
+    """Set the global batch queue manager."""
     global _batch_queue_manager
     _batch_queue_manager = manager
     if manager:
         logger.info("Batch queue manager registered globally")
 
 
+def set_batch_config(config: AgentSystemConfig) -> None:
+    """Store config for lazy batch manager initialization."""
+    global _batch_manager_config
+    _batch_manager_config = config
+
+
 def get_batch_queue_manager() -> Optional["BatchQueueManager"]:
-    """Get the global batch queue manager."""
+    """Get or create the global batch queue manager (lazy init)."""
+    global _batch_queue_manager
+    
+    if _batch_queue_manager is not None:
+        return _batch_queue_manager
+    
+    # Lazy init if we have config
+    if _batch_manager_config is not None:
+        _batch_queue_manager = _create_batch_queue_manager_sync(_batch_manager_config)
+        
     return _batch_queue_manager
+
+
+def _create_batch_queue_manager_sync(config: AgentSystemConfig) -> Optional["BatchQueueManager"]:
+    """Create batch queue manager synchronously (without starting async tasks)."""
+    if not config.llm_system or not config.llm_system.models:
+        return None
+    
+    # Find first batch-enabled model
+    batch_config = None
+    for model_config in config.llm_system.models.values():
+        if model_config.batch and model_config.batch.enabled:
+            batch_config = model_config.batch
+            break
+    
+    if not batch_config:
+        return None
+    
+    from .batch.queue_manager import BatchQueueManager
+    
+    storage_path = Path(batch_config.storage_path) if batch_config.storage_path else None
+    manager = BatchQueueManager(config=batch_config, storage_path=storage_path)
+    logger.info("Batch queue manager created (lazy init)")
+    return manager
 
 
 def create_llm_from_profile(

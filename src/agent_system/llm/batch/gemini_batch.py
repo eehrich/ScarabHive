@@ -12,6 +12,7 @@ Reference: https://ai.google.dev/gemini-api/docs/batch
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List
@@ -117,9 +118,12 @@ class GeminiBatchClient:
         
         Uses the SDK's batches.create() with inline requests format.
         Reference: https://ai.google.dev/gemini-api/docs/batch-api
+        
+        Note: The SDK validates request structure strictly via Pydantic.
+        Tools must be SDK types.Tool objects, not dicts.
         """
         # Convert requests to SDK inline request format
-        # Each request is a dict with 'contents' key
+        # Each request is a dict with 'contents' key and optional 'config'
         inline_requests = []
         for req in job.requests:
             contents = self._convert_messages_to_contents(req.messages)
@@ -128,9 +132,11 @@ class GeminiBatchClient:
                 'contents': contents,
             }
             
-            # Add tools if present
+            # Add tools if present - use SDK types.Tool objects
             if req.tools:
-                request_dict['tools'] = self._convert_tools_to_rest(req.tools)
+                sdk_tools = self._convert_tools_to_sdk(req.tools)
+                if sdk_tools:
+                    request_dict['config'] = {'tools': sdk_tools}
             
             inline_requests.append(request_dict)
         
@@ -140,6 +146,9 @@ class GeminiBatchClient:
             model_name = job.model
             if not model_name.startswith("models/"):
                 model_name = f"models/{model_name}"
+            
+            logger.debug("Submitting batch via SDK: model=%s, requests=%d", 
+                        model_name, len(inline_requests))
             
             batch_job = self._sdk_client.batches.create(
                 model=model_name,
@@ -152,7 +161,8 @@ class GeminiBatchClient:
             return batch_job.name
         except Exception as e:
             # Fallback to REST if SDK fails
-            logger.warning("SDK batch failed (%s), falling back to REST", e)
+            logger.warning("SDK batch failed (%s: %s), falling back to REST", 
+                          type(e).__name__, e)
             self.use_sdk = False
             # Initialize HTTP client if needed
             if not hasattr(self, '_http_client') or self._http_client is None:
@@ -166,8 +176,12 @@ class GeminiBatchClient:
         job: BatchJob,
         storage_path: Path,
     ) -> str:
-        """Submit batch using REST API."""
-        # Create batch request payload
+        """Submit batch using REST API.
+        
+        Uses the Gemini Batch API format:
+        https://ai.google.dev/gemini-api/docs/batch-api
+        """
+        # Create batch request payload with correct nested structure
         requests = []
         for req in job.requests:
             contents = self._convert_messages_to_contents(req.messages)
@@ -180,15 +194,26 @@ class GeminiBatchClient:
                 request_payload["tools"] = self._convert_tools_to_rest(req.tools)
             
             requests.append({
-                "customId": req.custom_id,
                 "request": request_payload,
+                "metadata": {
+                    "key": req.custom_id,
+                }
             })
         
-        # Submit batch job
+        # Submit batch job - use correct nested format
         url = f"{self.base_url}/models/{job.model}:batchGenerateContent"
         
+        # Gemini REST API expects this nested structure:
+        # {"batch": {"display_name": "...", "input_config": {"requests": {"requests": [...]}}}}
         payload = {
-            "requests": requests,
+            "batch": {
+                "display_name": f"batch_{job.job_id}",
+                "input_config": {
+                    "requests": {
+                        "requests": requests,
+                    }
+                }
+            }
         }
         
         response = await self._http_client.post(
@@ -216,7 +241,16 @@ class GeminiBatchClient:
         self,
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Convert OpenAI-style messages to Gemini content format."""
+        """Convert OpenAI-style messages to Gemini content format.
+        
+        Handles:
+        - user messages → role: "user"
+        - assistant messages → role: "model"
+        - assistant with tool_calls → role: "model" with functionCall parts
+        - tool responses → role: "tool" with functionResponse parts (Gemini 2.0+ format)
+        - system messages → skipped (handled separately via system_instruction)
+        """
+        import json
         contents = []
         
         for msg in messages:
@@ -225,9 +259,69 @@ class GeminiBatchClient:
             
             if role == "system":
                 # Gemini handles system messages differently
-                # Prepend to first user message or add as user context
+                # Should be passed as system_instruction, not in contents
                 continue
             
+            # Handle tool responses (function results)
+            if role == "tool":
+                tool_name = msg.get("name") or msg.get("tool_call_id") or "unknown"
+                
+                # Try to parse content as JSON
+                if isinstance(content, str):
+                    try:
+                        result_data = json.loads(content)
+                    except json.JSONDecodeError:
+                        result_data = {"result": content}
+                else:
+                    result_data = content if content else {}
+                
+                contents.append({
+                    "role": "tool",  # Gemini 2.0+ uses "tool" role
+                    "parts": [{
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": result_data
+                        }
+                    }]
+                })
+                continue
+            
+            # Handle assistant with tool_calls (function call requests)
+            if role == "assistant" and msg.get("tool_calls"):
+                parts = []
+                
+                # Add text content if present
+                if content:
+                    parts.append({"text": content})
+                
+                # Add function calls
+                for tc in msg.get("tool_calls", []):
+                    func = tc.get("function", {})
+                    func_name = func.get("name", "")
+                    func_args = func.get("arguments", "{}")
+                    
+                    # Parse args if string
+                    if isinstance(func_args, str):
+                        try:
+                            func_args = json.loads(func_args)
+                        except json.JSONDecodeError:
+                            func_args = {}
+                    
+                    parts.append({
+                        "functionCall": {
+                            "name": func_name,
+                            "args": func_args
+                        }
+                    })
+                
+                if parts:
+                    contents.append({
+                        "role": "model",
+                        "parts": parts,
+                    })
+                continue
+            
+            # Standard user/assistant messages
             gemini_role = "user" if role == "user" else "model"
             
             if isinstance(content, str):
@@ -271,11 +365,68 @@ class GeminiBatchClient:
         
         return contents
     
+    def _sanitize_schema_for_sdk(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove JSON Schema keywords not supported by Gemini API.
+        
+        Gemini's Function Declaration schema doesn't support:
+        - oneOf, anyOf, allOf (JSON Schema composition)
+        - $ref (references)
+        - additionalProperties (Gemini uses strict schemas)
+        - default (default values)
+        - examples
+        - $schema, $id (meta keywords)
+        
+        This recursively processes the schema and removes unsupported
+        constructs.
+        """
+        if not isinstance(schema, dict):
+            return schema
+        
+        # Keywords that Gemini doesn't support at all
+        unsupported_keywords = {
+            "oneOf", "anyOf", "allOf", "$ref", 
+            "additionalProperties", "default", "examples",
+            "$schema", "$id", "definitions", "$defs",
+            "patternProperties", "unevaluatedProperties",
+            "if", "then", "else", "not",
+        }
+        
+        result = {}
+        for key, value in schema.items():
+            # Skip completely unsupported keywords
+            if key in unsupported_keywords:
+                # For oneOf/anyOf/allOf, try to merge first option
+                if key in ("oneOf", "anyOf", "allOf"):
+                    if isinstance(value, list) and len(value) > 0:
+                        first_option = value[0]
+                        if isinstance(first_option, dict):
+                            for opt_key, opt_val in first_option.items():
+                                if opt_key not in result and opt_key not in unsupported_keywords:
+                                    result[opt_key] = self._sanitize_schema_for_sdk(opt_val)
+                continue
+            elif key == "properties" and isinstance(value, dict):
+                # Recursively sanitize properties
+                result[key] = {
+                    k: self._sanitize_schema_for_sdk(v) 
+                    for k, v in value.items()
+                }
+            elif key == "items" and isinstance(value, dict):
+                # Recursively sanitize array items
+                result[key] = self._sanitize_schema_for_sdk(value)
+            else:
+                result[key] = value
+        
+        return result
+    
     def _convert_tools_to_sdk(
         self,
         tools: List[Dict[str, Any]],
     ) -> List[types.Tool]:
-        """Convert OpenAI tools to SDK format."""
+        """Convert OpenAI tools to SDK format.
+        
+        Creates proper types.Tool objects with FunctionDeclaration.
+        Also sanitizes JSON schemas to remove unsupported keywords like 'oneOf'.
+        """
         function_declarations = []
         
         for tool in tools:
@@ -283,14 +434,17 @@ class GeminiBatchClient:
                 continue
             
             func = tool.get("function", {})
-            declaration = {
-                "name": func.get("name", ""),
-                "description": func.get("description", ""),
-            }
-            
             params = func.get("parameters", {})
-            if params:
-                declaration["parameters"] = params
+            
+            # Sanitize schema to remove unsupported keywords like 'oneOf'
+            sanitized_params = self._sanitize_schema_for_sdk(params) if params else None
+            
+            # Build function declaration with all parameters at once
+            declaration = types.FunctionDeclaration(
+                name=func.get("name", ""),
+                description=func.get("description", ""),
+                parameters=sanitized_params,  # type: ignore[arg-type]
+            )
             
             function_declarations.append(declaration)
         
@@ -302,7 +456,10 @@ class GeminiBatchClient:
         self,
         tools: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Convert OpenAI tools to REST API format."""
+        """Convert OpenAI tools to REST API format.
+        
+        Also sanitizes JSON schemas to remove unsupported keywords.
+        """
         function_declarations = []
         
         for tool in tools:
@@ -317,7 +474,8 @@ class GeminiBatchClient:
             
             params = func.get("parameters", {})
             if params:
-                declaration["parameters"] = params
+                # Sanitize schema to remove unsupported keywords
+                declaration["parameters"] = self._sanitize_schema_for_sdk(params)
             
             function_declarations.append(declaration)
         
@@ -528,28 +686,43 @@ class GeminiBatchClient:
                             "error": {"message": str(inline_response.error)},
                         })
                     elif hasattr(inline_response, "response") and inline_response.response:
-                        # Extract content from response
-                        content = ""
+                        # Extract content from response - check parts directly to avoid
+                        # warning when function_call parts are present
                         response_obj = inline_response.response
+                        content = ""
+                        tool_calls = []
                         
-                        # Try .text shortcut first
-                        if hasattr(response_obj, 'text'):
-                            content = response_obj.text
-                        elif hasattr(response_obj, "candidates") and response_obj.candidates:
+                        if hasattr(response_obj, "candidates") and response_obj.candidates:
                             candidate = response_obj.candidates[0]
                             if hasattr(candidate, "content") and candidate.content:
                                 for part in candidate.content.parts:
-                                    if hasattr(part, "text"):
+                                    if hasattr(part, "function_call") and part.function_call:
+                                        # Extract function call
+                                        fc = part.function_call
+                                        tool_calls.append({
+                                            "id": f"call_{fc.name}_{len(tool_calls)}",
+                                            "type": "function",
+                                            "function": {
+                                                "name": fc.name,
+                                                "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
+                                            }
+                                        })
+                                    elif hasattr(part, "text") and part.text:
                                         content += part.text
+                        
+                        # Build message
+                        message: Dict[str, Any] = {
+                            "role": "assistant",
+                            "content": content if content else None,
+                        }
+                        if tool_calls:
+                            message["tool_calls"] = tool_calls
                         
                         results.append({
                             "custom_id": custom_id,
                             "response": {
                                 "choices": [{
-                                    "message": {
-                                        "role": "assistant",
-                                        "content": content,
-                                    }
+                                    "message": message,
                                 }],
                             },
                             "error": None,
