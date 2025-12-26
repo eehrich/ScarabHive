@@ -97,6 +97,8 @@ dev = [
     "types-pytz>=2024.1",
     "types-tabulate>=0.9",
     "types-python-dateutil>=2.8",
+    "types-aiofiles>=25.1.0",
+    "types-Markdown>=3.10.0",
 ]
 test = [
     "pytest>=8.4",
@@ -119,5 +121,7 @@ ignore_missing_imports = true
 follow_imports = "silent"
 warn_unreachable = true
 disable_error_code = ["misc"]
-mypy_path = "src"
+# Explicitly set namespace_packages to avoid duplicate module detection
+namespace_packages = true
+explicit_package_bases = true
 
