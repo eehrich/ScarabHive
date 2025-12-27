@@ -59,27 +59,42 @@ class ModelCapabilitiesConfig(BaseModel):
     supports_file_uploads: bool = False
 
 
-class BatchAPIConfig(BaseModel):
-    """Configuration for LLM Batch API support (OpenAI/Gemini).
+class BatchProviderConfig(BaseModel):
+    """Configuration for a specific batch provider (Gemini/OpenAI).
     
     Batch APIs provide 50% cost reduction and separate rate limits
     for non-time-critical workloads. Requests are collected, submitted
     as batch jobs, and results are polled asynchronously.
     """
-    enabled: bool = False  # Enable batch mode for this model
-    collection_window_seconds: float = 60.0  # Time to collect requests before submitting batch
-    max_requests_per_batch: int = 1000  # Max requests per batch (OpenAI: unlimited, Gemini: 200k)
-    poll_interval_seconds: float = 30.0  # Interval between status polls
+    enabled: bool = True  # Enable this batch provider
+    collection_window_seconds: float = 10.0  # Time to collect requests before submitting batch
+    max_requests_per_batch: int = 100  # Max requests per batch (OpenAI: 50k, Gemini: 200k)
+    poll_interval_seconds: float = 10.0  # Interval between status polls
     max_wait_hours: float = 24.0  # Max time to wait for batch completion
     max_retries: int = 3  # Max retries for server-side cancelled jobs
-    cancel_on_startup: bool = True  # Cancel obsolete batches on app startup
-    fallback_to_sync: bool = True  # Fallback to sync API on timeout/failure
-    storage_path: Optional[str] = None  # Path for temp JSONL files (default: data/batch/)
+    cancel_on_startup: bool = True  # Cancel orphaned batches on app startup
+    fallback_to_sync: bool = False  # Fallback to sync API on timeout/failure
+
+
+class BatchProvidersConfig(BaseModel):
+    """Configuration for all batch providers."""
+    gemini: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
+    openai: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
+
+
+class BatchSystemConfig(BaseModel):
+    """Global batch system configuration.
+    
+    Centralized configuration for batch processing. Models with
+    provider='batch' reference this config via their batch_provider field.
+    """
+    storage_path: str = "data/batch_jobs"  # Where to store batch job data
+    providers: BatchProvidersConfig = Field(default_factory=BatchProvidersConfig)
 
 
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
-    provider: Literal["ollama", "openai", "openai_httpx", "gemini", "gemini_sdk", "mock"] = "ollama"
+    provider: Literal["ollama", "openai", "openai_httpx", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
     model: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # Custom base URL for API endpoint (e.g. Gemini, Ollama, OpenAI-compatible)
@@ -91,7 +106,9 @@ class LLMModelConfig(BaseModel):
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
     thinking_budget: Optional[int] = None  # Token budget for thinking process (Gemini 2.5+, default: 8192)
-    batch: Optional[BatchAPIConfig] = None  # Batch API configuration
+    
+    # Batch provider (only for provider="batch")
+    batch_provider: Optional[Literal["gemini", "openai"]] = None  # Which batch API to use
 
 
 class LLMProfile(BaseModel):
@@ -104,6 +121,7 @@ class LLMProfile(BaseModel):
 class LLMSystemConfig(BaseModel):
     """Complete LLM system configuration"""
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
+    batch: Optional[BatchSystemConfig] = None  # Global batch processing configuration
     models: Dict[str, LLMModelConfig] = {}
     profiles: Dict[str, LLMProfile] = {}
     default_profile: Optional[str] = "normal"  # Default LLM profile to use

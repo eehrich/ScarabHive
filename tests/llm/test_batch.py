@@ -707,17 +707,16 @@ class TestBatchLLMClient:
     """Tests for BatchLLMClient wrapper."""
     
     @pytest.fixture
-    def batch_config(self, tmp_path):
-        """Create a batch API config."""
-        from agent_system.config.models import BatchAPIConfig
-        config = BatchAPIConfig()
+    def batch_provider_config(self, tmp_path):
+        """Create a batch provider config."""
+        from agent_system.config.models import BatchProviderConfig
+        config = BatchProviderConfig()
         config.enabled = True
         config.collection_window_seconds = 1.0
         config.max_requests_per_batch = 10
         config.poll_interval_seconds = 1.0
         config.max_wait_hours = 1.0
         config.fallback_to_sync = True
-        config.storage_path = str(tmp_path / "batch")
         return config
     
     @pytest.fixture
@@ -742,36 +741,36 @@ class TestBatchLLMClient:
         })
         return manager
     
-    def test_create_batch_client(self, mock_underlying_client, mock_queue_manager, batch_config):
+    def test_create_batch_client(self, mock_underlying_client, mock_queue_manager, batch_provider_config):
         """Test creating a BatchLLMClient."""
-        from agent_system.llm.batch.client_wrapper import BatchLLMClient
+        from agent_system.llm.batch.batch_client import BatchLLMClient
         
         client = BatchLLMClient(
             underlying_client=mock_underlying_client,
             queue_manager=mock_queue_manager,
-            batch_config=batch_config,
+            batch_provider_config=batch_provider_config,
             model_name="gpt-4",
-            provider="openai",
+            batch_provider="openai",
         )
         
         assert client.model_name == "gpt-4"
-        assert client.provider == "openai"
+        assert client.batch_provider == "openai"
         assert client.context_window == 100000
     
     @pytest.mark.asyncio
     async def test_chat_tools_uses_batch_queue(
-        self, mock_underlying_client, mock_queue_manager, batch_config
+        self, mock_underlying_client, mock_queue_manager, batch_provider_config
     ):
         """Test that chat_tools routes through batch queue."""
-        from agent_system.llm.batch.client_wrapper import BatchLLMClient
+        from agent_system.llm.batch.batch_client import BatchLLMClient
         from agent_system.llm.models import ChatMessage
         
         client = BatchLLMClient(
             underlying_client=mock_underlying_client,
             queue_manager=mock_queue_manager,
-            batch_config=batch_config,
+            batch_provider_config=batch_provider_config,
             model_name="gpt-4",
-            provider="openai",
+            batch_provider="openai",
         )
         
         messages = [ChatMessage(role="user", content="Hello")]
@@ -787,10 +786,10 @@ class TestBatchLLMClient:
     
     @pytest.mark.asyncio
     async def test_fallback_on_batch_failure(
-        self, mock_underlying_client, mock_queue_manager, batch_config
+        self, mock_underlying_client, mock_queue_manager, batch_provider_config
     ):
         """Test fallback to sync when batch fails."""
-        from agent_system.llm.batch.client_wrapper import BatchLLMClient
+        from agent_system.llm.batch.batch_client import BatchLLMClient
         from agent_system.llm.models import ChatMessage
         
         # Make queue manager fail
@@ -799,9 +798,9 @@ class TestBatchLLMClient:
         client = BatchLLMClient(
             underlying_client=mock_underlying_client,
             queue_manager=mock_queue_manager,
-            batch_config=batch_config,
+            batch_provider_config=batch_provider_config,
             model_name="gpt-4",
-            provider="openai",
+            batch_provider="openai",
         )
         
         messages = [ChatMessage(role="user", content="Hello")]
@@ -815,14 +814,14 @@ class TestBatchLLMClient:
     
     @pytest.mark.asyncio
     async def test_no_fallback_when_disabled(
-        self, mock_underlying_client, mock_queue_manager, batch_config
+        self, mock_underlying_client, mock_queue_manager, batch_provider_config
     ):
         """Test that fallback is not used when disabled."""
-        from agent_system.llm.batch.client_wrapper import BatchLLMClient
+        from agent_system.llm.batch.batch_client import BatchLLMClient
         from agent_system.llm.models import ChatMessage
         
         # Disable fallback
-        batch_config.fallback_to_sync = False
+        batch_provider_config.fallback_to_sync = False
         
         # Make queue manager fail
         mock_queue_manager.submit_request = AsyncMock(side_effect=Exception("Batch failed"))
@@ -830,9 +829,9 @@ class TestBatchLLMClient:
         client = BatchLLMClient(
             underlying_client=mock_underlying_client,
             queue_manager=mock_queue_manager,
-            batch_config=batch_config,
+            batch_provider_config=batch_provider_config,
             model_name="gpt-4",
-            provider="openai",
+            batch_provider="openai",
         )
         
         messages = [ChatMessage(role="user", content="Hello")]
@@ -842,30 +841,30 @@ class TestBatchLLMClient:
             await client.chat_tools(messages, tools)
     
     def test_supports_streaming_with_fallback(
-        self, mock_underlying_client, mock_queue_manager, batch_config
+        self, mock_underlying_client, mock_queue_manager, batch_provider_config
     ):
         """Test streaming support depends on fallback setting."""
-        from agent_system.llm.batch.client_wrapper import BatchLLMClient
+        from agent_system.llm.batch.batch_client import BatchLLMClient
         
         # With fallback enabled
-        batch_config.fallback_to_sync = True
+        batch_provider_config.fallback_to_sync = True
         client = BatchLLMClient(
             underlying_client=mock_underlying_client,
             queue_manager=mock_queue_manager,
-            batch_config=batch_config,
+            batch_provider_config=batch_provider_config,
             model_name="gpt-4",
-            provider="openai",
+            batch_provider="openai",
         )
         assert client.supports_streaming() is True
         
         # Without fallback
-        batch_config.fallback_to_sync = False
+        batch_provider_config.fallback_to_sync = False
         client2 = BatchLLMClient(
             underlying_client=mock_underlying_client,
             queue_manager=mock_queue_manager,
-            batch_config=batch_config,
+            batch_provider_config=batch_provider_config,
             model_name="gpt-4",
-            provider="openai",
+            batch_provider="openai",
         )
         assert client2.supports_streaming() is False
 

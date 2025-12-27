@@ -15,7 +15,7 @@ from ..models import ChatMessage, LLMClient
 
 if TYPE_CHECKING:
     from .queue_manager import BatchQueueManager
-    from agent_system.config.models import BatchAPIConfig
+    from agent_system.config.models import BatchProviderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +35,13 @@ class BatchLLMClient(LLMClient):
     client for streaming requests if fallback_to_sync is enabled.
     
     Usage:
-        # Created by LLMFactory when batch is enabled
+        # Created by LLMFactory when provider='batch'
         client = BatchLLMClient(
             underlying_client=regular_llm_client,
             queue_manager=global_batch_manager,
-            batch_config=config,
-            model_name="gpt-4o"
+            batch_provider_config=provider_config,
+            model_name="gpt-4o",
+            batch_provider="openai"
         )
         
         # Use like a normal client
@@ -51,24 +52,24 @@ class BatchLLMClient(LLMClient):
         self,
         underlying_client: LLMClient,
         queue_manager: "BatchQueueManager",
-        batch_config: "BatchAPIConfig",
+        batch_provider_config: "BatchProviderConfig",
         model_name: str,
-        provider: str,
+        batch_provider: str,
     ):
         """Initialize the batch wrapper.
         
         Args:
             underlying_client: The real LLM client to use for fallback/streaming
             queue_manager: Global batch queue manager
-            batch_config: Batch configuration from LLM config
+            batch_provider_config: Batch provider configuration (from global batch.providers.*)
             model_name: Name of the model (for grouping batch requests)
-            provider: Provider name (openai, gemini, etc.)
+            batch_provider: Batch provider name (openai, gemini)
         """
         self.underlying_client = underlying_client
         self.queue_manager = queue_manager
-        self.batch_config = batch_config
+        self.batch_provider_config = batch_provider_config
         self.model_name = model_name
-        self.provider = provider
+        self.batch_provider = batch_provider
         
         # Copy attributes from underlying client
         if hasattr(underlying_client, 'context_window'):
@@ -98,7 +99,7 @@ class BatchLLMClient(LLMClient):
         
         if result is None:
             # Fallback to sync if batch failed
-            if self.batch_config.fallback_to_sync:
+            if self.batch_provider_config.fallback_to_sync:
                 logger.warning("Batch request failed, falling back to sync")
                 return await self.underlying_client.chat(messages, cancellation_token)
             raise RuntimeError("Batch request failed and fallback is disabled")
@@ -193,7 +194,7 @@ class BatchLLMClient(LLMClient):
         
         if result is None:
             # Fallback to sync if batch failed
-            if self.batch_config.fallback_to_sync:
+            if self.batch_provider_config.fallback_to_sync:
                 logger.warning("Batch request failed, falling back to sync")
                 return await self.underlying_client.chat_tools(
                     messages, tools, cancellation_token
@@ -214,7 +215,7 @@ class BatchLLMClient(LLMClient):
         Falls back to underlying client if fallback_to_sync is enabled,
         otherwise uses batch and yields final result.
         """
-        if self.batch_config.fallback_to_sync:
+        if self.batch_provider_config.fallback_to_sync:
             # Use underlying client for streaming
             logger.debug("Batch mode: falling back to sync client for streaming")
             async for chunk in self.underlying_client.chat_tools_streaming(
@@ -229,7 +230,7 @@ class BatchLLMClient(LLMClient):
     def supports_streaming(self) -> bool:
         """Batch mode does not support true streaming."""
         # If fallback is enabled, we can stream through underlying client
-        return self.batch_config.fallback_to_sync and self.underlying_client.supports_streaming()
+        return self.batch_provider_config.fallback_to_sync and self.underlying_client.supports_streaming()
     
     async def _submit_batch_request(
         self,
@@ -271,7 +272,7 @@ class BatchLLMClient(LLMClient):
             # Submit to queue and get future with cancellation support
             result = await self.queue_manager.submit_request(
                 model=self.model_name,
-                provider=self.provider,
+                provider=self.batch_provider,
                 messages=messages_data,
                 tools=tools,
                 cancellation_token=cancellation_token,
@@ -286,4 +287,4 @@ class BatchLLMClient(LLMClient):
             return None
     
     def __repr__(self) -> str:
-        return f"BatchLLMClient(model={self.model_name}, provider={self.provider})"
+        return f"BatchLLMClient(model={self.model_name}, batch_provider={self.batch_provider})"

@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig
@@ -33,20 +33,17 @@ logger = logging.getLogger(__name__)
 _batch_queue_manager: Optional["BatchQueueManager"] = None
 
 
-def _normalize_provider(provider: str) -> str:
-    """Normalize provider names to canonical form.
-    
-    Maps provider variants to their base names for batch client registration.
+def _normalize_batch_provider(batch_provider: str) -> str:
+    """Normalize batch provider names to canonical form.
     
     Args:
-        provider: Provider name (e.g., "openai_httpx", "openai", "gemini")
+        batch_provider: Batch provider name (e.g., "openai", "gemini")
         
     Returns:
         Normalized provider name
     """
-    if provider in ("openai", "openai_httpx"):
-        return "openai"
-    return provider
+    # Batch providers are already canonical (gemini, openai)
+    return batch_provider
 
 
 def setup_batch_queue_manager_sync(
@@ -73,38 +70,46 @@ def setup_batch_queue_manager_sync(
         log.debug("Batch queue manager already created, skipping")
         return _batch_queue_manager
     
-    if not config.llm_system or not config.llm_system.models:
-        log.debug("No LLM models configured, skipping batch initialization")
+    if not config.llm_system:
+        log.debug("No LLM system configured, skipping batch initialization")
         return None
     
-    # Check if any model has batch enabled
-    batch_enabled_models = []
-    for model_name, model_config in config.llm_system.models.items():
-        if model_config.batch and model_config.batch.enabled:
-            batch_enabled_models.append(model_name)
-    
-    if not batch_enabled_models:
-        log.debug("No models with batch enabled, skipping batch queue manager")
+    # Check for global batch config
+    batch_system_config = config.llm_system.batch
+    if not batch_system_config:
+        log.debug("No batch system config, skipping batch queue manager")
         return None
     
-    log.info("Found %d models with batch enabled: %s", 
-             len(batch_enabled_models), batch_enabled_models)
+    # Check if any provider is enabled
+    providers_config = batch_system_config.providers
+    gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
+    openai_enabled = providers_config.openai.enabled if providers_config.openai else False
+    
+    if not gemini_enabled and not openai_enabled:
+        log.debug("No batch providers enabled, skipping batch queue manager")
+        return None
+    
+    # Check if any model uses provider='batch'
+    batch_models = [
+        name for name, m in config.llm_system.models.items()
+        if m.provider == "batch"
+    ]
+    
+    if not batch_models:
+        log.debug("No models with provider='batch', skipping batch queue manager")
+        return None
+    
+    log.info("Found %d batch models: %s", len(batch_models), batch_models)
     
     try:
         from .queue_manager import BatchQueueManager
         from ..factory import set_batch_queue_manager
         
-        # Use first batch-enabled model's config for manager settings
-        first_model = config.llm_system.models[batch_enabled_models[0]]
-        batch_config = first_model.batch
-        
-        # Create batch queue manager
-        storage_path = None
-        if batch_config.storage_path:
-            storage_path = Path(batch_config.storage_path)
+        # Create batch queue manager with global config
+        storage_path = Path(batch_system_config.storage_path)
         
         _batch_queue_manager = BatchQueueManager(
-            config=batch_config,
+            batch_system_config=batch_system_config,
             storage_path=storage_path
         )
         
@@ -147,33 +152,39 @@ async def start_batch_queue_manager(
         log.debug("Batch queue manager already running")
         return
     
+    batch_system_config = config.llm_system.batch if config.llm_system else None
+    if not batch_system_config:
+        log.debug("No batch system config available")
+        return
+    
     try:
-        # Collect provider info and cancel_on_startup settings
-        providers_needing_clients: dict = {}
+        # Collect batch providers from models with provider='batch'
+        providers_needing_clients: dict = {}  # batch_provider -> model_config
         providers_cancel_on_startup: set = set()
         
         for model_name, model_config in config.llm_system.models.items():
-            if model_config.batch and model_config.batch.enabled:
-                normalized = _normalize_provider(model_config.provider)
-                if normalized not in providers_needing_clients:
-                    providers_needing_clients[normalized] = model_config
-                if model_config.batch.cancel_on_startup:
-                    providers_cancel_on_startup.add(normalized)
+            if model_config.provider == "batch" and model_config.batch_provider:
+                batch_provider = model_config.batch_provider
+                if batch_provider not in providers_needing_clients:
+                    providers_needing_clients[batch_provider] = model_config
+                # Check cancel_on_startup from global provider config
+                provider_config = getattr(batch_system_config.providers, batch_provider, None)
+                if provider_config and provider_config.cancel_on_startup:
+                    providers_cancel_on_startup.add(batch_provider)
         
         # Register batch clients for each provider
         await _register_batch_clients(
             manager, 
-            providers_needing_clients, 
+            providers_needing_clients,
+            batch_system_config,
             log
         )
         
         # Start the batch queue manager
         await manager.start()
         
-        batch_config = manager.config
-        log.info("Batch queue manager started (collection_window=%ss, poll_interval=%ss)",
-                 batch_config.collection_window_seconds, 
-                 batch_config.poll_interval_seconds)
+        log.info("Batch queue manager started (providers: %s)", 
+                 list(providers_needing_clients.keys()))
         
         # Handle existing jobs from providers - per-provider cancel_on_startup
         if providers_cancel_on_startup:
@@ -202,12 +213,12 @@ async def init_batch_system(
     config: "AgentSystemConfig",
     custom_logger: Optional[logging.Logger] = None,
 ) -> Optional["BatchQueueManager"]:
-    """Initialize the batch queue manager if any model has batch enabled.
+    """Initialize the batch queue manager if any model has provider='batch'.
     
     This function:
-    1. Scans all LLM models for batch.enabled=true
-    2. Creates a BatchQueueManager with the appropriate config
-    3. Registers batch clients for each provider (OpenAI, Gemini, etc.)
+    1. Scans all LLM models for provider='batch'
+    2. Creates a BatchQueueManager with the global batch config
+    3. Registers batch clients for each provider (OpenAI, Gemini)
     4. Starts the background polling/submission tasks
     5. Registers the manager globally so LLMFactory can access it
     
@@ -223,59 +234,72 @@ async def init_batch_system(
         queue_manager = await init_batch_system(config)
         
         if queue_manager:
-            print(f"Batch processing enabled with {queue_manager._collection_window}s window")
+            print("Batch processing enabled")
     """
     global _batch_queue_manager
     log = custom_logger or logger
     
-    if not config.llm_system or not config.llm_system.models:
-        log.debug("No LLM models configured, skipping batch initialization")
+    if not config.llm_system:
+        log.debug("No LLM system configured, skipping batch initialization")
         return None
     
-    # Check if any model has batch enabled and collect provider info
-    batch_enabled_models = []
-    providers_needing_clients: dict = {}  # normalized_provider -> model_config
+    # Check for global batch config
+    batch_system_config = config.llm_system.batch
+    if not batch_system_config:
+        log.debug("No batch system config, skipping batch initialization")
+        return None
+    
+    # Check if any provider is enabled
+    providers_config = batch_system_config.providers
+    gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
+    openai_enabled = providers_config.openai.enabled if providers_config.openai else False
+    
+    if not gemini_enabled and not openai_enabled:
+        log.debug("No batch providers enabled, skipping batch initialization")
+        return None
+    
+    # Check for models with provider='batch' and collect their batch_provider info
+    batch_models = []
+    providers_needing_clients: dict = {}  # batch_provider -> model_config
     providers_cancel_on_startup: set = set()  # providers that need cancel_on_startup
     
     for model_name, model_config in config.llm_system.models.items():
-        if model_config.batch and model_config.batch.enabled:
-            batch_enabled_models.append(model_name)
-            normalized = _normalize_provider(model_config.provider)
-            if normalized not in providers_needing_clients:
-                providers_needing_clients[normalized] = model_config
-            # Track which providers need cancel_on_startup
-            if model_config.batch.cancel_on_startup:
-                providers_cancel_on_startup.add(normalized)
+        if model_config.provider == "batch":
+            if not model_config.batch_provider:
+                log.warning("Model %s has provider='batch' but no batch_provider", model_name)
+                continue
+            batch_models.append(model_name)
+            batch_provider = model_config.batch_provider
+            if batch_provider not in providers_needing_clients:
+                providers_needing_clients[batch_provider] = model_config
+            # Check cancel_on_startup from global provider config
+            provider_config = getattr(providers_config, batch_provider, None)
+            if provider_config and provider_config.cancel_on_startup:
+                providers_cancel_on_startup.add(batch_provider)
     
-    if not batch_enabled_models:
-        log.debug("No models with batch enabled, skipping batch queue manager")
+    if not batch_models:
+        log.debug("No models with provider='batch', skipping batch queue manager")
         return None
     
-    log.info("Found %d models with batch enabled: %s", 
-             len(batch_enabled_models), batch_enabled_models)
+    log.info("Found %d batch models: %s", len(batch_models), batch_models)
     
     try:
         from .queue_manager import BatchQueueManager
         from ..factory import set_batch_queue_manager
         
-        # Use first batch-enabled model's config for manager settings
-        first_model = config.llm_system.models[batch_enabled_models[0]]
-        batch_config = first_model.batch
-        
-        # Create batch queue manager
-        storage_path = None
-        if batch_config.storage_path:
-            storage_path = Path(batch_config.storage_path)
+        # Create batch queue manager with global config
+        storage_path = Path(batch_system_config.storage_path)
         
         _batch_queue_manager = BatchQueueManager(
-            config=batch_config,
+            batch_system_config=batch_system_config,
             storage_path=storage_path
         )
         
         # Register batch clients for each provider
         await _register_batch_clients(
             _batch_queue_manager, 
-            providers_needing_clients, 
+            providers_needing_clients,
+            batch_system_config,
             log
         )
         
@@ -284,9 +308,8 @@ async def init_batch_system(
         
         # Start the batch queue manager
         await _batch_queue_manager.start()
-        log.info("Batch queue manager started (collection_window=%ss, poll_interval=%ss)",
-                 batch_config.collection_window_seconds, 
-                 batch_config.poll_interval_seconds)
+        log.info("Batch queue manager started (providers: %s)",
+                 list(providers_needing_clients.keys()))
         
         # Handle existing jobs from providers - per-provider cancel_on_startup
         if providers_cancel_on_startup:
@@ -319,18 +342,20 @@ async def init_batch_system(
 async def _register_batch_clients(
     queue_manager: "BatchQueueManager",
     providers_needing_clients: dict,
+    batch_system_config: Any,
     log: logging.Logger,
 ) -> None:
-    """Register batch API clients for each provider.
+    """Register batch API clients for each batch provider.
     
     Args:
         queue_manager: BatchQueueManager instance
-        providers_needing_clients: Dict of normalized_provider -> model_config
+        providers_needing_clients: Dict of batch_provider -> model_config
+        batch_system_config: Global BatchSystemConfig
         log: Logger instance
     """
-    for provider, model_config in providers_needing_clients.items():
+    for batch_provider, model_config in providers_needing_clients.items():
         try:
-            if provider == "openai":
+            if batch_provider == "openai":
                 from .openai_batch import OpenAIBatchClient
                 
                 # Get API key from model config or environment
@@ -344,11 +369,9 @@ async def _register_batch_clients(
                     
                 client = OpenAIBatchClient(api_key=api_key)
                 queue_manager.register_batch_client("openai", client)
-                # Also register for openai_httpx variant
-                queue_manager.register_batch_client("openai_httpx", client)
                 log.info("Registered OpenAI batch client")
                 
-            elif provider == "gemini":
+            elif batch_provider == "gemini":
                 from .gemini_batch import GeminiBatchClient
                 
                 # Get API key from model config or environment
@@ -364,15 +387,15 @@ async def _register_batch_clients(
                 queue_manager.register_batch_client("gemini", client)
                 log.info("Registered Gemini batch client")
                 
-            elif provider == "anthropic":
+            elif batch_provider == "anthropic":
                 # Anthropic batch support can be added here when needed
                 log.debug("Anthropic batch not yet implemented")
                 
             else:
-                log.warning(f"Unknown provider for batch: {provider}")
+                log.warning(f"Unknown batch provider: {batch_provider}")
                 
         except Exception as e:
-            log.error(f"Failed to register batch client for {provider}: {e}")
+            log.error(f"Failed to register batch client for {batch_provider}: {e}")
 
 
 async def _cancel_provider_batches(

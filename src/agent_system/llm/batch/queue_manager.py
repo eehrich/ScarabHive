@@ -19,7 +19,7 @@ from agent_system.utils.id import short_id
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
 
 if TYPE_CHECKING:
-    from agent_system.config.models import BatchAPIConfig
+    from agent_system.config.models import BatchSystemConfig, BatchProviderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -55,35 +55,50 @@ class BatchQueueManager:
     
     def __init__(
         self,
-        config: Optional[BatchAPIConfig] = None,
+        batch_system_config: Optional["BatchSystemConfig"] = None,
         storage_path: Optional[Path] = None,
     ):
         """Initialize the batch queue manager.
         
         Args:
-            config: Batch API configuration
-            storage_path: Path for storing batch files (default: data/batch/)
+            batch_system_config: Global batch system configuration
+            storage_path: Path for storing batch files (overrides config.storage_path)
         """
-        self.config = config
-        self.storage_path = storage_path or Path("data/batch")
+        self.batch_system_config = batch_system_config
+        
+        # Determine storage path
+        if storage_path:
+            self.storage_path = storage_path
+        elif batch_system_config:
+            self.storage_path = Path(batch_system_config.storage_path)
+        else:
+            self.storage_path = Path("data/batch_jobs")
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
-        # Configuration with defaults
-        self._collection_window = (
-            config.collection_window_seconds if config else 60.0
-        )
-        self._max_requests = (
-            config.max_requests_per_batch if config else 1000
-        )
-        self._poll_interval = (
-            config.poll_interval_seconds if config else 30.0
-        )
-        self._max_wait_hours = (
-            config.max_wait_hours if config else 24.0
-        )
-        self._max_retries = (
-            config.max_retries if config and hasattr(config, 'max_retries') else 3
-        )
+        # Per-provider configurations
+        self._provider_configs: Dict[str, "BatchProviderConfig"] = {}
+        if batch_system_config and batch_system_config.providers:
+            if batch_system_config.providers.gemini:
+                self._provider_configs["gemini"] = batch_system_config.providers.gemini
+            if batch_system_config.providers.openai:
+                self._provider_configs["openai"] = batch_system_config.providers.openai
+        
+        # Default configuration values (can be overridden per-provider)
+        # These are used for queue management and polling
+        self._collection_window = 10.0  # seconds
+        self._max_requests = 100
+        self._poll_interval = 10.0  # seconds
+        self._max_wait_hours = 24.0
+        self._max_retries = 3
+        
+        # Use first available provider config for defaults
+        for provider_config in self._provider_configs.values():
+            self._collection_window = provider_config.collection_window_seconds
+            self._max_requests = provider_config.max_requests_per_batch
+            self._poll_interval = provider_config.poll_interval_seconds
+            self._max_wait_hours = provider_config.max_wait_hours
+            self._max_retries = provider_config.max_retries
+            break
         
         # Request queues by model
         self._queues: Dict[str, List[BatchRequest]] = defaultdict(list)

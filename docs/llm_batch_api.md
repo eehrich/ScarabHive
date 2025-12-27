@@ -10,53 +10,100 @@ AgentSystem supports batch processing for OpenAI and Gemini LLM APIs, providing:
 
 ## How It Works
 
-1. **Collection Phase**: Requests are collected during a configurable time window (default: 60s)
+1. **Collection Phase**: Requests are collected during a configurable time window (default: 10s)
 2. **Submission Phase**: Collected requests are submitted as a batch job
 3. **Polling Phase**: Job status is polled until completion (up to 24 hours)
 4. **Distribution Phase**: Results are matched to original requests and returned
 
 ## Configuration
 
-Add batch configuration to `config/llm.yaml`:
+Batch processing is configured in `config/llm.yaml` with two parts:
+
+### 1. Global Batch Configuration
+
+The `batch:` section under `llm_system:` defines global settings per provider:
 
 ```yaml
-models:
-  gpt-4o-batch:
-    provider: openai
-    api_key: ${OPENAI_API_KEY}
-    model: gpt-4o
-    batch:
-      enabled: true
-      collection_window_seconds: 60.0
-      max_requests_per_batch: 1000
-      poll_interval_seconds: 30.0
-      max_wait_hours: 24.0
-      cancel_on_startup: true
-      fallback_to_sync: true
-      storage_path: data/batch/
-  
-  gemini-flash-batch:
-    provider: gemini
-    api_key: ${GOOGLE_API_KEY}
-    model: gemini-2.0-flash-001
-    batch:
-      enabled: true
-      collection_window_seconds: 60.0
-      max_requests_per_batch: 5000
+llm_system:
+  batch:
+    storage_path: "data/batch_jobs"   # Where to store batch job data
+    
+    providers:
+      gemini:
+        enabled: true
+        collection_window_seconds: 10
+        max_requests_per_batch: 100
+        poll_interval_seconds: 10
+        max_wait_hours: 24
+        max_retries: 3
+        cancel_on_startup: true
+        fallback_to_sync: false
+        
+      openai:
+        enabled: true
+        collection_window_seconds: 10
+        max_requests_per_batch: 100
+        poll_interval_seconds: 10
+        max_wait_hours: 24
+        max_retries: 3
+        cancel_on_startup: true
+        fallback_to_sync: false
+```
+
+### 2. Batch Model Definitions
+
+Models that use batch processing have `provider: batch` and specify which batch API via `batch_provider`:
+
+```yaml
+  models:
+    # Gemini batch model
+    gemini-2-5-flash-batch:
+      provider: batch               # Use batch processing
+      batch_provider: gemini        # Use Gemini batch API
+      model: gemini-2.5-flash
+      api_key: "..."
+      context_window: 200000
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false            # Batch doesn't support streaming
+
+    # OpenAI batch model
+    gpt-5-mini-batch:
+      provider: batch               # Use batch processing
+      batch_provider: openai        # Use OpenAI batch API
+      model: gpt-5-mini
+      api_key: "..."
+      context_window: 272000
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
 ```
 
 ### Configuration Options
 
+#### Global Provider Settings (`batch.providers.*`)
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable batch processing for this model |
-| `collection_window_seconds` | float | `60.0` | Time to collect requests before submitting |
-| `max_requests_per_batch` | int | `1000` | Max requests per batch (triggers early submission) |
-| `poll_interval_seconds` | float | `30.0` | How often to check batch status |
+| `enabled` | bool | `true` | Enable this batch provider |
+| `collection_window_seconds` | float | `10.0` | Time to collect requests before submitting |
+| `max_requests_per_batch` | int | `100` | Max requests per batch (triggers early submission) |
+| `poll_interval_seconds` | float | `10.0` | How often to check batch status |
 | `max_wait_hours` | float | `24.0` | Max time to wait for batch completion |
+| `max_retries` | int | `3` | Retries for server-side cancelled jobs |
 | `cancel_on_startup` | bool | `true` | Cancel pending batches on system startup |
-| `fallback_to_sync` | bool | `true` | Fall back to sync API if batch fails |
-| `storage_path` | str | `data/batch/` | Path for temporary batch files |
+| `fallback_to_sync` | bool | `false` | Fall back to sync API if batch fails |
+
+#### Model Settings
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `provider` | str | Must be `"batch"` for batch models |
+| `batch_provider` | str | Which batch API: `"gemini"` or `"openai"` |
+| `model` | str | The underlying model name |
+| `api_key` | str | API key for the provider |
 
 ## API Reference
 
@@ -66,9 +113,14 @@ Central manager for batch request queuing and distribution.
 
 ```python
 from agent_system.llm.batch import BatchQueueManager
+from agent_system.config.models import BatchSystemConfig
 
-# Initialize
-manager = BatchQueueManager(config)
+# Initialize with global config
+batch_config = BatchSystemConfig(
+    storage_path="data/batch_jobs",
+    providers=BatchProvidersConfig(...)
+)
+manager = BatchQueueManager(batch_system_config=batch_config)
 
 # Register batch clients
 manager.register_batch_client("openai", openai_client)
@@ -80,7 +132,7 @@ await manager.start()
 # Submit request (returns Future)
 result = await manager.submit_request(
     model="gpt-4o",
-    provider="openai",
+    provider="openai",  # batch_provider from config
     messages=[{"role": "user", "content": "Hello"}],
     tools=[...],  # optional
     custom_id="my-request-1",  # optional

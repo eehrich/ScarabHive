@@ -15,7 +15,7 @@ from .queue_manager import BatchQueueManager
 from .models import BatchJob, BatchRequest, BatchResult, BatchStatus
 from .openai_batch import OpenAIBatchClient
 from .gemini_batch import GeminiBatchClient
-from .client_wrapper import BatchLLMClient
+from .batch_client import BatchLLMClient
 
 __all__ = [
     "BatchQueueManager",

@@ -1,27 +1,61 @@
 llm_system:
   # Default HTTPX timeout configuration for all models
-  # These can be overridden per model if needed
   httpx_timeouts:
     connect: 10.0      # Connection establishment timeout (seconds)
     read: 180.0        # Read timeout - waiting for response data (seconds)
     write: 10.0        # Write timeout - sending request data (seconds)
     pool: 5.0          # Pool timeout - getting connection from pool (seconds)
 
+  # =============================================================================
+  # BATCH PROCESSING CONFIGURATION
+  # =============================================================================
+  # Global batch settings with per-provider overrides.
+  # Models with provider: "batch" use these settings.
+  batch:
+    storage_path: "data/batch_jobs"   # Where to store batch job data
+    
+    providers:
+      gemini:
+        enabled: true
+        collection_window_seconds: 10   # Time to collect requests before submitting
+        max_requests_per_batch: 100     # Max requests per batch
+        poll_interval_seconds: 10       # How often to check batch status
+        max_wait_hours: 24              # Max time to wait for completion
+        max_retries: 3                  # Retries for server-side cancellations
+        cancel_on_startup: true         # Cancel orphaned batches on startup
+        fallback_to_sync: false         # Don't fall back to sync API
+        
+      openai:
+        enabled: true
+        collection_window_seconds: 10
+        max_requests_per_batch: 100     # OpenAI supports up to 50k
+        poll_interval_seconds: 10
+        max_wait_hours: 24
+        max_retries: 3
+        cancel_on_startup: true
+        fallback_to_sync: false
+
+  # =============================================================================
+  # MODEL DEFINITIONS
+  # =============================================================================
   models:
+    # ---------------------------------------------------------------------------
+    # GEMINI MODELS (Sync/Streaming)
+    # ---------------------------------------------------------------------------
     gemini-2-5-flash:
       provider: gemini
       model: gemini-2.5-flash
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
+      context_window: 200000
       request_timeout: 240
       include_thoughts: true
-      thinking_budget: 2048
+      thinking_budget: 1024
       capabilities:
         tools: true
         function_calling: true
         image_input: true
-        streaming: true  # Streams reasoning tokens via delta.reasoning
+        streaming: true
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
@@ -31,15 +65,15 @@ llm_system:
       model: gemini-2.5-flash
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
+      context_window: 200000
       request_timeout: 240
       include_thoughts: false
-      thinking_budget: 2048
+      thinking_budget: 1024
       capabilities:
         tools: true
         function_calling: true
         image_input: true
-        streaming: false  # Streams reasoning tokens via delta.reasoning
+        streaming: false
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
@@ -49,15 +83,15 @@ llm_system:
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
+      context_window: 200000
       request_timeout: 240
       include_thoughts: true
-      thinking_budget: 8192
+      thinking_budget: 4096
       capabilities:
         tools: true
         function_calling: true
         image_input: true
-        streaming: true  # Streams reasoning tokens via delta.reasoning
+        streaming: true
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
@@ -67,10 +101,10 @@ llm_system:
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # Gemini 3 Pro Thinking: 1M context, limit to 200k
+      context_window: 200000
       request_timeout: 240
       include_thoughts: false
-      thinking_budget: 8192
+      thinking_budget: 4096
       capabilities:
         tools: true
         function_calling: true
@@ -80,60 +114,42 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    gemini-3-0-pro-batch:
-      provider: gemini
-      model: gemini-3-pro-preview
-      api_key: "***REMOVED***"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # Gemini 3 Pro: 1M context, limit to 200k
-      request_timeout: 240
-      include_thoughts: false
-      thinking_budget: 8192
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
-      batch:
-        enabled: true
-        collection_window_seconds: 10   # 10 seconds collection window
-        max_requests_per_batch: 100     # Up to 100 requests per batch
-        poll_interval_seconds: 10       # Check status every 10 seconds
-        max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: true        
-        fallback_to_sync: false         # Fall back to sync if batch fails
-        storage_path: "data/batch_jobs" # Where to store batch job data
-
+    # ---------------------------------------------------------------------------
+    # GEMINI BATCH MODELS (provider: batch)
+    # ---------------------------------------------------------------------------
     gemini-2-5-flash-batch:
-      provider: gemini
+      provider: batch                   # NEW: Explicit batch provider
+      batch_provider: gemini            # NEW: Which batch API to use
       model: gemini-2.5-flash
       api_key: "***REMOVED***"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
-      request_timeout: 240
+      context_window: 200000
       include_thoughts: false
-      thinking_budget: 2048
+      thinking_budget: 1024
       capabilities:
         tools: true
         function_calling: true
         image_input: true
         streaming: false
         json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
-      batch:
-        enabled: true
-        collection_window_seconds: 10   # 1 minutes collection window
-        max_requests_per_batch: 100     # Up to 100 requests per batch
-        poll_interval_seconds: 10       # Check status every minute
-        max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: true        
-        fallback_to_sync: false         # Fall back to sync if batch fails
-        storage_path: "data/batch_jobs" # Where to store batch job data
 
+    gemini-3-0-pro-batch:
+      provider: batch
+      batch_provider: gemini
+      model: gemini-3-pro-preview
+      api_key: "***REMOVED***"
+      context_window: 200000
+      include_thoughts: false
+      thinking_budget: 4096
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+
+    # ---------------------------------------------------------------------------
+    # OPENAI MODELS (Sync/Streaming)
+    # ---------------------------------------------------------------------------
     gpt-4.1:
       provider: openai_httpx
       model: gpt-4.1
@@ -150,7 +166,7 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
@@ -188,7 +204,7 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions, assistants]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
@@ -208,7 +224,7 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions, assistants]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
@@ -228,7 +244,7 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions, assistants]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
@@ -251,42 +267,33 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions, assistants]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
+    # ---------------------------------------------------------------------------
+    # OPENAI BATCH MODELS (provider: batch)
+    # ---------------------------------------------------------------------------
     gpt-5-mini-batch:
-      provider: openai_httpx
+      provider: batch                   # NEW: Explicit batch provider
+      batch_provider: openai            # NEW: Which batch API to use
       model: gpt-5-mini
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
-      httpx_timeouts:
-        connect: 10.0
-        read: 240.0
-        write: 10.0
-        pool: 5.0
       capabilities:
         tools: true
         function_calling: true
         image_input: true
         streaming: false
         json_mode: true
-        supported_api_types: [chat_completions, assistants]
-        default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
-      batch:
-        enabled: true
-        collection_window_seconds: 10   # 1 minutes collection window
-        max_requests_per_batch: 100     # Up to 50k requests per batch
-        poll_interval_seconds: 10       # Check status every minute
-        max_wait_hours: 24              # Max 24 hours for batch completion
-        cancel_on_startup: true        
-        fallback_to_sync: false         # Fall back to sync if batch fails
-        storage_path: "data/batch_jobs" # Where to store batch job data
 
+    # ---------------------------------------------------------------------------
+    # REALTIME / AUDIO MODELS
+    # ---------------------------------------------------------------------------
     gpt-realtime:
       provider: openai
       model: gpt-realtime
@@ -312,11 +319,10 @@ llm_system:
         tools: true
         function_calling: true
         audio_input: true
+        image_input: true
         streaming: true
         supported_api_types: [realtime]
         default_api_type: realtime
-        image_input: true
-        streaming: true
 
     gpt-audio:
       provider: openai
@@ -330,6 +336,9 @@ llm_system:
         audio_input: true
         streaming: false
 
+    # ---------------------------------------------------------------------------
+    # LOCAL / OLLAMA MODELS
+    # ---------------------------------------------------------------------------
     ollama-gpt-oss-20b:
       provider: ollama
       model: gpt-oss:20b
@@ -342,12 +351,15 @@ llm_system:
         function_calling: true
         streaming: true
 
+    # ---------------------------------------------------------------------------
+    # DEEPSEEK MODELS
+    # ---------------------------------------------------------------------------
     deepseek-chat:
       provider: openai_httpx
       model: deepseek-chat
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
-      context_window: 100000 # 128K context size totally
+      context_window: 100000
       request_timeout: 240
       capabilities:
         tools: true
@@ -360,100 +372,112 @@ llm_system:
       model: deepseek-chat
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
-      context_window: 100000 # 128K context size totally
+      context_window: 100000
       request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
-        streaming: true
+        streaming: false
         json_mode: true
 
+  # =============================================================================
+  # PROFILES
+  # =============================================================================
   profiles:
     turbo:
       model_ref: gpt-5-nano
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 500
+      
     normal:
       model_ref: gemini-2-5-flash-batch
-      #model_ref: gpt-5-mini-batch
-      #model_ref: gpt-5-mini
-      description: "Fast model for medium reasoning tasks"
+      description: "Fast model for medium reasoning tasks (batch)"
       max_steps: 500
+      
     normal-stream:
       model_ref: gemini-2-5-flash
-      #model_ref: gpt-5-mini
-      description: "Fast model for medium reasoning tasks"
-      max_steps: 500      
-    think:
-      #model_ref: gemini-3-0-pro-nostream
-      model_ref: gpt-5.1
-      #model_ref: gemini-3-0-pro-batch
-      description: "Advanced model for complex reasoning"
+      description: "Fast model for medium reasoning tasks (streaming)"
       max_steps: 500
+      
+    think:
+      model_ref: gemini-3-0-pro-batch
+      description: "Advanced model for complex reasoning (batch)"
+      max_steps: 500
+      
     think-stream:
       model_ref: gemini-3-0-pro
-      description: "Advanced model for complex reasoning"
-      max_steps: 500      
+      description: "Advanced model for complex reasoning (streaming)"
+      max_steps: 500
+      
     big:
       model_ref: gpt-4.1
-      description: "Expensive model with big context window, legacy and medium powerful."
+      description: "Expensive model with big context window"
       max_steps: 500
+      
     chat:
       model_ref: deepseek-chat
-      description: "Cheap and fast none thinking model, for medium complex tasks."
+      description: "Cheap and fast model for medium tasks"
       max_steps: 500
+      
     chat-nostream:
       model_ref: deepseek-chat-nostream
-      description: "Cheap and fast none thinking model, for medium complex tasks."
+      description: "Cheap and fast model for medium tasks (no streaming)"
       max_steps: 500
+      
     code:
       model_ref: gpt-5.1-codex
-      description: "Special LLM for complex reasoning Codeing tasks."
+      description: "Special LLM for complex coding tasks"
       max_steps: 500
+      
     code-mini:
       model_ref: gpt-5.1-codex-mini
-      description: "Special LLM for medium reasoning Codeing tasks."
+      description: "Special LLM for medium coding tasks"
       max_steps: 500
+      
     realtime:
       model_ref: gpt-realtime-mini
-      description: "Realtime answers, for medium complex tasks"
+      description: "Realtime answers for medium tasks"
       max_steps: 500
 
+    # Named profiles for specific models
     gemini-flash:
       model_ref: gemini-2-5-flash
-      description: "Google Gemini model for advanced reasoning tasks."
+      description: "Google Gemini Flash (streaming)"
       max_steps: 500
-    gemini-pro:
-      model_ref: gemini-3-0-pro
-      description: "Google Gemini model for advanced reasoning tasks."
-      max_steps: 500
+      
     gemini-flash-batch:
       model_ref: gemini-2-5-flash-batch
-      description: "Google Gemini model for advanced reasoning tasks with batch processing."
+      description: "Google Gemini Flash (batch)"
+      max_steps: 500
+      
+    gemini-pro:
+      model_ref: gemini-3-0-pro
+      description: "Google Gemini Pro (streaming)"
       max_steps: 500
 
     gpt-full:
       model_ref: gpt-5.1
-      description: "OpenAI Powerful model for complex reasoning tasks."
-      max_steps: 500     
+      description: "OpenAI full model for complex tasks"
+      max_steps: 500
+      
     gpt-mini:
       model_ref: gpt-5-mini
-      description: "OpenAI model for medium reasoning tasks."
-      max_steps: 500          
-    gpt-nano:
-      model_ref: gpt-5-nano
-      description: "OpenAI model for medium reasoning tasks."
-      max_steps: 500    
+      description: "OpenAI mini model (sync)"
+      max_steps: 500
+      
     gpt-mini-batch:
       model_ref: gpt-5-mini-batch
-      description: "OpenAI model for medium reasoning tasks with batch processing."
+      description: "OpenAI mini model (batch)"
       max_steps: 500
+      
+    gpt-nano:
+      model_ref: gpt-5-nano
+      description: "OpenAI nano model for fast tasks"
+      max_steps: 500
+      
     local:
       model_ref: ollama-gpt-oss-20b
-      description: "Model for privacy and offline usage, powerful but slow."
+      description: "Local model for privacy and offline usage"
       max_steps: 500
 
   default_profile: normal
-
-
-
