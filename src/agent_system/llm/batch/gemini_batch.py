@@ -376,8 +376,8 @@ class GeminiBatchClient:
             logger.debug(f"Gemini batch status for {job_name}: {state_name}")
             
             status_mapping = {
-                "STATE_UNSPECIFIED": BatchStatus.PENDING.value,
-                "JOB_STATE_PENDING": BatchStatus.PENDING.value,
+                "STATE_UNSPECIFIED": BatchStatus.SUBMITTED.value,
+                "JOB_STATE_PENDING": BatchStatus.SUBMITTED.value,  # Waiting at provider
                 "JOB_STATE_RUNNING": BatchStatus.IN_PROGRESS.value,
                 "JOB_STATE_SUCCEEDED": BatchStatus.COMPLETED.value,
                 "JOB_STATE_FAILED": BatchStatus.FAILED.value,

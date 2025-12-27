@@ -290,13 +290,13 @@ class BatchQueueManager:
         """Map Gemini job state to BatchStatus."""
         from .models import BatchStatus
         mapping = {
-            "JOB_STATE_PENDING": BatchStatus.PENDING,
+            "JOB_STATE_PENDING": BatchStatus.SUBMITTED,  # Waiting at provider
             "JOB_STATE_RUNNING": BatchStatus.IN_PROGRESS,
             "JOB_STATE_SUCCEEDED": BatchStatus.COMPLETED,
             "JOB_STATE_FAILED": BatchStatus.FAILED,
             "JOB_STATE_CANCELLED": BatchStatus.CANCELLED,
         }
-        return mapping.get(state, BatchStatus.PENDING)
+        return mapping.get(state, BatchStatus.SUBMITTED)
     
     def _map_openai_status(self, status: str) -> "BatchStatus":
         """Map OpenAI batch status to BatchStatus."""
