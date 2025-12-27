@@ -138,8 +138,8 @@ class BatchLLMClient(LLMClient):
     def _convert_to_native_format(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Convert OpenAI batch format to native format expected by agent.
         
-        OpenAI batch format: {"choices": [{"message": {"role": "assistant", "content": "..."}}]}
-        Native format: {"assistant": {"role": "assistant", "content": "..."}}
+        OpenAI batch format: {"choices": [{"message": {"role": "assistant", "content": "..."}}], "usage": {...}}
+        Native format: {"assistant": {"role": "assistant", "content": "..."}, "usage": {...}}
         """
         if not isinstance(result, dict):
             return {"assistant": {"role": "assistant", "content": str(result)}}
@@ -152,11 +152,19 @@ class BatchLLMClient(LLMClient):
         choices = result.get("choices")
         if choices and isinstance(choices, list) and len(choices) > 0:
             message = choices[0].get("message", {})
-            return {"assistant": message}
+            native = {"assistant": message}
+            # Preserve usage data if present
+            if "usage" in result:
+                native["usage"] = result["usage"]
+            return native
         
         # If we have direct content, wrap it
         if "content" in result:
-            return {"assistant": {"role": "assistant", "content": result["content"]}}
+            native = {"assistant": {"role": "assistant", "content": result["content"]}}
+            # Preserve usage data if present
+            if "usage" in result:
+                native["usage"] = result["usage"]
+            return native
             
         # Return as-is if we can't determine the format
         return result

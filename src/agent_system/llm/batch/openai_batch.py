@@ -272,11 +272,20 @@ class OpenAIBatchClient:
     async def get_batch_results(self, job: BatchJob) -> List[Dict[str, Any]]:
         """Download and parse batch results.
         
+        Returns individual results with per-request token usage.
+        OpenAI provides both:
+        - Batch-level usage in batch.usage (aggregate totals)
+        - Per-request usage in each response.body.usage
+        
+        We extract per-request usage here so it can be attributed to
+        individual agents/sessions. Batch-level totals are available
+        via get_batch_status().
+        
         Args:
             job: BatchJob to get results for (must have output_file_id set)
             
         Returns:
-            List of result dicts with custom_id and response/error
+            List of result dicts with custom_id, response/error, and usage per request
         """
         # Get current status to get output_file_id
         if not job.provider_job_id:

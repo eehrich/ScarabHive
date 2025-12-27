@@ -71,6 +71,7 @@ class BatchAPIConfig(BaseModel):
     max_requests_per_batch: int = 1000  # Max requests per batch (OpenAI: unlimited, Gemini: 200k)
     poll_interval_seconds: float = 30.0  # Interval between status polls
     max_wait_hours: float = 24.0  # Max time to wait for batch completion
+    max_retries: int = 3  # Max retries for server-side cancelled jobs
     cancel_on_startup: bool = True  # Cancel obsolete batches on app startup
     fallback_to_sync: bool = True  # Fallback to sync API on timeout/failure
     storage_path: Optional[str] = None  # Path for temp JSONL files (default: data/batch/)

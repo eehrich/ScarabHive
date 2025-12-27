@@ -81,6 +81,9 @@ class BatchQueueManager:
         self._max_wait_hours = (
             config.max_wait_hours if config else 24.0
         )
+        self._max_retries = (
+            config.max_retries if config and hasattr(config, 'max_retries') else 3
+        )
         
         # Request queues by model
         self._queues: Dict[str, List[BatchRequest]] = defaultdict(list)
@@ -592,7 +595,23 @@ class BatchQueueManager:
                 await self._process_results(job, results)
                 await self._complete_job(job)
                 
-            elif job.status in (BatchStatus.FAILED, BatchStatus.EXPIRED, BatchStatus.CANCELLED):
+            elif job.status == BatchStatus.CANCELLED:
+                # Server-side cancellation - retry if under limit
+                if job.retry_count < self._max_retries:
+                    job.retry_count += 1
+                    logger.warning(
+                        f"Batch job {job.job_id} cancelled server-side, "
+                        f"retrying ({job.retry_count}/{self._max_retries})"
+                    )
+                    await self._retry_job(job)
+                else:
+                    logger.error(
+                        f"Batch job {job.job_id} cancelled after {job.retry_count} retries, giving up"
+                    )
+                    job.error_message = f"Cancelled after {job.retry_count} retries"
+                    await self._complete_job(job)
+                    
+            elif job.status in (BatchStatus.FAILED, BatchStatus.EXPIRED):
                 job.error_message = status_info.get("error", "Unknown error")
                 await self._complete_job(job)
                 
@@ -608,6 +627,41 @@ class BatchQueueManager:
         except Exception as e:
             logger.error(f"Error polling batch job {job.job_id}: {e}")
     
+    async def _retry_job(self, job: BatchJob) -> None:
+        """Retry a cancelled batch job by resubmitting it.
+        
+        Args:
+            job: The BatchJob to retry
+        """
+        client = self._batch_clients.get(job.provider)
+        if not client:
+            logger.error(f"No batch client for provider {job.provider}, cannot retry")
+            job.error_message = f"No batch client for provider: {job.provider}"
+            await self._complete_job(job)
+            return
+        
+        try:
+            # Reset job state for resubmission
+            job.status = BatchStatus.SUBMITTED
+            job.submitted_at = _utc_now()
+            job.provider_job_id = None
+            job.error_message = None
+            
+            # Resubmit to provider
+            provider_job_id = await client.submit_batch(job, self.storage_path)
+            job.provider_job_id = provider_job_id
+            
+            logger.info(
+                f"Batch job {job.job_id} resubmitted as {provider_job_id} "
+                f"(retry {job.retry_count}/{self._max_retries})"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to retry batch job {job.job_id}: {e}")
+            job.status = BatchStatus.FAILED
+            job.error_message = f"Retry failed: {e}"
+            await self._complete_job(job)
+
     async def _process_results(
         self,
         job: BatchJob,

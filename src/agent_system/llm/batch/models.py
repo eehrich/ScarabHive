@@ -111,6 +111,9 @@ class BatchJob:
     failed_count: int = 0
     completed_count: int = 0
     
+    # Retry tracking
+    retry_count: int = 0
+    
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
     

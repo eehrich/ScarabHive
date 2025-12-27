@@ -376,7 +376,7 @@ class TestGeminiBatchClient:
     
     def test_convert_messages_to_contents(self):
         """Test message conversion to Gemini format."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
+        client = GeminiBatchClient(api_key="test_key")
         
         messages = [
             {"role": "user", "content": "Hello"},
@@ -394,7 +394,7 @@ class TestGeminiBatchClient:
     
     def test_convert_multimodal_messages(self):
         """Test multimodal message conversion."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
+        client = GeminiBatchClient(api_key="test_key")
         
         messages = [{
             "role": "user",
@@ -414,31 +414,9 @@ class TestGeminiBatchClient:
         assert contents[0]["parts"][0] == {"text": "What's in this image?"}
         assert "inlineData" in contents[0]["parts"][1]
     
-    def test_convert_tools_to_rest(self):
-        """Test tools conversion to REST format."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
-        
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get weather info",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"city": {"type": "string"}},
-                },
-            },
-        }]
-        
-        converted = client._convert_tools_to_rest(tools)
-        
-        assert len(converted) == 1
-        assert "functionDeclarations" in converted[0]
-        assert converted[0]["functionDeclarations"][0]["name"] == "get_weather"
-    
     def test_convert_messages_with_tool_calls(self):
         """Test converting assistant messages with tool calls."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
+        client = GeminiBatchClient(api_key="test_key")
         
         messages = [
             {"role": "user", "content": "What's the weather in Paris?"},
@@ -475,7 +453,7 @@ class TestGeminiBatchClient:
     
     def test_convert_messages_with_tool_results(self):
         """Test converting tool response messages."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
+        client = GeminiBatchClient(api_key="test_key")
         
         messages = [
             {"role": "user", "content": "What's the weather?"},
@@ -517,63 +495,6 @@ class TestGeminiBatchClient:
         assert contents[3]["role"] == "model"
         assert contents[3]["parts"][0]["text"] == "It's 20°C and sunny in Paris."
     
-    @pytest.mark.asyncio
-    async def test_submit_batch_rest(self, sample_job, tmp_path):
-        """Test batch submission via REST API."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
-        
-        mock_http = AsyncMock()
-        client._http_client = mock_http
-        
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {
-            "name": "operations/batch_job_123",
-            "responses": [],
-        }
-        mock_http.post.return_value = response
-        
-        job_name = await client.submit_batch(sample_job, tmp_path)
-        
-        assert job_name == "operations/batch_job_123"
-    
-    @pytest.mark.asyncio
-    async def test_immediate_results(self, sample_job):
-        """Test handling of immediate batch results (small batches)."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
-        
-        sample_job.metadata["immediate_results"] = [{
-            "candidates": [{
-                "content": {
-                    "parts": [{"text": "Test response"}]
-                }
-            }]
-        }]
-        
-        results = await client.get_batch_results(sample_job)
-        
-        assert len(results) == 1
-        assert results[0]["custom_id"] == "custom_1"
-        assert results[0]["response"]["choices"][0]["message"]["content"] == "Test response"
-    
-    @pytest.mark.asyncio
-    async def test_get_batch_status_rest(self):
-        """Test batch status via REST API."""
-        client = GeminiBatchClient(api_key="test_key", use_sdk=False)
-        
-        mock_http = AsyncMock()
-        client._http_client = mock_http
-        
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {
-            "state": "JOB_STATE_SUCCEEDED",
-        }
-        mock_http.get.return_value = response
-        
-        status_info = await client.get_batch_status("operations/batch_123")
-        
-        assert status_info["status"] == BatchStatus.COMPLETED.value
 
 
 # ==============================================================================
@@ -959,11 +880,8 @@ class TestSchemaSanitization:
     @pytest.fixture
     def gemini_client(self) -> GeminiBatchClient:
         """Create a Gemini batch client for testing."""
-        with patch.object(GeminiBatchClient, '__init__', lambda self, *args, **kwargs: None):
-            client = object.__new__(GeminiBatchClient)
-            client.api_key = "test-key"
-            client.use_sdk = False  # Avoid SDK initialization
-            return client
+        client = GeminiBatchClient(api_key="test-key")
+        return client
     
     def test_sanitize_removes_oneof(self, gemini_client):
         """Test that oneOf is removed from schemas."""
@@ -1106,8 +1024,7 @@ class TestSDKToolConversion:
     @pytest.fixture
     def gemini_client(self) -> GeminiBatchClient:
         """Create a Gemini batch client for testing."""
-        # Use SDK mode for this test
-        client = GeminiBatchClient(api_key="test-key", use_sdk=True)
+        client = GeminiBatchClient(api_key="test-key")
         return client
     
     def test_convert_tools_creates_sdk_types(self, gemini_client):
@@ -1180,11 +1097,11 @@ class TestSDKResultsExtraction:
     @pytest.fixture
     def gemini_client_sdk(self) -> GeminiBatchClient:
         """Create a Gemini batch client in SDK mode."""
-        client = GeminiBatchClient(api_key="test-key", use_sdk=True)
+        client = GeminiBatchClient(api_key="test-key")
         return client
     
     @pytest.mark.asyncio
-    async def test_get_results_sdk_with_function_calls(self, gemini_client_sdk):
+    async def test_get_batch_results_with_function_calls(self, gemini_client_sdk):
         """Test extracting results with function calls from SDK batch job."""
         from google.genai import types
         
@@ -1217,8 +1134,17 @@ class TestSDKResultsExtraction:
         mock_candidate = MagicMock()
         mock_candidate.content.parts = [mock_fc_part]
         
+        # Mock usage metadata
+        mock_usage = MagicMock()
+        mock_usage.prompt_token_count = 100
+        mock_usage.response_token_count = 50
+        mock_usage.candidates_token_count = 50
+        mock_usage.total_token_count = 150
+        mock_usage.cached_content_token_count = None
+        
         mock_response = MagicMock()
         mock_response.candidates = [mock_candidate]
+        mock_response.usage_metadata = mock_usage
         
         mock_inline_response = MagicMock()
         mock_inline_response.response = mock_response
@@ -1232,7 +1158,7 @@ class TestSDKResultsExtraction:
         mock_sdk_batch.dest = mock_dest
         
         with patch.object(gemini_client_sdk._sdk_client.batches, 'get', return_value=mock_sdk_batch):
-            results = await gemini_client_sdk._get_results_sdk(job)
+            results = await gemini_client_sdk.get_batch_results(job)
         
         assert len(results) == 1
         assert results[0]["custom_id"] == "test_1"
@@ -1249,7 +1175,7 @@ class TestSDKResultsExtraction:
         assert args["location"] == "Berlin"
     
     @pytest.mark.asyncio
-    async def test_get_results_sdk_with_text_and_function_call(self, gemini_client_sdk):
+    async def test_get_batch_results_with_text_and_function_call(self, gemini_client_sdk):
         """Test extracting results with both text and function calls."""
         from google.genai import types
         
@@ -1285,8 +1211,17 @@ class TestSDKResultsExtraction:
         mock_candidate = MagicMock()
         mock_candidate.content.parts = [mock_text_part, mock_fc_part]
         
+        # Mock usage metadata
+        mock_usage = MagicMock()
+        mock_usage.prompt_token_count = 100
+        mock_usage.response_token_count = 50
+        mock_usage.candidates_token_count = 50
+        mock_usage.total_token_count = 150
+        mock_usage.cached_content_token_count = None
+        
         mock_response = MagicMock()
         mock_response.candidates = [mock_candidate]
+        mock_response.usage_metadata = mock_usage
         
         mock_inline_response = MagicMock()
         mock_inline_response.response = mock_response
@@ -1299,7 +1234,7 @@ class TestSDKResultsExtraction:
         mock_sdk_batch.dest = mock_dest
         
         with patch.object(gemini_client_sdk._sdk_client.batches, 'get', return_value=mock_sdk_batch):
-            results = await gemini_client_sdk._get_results_sdk(job)
+            results = await gemini_client_sdk.get_batch_results(job)
         
         assert len(results) == 1
         message = results[0]["response"]["choices"][0]["message"]
@@ -1311,7 +1246,7 @@ class TestSDKResultsExtraction:
         assert message["tool_calls"][0]["function"]["name"] == "web_search"
     
     @pytest.mark.asyncio
-    async def test_get_results_sdk_text_only(self, gemini_client_sdk):
+    async def test_get_batch_results_text_only(self, gemini_client_sdk):
         """Test extracting results with text only (no function calls)."""
         job = BatchJob(
             job_id="test_job",
@@ -1337,8 +1272,17 @@ class TestSDKResultsExtraction:
         mock_candidate = MagicMock()
         mock_candidate.content.parts = [mock_text_part]
         
+        # Mock usage metadata
+        mock_usage = MagicMock()
+        mock_usage.prompt_token_count = 100
+        mock_usage.response_token_count = 50
+        mock_usage.candidates_token_count = 50
+        mock_usage.total_token_count = 150
+        mock_usage.cached_content_token_count = None
+        
         mock_response = MagicMock()
         mock_response.candidates = [mock_candidate]
+        mock_response.usage_metadata = mock_usage
         
         mock_inline_response = MagicMock()
         mock_inline_response.response = mock_response
@@ -1351,7 +1295,7 @@ class TestSDKResultsExtraction:
         mock_sdk_batch.dest = mock_dest
         
         with patch.object(gemini_client_sdk._sdk_client.batches, 'get', return_value=mock_sdk_batch):
-            results = await gemini_client_sdk._get_results_sdk(job)
+            results = await gemini_client_sdk.get_batch_results(job)
         
         assert len(results) == 1
         message = results[0]["response"]["choices"][0]["message"]
