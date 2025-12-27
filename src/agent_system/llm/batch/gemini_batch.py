@@ -711,12 +711,24 @@ class GeminiBatchClient:
                         if tool_calls:
                             message["tool_calls"] = tool_calls
                         
+                        # Extract usage metadata if available
+                        usage = {}
+                        if hasattr(response_obj, "usage_metadata"):
+                            um = response_obj.usage_metadata
+                            usage = {
+                                "prompt_token_count": getattr(um, "prompt_token_count", 0),
+                                "candidates_token_count": getattr(um, "candidates_token_count", 0),
+                                "total_token_count": getattr(um, "total_token_count", 0),
+                                "cached_content_token_count": getattr(um, "cached_content_token_count", 0),
+                            }
+                        
                         results.append({
                             "custom_id": custom_id,
                             "response": {
                                 "choices": [{
                                     "message": message,
                                 }],
+                                "usage": usage,  # Per-request token usage
                             },
                             "error": None,
                         })

@@ -265,6 +265,7 @@ class OpenAIBatchClient:
             "output_file_id": data.get("output_file_id"),
             "error_file_id": data.get("error_file_id"),
             "request_counts": data.get("request_counts", {}),
+            "usage": data.get("usage", {}),  # Token usage for entire batch
             "error": error_message,
         }
     
@@ -299,10 +300,18 @@ class OpenAIBatchClient:
                 continue
             try:
                 data = json.loads(line)
+                response_body = data.get("response", {}).get("body")
+                
+                # Extract usage from response body if available
+                usage = {}
+                if response_body and isinstance(response_body, dict):
+                    usage = response_body.get("usage", {})
+                
                 result = {
                     "custom_id": data.get("custom_id"),
-                    "response": data.get("response", {}).get("body"),
+                    "response": response_body,
                     "error": data.get("error"),
+                    "usage": usage,  # Per-request token usage
                 }
                 results.append(result)
             except json.JSONDecodeError as e:
