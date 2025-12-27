@@ -632,6 +632,110 @@ class TestBatchQueueManager:
         assert "openai" in manager._batch_clients
         assert manager._batch_clients["openai"] == mock_client
 
+    @pytest.mark.asyncio
+    async def test_cancel_request_from_queue(self, mock_config):
+        """Test cancelling a request that hasn't been submitted yet."""
+        manager = BatchQueueManager(mock_config)
+        await manager.start()
+        
+        # Add a request to the queue manually
+        request = BatchRequest(
+            request_id="test-cancel-1",
+            custom_id="custom-1",
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Test"}],
+        )
+        manager._queues["openai:gpt-4"].append(request)
+        
+        # Create a future for this request
+        future = asyncio.get_event_loop().create_future()
+        manager._request_futures[request.request_id] = future
+        
+        # Cancel the request
+        result = await manager.cancel_request("test-cancel-1")
+        
+        assert result is True
+        assert len(manager._queues["openai:gpt-4"]) == 0
+        assert future.done()
+        
+        await manager.stop()
+
+    @pytest.mark.asyncio
+    async def test_cancel_request_after_submission(self, mock_config):
+        """Test cancelling a request that has been submitted to provider."""
+        manager = BatchQueueManager(mock_config)
+        await manager.start()
+        
+        # Create a job with a request
+        request = BatchRequest(
+            request_id="test-cancel-2",
+            custom_id="custom-2",
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Test"}],
+        )
+        job = BatchJob(
+            job_id="job-test",
+            provider="openai",
+            model="gpt-4",
+            requests=[request],
+        )
+        job.provider_job_id = "batch_abc123"
+        
+        # Set up the manager state
+        manager._active_jobs[job.job_id] = job
+        manager._request_to_job[request.request_id] = job.job_id
+        
+        # Register a mock client
+        mock_client = AsyncMock()
+        mock_client.cancel_batch = AsyncMock(return_value={"status": "cancelled"})
+        manager.register_batch_client("openai", mock_client)
+        
+        # Cancel the request
+        result = await manager.cancel_request("test-cancel-2")
+        
+        assert result is True
+        mock_client.cancel_batch.assert_called_once_with("batch_abc123")
+        assert job.status == BatchStatus.CANCELLED
+        
+        await manager.stop()
+
+    @pytest.mark.asyncio  
+    async def test_request_to_job_mapping_cleanup(self, mock_config):
+        """Test that request-to-job mapping is cleaned up after job completion."""
+        manager = BatchQueueManager(mock_config)
+        
+        # Create a job with requests
+        requests = [
+            BatchRequest(
+                request_id=f"req-{i}",
+                custom_id=f"custom-{i}",
+                model="gpt-4",
+                messages=[{"role": "user", "content": f"Test {i}"}],
+            )
+            for i in range(3)
+        ]
+        job = BatchJob(
+            job_id="job-cleanup",
+            provider="openai",
+            model="gpt-4",
+            requests=requests,
+        )
+        
+        # Set up mappings
+        manager._active_jobs[job.job_id] = job
+        for req in requests:
+            manager._request_to_job[req.request_id] = job.job_id
+        
+        # Complete the job
+        job.status = BatchStatus.COMPLETED
+        await manager._complete_job(job)
+        
+        # Verify cleanup
+        assert job.job_id not in manager._active_jobs
+        assert job.job_id in manager._completed_jobs
+        for req in requests:
+            assert req.request_id not in manager._request_to_job
+
 
 # ==============================================================================
 # Integration Tests

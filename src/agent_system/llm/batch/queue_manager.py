@@ -114,6 +114,9 @@ class BatchQueueManager:
         # Request futures (for callers waiting on results)
         self._request_futures: Dict[str, asyncio.Future] = {}
         
+        # Request to job mapping (for cancellation)
+        self._request_to_job: Dict[str, str] = {}  # request_id -> job_id
+        
         # Background tasks
         self._submission_tasks: Dict[str, asyncio.Task] = {}
         self._polling_task: Optional[asyncio.Task] = None
@@ -427,13 +430,8 @@ class BatchQueueManager:
                 # Check cancellation token
                 if cancellation_token and cancellation_token.is_cancelled:
                     logger.info(f"Request {request.request_id} cancelled via token")
-                    self._request_futures.pop(request.request_id, None)
-                    # Remove from queue if not yet submitted
-                    async with self._queue_locks[queue_key]:
-                        self._queues[queue_key] = [
-                            r for r in self._queues[queue_key] 
-                            if r.request_id != request.request_id
-                        ]
+                    # Cancel the request (and its batch job if already submitted)
+                    await self.cancel_request(request.request_id)
                     raise asyncio.CancelledError("Cancelled by user")
                 
                 # Wait for result with short timeout
@@ -511,9 +509,11 @@ class BatchQueueManager:
             requests=batch_requests,
         )
         
-        # Store job
+        # Store job and map requests to job for cancellation tracking
         async with self._jobs_lock:
             self._active_jobs[job.job_id] = job
+            for req in batch_requests:
+                self._request_to_job[req.request_id] = job.job_id
         
         self._metrics.total_jobs += 1
         self._metrics.total_requests += len(batch_requests)
@@ -709,7 +709,7 @@ class BatchQueueManager:
             
             # Notify waiting caller
             future = self._request_futures.pop(request.request_id, None)
-            if future and not future.done():
+            if future and not future.done() and not future.cancelled():
                 if request.error:
                     future.set_exception(RuntimeError(request.error))
                 else:
@@ -730,16 +730,19 @@ class BatchQueueManager:
         elif job.status == BatchStatus.CANCELLED:
             self._metrics.cancelled_jobs += 1
         
-        # Move to completed jobs
+        # Move to completed jobs and cleanup request-to-job mapping
         async with self._jobs_lock:
             self._active_jobs.pop(job.job_id, None)
             self._completed_jobs[job.job_id] = job
+            # Clean up request-to-job mapping for this job's requests
+            for request in job.requests:
+                self._request_to_job.pop(request.request_id, None)
         
         # Notify any remaining waiting callers of failure
         if job.status != BatchStatus.COMPLETED:
             for request in job.requests:
                 future = self._request_futures.pop(request.request_id, None)
-                if future and not future.done():
+                if future and not future.done() and not future.cancelled():
                     future.set_exception(
                         RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
                     )
@@ -782,6 +785,84 @@ class BatchQueueManager:
         except Exception as e:
             logger.error(f"Failed to cancel batch job {job_id}: {e}")
             return False
+    
+    async def cancel_request(self, request_id: str) -> bool:
+        """Cancel a specific request and its associated batch job at the provider.
+        
+        This is called when a user cancels an agent task. It will:
+        1. Remove the request from its queue (if not yet submitted)
+        2. Cancel the batch job at the provider API (if already submitted)
+        3. Notify waiting callers with CancelledError
+        
+        Args:
+            request_id: The request ID to cancel
+            
+        Returns:
+            True if cancellation was successful
+        """
+        # First, try to remove from queue (not yet submitted)
+        removed_from_queue = False
+        for queue_key in list(self._queues.keys()):
+            async with self._queue_locks[queue_key]:
+                original_len = len(self._queues[queue_key])
+                self._queues[queue_key] = [
+                    r for r in self._queues[queue_key] 
+                    if r.request_id != request_id
+                ]
+                if len(self._queues[queue_key]) < original_len:
+                    removed_from_queue = True
+                    logger.info(f"Request {request_id} removed from queue before submission")
+                    break
+        
+        if removed_from_queue:
+            # Notify waiting caller
+            future = self._request_futures.pop(request_id, None)
+            if future and not future.done():
+                future.cancel()
+            return True
+        
+        # Request was already submitted - find and cancel the job
+        job_id = self._request_to_job.get(request_id)
+        if not job_id:
+            logger.debug(f"Request {request_id} not found in any job")
+            return False
+        
+        async with self._jobs_lock:
+            job = self._active_jobs.get(job_id)
+        
+        if not job:
+            logger.debug(f"Job {job_id} for request {request_id} not found")
+            return False
+        
+        if job.is_terminal:
+            logger.debug(f"Job {job_id} already in terminal state: {job.status}")
+            return False
+        
+        # Cancel the job at the provider
+        if job.provider_job_id:
+            client = self._batch_clients.get(job.provider)
+            if client:
+                try:
+                    logger.info(
+                        f"Cancelling batch job {job.provider_job_id} at {job.provider} "
+                        f"(triggered by request {request_id})"
+                    )
+                    job.status = BatchStatus.CANCELLING
+                    await client.cancel_batch(job.provider_job_id)
+                    job.status = BatchStatus.CANCELLED
+                    job.error_message = f"Cancelled by user (request {request_id})"
+                    await self._complete_job(job)
+                    logger.info(f"Successfully cancelled batch job {job.provider_job_id}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to cancel batch job at provider: {e}")
+                    # Still mark as cancelled locally
+                    job.status = BatchStatus.CANCELLED
+                    job.error_message = f"Cancel request sent (provider error: {e})"
+                    await self._complete_job(job)
+                    return True
+        
+        return False
     
     async def cancel_all_jobs(self) -> int:
         """Cancel all active batch jobs.
