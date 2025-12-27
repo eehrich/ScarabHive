@@ -160,16 +160,9 @@ class GeminiBatchClient:
             logger.info("Created Gemini batch job: %s", batch_job.name)
             return batch_job.name
         except Exception as e:
-            # Fallback to REST if SDK fails
-            logger.warning("SDK batch failed (%s: %s), falling back to REST", 
-                          type(e).__name__, e)
-            self.use_sdk = False
-            # Initialize HTTP client if needed
-            if not hasattr(self, '_http_client') or self._http_client is None:
-                self._http_client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(self.timeout),
-                )
-            return await self._submit_batch_rest(job, Path("data/batch"))
+            # Don't fallback to REST - propagate the error so it can be properly handled
+            logger.error("SDK batch submission failed: %s: %s", type(e).__name__, e)
+            raise
     
     async def _submit_batch_rest(
         self,
