@@ -123,33 +123,76 @@
             color: #e57373;
         }
         
-        .queue-list {
-            display: grid;
-            gap: 15px;
+        .stat-multi {
+            display: flex;
+            gap: 20px;
+            margin-top: 8px;
         }
         
-        .queue-card {
+        .stat-item {
+            flex: 1;
+        }
+        
+        .stat-item-label {
+            font-size: 10px;
+            color: #858585;
+            margin-bottom: 2px;
+        }
+        
+        .stat-item-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: #4ec9b0;
+        }
+        
+        .stat-item-value.warning {
+            color: #ffcc00;
+        }
+        
+        .stat-item-value.error {
+            color: #e57373;
+        }
+        
+        .queue-list {
             background: #252526;
             border: 1px solid #3e3e42;
             border-radius: 6px;
-            padding: 20px;
-            transition: border-color 0.2s;
+            overflow: hidden;
         }
         
-        .queue-card:hover {
-            border-color: #569cd6;
+        .queue-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
         }
         
-        .queue-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
+        .queue-table th {
+            background: #1e1e1e;
+            padding: 10px 12px;
+            text-align: left;
+            font-size: 11px;
+            color: #858585;
+            text-transform: uppercase;
+            font-weight: 600;
+            border-bottom: 1px solid #3e3e42;
+        }
+        
+        .queue-table td {
+            padding: 12px;
+            border-bottom: 1px solid #2d2d30;
+        }
+        
+        .queue-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .queue-table tr:hover {
+            background: #2a2a2a;
         }
         
         .queue-key {
             font-family: 'Courier New', monospace;
-            font-size: 16px;
+            font-size: 13px;
             font-weight: 600;
             color: #dcdcaa;
         }
@@ -232,39 +275,29 @@
             }
         }
         
-        .queue-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-        }
-        
-        .detail-item {
-            padding: 12px;
-            background: #1e1e1e;
-            border-radius: 4px;
-        }
-        
-        .detail-label {
-            font-size: 11px;
-            color: #858585;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        
-        .detail-value {
-            font-size: 14px;
-            color: #d4d4d4;
-            font-weight: 500;
-        }
-        
-        .detail-value.monospace {
+        .job-id {
             font-family: 'Courier New', monospace;
-            font-size: 13px;
+            font-size: 12px;
+            color: #858585;
+        }
+        
+        .progress-text {
+            color: #d4d4d4;
         }
         
         .error-count {
             color: #e57373;
             font-weight: 600;
+        }
+        
+        .elapsed-time {
+            color: #9e9e9e;
+            font-size: 12px;
+        }
+        
+        .queue-info {
+            color: #858585;
+            font-size: 12px;
         }
         
         .empty-state {
@@ -326,24 +359,51 @@
         
         <div class="stats-grid" id="statsGrid" style="display: none;">
             <div class="stat-card">
-                <div class="stat-label">Queues</div>
-                <div class="stat-value" id="totalQueues">0</div>
+                <div class="stat-label">System</div>
+                <div class="stat-multi">
+                    <div class="stat-item">
+                        <div class="stat-item-label">Queues</div>
+                        <div class="stat-item-value" id="totalQueues">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">Active Jobs</div>
+                        <div class="stat-item-value" id="activeJobs">0</div>
+                    </div>
+                </div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Jobs</div>
-                <div class="stat-value" id="activeJobs">0</div>
+                <div class="stat-label">Requests</div>
+                <div class="stat-multi">
+                    <div class="stat-item">
+                        <div class="stat-item-label">Queued</div>
+                        <div class="stat-item-value warning" id="pendingRequests">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">Completed</div>
+                        <div class="stat-item-value" id="totalCompleted">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">Failed</div>
+                        <div class="stat-item-value error" id="totalFailed">0</div>
+                    </div>
+                </div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Queued</div>
-                <div class="stat-value warning" id="pendingRequests">0</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Completed</div>
-                <div class="stat-value" id="totalCompleted">0</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Failed</div>
-                <div class="stat-value error" id="totalFailed">0</div>
+                <div class="stat-label">⏱️ Processing Time</div>
+                <div class="stat-multi">
+                    <div class="stat-item">
+                        <div class="stat-item-label">Min</div>
+                        <div class="stat-item-value" id="timeMin">—</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">Mean</div>
+                        <div class="stat-item-value" id="timeMean">—</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">Max</div>
+                        <div class="stat-item-value" id="timeMax">—</div>
+                    </div>
+                </div>
             </div>
         </div>
         
@@ -417,11 +477,23 @@
             if (metricsData && metricsData.status === 'success') {
                 document.getElementById('totalCompleted').textContent = metricsData.total_completed_requests || 0;
                 document.getElementById('totalFailed').textContent = metricsData.total_failed_requests || 0;
+                
+                // Processing time stats
+                const pt = metricsData.processing_time;
+                if (pt && pt.sample_count > 0) {
+                    document.getElementById('timeMin').textContent = formatDuration(pt.min);
+                    document.getElementById('timeMean').textContent = formatDuration(pt.mean);
+                    document.getElementById('timeMax').textContent = formatDuration(pt.max);
+                } else {
+                    document.getElementById('timeMin').textContent = '—';
+                    document.getElementById('timeMean').textContent = '—';
+                    document.getElementById('timeMax').textContent = '—';
+                }
             }
             
             statsGrid.style.display = 'grid';
             
-            // Render queue cards
+            // Render queue table
             if (data.queues.length === 0) {
                 queueList.innerHTML = `
                     <div class="empty-state">
@@ -433,91 +505,76 @@
                 return;
             }
             
-            queueList.innerHTML = data.queues.map(queue => renderQueueCard(queue, data.collection_window_seconds)).join('');
+            queueList.innerHTML = renderQueueTable(data.queues, data.collection_window_seconds);
         }
         
-        function renderQueueCard(queue, collectionWindow) {
-            const statusClass = `status-${queue.status.replace('_', '-')}`;
-            const statusIcon = getStatusIcon(queue.status);
-            const activeJobs = queue.active_jobs || [];
-            const jobCount = activeJobs.length;
+        function renderQueueTable(queues, collectionWindow) {
+            let rows = '';
             
-            let detailsHTML = '';
-            
-            // Show pending requests info if any
-            if (queue.pending_requests > 0) {
-                detailsHTML += `
-                    <div class="queue-details" style="margin-bottom: 10px;">
-                        <div class="detail-item">
-                            <div class="detail-label">Queued Requests</div>
-                            <div class="detail-value">${queue.pending_requests}</div>
-                        </div>
-                        <div class="detail-item">
-                            <div class="detail-label">Next Submit</div>
-                            <div class="detail-value">~${collectionWindow}s</div>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Show all active jobs
-            if (jobCount > 0) {
-                for (let i = 0; i < activeJobs.length; i++) {
-                    const job = activeJobs[i];
-                    const elapsed = formatDuration(job.elapsed_seconds);
-                    const progress = job.total_requests > 0
-                        ? `${job.completed_count} / ${job.total_requests}`
-                        : '—';
-                    const jobStatusClass = `status-${job.status.replace('_', '-')}`;
-                    const jobStatusIcon = getStatusIcon(job.status);
+            for (const queue of queues) {
+                const statusClass = `status-${queue.status.replace('_', '-')}`;
+                const statusIcon = getStatusIcon(queue.status);
+                const activeJobs = queue.active_jobs || [];
+                
+                if (activeJobs.length > 0) {
+                    // One row per job
+                    for (let i = 0; i < activeJobs.length; i++) {
+                        const job = activeJobs[i];
+                        const jobStatusClass = `status-${job.status.replace('_', '-')}`;
+                        const jobStatusIcon = getStatusIcon(job.status);
+                        let progress = job.total_requests > 0
+                            ? `${job.completed_count} / ${job.total_requests}`
+                            : '—';
+                        
+                        // Add failed count to progress if any
+                        if (job.failed_count > 0) {
+                            progress += ` <span class="error-count">(${job.failed_count} ✗)</span>`;
+                        }
+                        
+                        const elapsed = formatDuration(job.elapsed_seconds);
+                        
+                        rows += `
+                            <tr>
+                                <td><span class="queue-key">${escapeHtml(queue.queue_key)}</span></td>
+                                <td><span class="job-id">${escapeHtml(job.job_id)}</span></td>
+                                <td><span class="queue-status-badge ${jobStatusClass}">${jobStatusIcon} ${job.status}</span></td>
+                                <td><span class="progress-text">${progress}</span></td>
+                                <td><span class="elapsed-time">${elapsed}</span></td>
+                            </tr>
+                        `;
+                    }
+                } else {
+                    // Queue with no active jobs
+                    const info = queue.pending_requests > 0
+                        ? `<span class="queue-info">${queue.pending_requests} queued (submit ~${collectionWindow}s)</span>`
+                        : `<span class="queue-info">—</span>`;
                     
-                    detailsHTML += `
-                        <div class="job-section" style="${i > 0 ? 'margin-top: 12px; padding-top: 12px; border-top: 1px solid #3e3e42;' : ''}">
-                            ${jobCount > 1 ? `<div style="font-size: 11px; color: #858585; margin-bottom: 8px;">Job ${i + 1} of ${jobCount} <span class="queue-status-badge ${jobStatusClass}" style="font-size: 10px; padding: 2px 6px;">${jobStatusIcon} ${job.status}</span></div>` : ''}
-                            <div class="queue-details">
-                                <div class="detail-item">
-                                    <div class="detail-label">Job ID</div>
-                                    <div class="detail-value monospace">${escapeHtml(job.job_id)}</div>
-                                </div>
-                                <div class="detail-item">
-                                    <div class="detail-label">Progress</div>
-                                    <div class="detail-value">${progress}</div>
-                                </div>
-                                <div class="detail-item">
-                                    <div class="detail-label">Elapsed Time</div>
-                                    <div class="detail-value">${elapsed}</div>
-                                </div>
-                                ${job.failed_count > 0 ? `
-                                <div class="detail-item">
-                                    <div class="detail-label">Failed</div>
-                                    <div class="detail-value error-count">${job.failed_count}</div>
-                                </div>
-                                ` : ''}
-                            </div>
-                        </div>
+                    rows += `
+                        <tr>
+                            <td><span class="queue-key">${escapeHtml(queue.queue_key)}</span></td>
+                            <td colspan="2"><span class="queue-status-badge ${statusClass}">${statusIcon} ${queue.status}</span></td>
+                            <td colspan="2">${info}</td>
+                        </tr>
                     `;
                 }
-            } else if (queue.status === 'idle' && queue.pending_requests === 0) {
-                detailsHTML = `
-                    <div class="queue-details">
-                        <div class="detail-item">
-                            <div class="detail-label">Status</div>
-                            <div class="detail-value">No active jobs</div>
-                        </div>
-                    </div>
-                `;
             }
             
-            // Show job count in header if multiple
-            const jobCountBadge = jobCount > 1 ? `<span style="font-size: 12px; color: #858585; margin-left: 10px;">(${jobCount} jobs)</span>` : '';
-            
             return `
-                <div class="queue-card">
-                    <div class="queue-header">
-                        <div class="queue-key">${escapeHtml(queue.queue_key)}${jobCountBadge}</div>
-                        <span class="queue-status-badge ${statusClass}">${statusIcon} ${queue.status}</span>
-                    </div>
-                    ${detailsHTML}
+                <div class="queue-list">
+                    <table class="queue-table">
+                        <thead>
+                            <tr>
+                                <th>Queue</th>
+                                <th>Job ID</th>
+                                <th>Status</th>
+                                <th>Progress</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows}
+                        </tbody>
+                    </table>
                 </div>
             `;
         }
@@ -540,9 +597,13 @@
         }
         
         function formatDuration(seconds) {
-            if (!seconds) return '—';
-            if (seconds < 60) return `${seconds}s`;
-            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+            if (seconds === null || seconds === undefined) return '—';
+            if (seconds < 60) return `${seconds.toFixed(1)}s`;
+            if (seconds < 3600) {
+                const mins = Math.floor(seconds / 60);
+                const secs = Math.round(seconds % 60);
+                return `${mins}m ${secs}s`;
+            }
             const hours = Math.floor(seconds / 3600);
             const mins = Math.floor((seconds % 3600) / 60);
             return `${hours}h ${mins}m`;

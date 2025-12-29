@@ -295,6 +295,13 @@ class BatchMonitorWebFactory:
             "total_jobs": metrics.total_jobs,
             "completed_jobs": metrics.completed_jobs,
             "failed_jobs": metrics.failed_jobs,
+            # Processing time statistics (in seconds)
+            "processing_time": {
+                "min": round(metrics.min_processing_time, 1) if metrics.min_processing_time else None,
+                "max": round(metrics.max_processing_time, 1) if metrics.max_processing_time else None,
+                "mean": round(metrics.mean_processing_time, 1) if metrics.mean_processing_time else None,
+                "sample_count": len(metrics._processing_times),
+            },
         })
 
 

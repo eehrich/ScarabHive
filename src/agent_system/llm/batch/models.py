@@ -184,6 +184,30 @@ class BatchMetrics:
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     
+    # Processing time tracking (in seconds)
+    _processing_times: List[float] = field(default_factory=list)
+    
+    def add_processing_time(self, seconds: float) -> None:
+        """Record a job's processing time."""
+        self._processing_times.append(seconds)
+    
+    @property
+    def min_processing_time(self) -> Optional[float]:
+        """Minimum processing time in seconds."""
+        return min(self._processing_times) if self._processing_times else None
+    
+    @property
+    def max_processing_time(self) -> Optional[float]:
+        """Maximum processing time in seconds."""
+        return max(self._processing_times) if self._processing_times else None
+    
+    @property
+    def mean_processing_time(self) -> Optional[float]:
+        """Mean processing time in seconds."""
+        if not self._processing_times:
+            return None
+        return sum(self._processing_times) / len(self._processing_times)
+    
     @property
     def total_tokens(self) -> int:
         return self.total_prompt_tokens + self.total_completion_tokens

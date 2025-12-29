@@ -719,6 +719,11 @@ class BatchQueueManager:
         """Mark a job as complete and update metrics."""
         job.completed_at = _utc_now()
         
+        # Calculate and record processing time
+        if job.submitted_at and job.completed_at:
+            processing_time = (job.completed_at - job.submitted_at).total_seconds()
+            self._metrics.add_processing_time(processing_time)
+        
         # Update metrics
         if job.status == BatchStatus.COMPLETED:
             self._metrics.completed_jobs += 1
