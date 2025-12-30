@@ -65,7 +65,7 @@ tools:
             type: array
             items:
               type: string
-            description: "Instance IDs array (wait_all). All must exist."
+            description: "Instance IDs array (wait_all, delete). All must exist. For delete: archives multiple sub-agents at once."
 
           message:
             type: string

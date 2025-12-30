@@ -828,7 +828,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             }
 
     async def _handle_delete(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle 'delete' operation - archive sub-agent."""
+        """Handle 'delete' operation - archive sub-agent(s).
+        
+        Supports both single instance_id and multiple instance_ids (array).
+        """
         status = params.get("_status") if params else None
         
         # Validate params
@@ -838,11 +841,30 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             return {"status": "error", "error": "Invalid parameters (None)"}
         
         try:
+            # Support both single instance_id and array instance_ids
             instance_id = params.get("instance_id")
-            if not instance_id:
+            instance_ids = params.get("instance_ids", [])
+            
+            # Build list of IDs to delete
+            ids_to_delete: list[str] = []
+            if instance_id:
+                ids_to_delete.append(instance_id)
+            if instance_ids:
+                ids_to_delete.extend(instance_ids)
+            
+            # Deduplicate while preserving order
+            seen: set[str] = set()
+            unique_ids: list[str] = []
+            for id_ in ids_to_delete:
+                if id_ not in seen:
+                    seen.add(id_)
+                    unique_ids.append(id_)
+            ids_to_delete = unique_ids
+            
+            if not ids_to_delete:
                 if status:
-                    await status.error("Delete: 'instance_id' is required")
-                return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
+                    await status.error("Delete: 'instance_id' or 'instance_ids' is required")
+                return {"status": "error", "error": "Missing required parameter: 'instance_id' or 'instance_ids'"}
             
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
@@ -855,37 +877,92 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             user_id = manager._extract_user_id(parent_session_id, params)
             session_manager = manager._session_service.session_manager
 
-            # Verify ownership
-            try:
-                sub_session_data = await session_manager.load_session(user_id, instance_id)
-            except FileNotFoundError:
-                raise ValueError(f"Sub-agent '{instance_id}' not found")
+            # Process each instance
+            results: list[dict[str, Any]] = []
+            archived_count = 0
+            
+            if status and len(ids_to_delete) > 1:
+                await status.progress(f"Archiving {len(ids_to_delete)} sub-agents...")
+            
+            for sub_id in ids_to_delete:
+                try:
+                    # Verify ownership
+                    try:
+                        sub_session_data = await session_manager.load_session(user_id, sub_id)
+                    except FileNotFoundError:
+                        results.append({
+                            "instance_id": sub_id,
+                            "status": "error",
+                            "error": f"Sub-agent '{sub_id}' not found"
+                        })
+                        continue
 
-            parent_link = sub_session_data.get("parent_session", {}).get("session_id")
-            if parent_link != parent_session_id:
-                raise ValueError(f"Sub-agent '{instance_id}' does not belong to current session")
+                    parent_link = sub_session_data.get("parent_session", {}).get("session_id")
+                    if parent_link != parent_session_id:
+                        results.append({
+                            "instance_id": sub_id,
+                            "status": "error",
+                            "error": f"Sub-agent '{sub_id}' does not belong to current session"
+                        })
+                        continue
 
-            # Get agent type for status message
-            agent_type = sub_session_data.get("agent_name", "unknown")
+                    # Get agent type for status message
+                    agent_type = sub_session_data.get("agent_name", "unknown")
 
-            # Update parent metadata (mark as archived)
-            await manager.update_sub_session_metadata(
-                parent_session_id=parent_session_id,
-                sub_session_id=instance_id,
-                status="archived",
-                archived_at=datetime.now(UTC).isoformat()
-            )
+                    # Update parent metadata (mark as archived)
+                    await manager.update_sub_session_metadata(
+                        parent_session_id=parent_session_id,
+                        sub_session_id=sub_id,
+                        status="archived",
+                        archived_at=datetime.now(UTC).isoformat()
+                    )
 
-            # Note: We keep the session file (don't delete) for audit trail
+                    results.append({
+                        "instance_id": sub_id,
+                        "status": "archived",
+                        "agent_type": agent_type
+                    })
+                    archived_count += 1
+                    
+                except Exception as e:
+                    results.append({
+                        "instance_id": sub_id,
+                        "status": "error",
+                        "error": str(e)
+                    })
 
-            if status:
-                await status.end(f"Archived sub-agent {instance_id} (type: {agent_type})")
-
-            return {
-                "instance_id": instance_id,
-                "status": "archived",
-                "message": f"Sub-agent '{instance_id}' archived successfully"
-            }
+            # Build response
+            if len(ids_to_delete) == 1:
+                # Single delete - return simple format for backwards compatibility
+                result = results[0]
+                if result["status"] == "archived":
+                    if status:
+                        await status.end(f"Archived sub-agent {result['instance_id']} (type: {result.get('agent_type', 'unknown')})")
+                    return {
+                        "instance_id": result["instance_id"],
+                        "status": "archived",
+                        "message": f"Sub-agent '{result['instance_id']}' archived successfully"
+                    }
+                else:
+                    if status:
+                        await status.error(result.get("error", "Unknown error"))
+                    return result
+            else:
+                # Multiple deletes - return batch result
+                failed_count = len(ids_to_delete) - archived_count
+                if status:
+                    if failed_count == 0:
+                        await status.end(f"Archived {archived_count} sub-agents")
+                    else:
+                        await status.end(f"Archived {archived_count}/{len(ids_to_delete)} sub-agents ({failed_count} failed)")
+                
+                return {
+                    "status": "completed",
+                    "archived_count": archived_count,
+                    "failed_count": failed_count,
+                    "total": len(ids_to_delete),
+                    "results": results
+                }
 
         except Exception as e:
             logger.exception(f"Error in delete_sub_agent: {e}")
