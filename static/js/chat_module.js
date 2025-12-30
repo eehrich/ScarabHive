@@ -781,6 +781,10 @@
           const blk = addAssistantBlock(chatContainer);
           runBtn.style.display = 'none';
           stopBtn.style.display = 'block';
+          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+          stopBtn.disabled = false;
+          stopBtn.setAttribute('title', 'Stop');
+          stopBtn.setAttribute('aria-label', 'Stop');
 
           const resp = await fetch(`/events/${encodeURIComponent(currentRequestId)}/append`, {
             method: 'POST',
@@ -808,6 +812,10 @@
       const blk = addAssistantBlock(chatContainer);
       runBtn.style.display = 'none'; // Hide run button
       stopBtn.style.display = 'block'; // Show stop button
+      stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+      stopBtn.disabled = false;
+      stopBtn.setAttribute('title', 'Stop');
+      stopBtn.setAttribute('aria-label', 'Stop');
       currentRequestId = null; // Will be set when SSE 'start' event arrives
 
       // Shared SSE event handler for both EventSource and manual fetch() parsing
