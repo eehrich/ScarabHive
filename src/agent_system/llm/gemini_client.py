@@ -1,5 +1,4 @@
-"""
-Google Gemini native API client.
+"""Google Gemini native API client.
 
 Uses Gemini's native REST API instead of OpenAI compatibility layer
 to avoid issues with tool_calls index handling and thought_signature requirements.
@@ -9,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import uuid
 from typing import Dict, List, Optional
 
@@ -17,42 +15,9 @@ import httpx
 
 from .models import ChatMessage
 from .clients import LLMClient
+from .retry_utils import parse_retry_delay, is_rate_limit_error
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_retry_delay(error_msg: str) -> float | None:
-    """Parse retry delay from Gemini 429 error message.
-    
-    Looks for patterns like:
-    - 'Please retry in 32.487019579s'
-    - 'retryDelay': '32s'
-    
-    Returns delay in seconds, or None if not found.
-    """
-    # Try to find "Please retry in Xs" pattern
-    match = re.search(r'retry in ([\d.]+)s', error_msg, re.IGNORECASE)
-    if match:
-        return float(match.group(1))
-    
-    # Try to find retryDelay JSON pattern
-    match = re.search(r'"retryDelay"\s*:\s*"(\d+)s?"', error_msg)
-    if match:
-        return float(match.group(1))
-    
-    return None
-
-
-def _is_rate_limit_error(error: Exception) -> bool:
-    """Check if error is a rate limit (429) error."""
-    error_str = str(error).lower()
-    return (
-        '429' in error_str or
-        'rate limit' in error_str or
-        'resource_exhausted' in error_str or
-        'quota' in error_str or
-        'too many requests' in error_str
-    )
 
 
 class GeminiClient(LLMClient):
@@ -694,11 +659,11 @@ class GeminiClient(LLMClient):
                 error_str = str(e)
                 
                 # Check if this is a rate limit error
-                is_rate_limit = _is_rate_limit_error(e)
+                is_rate_limit = is_rate_limit_error(e)
                 
                 if is_rate_limit:
                     # Parse retry delay from error message, default to 60s for rate limits
-                    parsed_delay = _parse_retry_delay(error_str)
+                    parsed_delay = parse_retry_delay(error_str)
                     wait_time = parsed_delay if parsed_delay else 60.0
                     # Add small buffer to parsed delay
                     if parsed_delay:
@@ -921,11 +886,11 @@ class GeminiClient(LLMClient):
                 error_str = str(e)
                 
                 # Check if this is a rate limit error
-                is_rate_limit = _is_rate_limit_error(e)
+                is_rate_limit = is_rate_limit_error(e)
                 
                 if is_rate_limit:
                     # Parse retry delay from error message, default to 60s for rate limits
-                    parsed_delay = _parse_retry_delay(error_str)
+                    parsed_delay = parse_retry_delay(error_str)
                     wait_time = parsed_delay if parsed_delay else 60.0
                     # Add small buffer to parsed delay
                     if parsed_delay:

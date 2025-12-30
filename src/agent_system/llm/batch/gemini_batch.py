@@ -26,12 +26,13 @@ except ImportError:
     genai = None  # type: ignore
     types = None  # type: ignore
 
+from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
 
 logger = logging.getLogger(__name__)
 
 
-class GeminiBatchClient:
+class GeminiBatchClient(BatchProviderClient):
     """Client for Gemini Batch API operations using Google GenAI SDK.
     
     The Gemini Batch API provides:

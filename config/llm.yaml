@@ -390,7 +390,8 @@ llm_system:
       max_steps: 500
       
     normal:
-      model_ref: gemini-2-5-flash-batch
+      #model_ref: gemini-2-5-flash-batch
+      model_ref: gemini-2-5-flash
       description: "Fast model for medium reasoning tasks (batch)"
       max_steps: 500
       
@@ -400,7 +401,8 @@ llm_system:
       max_steps: 500
       
     think:
-      model_ref: gemini-3-0-pro-batch
+      #model_ref: gemini-3-0-pro-batch
+      model_ref: gemini-3-0-pro
       description: "Advanced model for complex reasoning (batch)"
       max_steps: 500
       

@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class _DateTimeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-class OpenAIBatchClient:
+class OpenAIBatchClient(BatchProviderClient):
     """Client for OpenAI Batch API operations.
     
     The Batch API provides:
