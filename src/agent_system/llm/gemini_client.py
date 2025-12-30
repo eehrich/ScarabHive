@@ -172,6 +172,18 @@ class GeminiClient(LLMClient):
                             error_text = error_bytes.decode('utf-8', errors='replace')
                             error_msg = f"HTTP {response.status_code}: {error_text}"
                             logger.error(f"Gemini streaming request failed: {error_msg}")
+                            
+                            # Handle "too many states" error (400) - sporadic server-side issue
+                            # Retry with exponential backoff similar to rate limits
+                            if response.status_code == 400 and "too many states" in error_text and attempt < self.max_retries:
+                                wait_time = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                                logger.warning(
+                                    f"[Gemini] Schema 'too many states' error (sporadic). "
+                                    f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                                )
+                                await asyncio.sleep(wait_time)
+                                continue
+                            
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                         logger.debug("Gemini streaming: Response started, reading chunks...")
@@ -489,6 +501,18 @@ class GeminiClient(LLMClient):
                         error_text = response.text
                         error_msg = f"HTTP {response.status_code}: {error_text}"
                         logger.error(f"Gemini request failed: {error_msg}")
+                        
+                        # Handle "too many states" error (400) - sporadic server-side issue
+                        # Retry with exponential backoff similar to rate limits
+                        if response.status_code == 400 and "too many states" in error_text and attempt < self.max_retries:
+                            wait_time = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                            logger.warning(
+                                f"[Gemini] Schema 'too many states' error (sporadic). "
+                                f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+                        
                         raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                     data = response.json()
