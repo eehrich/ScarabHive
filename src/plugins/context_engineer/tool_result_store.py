@@ -161,8 +161,11 @@ class ToolResultStore:
         # Estimate tokens
         token_count = estimate_content_tokens(content)
         
-        # Create short ID for reference (first 8 chars)
-        short_id = tool_call_id[:8] if len(tool_call_id) >= 8 else tool_call_id
+        # Create short ID for reference
+        # Use 'TR_' prefix (Tool Result) to distinguish from tool_call_ids which use 'call_'
+        # This prevents LLM confusion when it sees multiple 'call_xxx' patterns in context
+        raw_id = tool_call_id.replace("call_", "")[:8] if tool_call_id.startswith("call_") else tool_call_id[:8]
+        short_id = f"TR_{raw_id}"
         
         # Store in database
         entry = ToolResultEntry(
@@ -210,17 +213,26 @@ class ToolResultStore:
     def retrieve(self, reference_id: str) -> ToolResultEntry | None:
         """Retrieve full tool result by reference ID.
         
+        Supports both new (TR_xxx) and legacy (call_xxx) reference formats.
+        
         Args:
             reference_id: Short reference ID (from the reference string)
             
         Returns:
             ToolResultEntry if found, None otherwise
         """
+        # Normalize reference_id: TR_xxx -> call_xxx for DB lookup
+        # The DB stores full tool_call_ids which start with 'call_'
+        lookup_id = reference_id
+        if reference_id.startswith("TR_"):
+            # Convert TR_xxx to call_xxx for prefix matching
+            lookup_id = f"call_{reference_id[3:]}"
+        
         # Try exact match first
         cursor = self._db.execute(
             "SELECT id, tool_name, content, content_hash, token_count, timestamp, session_id, summary "
             "FROM tool_results WHERE id = ?",
-            (reference_id,)
+            (lookup_id,)
         )
         row = cursor.fetchone()
         
@@ -231,12 +243,23 @@ class ToolResultStore:
         cursor = self._db.execute(
             "SELECT id, tool_name, content, content_hash, token_count, timestamp, session_id, summary "
             "FROM tool_results WHERE id LIKE ? LIMIT 1",
-            (f"{reference_id}%",)
+            (f"{lookup_id}%",)
         )
         row = cursor.fetchone()
         
         if row:
             return ToolResultEntry.from_row(row)
+        
+        # Legacy fallback: try the original reference_id directly (for old call_xxx format)
+        if reference_id != lookup_id:
+            cursor = self._db.execute(
+                "SELECT id, tool_name, content, content_hash, token_count, timestamp, session_id, summary "
+                "FROM tool_results WHERE id LIKE ? LIMIT 1",
+                (f"{reference_id}%",)
+            )
+            row = cursor.fetchone()
+            if row:
+                return ToolResultEntry.from_row(row)
         
         return None
     
