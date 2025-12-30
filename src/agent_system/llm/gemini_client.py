@@ -398,6 +398,19 @@ class GeminiClient(LLMClient):
                     await asyncio.sleep(wait_time)
                     continue
                 
+                # Check if this is a 400 error that might be caused by mode=ANY
+                # If we got 400 after forcing mode=ANY, try without it
+                is_400_error = "HTTP 400" in error_str or "400 Bad Request" in error_str
+                if is_400_error and got_malformed_function_call and "toolConfig" in payload:
+                    logger.warning(
+                        "[Gemini] HTTP 400 after mode=ANY retry. Removing forced function calling for next attempt."
+                    )
+                    # Remove the forced function calling config
+                    if "functionCallingConfig" in payload.get("toolConfig", {}):
+                        del payload["toolConfig"]["functionCallingConfig"]
+                    # Reset the flag so we don't add it back
+                    got_malformed_function_call = False
+                
                 logger.error(f"Gemini streaming error: {e}", exc_info=True)
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
@@ -624,6 +637,19 @@ class GeminiClient(LLMClient):
                     )
                     await asyncio.sleep(wait_time)
                     continue
+                
+                # Check if this is a 400 error that might be caused by mode=ANY
+                # If we got 400 after forcing mode=ANY, try without it
+                is_400_error = "HTTP 400" in error_str or "400 Bad Request" in error_str
+                if is_400_error and got_malformed_function_call and "toolConfig" in payload:
+                    logger.warning(
+                        "[Gemini] Non-streaming HTTP 400 after mode=ANY retry. Removing forced function calling for next attempt."
+                    )
+                    # Remove the forced function calling config
+                    if "functionCallingConfig" in payload.get("toolConfig", {}):
+                        del payload["toolConfig"]["functionCallingConfig"]
+                    # Reset the flag so we don't add it back
+                    got_malformed_function_call = False
                 
                 logger.error(f"Gemini request error: {e}", exc_info=True)
                 if attempt < self.max_retries:
