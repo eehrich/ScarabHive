@@ -34,6 +34,11 @@ from google.genai import types
 from agent_system.llm.models import ChatMessage
 from agent_system.llm.clients import LLMClient
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
+from agent_system.llm.gemini_utils import (
+    convert_openai_messages_to_gemini,
+    convert_openai_tools_to_gemini,
+    clean_schema_for_gemini
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,293 +116,80 @@ class GeminiSDKClient(LLMClient):
     ) -> tuple[Optional[str], List[types.Content]]:
         """Convert ChatMessage list to SDK Content format.
         
+        Uses shared conversion logic, then wraps in SDK types.
+        
         Returns:
             (system_instruction, contents_list)
         """
-        system_instructions: List[str] = []
-        contents: List[types.Content] = []
+        # Use shared conversion utility to get plain dicts
+        system_instruction, dict_contents = convert_openai_messages_to_gemini(messages)
         
-        # Add critical instruction to prevent MALFORMED_FUNCTION_CALL
-        # (Gemini sometimes generates Python code instead of JSON for function calls)
-        system_instructions.append(
-            "CRITICAL: When calling functions, output the function name exactly as defined. "
-            "Do NOT prepend 'default_api.' or any other namespace. "
-            "Always generate valid JSON for function arguments. "
-            "Properly escape all special characters in JSON strings (quotes, backslashes, newlines)."
-        )
-        
-        for msg in messages:
-            role = msg.role
+        # Convert dicts to SDK Content objects
+        sdk_contents: List[types.Content] = []
+        for content in dict_contents:
+            role = content["role"]
+            parts_list = content["parts"]
             
-            # Extract system instruction - collect ALL system messages
-            if role == "system":
-                content = msg.content if isinstance(msg.content, str) else ""
-                if content:
-                    system_instructions.append(content)
-                    logger.debug(f"[GeminiSDK] Collected system instruction: {len(content)} chars")
-                continue
-            
-            # Map assistant -> model
-            if role == "assistant":
-                role = "model"
-            
-            # Handle tool results
-            if msg.role == "tool":
-                # Tool results need to be function responses
-                tool_name = getattr(msg, "name", None) or "unknown_tool"
-                content_str = msg.content if isinstance(msg.content, str) else ""
+            # Convert each part to SDK Part
+            sdk_parts = []
+            for part_dict in parts_list:
+                if "text" in part_dict:
+                    sdk_parts.append(types.Part(text=part_dict["text"]))
                 
-                try:
-                    result_data = json.loads(content_str) if content_str else {}
-                except json.JSONDecodeError:
-                    result_data = {"result": content_str}
-                
-                # Convert our error format to Gemini's expected format
-                # Our format: {"error": True, "message": "..."}
-                # Gemini format: {"error": "..."}
-                if isinstance(result_data, dict) and result_data.get("error") is True:
-                    error_message = result_data.get("message", "Unknown error")
-                    result_data = {"error": error_message}
-                    logger.warning(f"[GeminiSDK] DEPRECATED: Tool returned old error format. Converted for {tool_name}: {error_message[:100]}")
-                
-                # Create function response part
-                # NOTE: Must use role="tool" (not "user") per Gemini SDK docs
-                function_response = types.Part.from_function_response(
-                    name=tool_name,
-                    response=result_data
-                )
-                content_obj = types.Content(role="tool", parts=[function_response])
-                
-                contents.append(content_obj)
-                continue
-            
-            # Handle model responses with tool calls
-            tool_calls = getattr(msg, "tool_calls", None)
-            if tool_calls and role == "model":
-                parts = []
-                
-                # Add text content if present
-                content_text = msg.content if isinstance(msg.content, str) else ""
-                if content_text:
-                    parts.append(types.Part(text=content_text))
-                
-                # Add function calls with thought signature preservation
-                for tc in tool_calls:
-                    func = tc.get("function", {})
-                    func_name = func.get("name", "")
-                    func_args_str = func.get("arguments", "{}")
-                    
-                    try:
-                        func_args = json.loads(func_args_str) if func_args_str else {}
-                    except json.JSONDecodeError:
-                        func_args = {}
-                    
-                    # Create function call part WITHOUT thought_signature for historical calls
-                    # CRITICAL: Do NOT restore thought_signature for historical function calls!
-                    # Historical thought_signatures become invalid when sent in a new request,
-                    # causing MALFORMED_FUNCTION_CALL errors during Gemini's validation.
-                    # Only NEW function calls generated by Gemini in THIS request will have valid signatures.
-                    part = types.Part.from_function_call(
-                        name=func_name,
-                        args=func_args
-                    )
-                    # NOTE: We intentionally do NOT restore thought_signature here
-                    logger.debug(f"[GeminiSDK] Created historical function call for {func_name} without thought_signature")
-                    
-                    parts.append(part)
-                
-                contents.append(types.Content(role="model", parts=parts))
-                continue
-            
-            # Regular message - handle both string and multimodal content
-            if isinstance(msg.content, str):
-                # Simple text message
-                if msg.content:
-                    contents.append(types.Content(
-                        role=role,
-                        parts=[types.Part(text=msg.content)]
+                elif "functionCall" in part_dict:
+                    fc = part_dict["functionCall"]
+                    # NOTE: We intentionally do NOT restore thought_signature for historical calls
+                    # Historical thought_signatures become invalid, causing MALFORMED_FUNCTION_CALL
+                    sdk_parts.append(types.Part.from_function_call(
+                        name=fc["name"],
+                        args=fc["args"]
                     ))
-            elif isinstance(msg.content, list):
-                # Multimodal content (text + images/etc.)
-                parts = []
-                for item in msg.content:
-                    # Handle dict format (direct JSON)
-                    if isinstance(item, dict):
-                        content_type = item.get("type")
-                        
-                        if content_type == "text":
-                            text_val = item.get("text", "")
-                            if text_val:
-                                parts.append(types.Part(text=text_val))
-                        
-                        elif content_type in ("image", "image_url"):
-                            # Extract image data
-                            image_url = item.get("image_url")
-                            image_source = item.get("source")
-                            
-                            # Handle OpenAI format: image_url can be string or dict with "url" key
-                            data_url = None
-                            if isinstance(image_url, str):
-                                data_url = image_url
-                            elif isinstance(image_url, dict):
-                                data_url = image_url.get("url")
-                            
-                            # Handle Anthropic format: source with base64 data
-                            if not data_url and image_source:
-                                if isinstance(image_source, dict):
-                                    source_type = image_source.get("type")
-                                    if source_type == "base64":
-                                        media_type = image_source.get("media_type", "image/jpeg")
-                                        data = image_source.get("data", "")
-                                        if data:
-                                            data_url = f"data:{media_type};base64,{data}"
-                                    elif source_type == "url":
-                                        data_url = image_source.get("url")
-                            
-                            # Convert data URL to SDK inline_data format
-                            if data_url:
-                                if data_url.startswith("data:"):
-                                    # Parse data URL: data:image/png;base64,iVBORw0KG...
-                                    try:
-                                        header, base64_data = data_url.split(",", 1)
-                                        mime_type = header.split(":")[1].split(";")[0]
-                                        parts.append(types.Part(
-                                            inline_data=types.Blob(
-                                                mime_type=mime_type,
-                                                data=base64.b64decode(base64_data)
-                                            )
-                                        ))
-                                    except (ValueError, IndexError) as e:
-                                        logger.warning(f"[GeminiSDK] Failed to parse data URL: {e}")
-                                else:
-                                    # External URL - Gemini doesn't support external URLs directly
-                                    logger.warning(f"[GeminiSDK] External image URLs not yet supported: {data_url[:100]}")
-                    
-                    # Handle Pydantic model objects (TextContent, ImageContent, etc.)
-                    elif hasattr(item, "type"):
-                        if item.type == "text" and hasattr(item, "text"):
-                            if item.text:
-                                parts.append(types.Part(text=item.text))
-                        
-                        elif item.type in ("image", "image_url"):
-                            # Extract from Pydantic ImageContent model
-                            image_url = getattr(item, "image_url", None)
-                            image_source = getattr(item, "source", None)
-                            
-                            data_url = None
-                            if isinstance(image_url, str):
-                                data_url = image_url
-                            elif isinstance(image_url, dict):
-                                data_url = image_url.get("url")
-                            
-                            if not data_url and image_source:
-                                if hasattr(image_source, "type"):
-                                    if image_source.type == "base64":
-                                        media_type = getattr(image_source, "media_type", "image/jpeg")
-                                        data = getattr(image_source, "data", "")
-                                        if data:
-                                            data_url = f"data:{media_type};base64,{data}"
-                                    elif image_source.type == "url":
-                                        data_url = getattr(image_source, "url", None)
-                            
-                            # Convert to SDK format
-                            if data_url:
-                                if data_url.startswith("data:"):
-                                    try:
-                                        header, base64_data = data_url.split(",", 1)
-                                        mime_type = header.split(":")[1].split(";")[0]
-                                        parts.append(types.Part(
-                                            inline_data=types.Blob(
-                                                mime_type=mime_type,
-                                                data=base64.b64decode(base64_data)
-                                            )
-                                        ))
-                                    except (ValueError, IndexError) as e:
-                                        logger.warning(f"[GeminiSDK] Failed to parse data URL from Pydantic model: {e}")
-                                else:
-                                    logger.warning(f"[GeminiSDK] External image URLs not yet supported: {data_url[:100]}")
+                    logger.debug(f"[GeminiSDK] Created historical function call for {fc['name']} without thought_signature")
                 
-                if parts:
-                    contents.append(types.Content(role=role, parts=parts))
+                elif "functionResponse" in part_dict:
+                    fr = part_dict["functionResponse"]
+                    sdk_parts.append(types.Part.from_function_response(
+                        name=fr["name"],
+                        response=fr["response"]
+                    ))
+                
+                elif "inlineData" in part_dict:
+                    inline = part_dict["inlineData"]
+                    # Decode base64 string to bytes for SDK
+                    import base64
+                    data_bytes = base64.b64decode(inline["data"])
+                    sdk_parts.append(types.Part(
+                        inline_data=types.Blob(
+                            mime_type=inline["mimeType"],
+                            data=data_bytes
+                        )
+                    ))
+            
+            if sdk_parts:
+                sdk_contents.append(types.Content(role=role, parts=sdk_parts))
         
-        # Merge all system instructions (first one is the main prompt, others are context additions)
-        system_instruction = None
-        if system_instructions:
-            system_instruction = "\n\n".join(system_instructions)
-            logger.debug(f"[GeminiSDK] Final merged system instruction: {len(system_instruction)} chars from {len(system_instructions)} parts")
-        
-        return system_instruction, contents
+        return system_instruction, sdk_contents
 
     def _convert_tools_to_sdk(self, tools: List[Dict]) -> Optional[types.Tool]:
-        """Convert OpenAI tool schema to SDK Tool format."""
-        function_declarations = []
+        """Convert OpenAI tool schema to SDK Tool format.
         
-        for tool in tools:
-            if tool.get("type") != "function":
-                continue
-            
-            func = tool.get("function", {})
-            
-            # Build declaration dict for SDK
-            declaration = {
-                "name": func.get("name", ""),
-                "description": func.get("description", ""),
-            }
-            
-            # Add parameters if present
-            params = func.get("parameters", {})
-            if params:
-                # SDK expects parameters in specific format
-                declaration["parameters"] = self._clean_schema_for_sdk(params)
-            
-            function_declarations.append(declaration)
+        Uses shared conversion logic, then wraps in SDK types.
+        """
+        # Use shared conversion utility
+        function_declarations_dicts = convert_openai_tools_to_gemini(tools)
         
-        if not function_declarations:
+        if not function_declarations_dicts:
             return None
         
-        return types.Tool(function_declarations=function_declarations)
+        # Wrap in SDK types.Tool
+        return types.Tool(function_declarations=function_declarations_dicts)
 
     def _clean_schema_for_sdk(self, schema: Dict) -> Dict:
         """Clean JSON schema for SDK compatibility.
         
-        Gemini SDK has strict validation and doesn't support many JSON Schema features.
-        This method removes unsupported fields and flattens complex schema constructs.
+        Delegates to shared utility with SDK-specific flattening enabled.
         """
-        if not isinstance(schema, dict):
-            return schema
-        
-        result = {}
-        
-        # Fields that Gemini SDK doesn't support
-        unsupported_fields = {
-            "default", "examples", "format", "title", 
-            "$schema", "additionalProperties", "$defs", "definitions",
-            "oneOf", "anyOf", "allOf"  # SDK doesn't support schema composition
-        }
-        
-        for key, value in schema.items():
-            if key in unsupported_fields:
-                # For oneOf/anyOf/allOf, try to use the first option if it's a list
-                if key in ("oneOf", "anyOf", "allOf") and isinstance(value, list) and len(value) > 0:
-                    # Flatten: use first option and merge into parent
-                    first_option = value[0]
-                    if isinstance(first_option, dict):
-                        for opt_key, opt_value in first_option.items():
-                            if opt_key not in result:
-                                result[opt_key] = self._clean_schema_for_sdk(opt_value) if isinstance(opt_value, dict) else opt_value
-                continue
-            
-            if isinstance(value, dict):
-                result[key] = self._clean_schema_for_sdk(value)
-            elif isinstance(value, list):
-                result[key] = [
-                    self._clean_schema_for_sdk(item) if isinstance(item, dict) else item
-                    for item in value
-                ]
-            else:
-                result[key] = value
-        
-        return result
+        return clean_schema_for_gemini(schema, flatten_complex_schemas=True)
 
     def _build_generation_config(
         self, 
