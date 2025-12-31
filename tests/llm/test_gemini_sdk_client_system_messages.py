@@ -423,3 +423,158 @@ class TestGeminiSDKClientMultimodalMessages:
         assert hasattr(contents[0].parts[1], 'inline_data')
         assert contents[0].parts[2].text == "and"
         assert hasattr(contents[0].parts[3], 'inline_data')
+
+
+class TestGeminiSDKClientInfiniteThinkingLoop:
+    """Test detection and abort of infinite thinking loop (Gemini bug)."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_infinite_thinking_loop_detection(self):
+        """Test that infinite thinking loop is detected and raises error.
+        
+        When Gemini sends only thought=True chunks without progress (tool calls, 
+        content, or finishReason), we detect this and abort after MAX_CONSECUTIVE_THOUGHT_CHUNKS.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Create client with no retries to simplify test
+        gemini_sdk_client = GeminiSDKClient(
+            model="gemini-2.5-flash",
+            api_key="test-api-key",
+            context_window=200000,
+            request_timeout=180,
+            max_retries=0  # No retries - fail immediately after detection
+        )
+        
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+        
+        # Create mock parts that simulate thinking-only chunks
+        mock_thought_part = MagicMock()
+        mock_thought_part.thought = True
+        mock_thought_part.text = "Thinking..."
+        mock_thought_part.function_call = None
+        mock_thought_part.function_response = None
+        
+        mock_content = MagicMock()
+        mock_content.parts = [mock_thought_part]
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content = mock_content
+        mock_candidate.finish_reason = None  # No finish reason - simulates the bug
+        
+        mock_chunk = MagicMock()
+        mock_chunk.candidates = [mock_candidate]
+        mock_chunk.usage_metadata = None
+        
+        # Create async generator that yields 150 thought-only chunks (exceeds 100 limit)
+        async def mock_stream():
+            for _ in range(150):
+                yield mock_chunk
+        
+        # Mock the client's generate_content_stream method
+        mock_generate = AsyncMock(return_value=mock_stream())
+        
+        with patch.object(gemini_sdk_client._client.aio.models, 'generate_content_stream', mock_generate):
+            # Should raise after detecting infinite loop
+            with pytest.raises(Exception) as exc_info:
+                async for _ in gemini_sdk_client.chat_tools_streaming(messages, tools):
+                    pass
+            
+            # Check error message indicates infinite thinking loop
+            error_msg = str(exc_info.value).lower()
+            assert "infinite thinking loop" in error_msg or "chunks without progress" in error_msg
+
+
+class TestGeminiSDKClientThoughtSignatureRestoration:
+    """Test that thought_signature is correctly restored for historical function calls."""
+
+    def test_thought_signature_restored_for_historical_function_calls(self, gemini_sdk_client):
+        """Test that thought_signature is preserved when converting historical tool calls."""
+        # Create a message with tool_calls that have thought_signature in extra_content
+        messages = [
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content="What's the weather?"),
+            ChatMessage(
+                role="assistant", 
+                content="Let me check the weather.",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "Berlin"}'
+                        },
+                        "extra_content": {
+                            "google": {
+                                "thought_signature": b"test_signature_bytes"
+                            }
+                        }
+                    }
+                ]
+            ),
+            ChatMessage(role="tool", name="get_weather", content='{"temp": 20}'),
+            ChatMessage(role="user", content="Thanks!")
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        # Find the assistant message with function call
+        assistant_content = None
+        for content in contents:
+            if content.role == "model" and content.parts:
+                for part in content.parts:
+                    if part.function_call:
+                        assistant_content = content
+                        break
+        
+        assert assistant_content is not None, "Should have assistant content with function call"
+        
+        # Check that thought_signature is present
+        function_call_part = None
+        for part in assistant_content.parts:
+            if part.function_call:
+                function_call_part = part
+                break
+        
+        assert function_call_part is not None
+        assert function_call_part.thought_signature == b"test_signature_bytes"
+
+    def test_no_thought_signature_when_not_present(self, gemini_sdk_client):
+        """Test that missing thought_signature doesn't cause issues."""
+        messages = [
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content="What's the weather?"),
+            ChatMessage(
+                role="assistant", 
+                content="Let me check the weather.",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "Berlin"}'
+                        }
+                        # No extra_content with thought_signature
+                    }
+                ]
+            ),
+            ChatMessage(role="tool", name="get_weather", content='{"temp": 20}'),
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        # Find the assistant message with function call
+        function_call_part = None
+        for content in contents:
+            if content.role == "model" and content.parts:
+                for part in content.parts:
+                    if part.function_call:
+                        function_call_part = part
+                        break
+        
+        assert function_call_part is not None
+        # Should have None thought_signature (not raise an error)
+        assert function_call_part.thought_signature is None

@@ -138,13 +138,22 @@ class GeminiSDKClient(LLMClient):
                 
                 elif "functionCall" in part_dict:
                     fc = part_dict["functionCall"]
-                    # NOTE: We intentionally do NOT restore thought_signature for historical calls
-                    # Historical thought_signatures become invalid, causing MALFORMED_FUNCTION_CALL
-                    sdk_parts.append(types.Part.from_function_call(
-                        name=fc["name"],
-                        args=fc["args"]
+                    # Restore thought_signature if present (required for Gemini 3 Pro)
+                    # thoughtSignature is stored directly in the part_dict
+                    thought_sig = part_dict.get("thoughtSignature")
+                    
+                    # Create Part with function_call and optional thought_signature
+                    sdk_parts.append(types.Part(
+                        function_call=types.FunctionCall(
+                            name=fc["name"],
+                            args=fc["args"]
+                        ),
+                        thought_signature=thought_sig  # bytes or None
                     ))
-                    logger.debug(f"[GeminiSDK] Created historical function call for {fc['name']} without thought_signature")
+                    if thought_sig:
+                        logger.debug(f"[GeminiSDK] Created historical function call for {fc['name']} WITH thought_signature")
+                    else:
+                        logger.debug(f"[GeminiSDK] Created historical function call for {fc['name']} without thought_signature")
                 
                 elif "functionResponse" in part_dict:
                     fr = part_dict["functionResponse"]
@@ -270,6 +279,9 @@ class GeminiSDKClient(LLMClient):
         first_thought_signature = None
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
+        # Track consecutive thinking-only chunks to detect infinite thinking loop
+        consecutive_thought_only_chunks = 0
+        MAX_CONSECUTIVE_THOUGHT_CHUNKS = 100  # ~200-300s of pure thinking = likely stuck
         
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -281,7 +293,7 @@ class GeminiSDKClient(LLMClient):
             generation_config = self._build_generation_config(system_instruction, sdk_tools)
             if attempt > 0 and got_malformed_function_call:
                 logger.info(f"[GeminiSDK] Retry #{attempt} with forced function calling (mode=ANY)")
-                generation_config["tool_config"] = types.ToolConfig(
+                generation_config.tool_config = types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(mode="ANY")
                 )
             
@@ -307,7 +319,10 @@ class GeminiSDKClient(LLMClient):
                     candidate = chunk.candidates[0]
                     
                     # Always log finish_reason (critical for debugging MALFORMED_FUNCTION_CALL)
+                    has_finish_reason = False
                     if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                        has_finish_reason = True
+                        consecutive_thought_only_chunks = 0  # Reset on finish_reason
                         finish_reason_str = str(candidate.finish_reason)
                         finish_msg = getattr(candidate, 'finish_message', None)
                         
@@ -350,6 +365,9 @@ class GeminiSDKClient(LLMClient):
                     if not candidate.content or not candidate.content.parts:
                         continue
                     
+                    # Track if this chunk has any non-thought content
+                    chunk_has_progress = False
+                    
                     for part in candidate.content.parts:
                         # Handle thought parts
                         if hasattr(part, 'thought') and part.thought:
@@ -371,6 +389,7 @@ class GeminiSDKClient(LLMClient):
                         elif hasattr(part, 'function_call') and part.function_call:
                             func_call = part.function_call
                             tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
+                            chunk_has_progress = True  # Tool call = progress
                             
                             # Extract thought signature if present on this part
                             thought_signature = None
@@ -421,6 +440,7 @@ class GeminiSDKClient(LLMClient):
                         elif hasattr(part, 'text') and part.text:
                             text_delta = part.text
                             accumulated_content.append(text_delta)
+                            chunk_has_progress = True  # Non-thought content = progress
                             
                             logger.debug(f"[GeminiSDK] Text delta: {len(text_delta)} chars")
                             
@@ -431,6 +451,20 @@ class GeminiSDKClient(LLMClient):
                                 "delta": text_delta,
                                 "accumulated": all_text
                             }
+                    
+                    # Track consecutive thinking-only chunks to detect infinite loop
+                    if chunk_has_progress or has_finish_reason:
+                        consecutive_thought_only_chunks = 0
+                    else:
+                        consecutive_thought_only_chunks += 1
+                        if consecutive_thought_only_chunks >= MAX_CONSECUTIVE_THOUGHT_CHUNKS:
+                            logger.error(
+                                f"[GeminiSDK] Infinite thinking loop detected: {consecutive_thought_only_chunks} "
+                                f"consecutive thought-only chunks without progress. Breaking stream."
+                            )
+                            raise RuntimeError(
+                                f"Gemini infinite thinking loop: {consecutive_thought_only_chunks} chunks without progress"
+                            )
                     
                     # Extract usage from chunks
                     if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
@@ -457,6 +491,7 @@ class GeminiSDKClient(LLMClient):
                         accumulated_tool_calls = {}
                         accumulated_usage = None
                         first_thought_signature = None
+                        consecutive_thought_only_chunks = 0
                         # DON'T reset got_malformed_function_call - we need it for mode=ANY in retry
                         continue
                     else:
@@ -519,7 +554,25 @@ class GeminiSDKClient(LLMClient):
                     accumulated_tool_calls = {}
                     accumulated_usage = None
                     first_thought_signature = None
+                    consecutive_thought_only_chunks = 0
                     # Keep got_malformed_function_call for mode=ANY if it was set
+                    continue
+                
+                # Handle "too many states" error (sporadic server-side issue)
+                if "too many states" in error_str.lower() and attempt < self.max_retries:
+                    wait_time = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                    logger.warning(
+                        f"[GeminiSDK] Schema 'too many states' error (sporadic). "
+                        f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(wait_time)
+                    # Reset accumulators for retry
+                    accumulated_content = []
+                    accumulated_thoughts = []
+                    accumulated_tool_calls = {}
+                    accumulated_usage = None
+                    first_thought_signature = None
+                    consecutive_thought_only_chunks = 0
                     continue
                 
                 logger.error(f"[GeminiSDK] Streaming error: {e}", exc_info=True)
@@ -536,6 +589,8 @@ class GeminiSDKClient(LLMClient):
                     accumulated_thoughts = []
                     accumulated_tool_calls = {}
                     accumulated_usage = None
+                    first_thought_signature = None
+                    consecutive_thought_only_chunks = 0
                     continue
                 else:
                     raise Exception(f"Gemini SDK streaming failed: {str(e)}") from e

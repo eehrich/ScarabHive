@@ -933,6 +933,57 @@ class TestGeminiClientStreaming:
             async for _ in gemini_client.chat_tools_streaming(messages, tools, cancellation_token=mock_token):
                 pass
 
+    @pytest.mark.asyncio
+    async def test_streaming_infinite_thinking_loop_detection(self, gemini_client):
+        """Test detection and abort of infinite thinking loop (Gemini bug).
+        
+        When Gemini sends only thought=True chunks without progress (tool calls, 
+        content, or finishReason), we detect this and abort after MAX_CONSECUTIVE_THOUGHT_CHUNKS.
+        """
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        # Simulate infinite thinking loop: 150 thought-only chunks (exceeds 100 limit)
+        thought_chunks = []
+        for i in range(150):
+            thought_chunks.append("data: " + json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [{"text": f"Thinking step {i}...", "thought": True}]
+                    }
+                }]
+            }))
+        # Never send finishReason or tool calls - simulates the bug
+
+        async def mock_aiter_lines():
+            for chunk in thought_chunks:
+                yield chunk
+
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+
+            mock_client_class.return_value = mock_client
+
+            # Should raise after detecting infinite loop (after retries exhausted)
+            with pytest.raises(Exception) as exc_info:
+                async for _ in gemini_client.chat_tools_streaming(messages, tools):
+                    pass
+
+            # Check error message indicates infinite thinking loop
+            assert "infinite thinking loop" in str(exc_info.value).lower() or "chunks without progress" in str(exc_info.value).lower()
+
 
 class TestGeminiClientNonStreaming:
     """Test non-streaming methods."""
