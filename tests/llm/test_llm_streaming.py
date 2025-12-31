@@ -42,20 +42,20 @@ class TestHTTPXClientStreaming:
         messages = [ChatMessage(role="user", content="Hello")]
         tools = []
         
-        # Mock SSE stream response
+        # Mock SSE stream response - now as bytes with newlines (for aiter_bytes)
         mock_stream_lines = [
             'data: {"choices":[{"delta":{"content":"Hello"}}]}',
             'data: {"choices":[{"delta":{"content":" there"}}]}',
             'data: {"choices":[{"delta":{"content":"!"}}]}',
             'data: [DONE]'
         ]
+        mock_bytes = ('\n'.join(mock_stream_lines) + '\n').encode('utf-8')
         
-        async def mock_aiter_lines():
-            for line in mock_stream_lines:
-                yield line
+        async def mock_aiter_bytes():
+            yield mock_bytes
         
         mock_response = MagicMock()
-        mock_response.aiter_lines = mock_aiter_lines
+        mock_response.aiter_bytes = mock_aiter_bytes
         mock_response.status_code = 200  # Add status code
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=None)
@@ -89,20 +89,20 @@ class TestHTTPXClientStreaming:
         messages = [ChatMessage(role="user", content="What's the weather?")]
         tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
         
-        # Mock SSE stream with tool call deltas
+        # Mock SSE stream with tool call deltas - now as bytes with newlines (for aiter_bytes)
         mock_stream_lines = [
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","function":{"name":"get_weather"}}]}}]}',
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"location\\""}}]}}]}',
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\\"Berlin\\"}"}}]}}]}',
             'data: [DONE]'
         ]
+        mock_bytes = ('\n'.join(mock_stream_lines) + '\n').encode('utf-8')
         
-        async def mock_aiter_lines():
-            for line in mock_stream_lines:
-                yield line
+        async def mock_aiter_bytes():
+            yield mock_bytes
         
         mock_response = MagicMock()
-        mock_response.aiter_lines = mock_aiter_lines
+        mock_response.aiter_bytes = mock_aiter_bytes
         mock_response.status_code = 200  # Add status code
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=None)

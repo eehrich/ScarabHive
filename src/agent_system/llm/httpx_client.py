@@ -390,105 +390,116 @@ class HTTPXOpenAIClient(LLMClient):
                             logger.error(f"HTTPX streaming request failed: {error_msg}")
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                        # Parse SSE stream with chunk timeout from config
+                        # Parse SSE stream with chunk timeout
+                        # Use aiter_bytes() instead of aiter_lines() because aiter_lines()
+                        # can block indefinitely inside httpcore when server keeps connection
+                        # open but stops sending data. With aiter_bytes() we get smaller chunks
+                        # and our timeout actually works.
                         chunk_timeout = self.timeout_config.read
-                        line_iter = response.aiter_lines().__aiter__()
+                        byte_iter = response.aiter_bytes().__aiter__()
+                        line_buffer = ""
                         
                         while True:
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
                             
                             try:
-                                line = await asyncio.wait_for(line_iter.__anext__(), timeout=chunk_timeout)
+                                chunk_bytes = await asyncio.wait_for(byte_iter.__anext__(), timeout=chunk_timeout)
+                                line_buffer += chunk_bytes.decode('utf-8', errors='replace')
                             except StopAsyncIteration:
                                 break  # Stream completed
                             except asyncio.TimeoutError:
                                 logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
                                 raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
+                            
+                            # Process complete lines from buffer
+                            while '\n' in line_buffer:
+                                line, line_buffer = line_buffer.split('\n', 1)
+                                line = line.strip()
+                                
+                                if not line or not line.startswith("data: "):
+                                    continue
 
-                            if not line or not line.startswith("data: "):
-                                continue
+                                data = line[6:]  # Remove "data: " prefix
 
-                            data = line[6:]  # Remove "data: " prefix
-
-                            if data == "[DONE]":
-                                # Stream finished - yield final result
-                                assistant = {
-                                    "role": "assistant",
-                                    "content": "".join(accumulated_content) if accumulated_content else ""
-                                }
-
-                                # Add tool calls if any
-                                if accumulated_tool_calls:
-                                    tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
-                                    assistant["tool_calls"] = tool_calls_list
-
-                                final_result = {"assistant": assistant}
-
-                                # Add usage if available
-                                if accumulated_usage:
-                                    final_result["usage"] = accumulated_usage
-
-                                yield {"type": "final", **final_result}
-                                return  # Success - exit retry loop
-
-                            try:
-                                chunk_data = json.loads(data)
-                            except Exception:
-                                logger.debug(f"Failed to parse chunk data: {data[:100]}")
-                                continue
-
-                            # Track usage if available in chunk
-                            if "usage" in chunk_data:
-                                accumulated_usage = chunk_data["usage"]
-
-                            # Process chunk
-                            choices = chunk_data.get("choices", [])
-                            if not choices:
-                                continue
-
-                            delta = choices[0].get("delta", {})
-
-                            # Handle content delta
-                            if "content" in delta and delta["content"]:
-                                accumulated_content.append(delta["content"])
-                                yield {
-                                    "type": "content_delta",
-                                    "delta": delta["content"],
-                                    "accumulated": "".join(accumulated_content)
-                                }
-
-                            # Handle tool call deltas
-                            if "tool_calls" in delta:
-                                for tc_delta in delta["tool_calls"]:
-                                    index = tc_delta.get("index", 0)
-
-                                    # Initialize tool call buffer if needed
-                                    if index not in accumulated_tool_calls:
-                                        accumulated_tool_calls[index] = {
-                                            "id": "",
-                                            "type": "function",
-                                            "function": {"name": "", "arguments": ""}
-                                        }
-
-                                    # Accumulate deltas
-                                    if "id" in tc_delta:
-                                        accumulated_tool_calls[index]["id"] = tc_delta["id"]
-
-                                    if "function" in tc_delta:
-                                        func_delta = tc_delta["function"]
-                                        if "name" in func_delta:
-                                            accumulated_tool_calls[index]["function"]["name"] += func_delta["name"]
-                                        if "arguments" in func_delta:
-                                            accumulated_tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
-
-                                    # Yield delta with accumulated state
-                                    yield {
-                                        "type": "tool_call_delta",
-                                        "index": index,
-                                        "delta": tc_delta,
-                                        "accumulated": accumulated_tool_calls[index]
+                                if data == "[DONE]":
+                                    # Stream finished - yield final result
+                                    assistant = {
+                                        "role": "assistant",
+                                        "content": "".join(accumulated_content) if accumulated_content else ""
                                     }
+
+                                    # Add tool calls if any
+                                    if accumulated_tool_calls:
+                                        tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                        assistant["tool_calls"] = tool_calls_list
+
+                                    final_result = {"assistant": assistant}
+
+                                    # Add usage if available
+                                    if accumulated_usage:
+                                        final_result["usage"] = accumulated_usage
+
+                                    yield {"type": "final", **final_result}
+                                    return  # Success - exit retry loop
+
+                                try:
+                                    chunk_data = json.loads(data)
+                                except Exception:
+                                    logger.debug(f"Failed to parse chunk data: {data[:100]}")
+                                    continue
+
+                                # Track usage if available in chunk
+                                if "usage" in chunk_data:
+                                    accumulated_usage = chunk_data["usage"]
+
+                                # Process chunk
+                                choices = chunk_data.get("choices", [])
+                                if not choices:
+                                    continue
+
+                                delta = choices[0].get("delta", {})
+
+                                # Handle content delta
+                                if "content" in delta and delta["content"]:
+                                    accumulated_content.append(delta["content"])
+                                    yield {
+                                        "type": "content_delta",
+                                        "delta": delta["content"],
+                                        "accumulated": "".join(accumulated_content)
+                                    }
+
+                                # Handle tool call deltas
+                                if "tool_calls" in delta:
+                                    for tc_delta in delta["tool_calls"]:
+                                        index = tc_delta.get("index", 0)
+
+                                        # Initialize tool call buffer if needed
+                                        if index not in accumulated_tool_calls:
+                                            accumulated_tool_calls[index] = {
+                                                "id": "",
+                                                "type": "function",
+                                                "function": {"name": "", "arguments": ""}
+                                            }
+
+                                        # Accumulate deltas
+                                        if "id" in tc_delta:
+                                            accumulated_tool_calls[index]["id"] = tc_delta["id"]
+
+                                        if "function" in tc_delta:
+                                            func_delta = tc_delta["function"]
+                                            if "name" in func_delta:
+                                                accumulated_tool_calls[index]["function"]["name"] += func_delta["name"]
+                                            if "arguments" in func_delta:
+                                                accumulated_tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
+
+                                        # Yield delta with accumulated state
+                                        yield {
+                                            "type": "tool_call_delta",
+                                            "index": index,
+                                            "delta": tc_delta,
+                                            "accumulated": accumulated_tool_calls[index]
+                                        }
 
             except asyncio.CancelledError:
                 # Re-raise cancellation without wrapping
