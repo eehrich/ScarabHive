@@ -47,8 +47,8 @@ dependencies = [
     "markdownify>=0.11.0",
     "pygments>=2.15.0",
     "websockets>=15.0.0",
-    "chromadb>=0.6.0,<1.0.0",  # 0.6.x works on Windows with hnswlib 0.7.x
-    "hnswlib>=0.7.0,<0.8.0",   # Required for ChromaDB on Windows (needs MSVC Build Tools)
+    "chromadb>=0.6.0,<1.0.0",
+    "chroma-hnswlib>=0.7.6",  # ChromaDB's compatible fork (NOT hnswlib!)
     "sqlite-vec>=0.1.0",
     "onnxruntime>=1.20.0",
 ]
