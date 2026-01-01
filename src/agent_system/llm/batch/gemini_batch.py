@@ -236,9 +236,9 @@ class GeminiBatchClient(BatchProviderClient):
                     # Get thought_signature - required for Gemini 3 Pro
                     # The signature is stored in extra_content.google.thought_signature
                     thought_sig = None
-                    extra_content = tc.get("extra_content", {})
+                    extra_content = tc.get("extra_content")
                     if extra_content:
-                        google_extra = extra_content.get("google", {})
+                        google_extra = extra_content.get("google")
                         if google_extra:
                             thought_sig = google_extra.get("thought_signature")
                     
@@ -247,13 +247,20 @@ class GeminiBatchClient(BatchProviderClient):
                         thought_sig = tc.get("thought_signature")
                     
                     # Convert thought_signature to bytes if it's a base64 string
-                    # (happens when messages were JSON-serialized)
+                    # (happens when messages were JSON-serialized via gemini_sdk_client)
                     if thought_sig and isinstance(thought_sig, str):
                         try:
                             thought_sig = base64.b64decode(thought_sig)
                         except Exception:
-                            # If decoding fails, try using as-is (might already be bytes-like)
-                            pass
+                            # If decoding fails, try encoding as UTF-8 bytes
+                            thought_sig = thought_sig.encode('utf-8')
+                    
+                    # CRITICAL: For Gemini 3 Pro, all function calls in current turn MUST have
+                    # a thought_signature. If we don't have one (e.g., from a different model,
+                    # or from older sessions), use Google's documented bypass token to skip validation.
+                    # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
+                    if not thought_sig:
+                        thought_sig = b"skip_thought_signature_validator"
                     
                     # Create SDK Part with function_call and thought_signature
                     parts.append(types.Part(
@@ -261,13 +268,8 @@ class GeminiBatchClient(BatchProviderClient):
                             name=func_name,
                             args=func_args
                         ),
-                        thought_signature=thought_sig if thought_sig else None
+                        thought_signature=thought_sig
                     ))
-                    
-                    if thought_sig:
-                        logger.debug(f"[GeminiBatch] Created function call for {func_name} WITH thought_signature")
-                    else:
-                        logger.debug(f"[GeminiBatch] Created function call for {func_name} without thought_signature")
                 
                 if parts:
                     contents.append(types.Content(role="model", parts=parts))

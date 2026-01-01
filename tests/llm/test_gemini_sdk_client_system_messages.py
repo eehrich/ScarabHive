@@ -541,8 +541,8 @@ class TestGeminiSDKClientThoughtSignatureRestoration:
         assert function_call_part is not None
         assert function_call_part.thought_signature == b"test_signature_bytes"
 
-    def test_no_thought_signature_when_not_present(self, gemini_sdk_client):
-        """Test that missing thought_signature doesn't cause issues."""
+    def test_bypass_token_when_thought_signature_not_present(self, gemini_sdk_client):
+        """Test that missing thought_signature uses bypass token for Gemini 3."""
         messages = [
             ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content="What's the weather?"),
@@ -576,5 +576,7 @@ class TestGeminiSDKClientThoughtSignatureRestoration:
                         break
         
         assert function_call_part is not None
-        # Should have None thought_signature (not raise an error)
-        assert function_call_part.thought_signature is None
+        # For Gemini 3 compatibility, when no thought_signature is present,
+        # we use Google's documented bypass token to skip validation
+        # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
+        assert function_call_part.thought_signature == b"skip_thought_signature_validator"

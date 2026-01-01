@@ -613,7 +613,7 @@ class TestGeminiBatchClient:
         assert function_call_part.thought_signature == original_bytes
     
     def test_convert_messages_without_thought_signature(self):
-        """Test that missing thought_signature doesn't cause issues."""
+        """Test that missing thought_signature uses bypass token for Gemini 3."""
         client = GeminiBatchClient(api_key="test_key")
         
         messages = [
@@ -640,8 +640,10 @@ class TestGeminiBatchClient:
         function_call_part = contents[1].parts[0]
         assert function_call_part.function_call is not None
         assert function_call_part.function_call.name == "greet"
-        # thought_signature should be None
-        assert function_call_part.thought_signature is None
+        # For Gemini 3 compatibility, we use the documented bypass token when
+        # no thought_signature is available (e.g., from different models or old sessions)
+        # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
+        assert function_call_part.thought_signature == b"skip_thought_signature_validator"
 
 
 # ==============================================================================

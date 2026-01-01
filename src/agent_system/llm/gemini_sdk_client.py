@@ -142,18 +142,21 @@ class GeminiSDKClient(LLMClient):
                     # thoughtSignature is stored directly in the part_dict
                     thought_sig = part_dict.get("thoughtSignature")
                     
-                    # Create Part with function_call and optional thought_signature
+                    # CRITICAL: For Gemini 3 Pro, all function calls in current turn MUST have
+                    # a thought_signature. If we don't have one (e.g., from a different model,
+                    # or from older sessions), use Google's documented bypass token.
+                    # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
+                    if not thought_sig:
+                        thought_sig = b"skip_thought_signature_validator"
+                    
+                    # Create Part with function_call and thought_signature
                     sdk_parts.append(types.Part(
                         function_call=types.FunctionCall(
                             name=fc["name"],
                             args=fc["args"]
                         ),
-                        thought_signature=thought_sig  # bytes or None
+                        thought_signature=thought_sig
                     ))
-                    if thought_sig:
-                        logger.debug(f"[GeminiSDK] Created historical function call for {fc['name']} WITH thought_signature")
-                    else:
-                        logger.debug(f"[GeminiSDK] Created historical function call for {fc['name']} without thought_signature")
                 
                 elif "functionResponse" in part_dict:
                     fr = part_dict["functionResponse"]
