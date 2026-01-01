@@ -22,6 +22,7 @@ import httpx
 
 from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
+from .job_tracker import get_job_tracker
 from ..models import LLMRateLimitError, LLMQuotaExhaustedError
 
 logger = logging.getLogger(__name__)
@@ -429,22 +430,44 @@ class OpenAIBatchClient(BatchProviderClient):
         return data.get("data", [])
     
     async def cancel_all_pending_batches(self) -> int:
-        """Cancel all non-completed batches (useful on startup).
+        """Cancel only tracked batch jobs from this AgentSystem instance.
+        
+        Only cancels jobs that were submitted by this AgentSystem (tracked in
+        job_tracker), leaving jobs from other systems untouched.
         
         Returns:
             Number of batches cancelled
         """
-        batches = await self.list_batches(limit=100)
+        tracker = get_job_tracker()
+        if not tracker:
+            logger.warning("No job tracker available, skipping batch cancellation")
+            return 0
+        
+        tracked_jobs = await tracker.get_tracked_jobs("openai")
+        if not tracked_jobs:
+            logger.debug("No tracked OpenAI batch jobs to cancel")
+            return 0
+        
+        logger.info(f"Found {len(tracked_jobs)} tracked OpenAI batch jobs to check")
         cancelled = 0
         
-        for batch in batches:
-            status = batch.get("status")
-            if status not in ("completed", "failed", "expired", "cancelled"):
-                try:
-                    await self.cancel_batch(batch.get("id"))
+        for job_id in tracked_jobs:
+            try:
+                # Get batch status
+                batch_info = await self.get_batch_status(job_id)
+                status = batch_info.get("status", "")
+                
+                if status not in ("completed", "failed", "expired", "cancelled"):
+                    await self.cancel_batch(job_id)
                     cancelled += 1
-                    logger.info(f"Cancelled batch {batch.get('id')}")
-                except Exception as e:
-                    logger.warning(f"Failed to cancel batch {batch.get('id')}: {e}")
+                    logger.info(f"Cancelled tracked batch {job_id}")
+                
+                # Remove from tracker (job is done or cancelled)
+                await tracker.remove_job("openai", job_id)
+                
+            except Exception as e:
+                logger.warning(f"Failed to cancel tracked batch {job_id}: {e}")
+                # Still try to remove from tracker (job may not exist anymore)
+                await tracker.remove_job("openai", job_id)
         
         return cancelled

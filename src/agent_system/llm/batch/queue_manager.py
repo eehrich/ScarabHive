@@ -17,6 +17,7 @@ import uuid
 
 from agent_system.utils.id import short_id
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
+from .job_tracker import get_job_tracker
 
 if TYPE_CHECKING:
     from agent_system.config.models import BatchSystemConfig, BatchProviderConfig
@@ -536,6 +537,11 @@ class BatchQueueManager:
             provider_job_id = await client.submit_batch(job, self.storage_path)
             job.provider_job_id = provider_job_id
             
+            # Track the job for selective cancellation on restart
+            tracker = get_job_tracker()
+            if tracker:
+                await tracker.add_job(provider, provider_job_id)
+            
             logger.debug(
                 f"Batch job {job.job_id} submitted to {provider} as {provider_job_id}"
             )
@@ -734,6 +740,12 @@ class BatchQueueManager:
             self._metrics.failed_requests += job.request_count
         elif job.status == BatchStatus.CANCELLED:
             self._metrics.cancelled_jobs += 1
+        
+        # Remove from job tracker (job is finished)
+        if job.provider_job_id:
+            tracker = get_job_tracker()
+            if tracker:
+                await tracker.remove_job(job.provider, job.provider_job_id)
         
         # Move to completed jobs and cleanup request-to-job mapping
         async with self._jobs_lock:

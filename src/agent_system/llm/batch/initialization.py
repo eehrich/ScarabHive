@@ -23,6 +23,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Any
 
+from .job_tracker import BatchJobTracker, set_job_tracker
+
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig
     from .queue_manager import BatchQueueManager
@@ -107,6 +109,11 @@ def setup_batch_queue_manager_sync(
         
         # Create batch queue manager with global config
         storage_path = Path(batch_system_config.storage_path)
+        
+        # Initialize job tracker for tracking our submitted jobs
+        job_tracker = BatchJobTracker(storage_path)
+        set_job_tracker(job_tracker)
+        log.debug("Job tracker initialized at %s", storage_path)
         
         _batch_queue_manager = BatchQueueManager(
             batch_system_config=batch_system_config,
@@ -290,6 +297,11 @@ async def init_batch_system(
         # Create batch queue manager with global config
         storage_path = Path(batch_system_config.storage_path)
         
+        # Initialize job tracker for tracking our submitted jobs
+        job_tracker = BatchJobTracker(storage_path)
+        set_job_tracker(job_tracker)
+        log.debug("Job tracker initialized at %s", storage_path)
+        
         _batch_queue_manager = BatchQueueManager(
             batch_system_config=batch_system_config,
             storage_path=storage_path
@@ -444,6 +456,7 @@ async def shutdown_batch_system(
     1. Stop background polling tasks
     2. Wait for pending batches to complete (optional)
     3. Clean up resources
+    4. Clear job tracker reference
     
     Args:
         custom_logger: Optional custom logger (defaults to module logger)
@@ -460,6 +473,10 @@ async def shutdown_batch_system(
             log.info("Batch queue manager stopped")
         except Exception as e:
             log.error(f"Error stopping batch queue manager: {e}")
+    
+    # Clear job tracker reference (keep file for next startup)
+    set_job_tracker(None)
+    log.debug("Job tracker cleared")
 
 
 def get_batch_queue_manager() -> Optional["BatchQueueManager"]:
