@@ -19,7 +19,7 @@ plugins:
 
     agent_config:
       llm_profile: normal
-      llm_profile_fallbacks: chat
+      llm_profile_fallbacks: [chat]
       max_steps: 20
       system_template: "config/prompts/system_prompt.yaml"
 

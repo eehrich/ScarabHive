@@ -275,8 +275,8 @@ llm_system:
     # OPENAI BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
     gpt-5-mini-batch:
-      provider: batch                   # NEW: Explicit batch provider
-      batch_provider: openai            # NEW: Which batch API to use
+      provider: batch
+      batch_provider: openai            
       model: gpt-5-mini
       api_key: ***REMOVED***
       context_window: 272000
@@ -290,6 +290,24 @@ llm_system:
         max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
+
+    gpt-5.1-batch:
+      provider: batch
+      batch_provider: openai            
+      model: gpt-5.1
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        max_image_size: 20971520
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+
 
     # ---------------------------------------------------------------------------
     # REALTIME / AUDIO MODELS
@@ -457,6 +475,11 @@ llm_system:
       description: "Google Gemini Pro (streaming)"
       max_steps: 500
 
+    gemini-pro-batch:
+      model_ref: gemini-3-0-pro-batch
+      description: "Google Gemini Pro (batch)"
+      max_steps: 500
+
     gpt-full:
       model_ref: gpt-5.1
       description: "OpenAI full model for complex tasks"
@@ -470,6 +493,11 @@ llm_system:
     gpt-mini-batch:
       model_ref: gpt-5-mini-batch
       description: "OpenAI mini model (batch)"
+      max_steps: 500
+    
+    gpt-full-batch:
+      model_ref: gpt-5.1-batch
+      description: "OpenAI full model (batch)"
       max_steps: 500
       
     gpt-nano:
