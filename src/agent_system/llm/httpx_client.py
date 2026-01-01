@@ -420,15 +420,19 @@ class HTTPXOpenAIClient(LLMClient):
                         # open but stops sending data. With aiter_bytes() we get smaller chunks
                         # and our timeout actually works.
                         chunk_timeout = self.timeout_config.read
-                        byte_iter = response.aiter_bytes().__aiter__()
+                        # aiter_bytes() is async iterator that we can iterate over directly
                         line_buffer = ""
+                        
+                        # Create async iterator manually to apply timeout per chunk
+                        byte_stream = response.aiter_bytes()
                         
                         while True:
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
                             
                             try:
-                                chunk_bytes = await asyncio.wait_for(byte_iter.__anext__(), timeout=chunk_timeout)
+                                # Get next chunk with timeout
+                                chunk_bytes = await asyncio.wait_for(byte_stream.__anext__(), timeout=chunk_timeout)
                                 line_buffer += chunk_bytes.decode('utf-8', errors='replace')
                             except StopAsyncIteration:
                                 break  # Stream completed

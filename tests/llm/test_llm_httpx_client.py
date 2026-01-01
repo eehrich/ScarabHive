@@ -178,11 +178,10 @@ class TestBasicFunctionality(TestHTTPXOpenAIClient):
             mock_stream_response.status_code = 200
             mock_stream_response.headers = {}
             
-            async def mock_aiter_lines():
+            async def mock_aiter_bytes():
                 for line in sse_lines:
-                    yield line
-            
-            mock_stream_response.aiter_lines = mock_aiter_lines
+                    yield (line + "\n").encode("utf-8")
+            mock_stream_response.aiter_bytes = mock_aiter_bytes
             mock_stream_response.__aenter__.return_value = mock_stream_response
             mock_stream_response.__aexit__.return_value = None
             
@@ -222,11 +221,10 @@ class TestBasicFunctionality(TestHTTPXOpenAIClient):
             mock_stream_response.status_code = 200
             mock_stream_response.headers = {}
             
-            async def mock_aiter_lines():
+            async def mock_aiter_bytes():
                 for line in sse_lines:
-                    yield line
-            
-            mock_stream_response.aiter_lines = mock_aiter_lines
+                    yield (line + "\n").encode("utf-8")
+            mock_stream_response.aiter_bytes = mock_aiter_bytes
             mock_stream_response.__aenter__.return_value = mock_stream_response
             mock_stream_response.__aexit__.return_value = None
             
@@ -268,11 +266,10 @@ class TestBasicFunctionality(TestHTTPXOpenAIClient):
             mock_stream_response.status_code = 200
             mock_stream_response.headers = {}
             
-            async def mock_aiter_lines():
+            async def mock_aiter_bytes():
                 for line in sse_lines:
-                    yield line
-            
-            mock_stream_response.aiter_lines = mock_aiter_lines
+                    yield (line + "\n").encode("utf-8")
+            mock_stream_response.aiter_bytes = mock_aiter_bytes
             mock_stream_response.__aenter__.return_value = mock_stream_response
             mock_stream_response.__aexit__.return_value = None
             
@@ -309,19 +306,19 @@ class TestCancellationHandling(TestHTTPXOpenAIClient):
         token = CancellationToken(request_id="test-request-2")
         
         # Create a mock that simulates cancellation during streaming
-        async def mock_aiter_lines_with_cancel():
-            yield 'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}'
+        async def mock_aiter_bytes_with_cancel():
+            yield b'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n'
             await asyncio.sleep(0.05)
             token.cancel()  # Cancel during streaming
             await asyncio.sleep(0.05)
             # This line should never be reached due to cancellation check
-            yield 'data: [DONE]'
+            yield b'data: [DONE]\n'
         
         with patch("httpx.AsyncClient") as mock_async_client:
             mock_stream_response = AsyncMock()
             mock_stream_response.status_code = 200
             mock_stream_response.headers = {}
-            mock_stream_response.aiter_lines = mock_aiter_lines_with_cancel
+            mock_stream_response.aiter_bytes = mock_aiter_bytes_with_cancel
             mock_stream_response.__aenter__.return_value = mock_stream_response
             mock_stream_response.__aexit__.return_value = None
             
@@ -355,11 +352,10 @@ class TestCancellationHandling(TestHTTPXOpenAIClient):
             mock_stream_response.status_code = 200
             mock_stream_response.headers = {}
             
-            async def mock_aiter_lines():
+            async def mock_aiter_bytes():
                 for line in sse_lines:
-                    yield line
-            
-            mock_stream_response.aiter_lines = mock_aiter_lines
+                    yield (line + "\n").encode("utf-8")
+            mock_stream_response.aiter_bytes = mock_aiter_bytes
             mock_stream_response.__aenter__.return_value = mock_stream_response
             mock_stream_response.__aexit__.return_value = None
             
@@ -437,11 +433,10 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
                     mock_success_response.status_code = 200
                     mock_success_response.headers = {}
                     
-                    async def mock_aiter_lines():
+                    async def mock_aiter_bytes():
                         for line in sse_lines:
-                            yield line
-                    
-                    mock_success_response.aiter_lines = mock_aiter_lines
+                            yield (line + "\n").encode("utf-8")
+                    mock_success_response.aiter_bytes = mock_aiter_bytes
                     mock_success_response.__aenter__.return_value = mock_success_response
                     mock_success_response.__aexit__.return_value = None
                     return mock_success_response
@@ -486,11 +481,10 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
             mock_success_response.status_code = 200
             mock_success_response.headers = {}
             
-            async def mock_aiter_lines():
+            async def mock_aiter_bytes():
                 for line in sse_lines:
-                    yield line
-            
-            mock_success_response.aiter_lines = mock_aiter_lines
+                    yield (line + "\n").encode("utf-8")
+            mock_success_response.aiter_bytes = mock_aiter_bytes
             mock_success_response.__aenter__.return_value = mock_success_response
             mock_success_response.__aexit__.return_value = None
             
@@ -524,11 +518,10 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
             mock_success_response.status_code = 200
             mock_success_response.headers = {}
             
-            async def mock_aiter_lines():
+            async def mock_aiter_bytes():
                 for line in sse_lines:
-                    yield line
-            
-            mock_success_response.aiter_lines = mock_aiter_lines
+                    yield (line + "\n").encode("utf-8")
+            mock_success_response.aiter_bytes = mock_aiter_bytes
             mock_success_response.__aenter__.return_value = mock_success_response
             mock_success_response.__aexit__.return_value = None
             
@@ -587,27 +580,26 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
                 
                 if call_count[0] == 1:
                     # First call: stream interruption
-                    async def mock_aiter_lines_with_error():
-                        yield 'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}'
+                    async def mock_aiter_bytes_with_error():
+                        yield b'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n'
                         raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
                     
                     mock_error_response = AsyncMock()
                     mock_error_response.status_code = 200
                     mock_error_response.headers = {}
-                    mock_error_response.aiter_lines = mock_aiter_lines_with_error
+                    mock_error_response.aiter_bytes = mock_aiter_bytes_with_error
                     mock_error_response.__aenter__.return_value = mock_error_response
                     mock_error_response.__aexit__.return_value = None
                     return mock_error_response
                 else:
                     # Second call: success
-                    async def mock_aiter_lines():
+                    async def mock_aiter_bytes():
                         for line in sse_lines:
-                            yield line
-                    
+                            yield (line + "\n").encode("utf-8")
                     mock_success_response = AsyncMock()
                     mock_success_response.status_code = 200
                     mock_success_response.headers = {}
-                    mock_success_response.aiter_lines = mock_aiter_lines
+                    mock_success_response.aiter_bytes = mock_aiter_bytes
                     mock_success_response.__aenter__.return_value = mock_success_response
                     mock_success_response.__aexit__.return_value = None
                     return mock_success_response
@@ -638,14 +630,13 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
                 'data: [DONE]'
             ]
             
-            async def mock_aiter_lines():
+            async def mock_aiter_bytes():
                 for line in sse_lines:
-                    yield line
-            
+                    yield (line + "\n").encode("utf-8")
             mock_success_response = AsyncMock()
             mock_success_response.status_code = 200
             mock_success_response.headers = {}
-            mock_success_response.aiter_lines = mock_aiter_lines
+            mock_success_response.aiter_bytes = mock_aiter_bytes
             mock_success_response.__aenter__.return_value = mock_success_response
             mock_success_response.__aexit__.return_value = None
             
@@ -724,11 +715,10 @@ class TestPerformanceComparison(TestHTTPXOpenAIClient):
                 mock_stream_response.status_code = 200
                 mock_stream_response.headers = {}
                 
-                async def mock_aiter_lines():
+                async def mock_aiter_bytes():
                     for line in sse_lines:
-                        yield line
-                
-                mock_stream_response.aiter_lines = mock_aiter_lines
+                        yield (line + "\n").encode("utf-8")
+                mock_stream_response.aiter_bytes = mock_aiter_bytes
                 mock_stream_response.__aenter__.return_value = mock_stream_response
                 mock_stream_response.__aexit__.return_value = None
                 return mock_stream_response
@@ -765,12 +755,12 @@ class TestPerformanceComparison(TestHTTPXOpenAIClient):
             mock_stream_response.status_code = 200
             mock_stream_response.headers = {}
             
-            async def mock_aiter_lines_with_cancel():
+            async def mock_aiter_bytes_with_cancel():
                 token.cancel()
                 raise asyncio.CancelledError()
                 yield  # Never reached
             
-            mock_stream_response.aiter_lines = mock_aiter_lines_with_cancel
+            mock_stream_response.aiter_bytes = mock_aiter_bytes_with_cancel
             mock_stream_response.__aenter__.return_value = mock_stream_response
             mock_stream_response.__aexit__.return_value = None
             
