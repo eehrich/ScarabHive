@@ -375,7 +375,7 @@ class TestGeminiBatchClient:
         )
     
     def test_convert_messages_to_contents(self):
-        """Test message conversion to Gemini format."""
+        """Test message conversion to Gemini SDK format."""
         client = GeminiBatchClient(api_key="test_key")
         
         messages = [
@@ -387,10 +387,12 @@ class TestGeminiBatchClient:
         contents = client._convert_messages_to_contents(messages)
         
         assert len(contents) == 3
-        assert contents[0]["role"] == "user"
-        assert contents[0]["parts"] == [{"text": "Hello"}]
-        assert contents[1]["role"] == "model"
-        assert contents[2]["role"] == "user"
+        # SDK types.Content has .role and .parts attributes
+        assert contents[0].role == "user"
+        assert contents[0].parts[0].text == "Hello"
+        assert contents[1].role == "model"
+        assert contents[1].parts[0].text == "Hi there!"
+        assert contents[2].role == "user"
     
     def test_convert_multimodal_messages(self):
         """Test multimodal message conversion."""
@@ -410,9 +412,11 @@ class TestGeminiBatchClient:
         contents = client._convert_messages_to_contents(messages)
         
         assert len(contents) == 1
-        assert len(contents[0]["parts"]) == 2
-        assert contents[0]["parts"][0] == {"text": "What's in this image?"}
-        assert "inlineData" in contents[0]["parts"][1]
+        assert len(contents[0].parts) == 2
+        assert contents[0].parts[0].text == "What's in this image?"
+        # Second part should have inline_data
+        assert contents[0].parts[1].inline_data is not None
+        assert contents[0].parts[1].inline_data.mime_type == "image/png"
     
     def test_convert_messages_with_tool_calls(self):
         """Test converting assistant messages with tool calls."""
@@ -440,16 +444,17 @@ class TestGeminiBatchClient:
         
         assert len(contents) == 2
         # User message
-        assert contents[0]["role"] == "user"
-        assert contents[0]["parts"][0]["text"] == "What's the weather in Paris?"
+        assert contents[0].role == "user"
+        assert contents[0].parts[0].text == "What's the weather in Paris?"
         
         # Assistant with tool call
-        assert contents[1]["role"] == "model"
-        assert len(contents[1]["parts"]) == 2
-        assert contents[1]["parts"][0]["text"] == "Let me check that for you."
-        assert "functionCall" in contents[1]["parts"][1]
-        assert contents[1]["parts"][1]["functionCall"]["name"] == "get_weather"
-        assert contents[1]["parts"][1]["functionCall"]["args"]["city"] == "Paris"
+        assert contents[1].role == "model"
+        assert len(contents[1].parts) == 2
+        assert contents[1].parts[0].text == "Let me check that for you."
+        # SDK Part has function_call attribute
+        assert contents[1].parts[1].function_call is not None
+        assert contents[1].parts[1].function_call.name == "get_weather"
+        assert contents[1].parts[1].function_call.args["city"] == "Paris"
     
     def test_convert_messages_with_tool_results(self):
         """Test converting tool response messages."""
@@ -485,16 +490,158 @@ class TestGeminiBatchClient:
         
         assert len(contents) == 4
         
-        # Tool response
-        assert contents[2]["role"] == "tool"
-        assert "functionResponse" in contents[2]["parts"][0]
-        assert contents[2]["parts"][0]["functionResponse"]["name"] == "get_weather"
-        assert contents[2]["parts"][0]["functionResponse"]["response"]["temperature"] == 20
+        # Tool response - SDK uses from_function_response which creates a Part
+        assert contents[2].role == "tool"
+        # For function response, check the part has the response data
+        # The SDK Part.from_function_response stores it internally
+        assert contents[2].parts[0].function_response is not None
+        assert contents[2].parts[0].function_response.name == "get_weather"
+        assert contents[2].parts[0].function_response.response["temperature"] == 20
         
         # Final assistant response
-        assert contents[3]["role"] == "model"
-        assert contents[3]["parts"][0]["text"] == "It's 20°C and sunny in Paris."
+        assert contents[3].role == "model"
+        assert contents[3].parts[0].text == "It's 20°C and sunny in Paris."
     
+    def test_convert_messages_with_thought_signature(self):
+        """Test that thought_signature is preserved in function calls for Gemini 3 Pro."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        # Create messages with thought_signature in extra_content (as stored by gemini_sdk_client)
+        messages = [
+            {"role": "user", "content": "What's the weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": "Let me check that.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}'
+                        },
+                        "extra_content": {
+                            "google": {
+                                "thought_signature": b"test_signature_bytes_123"
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+        
+        contents = client._convert_messages_to_contents(messages)
+        
+        assert len(contents) == 2
+        assert contents[1].role == "model"
+        assert len(contents[1].parts) == 2
+        
+        # Check that thought_signature is preserved in SDK Part
+        function_call_part = contents[1].parts[1]
+        assert function_call_part.function_call is not None
+        assert function_call_part.function_call.name == "get_weather"
+        assert function_call_part.thought_signature == b"test_signature_bytes_123"
+    
+    def test_convert_messages_with_direct_thought_signature(self):
+        """Test that direct thought_signature field is also supported."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        # Some code paths might store thought_signature directly on the tool_call
+        messages = [
+            {"role": "user", "content": "Calculate something"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_456",
+                        "type": "function",
+                        "function": {
+                            "name": "calculate",
+                            "arguments": '{"x": 5}'
+                        },
+                        "thought_signature": b"direct_signature_xyz"
+                    }
+                ]
+            }
+        ]
+        
+        contents = client._convert_messages_to_contents(messages)
+        
+        assert len(contents) == 2
+        function_call_part = contents[1].parts[0]
+        assert function_call_part.function_call is not None
+        assert function_call_part.function_call.name == "calculate"
+        assert function_call_part.thought_signature == b"direct_signature_xyz"
+    
+    def test_convert_messages_with_base64_thought_signature(self):
+        """Test that base64-encoded thought_signature (from JSON serialization) is decoded."""
+        import base64
+        client = GeminiBatchClient(api_key="test_key")
+        
+        # When messages are JSON-serialized, bytes become base64 strings
+        original_bytes = b"original_signature_bytes"
+        base64_encoded = base64.b64encode(original_bytes).decode('utf-8')
+        
+        messages = [
+            {"role": "user", "content": "Test"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_789",
+                        "type": "function",
+                        "function": {
+                            "name": "test_func",
+                            "arguments": '{}'
+                        },
+                        "extra_content": {
+                            "google": {
+                                "thought_signature": base64_encoded  # String, not bytes
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+        
+        contents = client._convert_messages_to_contents(messages)
+        
+        assert len(contents) == 2
+        function_call_part = contents[1].parts[0]
+        assert function_call_part.function_call is not None
+        # Should be decoded back to original bytes
+        assert function_call_part.thought_signature == original_bytes
+    
+    def test_convert_messages_without_thought_signature(self):
+        """Test that missing thought_signature doesn't cause issues."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_789",
+                        "type": "function",
+                        "function": {
+                            "name": "greet",
+                            "arguments": '{"name": "World"}'
+                        }
+                        # No thought_signature or extra_content
+                    }
+                ]
+            }
+        ]
+        
+        contents = client._convert_messages_to_contents(messages)
+        
+        assert len(contents) == 2
+        function_call_part = contents[1].parts[0]
+        assert function_call_part.function_call is not None
+        assert function_call_part.function_call.name == "greet"
+        # thought_signature should be None
+        assert function_call_part.thought_signature is None
 
 
 # ==============================================================================

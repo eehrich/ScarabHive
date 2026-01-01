@@ -12,6 +12,7 @@ Reference: https://ai.google.dev/gemini-api/docs/batch
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from pathlib import Path
@@ -165,18 +166,20 @@ class GeminiBatchClient(BatchProviderClient):
     def _convert_messages_to_contents(
         self,
         messages: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Convert OpenAI-style messages to Gemini content format.
+    ) -> List[types.Content]:
+        """Convert OpenAI-style messages to Gemini SDK Content format.
+        
+        Uses SDK types.Content and types.Part to properly support thought_signature
+        for Gemini 3 Pro function calls.
         
         Handles:
         - user messages → role: "user"
         - assistant messages → role: "model"
-        - assistant with tool_calls → role: "model" with functionCall parts
+        - assistant with tool_calls → role: "model" with functionCall parts (with thought_signature)
         - tool responses → role: "tool" with functionResponse parts (Gemini 2.0+ format)
         - system messages → skipped (handled separately via system_instruction)
         """
-        import json
-        contents = []
+        contents: List[types.Content] = []
         
         for msg in messages:
             role = msg.get("role")
@@ -200,26 +203,24 @@ class GeminiBatchClient(BatchProviderClient):
                 else:
                     result_data = content if content else {}
                 
-                contents.append({
-                    "role": "tool",  # Gemini 2.0+ uses "tool" role
-                    "parts": [{
-                        "functionResponse": {
-                            "name": tool_name,
-                            "response": result_data
-                        }
-                    }]
-                })
+                contents.append(types.Content(
+                    role="tool",  # Gemini 2.0+ uses "tool" role
+                    parts=[types.Part.from_function_response(
+                        name=tool_name,
+                        response=result_data
+                    )]
+                ))
                 continue
             
             # Handle assistant with tool_calls (function call requests)
             if role == "assistant" and msg.get("tool_calls"):
-                parts = []
+                parts: List[types.Part] = []
                 
                 # Add text content if present
                 if content:
-                    parts.append({"text": content})
+                    parts.append(types.Part(text=content))
                 
-                # Add function calls
+                # Add function calls with thought_signature preservation
                 for tc in msg.get("tool_calls", []):
                     func = tc.get("function", {})
                     func_name = func.get("name", "")
@@ -232,34 +233,60 @@ class GeminiBatchClient(BatchProviderClient):
                         except json.JSONDecodeError:
                             func_args = {}
                     
-                    parts.append({
-                        "functionCall": {
-                            "name": func_name,
-                            "args": func_args
-                        }
-                    })
+                    # Get thought_signature - required for Gemini 3 Pro
+                    # The signature is stored in extra_content.google.thought_signature
+                    thought_sig = None
+                    extra_content = tc.get("extra_content", {})
+                    if extra_content:
+                        google_extra = extra_content.get("google", {})
+                        if google_extra:
+                            thought_sig = google_extra.get("thought_signature")
+                    
+                    # Also check direct thought_signature field
+                    if not thought_sig:
+                        thought_sig = tc.get("thought_signature")
+                    
+                    # Convert thought_signature to bytes if it's a base64 string
+                    # (happens when messages were JSON-serialized)
+                    if thought_sig and isinstance(thought_sig, str):
+                        try:
+                            thought_sig = base64.b64decode(thought_sig)
+                        except Exception:
+                            # If decoding fails, try using as-is (might already be bytes-like)
+                            pass
+                    
+                    # Create SDK Part with function_call and thought_signature
+                    parts.append(types.Part(
+                        function_call=types.FunctionCall(
+                            name=func_name,
+                            args=func_args
+                        ),
+                        thought_signature=thought_sig if thought_sig else None
+                    ))
+                    
+                    if thought_sig:
+                        logger.debug(f"[GeminiBatch] Created function call for {func_name} WITH thought_signature")
+                    else:
+                        logger.debug(f"[GeminiBatch] Created function call for {func_name} without thought_signature")
                 
                 if parts:
-                    contents.append({
-                        "role": "model",
-                        "parts": parts,
-                    })
+                    contents.append(types.Content(role="model", parts=parts))
                 continue
             
             # Standard user/assistant messages
             gemini_role = "user" if role == "user" else "model"
             
             if isinstance(content, str):
-                contents.append({
-                    "role": gemini_role,
-                    "parts": [{"text": content}],
-                })
+                contents.append(types.Content(
+                    role=gemini_role,
+                    parts=[types.Part(text=content)]
+                ))
             elif isinstance(content, list):
                 # Multimodal content
                 parts = []
                 for item in content:
                     if item.get("type") == "text":
-                        parts.append({"text": item.get("text", "")})
+                        parts.append(types.Part(text=item.get("text", "")))
                     elif item.get("type") in ("image", "image_url"):
                         # Handle image content
                         image_url = item.get("image_url", {})
@@ -273,20 +300,18 @@ class GeminiBatchClient(BatchProviderClient):
                             try:
                                 header, data = url.split(",", 1)
                                 mime_type = header.split(":")[1].split(";")[0]
-                                parts.append({
-                                    "inlineData": {
-                                        "mimeType": mime_type,
-                                        "data": data,
-                                    }
-                                })
+                                data_bytes = base64.b64decode(data)
+                                parts.append(types.Part(
+                                    inline_data=types.Blob(
+                                        mime_type=mime_type,
+                                        data=data_bytes
+                                    )
+                                ))
                             except (ValueError, IndexError):
                                 pass
                 
                 if parts:
-                    contents.append({
-                        "role": gemini_role,
-                        "parts": parts,
-                    })
+                    contents.append(types.Content(role=gemini_role, parts=parts))
         
         return contents
     
