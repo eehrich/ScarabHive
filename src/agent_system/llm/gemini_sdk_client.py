@@ -203,7 +203,8 @@ class GeminiSDKClient(LLMClient):
     def _build_generation_config(
         self, 
         system_instruction: Optional[str],
-        sdk_tools: Optional[types.Tool]
+        sdk_tools: Optional[types.Tool],
+        force_any_mode: bool = False
     ) -> types.GenerateContentConfig:
         """Build generation config with all parameters."""
         config = types.GenerateContentConfig(
@@ -215,10 +216,17 @@ class GeminiSDKClient(LLMClient):
         # Add tools if present
         if sdk_tools:
             config.tools = [sdk_tools]
-            # Disable automatic function calling - we handle it ourselves
-            config.automatic_function_calling = types.AutomaticFunctionCallingConfig(
-                disable=True
-            )
+            # Configure function calling behavior
+            if force_any_mode:
+                # Force function calling (for retry after MALFORMED_FUNCTION_CALL)
+                config.tool_config = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(mode="ANY")
+                )
+            else:
+                # Normal mode: disable automatic function calling - we handle it ourselves
+                config.automatic_function_calling = types.AutomaticFunctionCallingConfig(
+                    disable=True
+                )
         
         # Add system instruction if present
         if system_instruction:
@@ -290,12 +298,12 @@ class GeminiSDKClient(LLMClient):
             
             # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
             # This helps the model generate proper JSON instead of Python code
-            generation_config = self._build_generation_config(system_instruction, sdk_tools)
-            if attempt > 0 and got_malformed_function_call:
+            force_any_mode = attempt > 0 and got_malformed_function_call
+            generation_config = self._build_generation_config(
+                system_instruction, sdk_tools, force_any_mode=force_any_mode
+            )
+            if force_any_mode:
                 logger.info(f"[GeminiSDK] Retry #{attempt} with forced function calling (mode=ANY)")
-                generation_config.tool_config = types.ToolConfig(
-                    function_calling_config=types.FunctionCallingConfig(mode="ANY")
-                )
             
             try:
                 logger.debug(f"[GeminiSDK] Starting streaming request to {self.model} (attempt {attempt + 1})")
