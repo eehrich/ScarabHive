@@ -111,6 +111,7 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `llm_profile` | string | Yes | - | LLM profile from `config/llm.yaml` |
+| `llm_profile_fallbacks` | list[string] | No | [] | Fallback profiles on rate limit/quota errors |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
@@ -118,6 +119,31 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 | `context_management` | object | No | defaults | Context management config |
 
 \* Either `system_prompt` or `system_template` must be provided, but not both.
+
+### LLM Profile Fallbacks
+
+When the primary LLM profile hits rate limits (HTTP 429) or quota exhaustion, the agent automatically switches to fallback profiles in order:
+
+```yaml
+my_agent:
+  type: basic_agent
+  agent_config:
+    llm_profile: "gemini"              # Primary profile
+    llm_profile_fallbacks:             # Tried in order on rate limit
+      - "openai"                       # First fallback
+      - "anthropic"                    # Second fallback
+```
+
+**Behavior:**
+1. Agent tries primary `llm_profile` first
+2. On `LLMRateLimitError` or `LLMQuotaExhaustedError`, tries next fallback
+3. If all fallbacks exhausted, raises the original error
+4. Status events show which profile is active
+
+**Use Cases:**
+- Gemini free tier (250 requests/day) → OpenAI fallback
+- Primary API down → Secondary provider
+- Cost optimization (cheaper primary, expensive fallback)
 
 ### Tools Configuration
 

@@ -31,7 +31,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from google import genai
 from google.genai import types
 
-from agent_system.llm.models import ChatMessage
+from agent_system.llm.models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.clients import LLMClient
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.gemini_utils import (
@@ -551,20 +551,33 @@ class GeminiSDKClient(LLMClient):
                     if parsed_delay:
                         wait_time = parsed_delay + 2.0
                     
-                    logger.warning(
-                        f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
-                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    # Check if we have retries left
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                            f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await asyncio.sleep(wait_time)
+                        # Reset accumulators for retry
+                        accumulated_content = []
+                        accumulated_thoughts = []
+                        accumulated_tool_calls = {}
+                        accumulated_usage = None
+                        first_thought_signature = None
+                        consecutive_thought_only_chunks = 0
+                        # Keep got_malformed_function_call for mode=ANY if it was set
+                        continue
+                    
+                    # Retries exhausted - raise for fallback
+                    if "quota" in error_str.lower() or "exhausted" in error_str.lower():
+                        raise LLMQuotaExhaustedError(
+                            f"Quota exhausted: {error_str}",
+                            provider="gemini_sdk", model=self.model, retry_after=wait_time
+                        )
+                    raise LLMRateLimitError(
+                        f"Rate limit exceeded: {error_str}",
+                        provider="gemini_sdk", model=self.model, retry_after=wait_time
                     )
-                    await asyncio.sleep(wait_time)
-                    # Reset accumulators for retry
-                    accumulated_content = []
-                    accumulated_thoughts = []
-                    accumulated_tool_calls = {}
-                    accumulated_usage = None
-                    first_thought_signature = None
-                    consecutive_thought_only_chunks = 0
-                    # Keep got_malformed_function_call for mode=ANY if it was set
-                    continue
                 
                 # Handle "too many states" error (sporadic server-side issue)
                 if "too many states" in error_str.lower() and attempt < self.max_retries:
@@ -734,12 +747,25 @@ class GeminiSDKClient(LLMClient):
                     if parsed_delay:
                         wait_time = parsed_delay + 2.0
                     
-                    logger.warning(
-                        f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
-                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    # Check if we have retries left
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                            f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+                    
+                    # Retries exhausted - raise for fallback
+                    if "quota" in error_str.lower() or "exhausted" in error_str.lower():
+                        raise LLMQuotaExhaustedError(
+                            f"Quota exhausted: {error_str}",
+                            provider="gemini_sdk", model=self.model, retry_after=wait_time
+                        )
+                    raise LLMRateLimitError(
+                        f"Rate limit exceeded: {error_str}",
+                        provider="gemini_sdk", model=self.model, retry_after=wait_time
                     )
-                    await asyncio.sleep(wait_time)
-                    continue
                 
                 logger.error(f"[GeminiSDK] Request error: {e}", exc_info=True)
                 

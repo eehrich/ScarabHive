@@ -8,7 +8,7 @@ import logging
 import httpx
 
 from ..utils.id import short_id
-from .models import ChatMessage, LLMClient
+from .models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from ..config.models import ModelCapabilitiesConfig
 from .retry_utils import execute_with_cancellation
 
@@ -369,11 +369,23 @@ class OpenAIAsyncClient(LLMClient):
                             wait = max(retry_after, self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
                         else:
                             wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
-                        logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
-                        if cancellation_token and cancellation_token.is_cancelled:
-                            raise Exception("Request cancelled by user during rate limit backoff")
-                        await asyncio.sleep(wait)
-                        continue
+                        if attempt < max_attempts:
+                            logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                            if cancellation_token and cancellation_token.is_cancelled:
+                                raise Exception("Request cancelled by user during rate limit backoff")
+                            await asyncio.sleep(wait)
+                            continue
+                        # Retries exhausted - raise for fallback
+                        error_text = str(e)
+                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {error_text}",
+                                provider="openai", model=self._model, retry_after=wait
+                            )
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            provider="openai", model=self._model, retry_after=wait
+                        )
                     # Handle server errors (5xx) - retry with exponential backoff
                     if status is not None and status >= 500 and attempt < max_attempts:
                         wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))

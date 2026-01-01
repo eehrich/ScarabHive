@@ -15,6 +15,7 @@ import httpx
 import ssl
 
 from agent_system.llm.clients import LLMClient
+from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.core.cancellation import CancellationToken
 
 logger = logging.getLogger(__name__)
@@ -254,13 +255,25 @@ class HTTPXOpenAIClient(LLMClient):
                     # Make regular POST request (not streaming)
                     response = await client.post(url=url, headers=self._headers, json=payload)
 
-                    # Handle rate limiting (429)
-                    if response.status_code == 429 and attempt < self.max_retries:
+                    # Handle rate limiting (429) - raise for fallback after retries exhausted
+                    if response.status_code == 429:
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                        backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-                        logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                        await asyncio.sleep(backoff_time)
-                        continue
+                        if attempt < self.max_retries:
+                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                            await asyncio.sleep(backoff_time)
+                            continue
+                        # Retries exhausted - raise for fallback
+                        error_text = response.text[:200] if response.text else ""
+                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {error_text}",
+                                provider="httpx", model=self._model, retry_after=retry_after
+                            )
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            provider="httpx", model=self._model, retry_after=retry_after
+                        )
 
                     # Handle server errors (5xx) - retry with exponential backoff
                     if response.status_code >= 500 and attempt < self.max_retries:
@@ -365,14 +378,25 @@ class HTTPXOpenAIClient(LLMClient):
                     # Make streaming request
                     async with client.stream("POST", url=url, headers=self._headers, json=payload) as response:
                         # Check status code (don't use raise_for_status() - it tries to read the body)
-                        if response.status_code == 429 and attempt < self.max_retries:
-                            # Rate limit - retry with backoff
+                        if response.status_code == 429:
                             retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-
-                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                            await asyncio.sleep(backoff_time)
-                            continue
+                            if attempt < self.max_retries:
+                                backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                                logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                                await asyncio.sleep(backoff_time)
+                                continue
+                            # Retries exhausted - raise for fallback
+                            error_body = await response.aread()
+                            error_text = error_body.decode()[:200] if error_body else ""
+                            if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                                raise LLMQuotaExhaustedError(
+                                    f"Quota exhausted: {error_text}",
+                                    provider="httpx", model=self._model, retry_after=retry_after
+                                )
+                            raise LLMRateLimitError(
+                                f"Rate limit exceeded: {error_text}",
+                                provider="httpx", model=self._model, retry_after=retry_after
+                            )
 
                         # Handle server errors (5xx) - retry with exponential backoff
                         if response.status_code >= 500 and attempt < self.max_retries:
@@ -605,14 +629,24 @@ class HTTPXOpenAIClient(LLMClient):
                     )
 
                     # Check for HTTP errors
-                    if response.status_code == 429 and attempt < self.max_retries:
-                        # Rate limit - retry with backoff
+                    if response.status_code == 429:
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                        backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-
-                        logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                        await asyncio.sleep(backoff_time)
-                        continue
+                        if attempt < self.max_retries:
+                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                            await asyncio.sleep(backoff_time)
+                            continue
+                        # Retries exhausted - raise for fallback
+                        error_text = response.text[:200] if response.text else ""
+                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {error_text}",
+                                provider="httpx", model=self._model, retry_after=retry_after
+                            )
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            provider="httpx", model=self._model, retry_after=retry_after
+                        )
 
                     response.raise_for_status()
 

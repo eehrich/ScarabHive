@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from .models import ChatMessage
+from .models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError
 from .clients import LLMClient
 from .retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
@@ -429,12 +429,25 @@ class GeminiClient(LLMClient):
                     if parsed_delay:
                         wait_time = parsed_delay + 2.0
                     
-                    logger.warning(
-                        f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
-                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    # Check if we have retries left
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                            f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+                    
+                    # Retries exhausted - raise for fallback
+                    if "quota" in error_str.lower() or "exhausted" in error_str.lower():
+                        raise LLMQuotaExhaustedError(
+                            f"Quota exhausted: {error_str}",
+                            provider="gemini", model=self.model, retry_after=wait_time
+                        )
+                    raise LLMRateLimitError(
+                        f"Rate limit exceeded: {error_str}",
+                        provider="gemini", model=self.model, retry_after=wait_time
                     )
-                    await asyncio.sleep(wait_time)
-                    continue
                 
                 # Check if this is a 400 error that might be caused by mode=ANY
                 # If we got 400 after forcing mode=ANY, try without it
@@ -688,12 +701,25 @@ class GeminiClient(LLMClient):
                     if parsed_delay:
                         wait_time = parsed_delay + 2.0
                     
-                    logger.warning(
-                        f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
-                        f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                    # Check if we have retries left
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
+                            f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+                    
+                    # Retries exhausted - raise for fallback
+                    if "quota" in error_str.lower() or "exhausted" in error_str.lower():
+                        raise LLMQuotaExhaustedError(
+                            f"Quota exhausted: {error_str}",
+                            provider="gemini", model=self.model, retry_after=wait_time
+                        )
+                    raise LLMRateLimitError(
+                        f"Rate limit exceeded: {error_str}",
+                        provider="gemini", model=self.model, retry_after=wait_time
                     )
-                    await asyncio.sleep(wait_time)
-                    continue
                 
                 # Check if this is a 400 error that might be caused by mode=ANY
                 # If we got 400 after forcing mode=ANY, try without it

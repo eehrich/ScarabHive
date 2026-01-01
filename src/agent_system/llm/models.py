@@ -6,6 +6,20 @@ from datetime import datetime
 from enum import Enum
 
 
+class LLMRateLimitError(Exception):
+    """Raised when LLM rate limit is hit - triggers fallback to alternative profile."""
+    def __init__(self, message: str, provider: str = "", model: str = "", retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.retry_after = retry_after
+
+
+class LLMQuotaExhaustedError(LLMRateLimitError):
+    """Raised when daily/monthly quota is exhausted - triggers fallback."""
+    pass
+
+
 class ContentType(str, Enum):
     """Types of content in multimodal messages."""
     TEXT = "text"

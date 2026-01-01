@@ -14,7 +14,7 @@ from ...config.models import AgentSystemConfig, MCPConfig
 from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager, CancellationToken
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
-from ...llm.models import ChatMessage
+from ...llm.models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...mcp.status import (
     status_scope,
@@ -261,6 +261,31 @@ class Agent(MCPServer):
         if profile_name:
             return f"{profile_name}:{provider}/{model}"
         return f"{provider}/{model}"
+
+    def _create_fallback_llm(self, fallback_profile: str) -> Optional[Any]:
+        """Create an LLM client for a fallback profile.
+        
+        Args:
+            fallback_profile: Name of the fallback LLM profile to use
+            
+        Returns:
+            LLM client instance or None if creation fails
+        """
+        try:
+            from ...llm.factory import create_llm_from_profile
+            
+            ssl_verify = getattr(self.system_config, "network").ssl_verify if getattr(self.system_config, "network", None) else None
+            
+            fallback_llm = create_llm_from_profile(
+                config=self.system_config,
+                llm_profile=fallback_profile,
+                ssl_verify=ssl_verify,
+            )
+            logger.info(f"[{self.name}] Created fallback LLM for profile: {fallback_profile}")
+            return fallback_llm
+        except Exception as e:
+            logger.warning(f"[{self.name}] Failed to create fallback LLM for profile '{fallback_profile}': {e}")
+            return None
 
     async def next_internal_tool_request_id(self, base_request_id: str) -> str:
         """Return the next internal tool request id with a 3-digit suffix.
@@ -1268,52 +1293,88 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
 
-            # LLM call with streaming support
+            # LLM call with streaming support and fallback handling
             llm_out = None
-            try:
-                async for event in self._call_llm_with_streaming(
-                    llm=active_llm,
-                    messages=messages,
-                    tools_schema=tools_schema,
-                    cancellation_token=main_token,
-                    step=step,
-                    yield_pending_status_fn=yield_pending_status_events
-                ):
-                    event_type = event.get("type")
+            current_llm = active_llm
+            fallback_index = 0
+            fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
+            
+            while True:  # Retry loop for fallbacks
+                try:
+                    async for event in self._call_llm_with_streaming(
+                        llm=current_llm,
+                        messages=messages,
+                        tools_schema=tools_schema,
+                        cancellation_token=main_token,
+                        step=step,
+                        yield_pending_status_fn=yield_pending_status_events
+                    ):
+                        event_type = event.get("type")
 
-                    if event_type == "reasoning_delta":
-                        # Yield Gemini reasoning/thinking tokens to WebUI
-                        yield event
-                    elif event_type == "thinking_delta":
-                        # Yield real-time token deltas to WebUI
-                        yield event
-                    elif event_type == "status":
-                        # Yield interleaved status events
-                        yield event
-                    elif event_type == "thinking_complete":
-                        # CRITICAL: Make a deep copy of assistant dict to prevent
-                        # format_output hooks in app.py from modifying the stored message!
-                        # app.py formats events for display, but we need raw Markdown in messages
-                        import copy
-                        llm_out = {"assistant": copy.deepcopy(event["assistant"])}
-                        # Preserve usage data if present in event
-                        if "usage" in event:
-                            llm_out["usage"] = event["usage"]
-                        # Yield thinking_complete to WebUI for final formatting
-                        yield event
-
-            except asyncio.CancelledError:
-                # Streaming was cancelled - send proper status events and cancelled event
-                logger.info(f"Request {request_id} cancelled during LLM call at step {step + 1}")
-                await status_worker.error(f"cancelled at step {step + 1}",
-                                      meta={"step": step + 1, "reason": "cancelled"})
-                await status_coordinator.error(f"cancelled at step {step + 1}",
-                                            meta={"step": step + 1, "reason": "cancelled"})
-                await asyncio.sleep(0.01)
-                for status_event in context.status_forwarder.get_pending_events():
-                    yield status_event
-                yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
-                return
+                        if event_type == "reasoning_delta":
+                            # Yield Gemini reasoning/thinking tokens to WebUI
+                            yield event
+                        elif event_type == "thinking_delta":
+                            # Yield real-time token deltas to WebUI
+                            yield event
+                        elif event_type == "status":
+                            # Yield interleaved status events
+                            yield event
+                        elif event_type == "thinking_complete":
+                            # CRITICAL: Make a deep copy of assistant dict to prevent
+                            # format_output hooks in app.py from modifying the stored message!
+                            # app.py formats events for display, but we need raw Markdown in messages
+                            import copy
+                            llm_out = {"assistant": copy.deepcopy(event["assistant"])}
+                            # Preserve usage data if present in event
+                            if "usage" in event:
+                                llm_out["usage"] = event["usage"]
+                            # Yield thinking_complete to WebUI for final formatting
+                            yield event
+                    # Success - exit retry loop
+                    break
+                    
+                except (LLMRateLimitError, LLMQuotaExhaustedError) as e:
+                    # Try fallback profiles
+                    if fallback_index < len(fallback_profiles):
+                        fallback_profile = fallback_profiles[fallback_index]
+                        fallback_index += 1
+                        
+                        logger.warning(
+                            f"[{self.name}] {e.__class__.__name__}: {e}. "
+                            f"Switching to fallback profile: {fallback_profile}"
+                        )
+                        await status_worker.progress(
+                            f"Rate limit hit, switching to {fallback_profile}",
+                            meta={"step": step + 1, "fallback": fallback_profile}
+                        )
+                        
+                        fallback_llm = self._create_fallback_llm(fallback_profile)
+                        if fallback_llm:
+                            current_llm = fallback_llm
+                            # Update profile info for status display
+                            self.llm_profile_info = f"{fallback_profile}:fallback"
+                            continue  # Retry with fallback
+                        else:
+                            logger.error(f"[{self.name}] Failed to create fallback LLM, giving up")
+                            raise
+                    else:
+                        # No more fallbacks available
+                        logger.error(f"[{self.name}] No fallback profiles available, rate limit exceeded")
+                        raise
+                
+                except asyncio.CancelledError:
+                    # Streaming was cancelled - send proper status events and cancelled event
+                    logger.info(f"Request {request_id} cancelled during LLM call at step {step + 1}")
+                    await status_worker.error(f"cancelled at step {step + 1}",
+                                          meta={"step": step + 1, "reason": "cancelled"})
+                    await status_coordinator.error(f"cancelled at step {step + 1}",
+                                                meta={"step": step + 1, "reason": "cancelled"})
+                    await asyncio.sleep(0.01)
+                    for status_event in context.status_forwarder.get_pending_events():
+                        yield status_event
+                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                    return
 
             # Signal LLM call completion
             await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
