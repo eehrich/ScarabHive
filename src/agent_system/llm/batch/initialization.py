@@ -165,6 +165,14 @@ async def start_batch_queue_manager(
         return
     
     try:
+        # Initialize job tracker if not already set (needed for cancel_all_pending_batches)
+        from .job_tracker import get_job_tracker
+        if not get_job_tracker():
+            storage_path = Path(batch_system_config.storage_path)
+            job_tracker = BatchJobTracker(storage_path)
+            set_job_tracker(job_tracker)
+            log.debug("Job tracker initialized at %s", storage_path)
+        
         # Collect batch providers from models with provider='batch'
         providers_needing_clients: dict = {}  # batch_provider -> model_config
         providers_cancel_on_startup: set = set()
