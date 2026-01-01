@@ -22,6 +22,7 @@ import httpx
 
 from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
+from ..models import LLMRateLimitError, LLMQuotaExhaustedError
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,45 @@ class OpenAIBatchClient(BatchProviderClient):
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._client.aclose()
+
+    def _raise_for_status(
+        self, response: httpx.Response, operation: str, model: str = "unknown"
+    ) -> None:
+        """Raise appropriate error for non-200 responses.
+        
+        Args:
+            response: HTTP response
+            operation: Description of the operation for error message
+            model: Model name for rate limit errors
+            
+        Raises:
+            LLMRateLimitError: On 429 status
+            LLMQuotaExhaustedError: On 429 with quota-related message
+            RuntimeError: On other errors
+        """
+        if response.status_code == 200:
+            return
+            
+        if response.status_code == 429:
+            error_text = response.text.lower()
+            # Check for quota exhaustion vs temporary rate limit
+            if "quota" in error_text or "insufficient" in error_text:
+                raise LLMQuotaExhaustedError(
+                    provider="openai_batch",
+                    model=model,
+                    message=f"{operation}: {response.text}"
+                )
+            # Extract retry-after if available
+            retry_after = response.headers.get("retry-after")
+            retry_seconds = float(retry_after) if retry_after else None
+            raise LLMRateLimitError(
+                provider="openai_batch",
+                model=model,
+                retry_after=retry_seconds,
+                message=f"{operation}: {response.text}"
+            )
+        
+        raise RuntimeError(f"{operation}: {response.status_code} {response.text}")
     
     async def submit_batch(
         self,
@@ -185,8 +225,7 @@ class OpenAIBatchClient(BatchProviderClient):
                 data=data,
             )
         
-        if response.status_code != 200:
-            raise RuntimeError(f"File upload failed: {response.status_code} {response.text}")
+        self._raise_for_status(response, "File upload failed")
         
         result = response.json()
         return result.get("id")
@@ -210,8 +249,7 @@ class OpenAIBatchClient(BatchProviderClient):
         
         response = await self._client.post(url, json=payload)
         
-        if response.status_code != 200:
-            raise RuntimeError(f"Batch creation failed: {response.status_code} {response.text}")
+        self._raise_for_status(response, "Batch creation failed")
         
         return response.json()
     
@@ -228,8 +266,7 @@ class OpenAIBatchClient(BatchProviderClient):
         
         response = await self._client.get(url)
         
-        if response.status_code != 200:
-            raise RuntimeError(f"Failed to get batch status: {response.status_code} {response.text}")
+        self._raise_for_status(response, "Failed to get batch status")
         
         data = response.json()
         
@@ -344,8 +381,7 @@ class OpenAIBatchClient(BatchProviderClient):
         
         response = await self._client.get(url)
         
-        if response.status_code != 200:
-            raise RuntimeError(f"File download failed: {response.status_code} {response.text}")
+        self._raise_for_status(response, "File download failed")
         
         return response.text
     
@@ -362,8 +398,7 @@ class OpenAIBatchClient(BatchProviderClient):
         
         response = await self._client.post(url)
         
-        if response.status_code != 200:
-            raise RuntimeError(f"Batch cancellation failed: {response.status_code} {response.text}")
+        self._raise_for_status(response, "Batch cancellation failed")
         
         return response.json()
     
@@ -388,8 +423,7 @@ class OpenAIBatchClient(BatchProviderClient):
         
         response = await self._client.get(url, params=params)
         
-        if response.status_code != 200:
-            raise RuntimeError(f"List batches failed: {response.status_code} {response.text}")
+        self._raise_for_status(response, "List batches failed")
         
         data = response.json()
         return data.get("data", [])

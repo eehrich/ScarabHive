@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from ..models import ChatMessage, LLMClient
+from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 
 if TYPE_CHECKING:
     from .queue_manager import BatchQueueManager
@@ -281,6 +281,10 @@ class BatchLLMClient(LLMClient):
             
         except asyncio.CancelledError:
             logger.info("Batch request cancelled")
+            raise
+        except (LLMRateLimitError, LLMQuotaExhaustedError):
+            # Propagate rate limit errors for fallback handling
+            logger.warning("Batch request hit rate limit, propagating for fallback")
             raise
         except Exception as e:
             logger.error("Batch request failed: %s", e)

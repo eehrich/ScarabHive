@@ -28,6 +28,8 @@ except ImportError:
 
 from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
+from ..models import LLMRateLimitError, LLMQuotaExhaustedError
+from ..retry_utils import is_rate_limit_error, parse_retry_delay
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,22 @@ class GeminiBatchClient(BatchProviderClient):
             return batch_job.name
         except Exception as e:
             logger.error("SDK batch submission failed: %s: %s", type(e).__name__, e)
+            # Check if this is a rate limit error and convert to our exception type
+            if is_rate_limit_error(e):
+                error_str = str(e).lower()
+                retry_delay = parse_retry_delay(str(e))
+                if "quota" in error_str or "insufficient" in error_str:
+                    raise LLMQuotaExhaustedError(
+                        provider="gemini_batch",
+                        model=job.model,
+                        message=f"Batch submission failed: {e}"
+                    ) from e
+                raise LLMRateLimitError(
+                    provider="gemini_batch",
+                    model=job.model,
+                    retry_after=retry_delay,
+                    message=f"Batch submission failed: {e}"
+                ) from e
             raise
     
     def _convert_messages_to_contents(
@@ -559,6 +577,21 @@ class GeminiBatchClient(BatchProviderClient):
             self._sdk_client.batches.cancel(name=job_name)
             return {"status": "cancelled"}
         except Exception as e:
+            if is_rate_limit_error(e):
+                error_str = str(e).lower()
+                retry_delay = parse_retry_delay(str(e))
+                if "quota" in error_str or "insufficient" in error_str:
+                    raise LLMQuotaExhaustedError(
+                        provider="gemini_batch",
+                        model="unknown",
+                        message=f"Batch cancellation failed: {e}"
+                    ) from e
+                raise LLMRateLimitError(
+                    provider="gemini_batch",
+                    model="unknown",
+                    retry_after=retry_delay,
+                    message=f"Batch cancellation failed: {e}"
+                ) from e
             raise RuntimeError(f"Cancellation failed: {e}")
     
     async def list_batches(self, limit: int = 20) -> List[Dict[str, Any]]:
