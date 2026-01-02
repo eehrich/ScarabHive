@@ -274,6 +274,20 @@ llm_system:
     # ---------------------------------------------------------------------------
     # OPENAI BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
+    gpt-5-nano-batch:
+      provider: batch
+      batch_provider: openai            
+      model: gpt-5-nano
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: false
+        streaming: false
+        json_mode: false
+
     gpt-5-mini-batch:
       provider: batch
       batch_provider: openai            
@@ -404,13 +418,18 @@ llm_system:
   profiles:
     turbo:
       model_ref: gpt-5-nano
-      description: "Turbo model for high-speed responses and cheap, but less powerful"
+      description: "Model for high-speed responses and cheap, but less powerful"
       max_steps: 500
-      
+
+    turbo-batch:
+      model_ref: gpt-5-nano-batch
+      description: "Model for high-speed responses and cheap, but less powerful (batch)"
+      max_steps: 500
+
     normal:
-      #model_ref: gemini-2-5-flash-batch
-      model_ref: gemini-2-5-flash
-      description: "Fast model for medium reasoning tasks (batch)"
+      #model_ref: gemini-2-5-flash-nostream
+      model_ref: gpt-5-mini
+      description: "Fast model for medium reasoning tasks"
       max_steps: 500
       
     normal-stream:
@@ -419,8 +438,8 @@ llm_system:
       max_steps: 500
       
     think:
-      #model_ref: gemini-3-0-pro-batch
-      model_ref: gemini-3-0-pro
+      #model_ref: gemini-3-0-pro-nostream
+      model_ref: gpt-5.1
       description: "Advanced model for complex reasoning (batch)"
       max_steps: 500
       

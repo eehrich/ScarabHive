@@ -798,6 +798,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         scope: StatusScope
     ) -> tuple[List[dict], Dict[str, Any]]:
         """Summarize messages in chunks using LLM.
+        
+        Uses parallel processing to submit all chunks to the LLM simultaneously,
+        which enables efficient batch API usage when configured.
 
         Args:
             messages: Messages to summarize
@@ -817,127 +820,209 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # CRITICAL: Create chunks that keep tool_calls/tool response pairs together
         chunks = self._create_smart_chunks(messages, self.chunk_size)
 
-        summarized = []
-        summary_count = 0
         total_chunks = len(chunks)
 
         # Get cancellation token from context (if available)
         cancellation_token = getattr(context, 'cancellation_token', None)
 
-        # Process messages in chunks
-        for chunk_idx, chunk in enumerate(chunks):
+        # Check for cancellation before starting
+        if cancellation_token and cancellation_token.is_cancelled:
+            logger.info("[ContextSummarizer] Cancellation requested before starting")
+            return messages, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0}
 
-            if len(chunk) < 2:
-                # Too small to summarize, keep as-is
-                summarized.extend(chunk)
-                continue
+        # Send progress update
+        await scope.progress(
+            f"Summarizing {total_chunks} chunks in parallel ({len(messages)} messages total)..."
+        )
+        await asyncio.sleep(0.01)
 
-            # Check for cancellation before each chunk
-            if cancellation_token and cancellation_token.is_cancelled:
-                logger.info(f"[ContextSummarizer] Cancellation requested, stopping at chunk {chunk_idx + 1}/{total_chunks}")
-                # Send error message via scope before returning
-                await scope.error(
-                    f"cancelled at chunk {chunk_idx + 1}/{total_chunks}",
-                    meta={'cancelled_at_chunk': chunk_idx + 1}
-                )
-                # Return what we have so far + remaining unsummarized chunks
-                for remaining_chunk in chunks[chunk_idx:]:
-                    summarized.extend(remaining_chunk)
-                stats = {
-                    'summary_count': summary_count,
-                    'total_chunks': total_chunks,
-                    'successful_chunks': summary_count,
-                    'failed_chunks': total_chunks - summary_count,
-                    'cancelled': True,
-                    'cancelled_at_chunk': chunk_idx + 1
-                }
-                return summarized, stats
+        # Process ALL chunks in parallel for batch API efficiency
+        summarized, stats = await self._summarize_chunks_parallel(
+            chunks, summarizer_llm, cancellation_token, scope, total_chunks
+        )
 
-            chunk_num = chunk_idx + 1
+        return summarized, stats
 
-            # Send progress update via the StatusScope
-            await scope.progress(
-                f"Summarizing chunk {chunk_num}/{total_chunks} ({len(chunk)} messages)..."
+    async def _summarize_single_chunk(
+        self,
+        chunk: List[dict],
+        chunk_idx: int,
+        total_chunks: int,
+        summarizer_llm,
+        cancellation_token
+    ) -> dict:
+        """Summarize a single chunk of messages.
+        
+        Args:
+            chunk: Messages to summarize
+            chunk_idx: Index of this chunk (0-based)
+            total_chunks: Total number of chunks
+            summarizer_llm: LLM instance to use
+            cancellation_token: Optional cancellation token
+            
+        Returns:
+            Dict with 'success', 'result' (summary message or original chunk), and 'error' if failed
+        """
+        chunk_num = chunk_idx + 1
+        
+        if len(chunk) < 2:
+            # Too small to summarize, keep as-is
+            return {
+                'success': True,
+                'result': chunk,
+                'is_summary': False,
+                'chunk_idx': chunk_idx
+            }
+        
+        try:
+            # Format messages for prompt
+            formatted_msgs = self._format_messages_for_summary(chunk)
+
+            # Create summarization prompt
+            prompt = self.prompt_template.replace('{messages}', formatted_msgs)
+
+            # Call LLM for summarization using chat() method with cancellation support
+            from agent_system.llm.models import ChatMessage
+            summary_response = await summarizer_llm.chat(
+                messages=[ChatMessage(role='user', content=prompt, timestamp=datetime.now())],
+                cancellation_token=cancellation_token
             )
 
-            # Small sleep to allow progress message to be sent
-            await asyncio.sleep(0.01)
+            summary_content = summary_response if isinstance(summary_response, str) else str(summary_response)
 
-            try:
-                # Format messages for prompt
-                formatted_msgs = self._format_messages_for_summary(chunk)
+            # Create summary marker with message count
+            marker = f"[Summary of {len(chunk)} older messages (chunk {chunk_num}/{total_chunks})]"
 
-                # Create summarization prompt
-                prompt = self.prompt_template.replace('{messages}', formatted_msgs)
-
-                # Call LLM for summarization using chat() method with cancellation support
-                from agent_system.llm.models import ChatMessage
-                summary_response = await summarizer_llm.chat(
-                    messages=[ChatMessage(role='user', content=prompt, timestamp=datetime.now())],
-                    cancellation_token=cancellation_token
-                )
-
-                summary_content = summary_response if isinstance(summary_response, str) else str(summary_response)
-
-                # Create summary marker with message count
-                # Note: Messages typically don't have timestamps, so we just show count
-                marker = f"[Summary of {len(chunk)} older messages (chunk {chunk_num}/{total_chunks})]"
-
-                # Create summary message as 'user' role so it gets persisted in sessions
-                # This ensures summaries are preserved across session reloads
-                summary_msg = {
-                    'role': 'user',
-                    'name': '__context_summary__',  # Special marker for UI styling
-                    'content': f"{marker}\n\n{summary_content}",
-                    'metadata': {
-                        'is_summary': True,
-                        'summarized_count': len(chunk),
-                        'chunk_index': chunk_idx // self.chunk_size,
-                        'total_chunks': total_chunks
-                    }
+            # Create summary message as 'user' role so it gets persisted in sessions
+            summary_msg = {
+                'role': 'user',
+                'name': '__context_summary__',  # Special marker for UI styling
+                'content': f"{marker}\n\n{summary_content}",
+                'metadata': {
+                    'is_summary': True,
+                    'summarized_count': len(chunk),
+                    'chunk_index': chunk_idx,
+                    'total_chunks': total_chunks
                 }
+            }
 
-                # Store original messages in metadata if configured
-                if self.store_metadata:
-                    summary_msg['metadata']['original_messages'] = chunk
+            # Store original messages in metadata if configured
+            if self.store_metadata:
+                summary_msg['metadata']['original_messages'] = chunk
 
-                summarized.append(summary_msg)
-                summary_count += 1
+            logger.debug(
+                f"[ContextSummarizer] Summarized chunk {chunk_num}/{total_chunks}: "
+                f"{len(chunk)} messages → 1 summary"
+            )
 
-                logger.debug(
-                    f"[ContextSummarizer] Summarized chunk {chunk_num}/{total_chunks}: "
-                    f"{len(chunk)} messages → 1 summary"
-                )
+            return {
+                'success': True,
+                'result': [summary_msg],
+                'is_summary': True,
+                'chunk_idx': chunk_idx
+            }
 
-            except asyncio.CancelledError:
-                logger.info(f"[ContextSummarizer] Summarization cancelled at chunk {chunk_num}/{total_chunks}")
-                # Send error message via scope before returning
-                await scope.error(
-                    f"cancelled at chunk {chunk_num}/{total_chunks}",
-                    meta={'cancelled_at_chunk': chunk_num}
-                )
-                # Return what we have + remaining unsummarized messages
-                summarized.extend(messages[chunk_idx:])
-                stats = {
-                    'summary_count': summary_count,
-                    'total_chunks': total_chunks,
-                    'successful_chunks': summary_count,
-                    'failed_chunks': total_chunks - summary_count,
-                    'cancelled': True,
-                    'cancelled_at_chunk': chunk_num
-                }
-                return summarized, stats
-            except Exception as e:
-                logger.error(f"[ContextSummarizer] Error summarizing chunk: {e}", exc_info=True)
-                # Fallback: keep original messages
-                summarized.extend(chunk)
+        except asyncio.CancelledError:
+            logger.info(f"[ContextSummarizer] Chunk {chunk_num}/{total_chunks} cancelled")
+            return {
+                'success': False,
+                'result': chunk,
+                'is_summary': False,
+                'chunk_idx': chunk_idx,
+                'error': 'cancelled'
+            }
+        except Exception as e:
+            logger.error(f"[ContextSummarizer] Error summarizing chunk {chunk_num}: {e}", exc_info=True)
+            # Fallback: keep original messages
+            return {
+                'success': False,
+                'result': chunk,
+                'is_summary': False,
+                'chunk_idx': chunk_idx,
+                'error': str(e)
+            }
+
+    async def _summarize_chunks_parallel(
+        self,
+        chunks: List[List[dict]],
+        summarizer_llm,
+        cancellation_token,
+        scope: StatusScope,
+        total_chunks: int
+    ) -> tuple[List[dict], Dict[str, Any]]:
+        """Process all chunks in parallel for batch API efficiency.
+        
+        Args:
+            chunks: List of message chunks to summarize
+            summarizer_llm: LLM instance to use
+            cancellation_token: Optional cancellation token
+            scope: StatusScope for progress updates
+            total_chunks: Total number of chunks
+            
+        Returns:
+            Tuple of (summarized_messages, statistics)
+        """
+        # Create tasks for all chunks
+        tasks = [
+            self._summarize_single_chunk(
+                chunk, idx, total_chunks, summarizer_llm, cancellation_token
+            )
+            for idx, chunk in enumerate(chunks)
+        ]
+
+        logger.info(f"[ContextSummarizer] Starting parallel summarization of {len(tasks)} chunks")
+
+        # Execute all tasks in parallel
+        # Using return_exceptions=True to handle individual failures gracefully
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results maintaining chunk order
+        summarized = []
+        summary_count = 0
+        failed_chunks = 0
+        cancelled = False
+
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                # Task raised an exception
+                logger.error(f"[ContextSummarizer] Chunk {idx + 1} raised exception: {result}")
+                summarized.extend(chunks[idx])  # Keep original
+                failed_chunks += 1
+            elif isinstance(result, dict):
+                if result.get('error') == 'cancelled':
+                    cancelled = True
+                
+                # Append result messages (either summary or original)
+                summarized.extend(result['result'])
+                
+                if result.get('is_summary'):
+                    summary_count += 1
+                elif not result.get('success'):
+                    failed_chunks += 1
+            else:
+                # Unexpected result type
+                logger.warning(f"[ContextSummarizer] Unexpected result type for chunk {idx + 1}: {type(result)}")
+                summarized.extend(chunks[idx])
+                failed_chunks += 1
+
+        # Send completion progress
+        await scope.progress(
+            f"Completed {summary_count}/{total_chunks} chunks successfully"
+        )
 
         stats = {
             'summary_count': summary_count,
             'total_chunks': total_chunks,
             'successful_chunks': summary_count,
-            'failed_chunks': total_chunks - summary_count
+            'failed_chunks': failed_chunks,
+            'parallel': True,
+            'cancelled': cancelled
         }
+
+        logger.info(
+            f"[ContextSummarizer] Parallel summarization complete: "
+            f"{summary_count}/{total_chunks} successful, {failed_chunks} failed"
+        )
 
         return summarized, stats
 
