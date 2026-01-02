@@ -193,6 +193,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         # Task ID counter per session
         self._task_counters: Dict[str, int] = {}
 
+        # Session locks to prevent concurrent access issues
+        self._session_locks: Dict[str, asyncio.Lock] = {}
+
         # Create storage directory
         self._storage_path.mkdir(parents=True, exist_ok=True)
 
@@ -321,7 +324,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Write atomically (write to temp, then rename)
-            temp_path = file_path.with_suffix(".tmp")
+            # Use unique temp file to avoid race conditions between parallel saves
+            import time
+            temp_path = file_path.with_suffix(f".tmp.{int(time.time() * 1000000)}")
 
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(
@@ -332,13 +337,15 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 )
 
             # On Windows, replace can fail if file is still open - retry a few times
-            import time
             max_retries = 3
             for attempt in range(max_retries):
                 try:
+                    # Verify temp file still exists before replacing
+                    if not temp_path.exists():
+                        raise FileNotFoundError(f"Temp file disappeared: {temp_path}")
                     temp_path.replace(file_path)
                     break
-                except PermissionError:
+                except (PermissionError, FileNotFoundError) as e:
                     if attempt < max_retries - 1:
                         time.sleep(0.01)  # 10ms delay
                     else:
@@ -349,17 +356,33 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             )
 
         except Exception as e:
+            # Clean up temp file if it still exists
+            try:
+                if 'temp_path' in locals() and temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
             raise StorageError(
                 f"Failed to save session {session_id}: {e}"
             ) from e
 
     async def _load_session_async(self, session_id: str) -> TaskCollection:
-        """Async wrapper for _load_session - runs in thread pool."""
-        return await asyncio.to_thread(self._load_session, session_id)
+        """Async wrapper for _load_session - runs in thread pool with locking."""
+        # Get or create lock for this session
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        
+        async with self._session_locks[session_id]:
+            return await asyncio.to_thread(self._load_session, session_id)
 
     async def _save_session_async(self, session_id: str) -> None:
-        """Async wrapper for _save_session - runs in thread pool."""
-        await asyncio.to_thread(self._save_session, session_id)
+        """Async wrapper for _save_session - runs in thread pool with locking."""
+        # Get or create lock for this session
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        
+        async with self._session_locks[session_id]:
+            await asyncio.to_thread(self._save_session, session_id)
 
     def _get_storage_path(self, session_id: str) -> Path:
         """Get file path for session storage"""

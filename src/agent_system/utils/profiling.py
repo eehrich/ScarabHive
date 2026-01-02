@@ -26,8 +26,7 @@ from datetime import datetime
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from fastapi import FastAPI, Request
-    from starlette.responses import Response
+    from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
 
@@ -434,39 +433,56 @@ def get_loop_monitor() -> EventLoopMonitor:
 
 
 async def create_profiling_middleware(app: "FastAPI") -> None:
-    """Add profiling middleware to FastAPI app."""
+    """Add profiling middleware to FastAPI app.
+    
+    Uses Pure ASGI to avoid BaseHTTPMiddleware overhead.
+    """
     import uuid
+    from starlette.types import ASGIApp, Receive, Scope, Send
     
     profiler = get_profiler()
     
-    @app.middleware("http")
-    async def profiling_middleware(request: Request, call_next: Callable) -> Response:
-        if not PROFILING_ENABLED:
-            return await call_next(request)
+    class ProfilingMiddleware:
+        """Pure ASGI profiling middleware."""
         
-        request_id = str(uuid.uuid4())[:8]
-        path = request.url.path
-        method = request.method
+        def __init__(self, app: ASGIApp):
+            self.app = app
         
-        profiler.start_request(request_id, path, method)
-        
-        error = None
-        status_code = 500
-        try:
-            response = await call_next(request)
-            status_code = response.status_code
-            return response
-        except Exception as e:
-            error = str(e)
-            raise
-        finally:
-            metrics = profiler.end_request(request_id, status_code, error)
-            if metrics and metrics.duration_ms and metrics.duration_ms > SLOW_REQUEST_THRESHOLD * 1000:
-                logger.warning(
-                    f"Slow request: {method} {path} took {metrics.duration_ms:.1f}ms "
-                    f"(threshold: {SLOW_REQUEST_THRESHOLD*1000:.0f}ms)"
-                )
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] != "http" or not PROFILING_ENABLED:
+                await self.app(scope, receive, send)
+                return
+            
+            request_id = str(uuid.uuid4())[:8]
+            path = scope.get("path", "")
+            method = scope.get("method", "")
+            
+            profiler.start_request(request_id, path, method)
+            
+            status_code = 500
+            error = None
+            
+            async def send_with_profiling(message):
+                nonlocal status_code
+                if message["type"] == "http.response.start":
+                    status_code = message.get("status", 500)
+                await send(message)
+            
+            try:
+                await self.app(scope, receive, send_with_profiling)
+            except Exception as e:
+                error = str(e)
+                raise
+            finally:
+                metrics = profiler.end_request(request_id, status_code, error)
+                if metrics and metrics.duration_ms and metrics.duration_ms > SLOW_REQUEST_THRESHOLD * 1000:
+                    logger.warning(
+                        f"Slow request: {method} {path} took {metrics.duration_ms:.1f}ms "
+                        f"(threshold: {SLOW_REQUEST_THRESHOLD*1000:.0f}ms)"
+                    )
     
+    # Wrap the ASGI app
+    app.add_middleware(ProfilingMiddleware)
     logger.info("Profiling middleware installed")
 
 

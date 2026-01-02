@@ -9,7 +9,7 @@ import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable, Any
+from typing import Optional, Any
 
 import uvicorn
 from fastapi import FastAPI, Request, Query, Header, HTTPException
@@ -356,16 +356,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         app.mount("/static", static_files, name="static")
 
         # Add no-cache headers for static files when cache is disabled
+        # NOTE: We add headers in StaticFiles response hook instead of middleware
+        # to avoid BaseHTTPMiddleware overhead (100ms+ per request)
         if config.network.disable_cache:
-            @app.middleware("http")
-            async def _no_cache_static_middleware(request: Request, call_next: Callable):
-                if request.url.path.startswith("/static"):
-                    response = await call_next(request)
-                    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                    response.headers["Pragma"] = "no-cache"
-                    response.headers["Expires"] = "0"
-                    return response
-                return await call_next(request)
+            original_static_call = static_files.__call__
+            
+            async def static_with_no_cache(scope, receive, send):
+                if scope["type"] != "http":
+                    await original_static_call(scope, receive, send)
+                    return
+                
+                async def send_with_no_cache(message):
+                    if message["type"] == "http.response.start":
+                        headers = list(message.get("headers", []))
+                        headers.extend([
+                            (b"cache-control", b"no-cache, no-store, must-revalidate"),
+                            (b"pragma", b"no-cache"),
+                            (b"expires", b"0"),
+                        ])
+                        message = {**message, "headers": headers}
+                    await send(message)
+                
+                await original_static_call(scope, receive, send_with_no_cache)
+            
+            static_files.__call__ = static_with_no_cache
 
     # Initialize logging with role-specific logfile
     def _role_logfile(base: str, role: str) -> str:
