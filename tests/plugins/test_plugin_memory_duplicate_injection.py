@@ -116,10 +116,13 @@ async def test_hook_prevents_multiple_injections_across_calls(server):
 @pytest.mark.asyncio
 async def test_hook_updates_memory_list_when_changed(server):
     """Test that memory list is updated when memories change."""
+    import uuid
+    unique_session = f"test_session_{uuid.uuid4().hex[:8]}"
+    
     context = HookContext(
         hook_type="pre_llm_call",
         request_id="test_req_003",
-        session_id="test_session_update",
+        session_id=unique_session,
         messages=[
             ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content="Tell me what you know")
@@ -136,7 +139,7 @@ async def test_hook_updates_memory_list_when_changed(server):
         "title": "New Memory",
         "content": "Newly stored information",
         "tags": ["new"],
-        "_session_id": "test_session_update"
+        "_session_id": unique_session
     })
 
     # Second call - should inject the new memory
@@ -159,7 +162,7 @@ async def test_hook_updates_memory_list_when_changed(server):
         "title": "Second Memory",
         "content": "Another piece of information",
         "tags": ["new"],
-        "_session_id": "test_session_update"
+        "_session_id": unique_session
     })
 
     # Third call - should update with both memories

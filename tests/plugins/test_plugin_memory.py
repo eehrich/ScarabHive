@@ -200,13 +200,13 @@ async def test_recall_memory(server: MemoryServer, mock_context: Dict[str, Any])
 @pytest.mark.asyncio
 async def test_recall_nonexistent(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test recall of non-existent memory"""
-    with pytest.raises(ValidationError) as exc_info:
-        await server._operation_recall(
-            session_id=mock_context["session_id"],
-            memory_id="nonexistent_memory",
-        )
+    result = await server._operation_recall(
+        session_id=mock_context["session_id"],
+        memory_id="nonexistent_memory",
+    )
     
-    assert "not found" in str(exc_info.value).lower()
+    assert "error" in result
+    assert "not found" in result["error"].lower()
 
 
 # =============================================================================
@@ -386,24 +386,25 @@ async def test_delete_memory(server: MemoryServer, mock_context: Dict[str, Any])
     assert result["deleted"] is True
     assert result["memory_id"] == memory_id
     
-    # Verify deleted
-    with pytest.raises(ValidationError):
-        await server._operation_recall(
-            session_id=mock_context["session_id"],
-            memory_id=memory_id,
-        )
+    # Verify deleted - should return error dict
+    recall_result = await server._operation_recall(
+        session_id=mock_context["session_id"],
+        memory_id=memory_id,
+    )
+    assert "error" in recall_result
+    assert "not found" in recall_result["error"].lower()
 
 
 @pytest.mark.asyncio
 async def test_delete_nonexistent(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test delete non-existent memory"""
-    with pytest.raises(ValidationError) as exc_info:
-        await server._operation_delete(
-            session_id=mock_context["session_id"],
-            memory_id="nonexistent",
-        )
+    result = await server._operation_delete(
+        session_id=mock_context["session_id"],
+        memory_id="nonexistent",
+    )
     
-    assert "not found" in str(exc_info.value).lower()
+    assert "error" in result
+    assert "not found" in result["error"].lower()
 
 
 # =============================================================================
@@ -516,14 +517,14 @@ async def test_operation_update_content_reindexes_chromadb(server: MemoryServer,
 @pytest.mark.asyncio
 async def test_operation_update_nonexistent(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test update non-existent memory"""
-    with pytest.raises(ValidationError) as exc_info:
-        await server._operation_update(
-            session_id=mock_context["session_id"],
-            memory_id="nonexistent_id",
-            title="New Title",
-        )
+    result = await server._operation_update(
+        session_id=mock_context["session_id"],
+        memory_id="nonexistent_id",
+        title="New Title",
+    )
     
-    assert "not found" in str(exc_info.value).lower()
+    assert "error" in result
+    assert "not found" in result["error"].lower()
 
 
 # =============================================================================
