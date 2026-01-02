@@ -101,8 +101,12 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
                         logger.debug("Search attempt %d failed, retrying in %.2f seconds", attempt, delay)
                         await asyncio.sleep(delay)
                     
-                    with DDGS() as ddgs:
-                        results = list(ddgs.text(query, max_results=max_results))
+                    # Run sync ddgs call in thread pool to avoid blocking event loop
+                    def _search_sync() -> list:
+                        with DDGS() as ddgs:
+                            return list(ddgs.text(query, max_results=max_results))
+                    
+                    results = await asyncio.to_thread(_search_sync)
                     break  # Success, exit retry loop
                     
                 except Exception as e:

@@ -262,7 +262,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 import asyncio
                 await asyncio.sleep(0.01)  # Allow START message to be delivered
                 
-                result = strategy.compact(messages_as_dicts, current_tokens, force=force)
+                result = await strategy.compact(messages_as_dicts, current_tokens, force=force)
             
             # Update rate limit tracker
             self._last_compaction_time[session_id] = current_time
@@ -284,9 +284,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "messages_dropped": result.messages_dropped
                 })
                 
-                # Save history to disk
+                # Save history to disk (support both sync and async callbacks)
                 if self.history_callback is not None:
-                    self.history_callback()
+                    if asyncio.iscoroutinefunction(self.history_callback):
+                        await self.history_callback()
+                    else:
+                        # Run sync callback in thread pool to avoid blocking
+                        await asyncio.to_thread(self.history_callback)
             
             # Convert modified messages to ChatMessage objects
             modified_messages = result.modified_messages
@@ -297,7 +301,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             
             # Inject restoration context (info about how to retrieve stored data)
             strategy: LayeredCompactionStrategy = components["strategy"]
-            restoration_context = strategy.get_restoration_context()
+            restoration_context = await strategy.get_restoration_context()
             
             if restoration_context:
                 # Prepend restoration context as system message
@@ -510,7 +514,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         components = self._get_session_components(session_id)
         core_memory: CoreMemory = components["core_memory"]
         
-        fact_id = core_memory.add_fact(fact, category=category, importance=importance)
+        fact_id = await core_memory.add_fact(fact, category=category, importance=importance)
         
         return {
             "success": True,

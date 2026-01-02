@@ -13,6 +13,7 @@ Key features:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -119,7 +120,7 @@ class VariableManager:
         if storage_path and storage_path.exists():
             self._load()
     
-    def create_variable(
+    async def create_variable(
         self,
         content: str,
         content_type: str = "text",
@@ -184,7 +185,7 @@ class VariableManager:
         
         # Persist if configured
         if self.storage_path:
-            self._save()
+            await self._save()
         
         return (var_name, summary)
     
@@ -255,7 +256,7 @@ class VariableManager:
         
         return "\n".join(lines)
     
-    def cleanup_unused_variables(self, messages: list[dict[str, Any]]) -> int:
+    async def cleanup_unused_variables(self, messages: list[dict[str, Any]]) -> int:
         """Remove variables that are no longer referenced in message history.
         
         Args:
@@ -288,7 +289,7 @@ class VariableManager:
         
         # Persist changes if any variables were removed
         if removed_count > 0:
-            self._save()
+            await self._save()
             logger.info(f"Cleaned up {removed_count} unreferenced variables")
         
         return removed_count
@@ -325,7 +326,7 @@ class VariableManager:
             "variables": variable_details  # Detailed list for UI
         }
     
-    def clear(self) -> int:
+    async def clear(self) -> int:
         """Clear all variables.
         
         Returns:
@@ -336,7 +337,7 @@ class VariableManager:
         self._var_counter = 0
         
         if self.storage_path:
-            self._save()
+            await self._save()
         
         return count
     
@@ -450,8 +451,8 @@ class VariableManager:
         
         return base
     
-    def _save(self) -> None:
-        """Save to storage path."""
+    def _save_sync(self) -> None:
+        """Save to storage path - sync version for thread pool."""
         if not self.storage_path:
             return
         
@@ -465,6 +466,12 @@ class VariableManager:
         
         with open(self.storage_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+    
+    async def _save(self) -> None:
+        """Save to storage path - async wrapper."""
+        if not self.storage_path:
+            return
+        await asyncio.to_thread(self._save_sync)
     
     def _load(self) -> None:
         """Load from storage path."""

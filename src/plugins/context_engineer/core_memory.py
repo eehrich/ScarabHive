@@ -14,6 +14,7 @@ Key features:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -101,7 +102,7 @@ class CoreMemory:
         if storage_path and storage_path.exists():
             self._load()
     
-    def add_fact(
+    async def add_fact(
         self,
         content: str,
         category: str = "facts",
@@ -163,7 +164,7 @@ class CoreMemory:
         
         # Persist if storage configured
         if self.storage_path:
-            self._save()
+            await self._save()
         
         return True
     
@@ -180,7 +181,7 @@ class CoreMemory:
             return [f for f in self.facts if f.category == category]
         return list(self.facts)
     
-    def remove_fact(self, content: str) -> bool:
+    async def remove_fact(self, content: str) -> bool:
         """Remove a specific fact by content.
         
         Args:
@@ -195,11 +196,11 @@ class CoreMemory:
                 self._recalculate_tokens()
                 logger.debug(f"Removed fact from core memory: {removed.content[:50]}...")
                 if self.storage_path:
-                    self._save()
+                    await self._save()
                 return True
         return False
     
-    def clear(self, category: str | None = None) -> int:
+    async def clear(self, category: str | None = None) -> int:
         """Clear facts, optionally only a specific category.
         
         Args:
@@ -219,7 +220,7 @@ class CoreMemory:
         self._recalculate_tokens()
         
         if self.storage_path:
-            self._save()
+            await self._save()
         
         return cleared
     
@@ -322,8 +323,8 @@ class CoreMemory:
         full_section = self.to_system_prompt_section()
         self._current_tokens = estimate_content_tokens(full_section)
     
-    def _save(self) -> None:
-        """Save to storage path."""
+    def _save_sync(self) -> None:
+        """Save to storage path - sync version for thread pool."""
         if not self.storage_path:
             return
         
@@ -337,6 +338,12 @@ class CoreMemory:
         
         with open(self.storage_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+    
+    async def _save(self) -> None:
+        """Save to storage path - async wrapper."""
+        if not self.storage_path:
+            return
+        await asyncio.to_thread(self._save_sync)
     
     def _load(self) -> None:
         """Load from storage path."""

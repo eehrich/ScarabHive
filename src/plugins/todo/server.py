@@ -14,6 +14,7 @@ Key features:
 - Progress metrics and filtering
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, UTC
@@ -351,6 +352,14 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             raise StorageError(
                 f"Failed to save session {session_id}: {e}"
             ) from e
+
+    async def _load_session_async(self, session_id: str) -> TaskCollection:
+        """Async wrapper for _load_session - runs in thread pool."""
+        return await asyncio.to_thread(self._load_session, session_id)
+
+    async def _save_session_async(self, session_id: str) -> None:
+        """Async wrapper for _save_session - runs in thread pool."""
+        await asyncio.to_thread(self._save_session, session_id)
 
     def _get_storage_path(self, session_id: str) -> Path:
         """Get file path for session storage"""
@@ -834,8 +843,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         status = context.get("_status") if context else None
 
         try:
-            # Load session
-            collection = self._load_session(session_id)
+            # Load session (async to avoid blocking event loop)
+            collection = await self._load_session_async(session_id)
 
             # Check for idempotency key
             if idempotency_key:
@@ -973,7 +982,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Save
             if self._auto_save:
-                self._save_session(session_id)
+                await self._save_session_async(session_id)
 
             # Short status message
             if status:
@@ -1036,7 +1045,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Find task
             if task_id not in collection.tasks:
@@ -1288,7 +1297,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Save
             if self._auto_save:
-                self._save_session(session_id)
+                await self._save_session_async(session_id)
 
             # Calculate is_blocked for response
             is_blocked = self._is_blocked(task, collection)
@@ -1372,7 +1381,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Start with all tasks
             tasks = list(collection.tasks.values())
@@ -1494,7 +1503,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Find task
             if task_id not in collection.tasks:
@@ -1609,7 +1618,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Find task
             if task_id not in collection.tasks:
@@ -1669,7 +1678,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Save
             if self._auto_save:
-                self._save_session(session_id)
+                await self._save_session_async(session_id)
 
             # Short status message
             if status:
@@ -1709,7 +1718,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             if not collection.tasks:
                 if status:

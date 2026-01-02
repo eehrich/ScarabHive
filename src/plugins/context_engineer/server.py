@@ -12,6 +12,7 @@ Also implements pre_llm_call hook for automatic context engineering.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -87,7 +88,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl = ContextEngineerPlugin(
             plugin_dir,
             stats_history=self.stats_history,
-            history_callback=self._save_history  # Callback to save after each event
+            history_callback=self._save_history_sync  # Sync callback, runs in thread pool
         )
         
         # Sync config to hooks implementation
@@ -108,23 +109,30 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             f"L3:{self.layer3_threshold}, target={self.target_tokens}"
         )
     
-    def _load_history(self) -> None:
-        """Load compaction history from persistent storage."""
+    def _load_history_sync(self) -> list[dict[str, Any]]:
+        """Load compaction history from persistent storage - sync version."""
         import json
         
         if not self._history_file.exists():
-            return
+            return []
         
         try:
             with open(self._history_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                self.stats_history.extend(data.get("events", []))
-                logger.info(f"Loaded {len(self.stats_history)} history events from {self._history_file}")
+                return data.get("events", [])
         except Exception as e:
             logger.warning(f"Failed to load history from {self._history_file}: {e}")
+            return []
     
-    def _save_history(self) -> None:
-        """Save compaction history to persistent storage."""
+    def _load_history(self) -> None:
+        """Load compaction history from persistent storage (init only)."""
+        events = self._load_history_sync()
+        if events:
+            self.stats_history.extend(events)
+            logger.info(f"Loaded {len(events)} history events from {self._history_file}")
+    
+    def _save_history_sync(self) -> None:
+        """Save compaction history to persistent storage - sync version."""
         import json
         
         try:
@@ -138,6 +146,10 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 
         except Exception as e:
             logger.warning(f"Failed to save history to {self._history_file}: {e}")
+    
+    async def _save_history_async(self) -> None:
+        """Save compaction history - async wrapper for thread pool."""
+        await asyncio.to_thread(self._save_history_sync)
     
     # =========================================================================
     # MCP Tools Interface

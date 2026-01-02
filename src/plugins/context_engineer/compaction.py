@@ -22,6 +22,7 @@ with minimum information loss.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -165,7 +166,7 @@ class LayeredCompactionStrategy:
         
         return tool_map
     
-    def compact(
+    async def compact(
         self,
         messages: list[dict[str, Any]],
         current_tokens: int | None = None,
@@ -211,7 +212,7 @@ class LayeredCompactionStrategy:
         
         # Layer 1: Always apply if forced, or if above threshold
         if force or current_tokens >= self.config.layer1_threshold:
-            self._apply_layer1(result)
+            await self._apply_layer1(result)
             result.layers_applied.append(1)
             
             if result.final_tokens <= self.config.target_tokens:
@@ -219,7 +220,7 @@ class LayeredCompactionStrategy:
         
         # Layer 2: Only apply if above threshold (turn-based archival)
         if result.final_tokens >= self.config.layer2_threshold:
-            self._apply_layer2(result)
+            await self._apply_layer2(result)
             result.layers_applied.append(2)
             
             if result.final_tokens <= self.config.target_tokens:
@@ -227,12 +228,12 @@ class LayeredCompactionStrategy:
         
         # Layer 3: Only apply if above threshold (turn-based dropping)
         if result.final_tokens >= self.config.layer3_threshold:
-            self._apply_layer3(result)
+            await self._apply_layer3(result)
             result.layers_applied.append(3)
         
         return self._finalize(result)
     
-    def _apply_layer1(self, result: CompactionResult) -> None:
+    async def _apply_layer1(self, result: CompactionResult) -> None:
         """Layer 1: Reversible compaction.
         
         - Store tool outputs with references (auto-archives large results > max_size)
@@ -265,7 +266,9 @@ class LayeredCompactionStrategy:
                     tool_name = msg.get("name", "unknown")
                     tool_call_id = msg.get("tool_call_id", "")
                     
-                    reference = self.tool_store.store_and_reference(
+                    # Wrap sync SQLite operation in thread pool
+                    reference = await asyncio.to_thread(
+                        self.tool_store.store_and_reference,
                         tool_call_id=tool_call_id,
                         tool_name=tool_name,
                         content=content
@@ -288,7 +291,7 @@ class LayeredCompactionStrategy:
                     token_count = estimate_content_tokens(content)
                     
                     if token_count >= self.config.variable_min_size:
-                        var_name, summary = self.variable_manager.create_variable(content)
+                        var_name, summary = await self.variable_manager.create_variable(content)
                         if var_name:  # Non-empty var_name means variable was created
                             var_ref = f"{var_name} [{summary}]"
                             messages[i] = {**msg, "content": var_ref}
@@ -304,7 +307,7 @@ class LayeredCompactionStrategy:
             f"saved {result.tokens_saved} tokens"
         )
     
-    def _apply_layer2(self, result: CompactionResult) -> None:
+    async def _apply_layer2(self, result: CompactionResult) -> None:
         """Layer 2: Semi-reversible compaction.
         
         - Archive old messages with summaries
@@ -357,7 +360,8 @@ class LayeredCompactionStrategy:
         # Archive collected messages
         for i in indices_to_archive:
             msg = messages[i]
-            archive_id = self.archival_memory.store(msg)
+            # Wrap sync SQLite operation in thread pool
+            archive_id = await asyncio.to_thread(self.archival_memory.store, msg)
             
             # Create compact reference as JSON (preserves structure, valid for tool messages)
             summary = self.archival_memory._generate_summary(msg)
@@ -382,11 +386,11 @@ class LayeredCompactionStrategy:
         )
         
         # Cleanup unreferenced variables after archiving messages
-        removed = self.variable_manager.cleanup_unused_variables(messages)
+        removed = await self.variable_manager.cleanup_unused_variables(messages)
         if removed > 0:
             logger.debug(f"Cleaned up {removed} unreferenced variables")
-    
-    def _apply_layer3(self, result: CompactionResult) -> None:
+
+    async def _apply_layer3(self, result: CompactionResult) -> None:
         """Layer 3: Irreversible compaction.
         
         - Drop old messages entirely
@@ -464,7 +468,7 @@ class LayeredCompactionStrategy:
         )
         
         # Cleanup unreferenced variables after dropping messages
-        removed = self.variable_manager.cleanup_unused_variables(messages)
+        removed = await self.variable_manager.cleanup_unused_variables(messages)
         if removed > 0:
             logger.debug(f"Cleaned up {removed} unreferenced variables")
     
@@ -504,7 +508,7 @@ class LayeredCompactionStrategy:
         
         return result
     
-    def get_restoration_context(self) -> str:
+    async def get_restoration_context(self) -> str:
         """Generate context section explaining how to restore information.
         
         This is added to the system prompt so the LLM knows how to access
@@ -515,8 +519,8 @@ class LayeredCompactionStrategy:
         """
         sections = []
         
-        # Tool result references
-        tool_stats = self.tool_store.get_stats()
+        # Tool result references - wrap sync SQLite operation
+        tool_stats = await asyncio.to_thread(self.tool_store.get_stats)
         if tool_stats["total_entries"] > 0:
             sections.append(
                 "## Tool Results\n"
@@ -531,8 +535,8 @@ class LayeredCompactionStrategy:
         if var_section:
             sections.append(var_section)
         
-        # Archival memory
-        archive_stats = self.archival_memory.get_stats()
+        # Archival memory - wrap sync SQLite operation
+        archive_stats = await asyncio.to_thread(self.archival_memory.get_stats)
         if archive_stats["total_messages"] > 0:
             sections.append(
                 "## Conversation Archive\n"

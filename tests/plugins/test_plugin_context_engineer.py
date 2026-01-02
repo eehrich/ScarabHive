@@ -40,33 +40,33 @@ class TestCoreMemory:
         assert len(memory.facts) == 0
         assert memory.max_tokens == 2000
     
-    def test_add_fact(self, temp_memory_file):
+    async def test_add_fact(self, temp_memory_file):
         """Test adding facts to core memory."""
         memory = CoreMemory(temp_memory_file)
         
-        fact_id = memory.add_fact("User prefers Python", category="preferences")
+        fact_id = await memory.add_fact("User prefers Python", category="preferences")
         
         assert fact_id is not None
         assert len(memory.facts) == 1
         assert memory.facts[0].content == "User prefers Python"
         assert memory.facts[0].category == "preferences"
     
-    def test_add_fact_with_importance(self, temp_memory_file):
+    async def test_add_fact_with_importance(self, temp_memory_file):
         """Test adding facts with custom importance."""
         memory = CoreMemory(temp_memory_file)
         
-        memory.add_fact("Critical decision", importance=0.9)
-        memory.add_fact("Minor note", importance=0.1)
+        await memory.add_fact("Critical decision", importance=0.9)
+        await memory.add_fact("Minor note", importance=0.1)
         
         assert memory.facts[0].importance == 0.9
         assert memory.facts[1].importance == 0.1
     
-    def test_persistence(self, temp_memory_file):
+    async def test_persistence(self, temp_memory_file):
         """Test that facts persist across instances."""
         # Add facts
         memory1 = CoreMemory(temp_memory_file)
-        memory1.add_fact("Fact 1", category="facts")
-        memory1.add_fact("Fact 2", category="decisions")
+        await memory1.add_fact("Fact 1", category="facts")
+        await memory1.add_fact("Fact 2", category="decisions")
         
         # Create new instance
         memory2 = CoreMemory(temp_memory_file)
@@ -75,32 +75,32 @@ class TestCoreMemory:
         assert memory2.facts[0].content == "Fact 1"
         assert memory2.facts[1].content == "Fact 2"
     
-    def test_eviction_when_full(self, temp_memory_file):
+    async def test_eviction_when_full(self, temp_memory_file):
         """Test that low importance facts are evicted when limit reached."""
         memory = CoreMemory(temp_memory_file, max_tokens=100)
         
         # Add many facts to exceed limit
         for i in range(10):
-            memory.add_fact(f"Fact {i} with lots of content", importance=0.1 * i)
+            await memory.add_fact(f"Fact {i} with lots of content", importance=0.1 * i)
         
         # Should have evicted some facts
         assert memory.get_token_usage() <= 100
     
-    def test_get_categories(self, temp_memory_file):
+    async def test_get_categories(self, temp_memory_file):
         """Test getting list of categories."""
         memory = CoreMemory(temp_memory_file)
-        memory.add_fact("Fact 1", category="facts")
-        memory.add_fact("Fact 2", category="decisions")
-        memory.add_fact("Fact 3", category="facts")
+        await memory.add_fact("Fact 1", category="facts")
+        await memory.add_fact("Fact 2", category="decisions")
+        await memory.add_fact("Fact 3", category="facts")
         
         categories = memory.get_categories()
         assert set(categories) == {"facts", "decisions"}
     
-    def test_to_system_prompt_section(self, temp_memory_file):
+    async def test_to_system_prompt_section(self, temp_memory_file):
         """Test generating system prompt section."""
         memory = CoreMemory(temp_memory_file)
-        memory.add_fact("User likes Python", category="preferences")
-        memory.add_fact("Project uses FastAPI", category="facts")
+        await memory.add_fact("User likes Python", category="preferences")
+        await memory.add_fact("Project uses FastAPI", category="facts")
         
         section = memory.to_system_prompt_section()
         
@@ -228,71 +228,71 @@ class TestVariableManager:
         stats = manager.get_stats()
         assert stats["total_variables"] == 0
     
-    def test_create_variable(self, temp_var_file):
+    async def test_create_variable(self, temp_var_file):
         """Test creating a variable."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
         # Use realistic content that generates multiple tokens
         large_content = "word " * 100  # ~100 words = ~130 tokens (exceeds threshold of 10)
-        var_name, summary = manager.create_variable(large_content)
+        var_name, summary = await manager.create_variable(large_content)
         
         assert var_name is not None
         assert "$VAR_" in var_name
         assert summary is not None  # Should include summary
     
-    def test_get_variable(self, temp_var_file):
+    async def test_get_variable(self, temp_var_file):
         """Test retrieving a variable."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
         content = "Test content " * 50
-        var_name, _ = manager.create_variable(content)
+        var_name, _ = await manager.create_variable(content)
         
         entry = manager.get_variable(var_name)
         
         assert entry is not None
         assert entry.content == content
     
-    def test_below_threshold_returns_none(self, temp_var_file):
+    async def test_below_threshold_returns_none(self, temp_var_file):
         """Test that small content returns empty var_name."""
         manager = VariableManager(min_content_tokens=1000, storage_path=temp_var_file)
         
         small_content = "Small"
-        result = manager.create_variable(small_content)
+        result = await manager.create_variable(small_content)
         
         # Returns tuple (var_name, summary) where var_name is empty if below threshold
         assert result[0] == ""  # Empty var_name
     
-    def test_detect_content_type(self, temp_var_file):
+    async def test_detect_content_type(self, temp_var_file):
         """Test content type detection."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
         # Test code detection
         code_content = "def hello():\n    print('Hello')\n" * 20
-        manager.create_variable(code_content, content_type="code")
+        await manager.create_variable(code_content, content_type="code")
         
         # Test JSON detection
         json_content = '{"key": "value", "nested": {"a": 1}}' * 20
-        manager.create_variable(json_content, content_type="json")
+        await manager.create_variable(json_content, content_type="json")
         
         stats = manager.get_stats()
         assert stats["total_variables"] >= 2
     
-    def test_persistence(self, temp_var_file):
+    async def test_persistence(self, temp_var_file):
         """Test that variables persist."""
         manager1 = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        manager1.create_variable("Content " * 100)
+        await manager1.create_variable("Content " * 100)
         
         manager2 = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         stats = manager2.get_stats()
         
         assert stats["total_variables"] == 1
     
-    def test_expand_variables(self, temp_var_file):
+    async def test_expand_variables(self, temp_var_file):
         """Test expanding variables in text."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
         content = "Original content " * 50
-        var_name, _ = manager.create_variable(content)
+        var_name, _ = await manager.create_variable(content)
         
         text_with_var = f"The result is in {var_name}."
         expanded = manager.expand_variables(text_with_var)
@@ -300,7 +300,7 @@ class TestVariableManager:
         assert content in expanded
         assert var_name not in expanded
     
-    def test_cleanup_unused_variables(self, temp_var_file):
+    async def test_cleanup_unused_variables(self, temp_var_file):
         """Test cleanup of unreferenced variables."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
@@ -309,9 +309,9 @@ class TestVariableManager:
         content2 = "Content 2 " * 50
         content3 = "Content 3 " * 50
         
-        var1, _ = manager.create_variable(content1)
-        var2, _ = manager.create_variable(content2)
-        var3, _ = manager.create_variable(content3)
+        var1, _ = await manager.create_variable(content1)
+        var2, _ = await manager.create_variable(content2)
+        var3, _ = await manager.create_variable(content3)
         
         # Verify all created
         assert manager.get_stats()["total_variables"] == 3
@@ -324,7 +324,7 @@ class TestVariableManager:
         ]
         
         # Cleanup - should remove var2
-        removed = manager.cleanup_unused_variables(messages)
+        removed = await manager.cleanup_unused_variables(messages)
         
         assert removed == 1
         assert manager.get_stats()["total_variables"] == 2
@@ -332,43 +332,43 @@ class TestVariableManager:
         assert manager.get_variable(var2) is None  # Removed
         assert manager.get_variable(var3) is not None
     
-    def test_cleanup_all_variables_referenced(self, temp_var_file):
+    async def test_cleanup_all_variables_referenced(self, temp_var_file):
         """Test cleanup when all variables are referenced."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
-        var1, _ = manager.create_variable("Content 1 " * 50)
-        var2, _ = manager.create_variable("Content 2 " * 50)
+        var1, _ = await manager.create_variable("Content 1 " * 50)
+        var2, _ = await manager.create_variable("Content 2 " * 50)
         
         messages = [
             {"role": "user", "content": f"See {var1} and {var2}"}
         ]
         
-        removed = manager.cleanup_unused_variables(messages)
+        removed = await manager.cleanup_unused_variables(messages)
         
         assert removed == 0
         assert manager.get_stats()["total_variables"] == 2
     
-    def test_cleanup_no_variables(self, temp_var_file):
+    async def test_cleanup_no_variables(self, temp_var_file):
         """Test cleanup with no variables stored."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
         messages = [{"role": "user", "content": "No variables here"}]
         
-        removed = manager.cleanup_unused_variables(messages)
+        removed = await manager.cleanup_unused_variables(messages)
         
         assert removed == 0
     
-    def test_cleanup_empty_messages(self, temp_var_file):
+    async def test_cleanup_empty_messages(self, temp_var_file):
         """Test cleanup with empty message list removes all variables."""
         manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
         
-        var1, _ = manager.create_variable("Content 1 " * 50)
-        var2, _ = manager.create_variable("Content 2 " * 50)
+        var1, _ = await manager.create_variable("Content 1 " * 50)
+        var2, _ = await manager.create_variable("Content 2 " * 50)
         
         assert manager.get_stats()["total_variables"] == 2
         
         # Empty messages means no references
-        removed = manager.cleanup_unused_variables([])
+        removed = await manager.cleanup_unused_variables([])
         
         assert removed == 2
         assert manager.get_stats()["total_variables"] == 0
@@ -524,7 +524,7 @@ class TestLayeredCompactionStrategy:
             "config": config
         }
     
-    def test_no_compaction_below_threshold(self, strategy_components):
+    async def test_no_compaction_below_threshold(self, strategy_components):
         """Test that no compaction happens below threshold."""
         strategy = strategy_components["strategy"]
         
@@ -532,12 +532,12 @@ class TestLayeredCompactionStrategy:
             {"role": "user", "content": "Short message"}
         ]
         
-        result = strategy.compact(messages, current_tokens=100)
+        result = await strategy.compact(messages, current_tokens=100)
         
         assert result.tokens_saved == 0
         assert result.layers_applied == []
     
-    def test_layer1_tool_result_storage(self, strategy_components):
+    async def test_layer1_tool_result_storage(self, strategy_components):
         """Test Layer 1 stores tool results."""
         strategy = strategy_components["strategy"]
         
@@ -555,12 +555,12 @@ class TestLayeredCompactionStrategy:
             {"role": "user", "content": "Latest question"},
         ]
         
-        result = strategy.compact(messages, current_tokens=600)
+        result = await strategy.compact(messages, current_tokens=600)
         
         # First tool result should be stored (not the last one)
         assert result.tool_results_stored >= 1 or result.layers_applied == []
     
-    def test_compaction_result_stats(self, strategy_components):
+    async def test_compaction_result_stats(self, strategy_components):
         """Test that CompactionResult has correct statistics."""
         strategy = strategy_components["strategy"]
         
@@ -569,13 +569,13 @@ class TestLayeredCompactionStrategy:
             for _ in range(10)
         ]
         
-        result = strategy.compact(messages, current_tokens=2000)
+        result = await strategy.compact(messages, current_tokens=2000)
         
         assert result.original_tokens == 2000
         assert result.final_tokens <= result.original_tokens
         assert result.tokens_saved >= 0
     
-    def test_restoration_context_generation(self, strategy_components):
+    async def test_restoration_context_generation(self, strategy_components):
         """Test generating restoration context for system prompt."""
         strategy = strategy_components["strategy"]
         tool_store = strategy_components["tool_store"]
@@ -583,9 +583,9 @@ class TestLayeredCompactionStrategy:
         
         # Add some data
         tool_store.store_and_reference("test", "c1", "Some output")
-        core_memory.add_fact("Important fact", category="facts")
+        await core_memory.add_fact("Important fact", category="facts")
         
-        context = strategy.get_restoration_context()
+        context = await strategy.get_restoration_context()
         
         assert "Context Engineer" in context
         assert "Tool Results" in context or "Core Memory" in context
@@ -689,8 +689,8 @@ class TestVariablePagination:
         large_content = "Line {}: This is a test line with some content.\n" * 50
         large_content = large_content.format(*range(50))
         
-        # create_variable returns (var_name, summary) tuple
-        var_name, _ = var_manager.create_variable(large_content, content_type="text", force=True)
+        # create_variable returns (var_name, summary) tuple - now async
+        var_name, _ = await var_manager.create_variable(large_content, content_type="text", force=True)
         return session_id, var_name, large_content
     
     @pytest.mark.asyncio

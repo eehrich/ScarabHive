@@ -6,6 +6,7 @@ No safety checks, no restrictions - direct SQL execution.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from pathlib import Path
@@ -53,6 +54,42 @@ class SqliteQueryServer(SchemaBasedMCPServer):
             "database": self.database
         }
 
+    def _execute_sql_sync(self, sql: str, db_path: Path) -> dict[str, Any]:
+        """Execute SQL synchronously - runs in thread pool."""
+        conn = None
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=self.query_timeout)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Execute SQL (no parameters - LLM generates complete SQL)
+            cursor.execute(sql)
+            
+            # Check if it's a SELECT query (has results)
+            if cursor.description:
+                rows = cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description]
+                result_rows = [dict(row) for row in rows]
+                
+                return {
+                    "status": "success",
+                    "rows": result_rows,
+                    "row_count": len(result_rows),
+                    "columns": columns
+                }
+            else:
+                # Write operation (INSERT/UPDATE/DELETE)
+                conn.commit()
+                
+                return {
+                    "status": "success",
+                    "rows_affected": cursor.rowcount,
+                    "last_row_id": cursor.lastrowid if cursor.lastrowid > 0 else None
+                }
+        finally:
+            if conn:
+                conn.close()
+
     async def execute_sql(self, params: dict[str, Any]) -> dict[str, Any]:
         """
         Execute SQL statement and return results.
@@ -80,49 +117,17 @@ class SqliteQueryServer(SchemaBasedMCPServer):
             sql_preview = sql[:50] + "..." if len(sql) > 50 else sql
             await status.progress(f"Executing: {sql_preview}")
             
-            conn = None
-            try:
-                conn = sqlite3.connect(str(db_path), timeout=self.query_timeout)
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                
-                # Execute SQL (no parameters - LLM generates complete SQL)
-                cursor.execute(sql)
-                
-                # Check if it's a SELECT query (has results)
-                if cursor.description:
-                    rows = cursor.fetchall()
-                    columns = [desc[0] for desc in cursor.description]
-                    result_rows = [dict(row) for row in rows]
-                    
-                    # Success message for user
-                    await status.end(f"Query returned {len(result_rows)} row(s)")
-                    
-                    result = {
-                        "status": "success",
-                        "rows": result_rows,
-                        "row_count": len(result_rows),
-                        "columns": columns
-                    }
-                else:
-                    # Write operation (INSERT/UPDATE/DELETE)
-                    conn.commit()
-                    
-                    # Success message for user
-                    await status.end(f"Query affected {cursor.rowcount} row(s)")
-                    
-                    result = {
-                        "status": "success",
-                        "rows_affected": cursor.rowcount,
-                        "last_row_id": cursor.lastrowid if cursor.lastrowid > 0 else None
-                    }
-                
-                logger.info(f"Executed SQL on {self.database}: {sql[:100]}")
-                return result
-                
-            finally:
-                if conn:
-                    conn.close()
+            # Execute SQL in thread pool to avoid blocking event loop
+            result = await asyncio.to_thread(self._execute_sql_sync, sql, db_path)
+            
+            # Send success status based on result type
+            if "row_count" in result:
+                await status.end(f"Query returned {result['row_count']} row(s)")
+            else:
+                await status.end(f"Query affected {result.get('rows_affected', 0)} row(s)")
+            
+            logger.info(f"Executed SQL on {self.database}: {sql[:100]}")
+            return result
         
         except sqlite3.Error as e:
             error_msg = f"SQL error: {str(e)}"

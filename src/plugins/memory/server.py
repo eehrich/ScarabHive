@@ -12,6 +12,7 @@ Key features:
 - Web UI for viewing and managing memories
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, UTC
@@ -153,7 +154,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         # Sanitize session_id for collection name
         return f"session_{session_id.replace('-', '_')}"
 
-    def _generate_memory_id(self, session_id: str) -> str:
+    async def _generate_memory_id(self, session_id: str) -> str:
         """
         Generate unique memory ID for session using counter.
 
@@ -171,12 +172,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             try:
                 collection = self._collections_cache.get(session_id)
                 if not collection:
-                    # Try to load from storage
-                    metadata_path = self._get_metadata_path(session_id)
-                    if metadata_path.exists():
-                        with open(metadata_path, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            collection = MemoryCollection(**data)
+                    # Try to load from storage (async)
+                    collection = await self._load_collection(session_id)
 
                 if collection and collection.memories:
                     # Find highest memory number
@@ -283,6 +280,18 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         """Get path to JSON metadata file for session"""
         return self.storage_path / f"{session_id}.json"
 
+    def _load_collection_sync(self, session_id: str) -> MemoryCollection:
+        """Load memory collection from JSON - sync version for thread pool."""
+        metadata_path = self._get_metadata_path(session_id)
+
+        if not metadata_path.exists():
+            return MemoryCollection(session_id=session_id)
+
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        return MemoryCollection(**data)
+
     async def _load_collection(self, session_id: str) -> MemoryCollection:
         """Load memory collection from JSON metadata file"""
         if session_id in self._collections_cache:
@@ -297,11 +306,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             return collection
 
         try:
-            with open(metadata_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Convert datetime strings back to datetime objects
-            collection = MemoryCollection(**data)
+            # Run sync file I/O in thread pool
+            collection = await asyncio.to_thread(self._load_collection_sync, session_id)
             self._collections_cache[session_id] = collection
             return collection
 
@@ -309,18 +315,21 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             logger.error(f"Failed to load collection {session_id}: {e}")
             raise StorageError(f"Failed to load memories: {e}")
 
+    def _save_collection_sync(self, collection: MemoryCollection) -> None:
+        """Save memory collection to JSON - sync version for thread pool."""
+        metadata_path = self._get_metadata_path(collection.session_id)
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(collection.model_dump(), f, indent=2, ensure_ascii=False)
+
     async def _save_collection(self, collection: MemoryCollection):
         """Save memory collection to JSON metadata file"""
-        metadata_path = self._get_metadata_path(collection.session_id)
-
         try:
             # Update timestamp and count
             collection.updated_at = datetime.now(UTC)
             collection.total_memories = len(collection.memories)
 
-            # Serialize to JSON
-            with open(metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(collection.model_dump(), f, indent=2, ensure_ascii=False)
+            # Run sync file I/O in thread pool
+            await asyncio.to_thread(self._save_collection_sync, collection)
 
             # Update cache
             self._collections_cache[collection.session_id] = collection
@@ -340,8 +349,9 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         try:
             collection_name = self._get_collection_name(session_id)
 
-            # Store in vector store with metadata
-            self.vector_store.add(
+            # Store in vector store with metadata (run sync call in thread pool)
+            await asyncio.to_thread(
+                self.vector_store.add,
                 collection=collection_name,
                 ids=[memory.memory_id],
                 documents=[memory.content],
@@ -368,7 +378,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         """Delete memory from vector store"""
         try:
             collection_name = self._get_collection_name(session_id)
-            self.vector_store.delete(collection=collection_name, ids=[memory_id])
+            # Run sync call in thread pool
+            await asyncio.to_thread(
+                self.vector_store.delete,
+                collection=collection_name,
+                ids=[memory_id]
+            )
             logger.debug(f"Deleted memory {memory_id} from vector store")
         except Exception as e:
             logger.error(f"Failed to delete memory from vector store: {e}")
@@ -393,8 +408,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         if keywords is None or len(keywords) == 0:
             keywords = self._extract_keywords(f"{title} {content}")
 
-        # Generate memory ID with session-specific counter
-        memory_id = self._generate_memory_id(session_id)
+        # Generate memory ID with session-specific counter (async)
+        memory_id = await self._generate_memory_id(session_id)
 
         # Create memory object
         memory = Memory(
@@ -470,8 +485,9 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         try:
             collection_name = self._get_collection_name(session_id)
 
-            # Perform semantic search (VectorStore handles n_results adjustment internally)
-            results = self.vector_store.query(
+            # Perform semantic search (run sync call in thread pool)
+            results = await asyncio.to_thread(
+                self.vector_store.query,
                 collection=collection_name,
                 query_text=query,
                 n_results=n_results,
