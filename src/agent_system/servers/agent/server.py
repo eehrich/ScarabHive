@@ -719,6 +719,12 @@ class Agent(MCPServer):
                     logger.error(f"Failed to create LLM override for use_advanced_model: {e}")
                     # Continue with default LLM
 
+        # Create and start status forwarder BEFORE entering status_scope context managers
+        # This ensures the forwarder is subscribed to status_bus before any START events are generated
+        # Fixes race condition where status_scope generates events before forwarder is ready
+        status_forwarder = StatusEventForwarder()
+        await status_forwarder.start_forwarding(request_id)
+        
         try:
             async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
                        status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
@@ -730,7 +736,8 @@ class Agent(MCPServer):
                     status_worker=status_worker,
                     initial_message=initial_message,
                     llm_override=llm_override,
-                    llm_profile_info_override=llm_profile_info_override
+                    llm_profile_info_override=llm_profile_info_override,
+                    status_forwarder=status_forwarder
                 ):
                     yield event
         except GeneratorExit:
@@ -743,7 +750,8 @@ class Agent(MCPServer):
         request_id: str,
         session_id: str,
         initial_message: Optional[ChatMessage] = None,
-        llm_override: Optional[object] = None
+        llm_override: Optional[object] = None,
+        status_forwarder: Optional[StatusEventForwarder] = None
     ) -> ConversationContext:
         """Initialize request tracking and build initial conversation context.
 
@@ -754,7 +762,7 @@ class Agent(MCPServer):
         2. Register request for cancellation/appends
         3. Set context vars
         4. Initialize session storage
-        5. Start status event forwarding
+        5. Use pre-created status event forwarder (passed from caller)
         6. Validate LLM availability
         7. Initialize MCP integration
         8. Discover usable tools
@@ -769,6 +777,7 @@ class Agent(MCPServer):
             session_id: Session identifier for history
             initial_message: Optional multimodal message
             llm_override: Optional LLM client override
+            status_forwarder: Pre-created status event forwarder (must be started before status_scope)
 
         Returns:
             ConversationContext with all initialized state
@@ -792,9 +801,13 @@ class Agent(MCPServer):
             logger.debug(f"Failed to set current_request_id context var: {e}")
             context_reset_token = None
 
-        # Create per-request status event forwarder (prevents race conditions with parallel requests)
-        status_forwarder = StatusEventForwarder()
-        await status_forwarder.start_forwarding(request_id)
+        # Status forwarder is passed in from caller (created before status_scope context managers)
+        # This ensures forwarder is subscribed to status_bus before any START events are generated
+        # Fallback to creating one here for backwards compatibility (though this defeats the purpose)
+        if status_forwarder is None:
+            logger.warning("status_forwarder not passed to _initialize_request_and_conversation - creating one here (may miss events)")
+            status_forwarder = StatusEventForwarder()
+            await status_forwarder.start_forwarding(request_id)
 
         # If no LLM is configured, raise error
         if active_llm is None:
@@ -1814,7 +1827,8 @@ class Agent(MCPServer):
         status_worker: StatusScope,
         initial_message: Optional[ChatMessage] = None,
         llm_override: Optional[object] = None,
-        llm_profile_info_override: Optional[str] = None
+        llm_profile_info_override: Optional[str] = None,
+        status_forwarder: Optional[StatusEventForwarder] = None
     ):
         """
         Core agent execution loop - orchestrates LLM conversation with tool usage.
@@ -1835,6 +1849,7 @@ class Agent(MCPServer):
             initial_message: Optional ChatMessage with multimodal content
             llm_override: Optional LLM client override
             llm_profile_info_override: Optional profile info for status display
+            status_forwarder: Pre-created status event forwarder (created before status_scope)
 
         Yields:
             Dict events: start, heartbeat, thinking, status, tool_*, final, error, cancelled, end
@@ -1879,7 +1894,8 @@ class Agent(MCPServer):
                     request_id=request_id,
                     session_id=session_id,
                     initial_message=initial_message,
-                    llm_override=llm_override
+                    llm_override=llm_override,
+                    status_forwarder=status_forwarder
                 )
             except RuntimeError as e:
                 # LLM not available - emit error and end stream
