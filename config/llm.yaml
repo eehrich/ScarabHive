@@ -42,9 +42,9 @@ llm_system:
     # ---------------------------------------------------------------------------
     # GEMINI MODELS (Sync/Streaming)
     # ---------------------------------------------------------------------------
-    gemini-2-5-flash:
+    gemini-3-0-flash:
       provider: gemini_sdk
-      model: gemini-2.5-flash
+      model: gemini-3-flash-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000
@@ -60,9 +60,9 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    gemini-2-5-flash-nostream:
+    gemini-3-0-flash-nostream:
       provider: gemini_sdk
-      model: gemini-2.5-flash
+      model: gemini-3-flash-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000
@@ -117,10 +117,10 @@ llm_system:
     # ---------------------------------------------------------------------------
     # GEMINI BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
-    gemini-2-5-flash-batch:
+    gemini-3-0-flash-batch:
       provider: batch                   # NEW: Explicit batch provider
       batch_provider: gemini            # NEW: Which batch API to use
-      model: gemini-2.5-flash
+      model: gemini-3-flash-preview
       api_key: "***REMOVED***"
       context_window: 200000
       include_thoughts: false
@@ -427,13 +427,13 @@ llm_system:
       max_steps: 500
 
     normal:
-      #model_ref: gemini-2-5-flash-nostream
+      #model_ref: gemini-3-0-flash-nostream
       model_ref: gpt-5-mini
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
       
     normal-stream:
-      model_ref: gemini-2-5-flash
+      model_ref: gemini-3-0-flash
       description: "Fast model for medium reasoning tasks (streaming)"
       max_steps: 500
       
@@ -480,12 +480,12 @@ llm_system:
 
     # Named profiles for specific models
     gemini-flash:
-      model_ref: gemini-2-5-flash
+      model_ref: gemini-3-0-flash
       description: "Google Gemini Flash (streaming)"
       max_steps: 500
       
     gemini-flash-batch:
-      model_ref: gemini-2-5-flash-batch
+      model_ref: gemini-3-0-flash-batch
       description: "Google Gemini Flash (batch)"
       max_steps: 500
       
