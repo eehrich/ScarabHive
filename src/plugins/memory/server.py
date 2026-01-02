@@ -450,7 +450,11 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         collection = await self._load_collection(session_id)
 
         if memory_id not in collection.memories:
-            raise ValidationError(f"Memory {memory_id} not found")
+            logger.info(f"Memory {memory_id} not found in session {session_id}")
+            return {
+                "error": f"Memory {memory_id} not found",
+                "message": f"Memory ID '{memory_id}' does not exist. Use memory(operation='list') to see available memories."
+            }
 
         memory = collection.memories[memory_id]
 
@@ -606,7 +610,11 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         collection = await self._load_collection(session_id)
 
         if memory_id not in collection.memories:
-            raise ValidationError(f"Memory {memory_id} not found")
+            logger.info(f"Memory {memory_id} not found for deletion in session {session_id}")
+            return {
+                "error": f"Memory {memory_id} not found",
+                "message": f"Cannot delete: Memory ID '{memory_id}' does not exist."
+            }
 
         # Delete from JSON metadata
         del collection.memories[memory_id]
@@ -637,7 +645,11 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         collection = await self._load_collection(session_id)
 
         if memory_id not in collection.memories:
-            raise ValidationError(f"Memory {memory_id} not found")
+            logger.info(f"Memory {memory_id} not found for update in session {session_id}")
+            return {
+                "error": f"Memory {memory_id} not found",
+                "message": f"Cannot update: Memory ID '{memory_id}' does not exist."
+            }
 
         memory = collection.memories[memory_id]
 
