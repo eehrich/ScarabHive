@@ -143,7 +143,7 @@ class SessionService:
 
             # Check if session already exists and find its owner
             # This is critical for sub-agent sessions which may have different user_ids
-            session_owner = self.session_manager._find_session_owner(session_id)
+            session_owner = await self.session_manager._find_session_owner_async(session_id)
             session_exists = session_owner is not None
 
             # Use the actual owner's user_id for existing sessions

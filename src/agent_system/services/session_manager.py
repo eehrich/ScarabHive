@@ -118,8 +118,28 @@ class SessionManager:
                     return True
         return False
 
+    async def _find_session_owner_async(self, session_id: str) -> Optional[str]:
+        """Find the user_id that owns a session (async version).
+        
+        Args:
+            session_id: Session ID to find
+        
+        Returns:
+            user_id if session found, None otherwise
+        """
+        for user_dir in self.storage_path.iterdir():
+            if user_dir.is_dir():
+                session_file = user_dir / f"{session_id}.json"
+                if session_file.exists():
+                    try:
+                        session_data = await self._read_session_file_async(session_file)
+                        return session_data.get("user_id")
+                    except Exception:
+                        pass
+        return None
+
     def _find_session_owner(self, session_id: str) -> Optional[str]:
-        """Find the user_id that owns a session.
+        """Find the user_id that owns a session (sync version - use _find_session_owner_async in async contexts).
         
         Args:
             session_id: Session ID to find
@@ -166,6 +186,9 @@ class SessionManager:
 
     def _atomic_write(self, path: Path, data: Dict[str, Any]) -> None:
         """Write data to file atomically with retry on Windows file lock conflicts.
+        
+        NOTE: This is a synchronous method. Use _atomic_write_async() in async contexts
+        to avoid blocking the event loop.
         
         Args:
             path: Target file path
@@ -215,8 +238,15 @@ class SessionManager:
                 logger.error("Failed to write session %s: %s", path, e)
                 raise IOError(f"Failed to write session: {e}") from e
 
+    async def _atomic_write_async(self, path: Path, data: Dict[str, Any]) -> None:
+        """Async wrapper for atomic write to avoid blocking event loop."""
+        await asyncio.to_thread(self._atomic_write, path, data)
+
     def _read_session_file(self, path: Path) -> Dict[str, Any]:
         """Read and validate session file.
+        
+        NOTE: This is a synchronous method. Use _read_session_file_async() in async contexts
+        to avoid blocking the event loop.
         
         Args:
             path: Session file path
@@ -244,6 +274,10 @@ class SessionManager:
         except Exception as e:
             logger.error("Failed to read session %s: %s", path, e)
             raise
+
+    async def _read_session_file_async(self, path: Path) -> Dict[str, Any]:
+        """Async wrapper for reading session file to avoid blocking event loop."""
+        return await asyncio.to_thread(self._read_session_file, path)
 
     async def create_session(
         self,
@@ -314,7 +348,7 @@ class SessionManager:
                 }
             }
             
-            self._atomic_write(path, session_data)
+            await self._atomic_write_async(path, session_data)
             
             # Cache the new session
             self._cache[sid] = (session_data, time.time())
@@ -365,7 +399,7 @@ class SessionManager:
                 # Session truly doesn't exist
                 raise SessionNotFoundError(f"Session {session_id} not found")
             
-            session_data = self._read_session_file(path)
+            session_data = await self._read_session_file_async(path)
             
             # Verify ownership (security check)
             if session_data["user_id"] != user_id:
@@ -410,7 +444,7 @@ class SessionManager:
                     if isinstance(content, str):
                         session_data["metadata"]["last_agent_response"] = content[:200]
             
-            self._atomic_write(path, session_data)
+            await self._atomic_write_async(path, session_data)
             
             # Update cache
             self._cache[session_id] = (session_data, time.time())
@@ -440,7 +474,7 @@ class SessionManager:
                     potential_path = user_dir / f"{session_id}.json"
                     if potential_path.exists():
                         try:
-                            session_data = self._read_session_file(potential_path)
+                            session_data = await self._read_session_file_async(potential_path)
                             if session_data["user_id"] != user_id:
                                 # Session exists but belongs to different user
                                 raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
@@ -454,7 +488,7 @@ class SessionManager:
                     raise SessionNotFoundError(f"Session {session_id} not found")
             
             # At this point, path exists and user owns it
-            session_data = self._read_session_file(path)
+            session_data = await self._read_session_file_async(path)
             
             # Create backup if requested
             if create_backup:
@@ -494,7 +528,7 @@ class SessionManager:
                 continue
             
             try:
-                session_data = self._read_session_file(session_file)
+                session_data = await self._read_session_file_async(session_file)
                 
                 # Return metadata only (not full message history)
                 sessions.append({

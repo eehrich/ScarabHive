@@ -134,11 +134,16 @@ class OllamaNativeAsyncClient(LLMClient):
             out.append(d)
         return out
 
+    async def _map_messages_async(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        """Async wrapper for message mapping to avoid blocking event loop."""
+        return await asyncio.to_thread(self._map_messages, messages)
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         url = f"{self._base}/api/chat"
+        mapped_messages = await self._map_messages_async(messages)
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": self._map_messages(messages),
+            "messages": mapped_messages,
             "stream": False,
         }
         if self._options:
@@ -160,9 +165,10 @@ class OllamaNativeAsyncClient(LLMClient):
 
     async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
         url = f"{self._base}/api/chat"
+        mapped_messages = await self._map_messages_async(messages)
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": self._map_messages(messages),
+            "messages": mapped_messages,
             "stream": False,
         }
         if tools:
@@ -223,9 +229,10 @@ class OllamaNativeAsyncClient(LLMClient):
         Each line is a JSON object with message deltas.
         """
         url = f"{self._base}/api/chat"
+        mapped_messages = await self._map_messages_async(messages)
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": self._map_messages(messages),
+            "messages": mapped_messages,
             "stream": True,  # Enable streaming
         }
         if tools:

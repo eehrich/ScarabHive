@@ -213,14 +213,20 @@ class HTTPXOpenAIClient(LLMClient):
         logger.debug(f"_make_request_non_streaming called for model {self.model}")
 
         # Build request payload - convert ChatMessage objects to dicts
-        message_dicts = []
-        for msg in messages:
-            if hasattr(msg, 'model_dump'):
-                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
-            elif isinstance(msg, dict):
-                message_dicts.append(msg)
-            else:
-                message_dicts.append(dict(msg))
+        # NOTE: model_dump() is CPU-intensive for large messages (can take 150ms+ for 30+ messages)
+        # Run in thread pool to avoid blocking event loop
+        def _serialize_messages() -> list:
+            result = []
+            for msg in messages:
+                if hasattr(msg, 'model_dump'):
+                    result.append(msg.model_dump(exclude_none=True, mode='json'))
+                elif isinstance(msg, dict):
+                    result.append(msg)
+                else:
+                    result.append(dict(msg))
+            return result
+        
+        message_dicts = await asyncio.to_thread(_serialize_messages)
 
         payload = {
             "model": self.model,
@@ -325,17 +331,23 @@ class HTTPXOpenAIClient(LLMClient):
         """
 
         # Build request payload - convert ChatMessage objects to dicts
-        message_dicts = []
-        for msg in messages:
-            if hasattr(msg, 'model_dump'):
-                # ChatMessage object - convert to dict, exclude None values for API compatibility
-                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
-            elif isinstance(msg, dict):
-                # Already a dict
-                message_dicts.append(msg)
-            else:
-                # Fallback - try to convert to dict
-                message_dicts.append(dict(msg))
+        # NOTE: model_dump() is CPU-intensive for large messages (can take 150ms+ for 30+ messages)
+        # Run in thread pool to avoid blocking event loop
+        def _serialize_messages() -> list:
+            result = []
+            for msg in messages:
+                if hasattr(msg, 'model_dump'):
+                    # ChatMessage object - convert to dict, exclude None values for API compatibility
+                    result.append(msg.model_dump(exclude_none=True, mode='json'))
+                elif isinstance(msg, dict):
+                    # Already a dict
+                    result.append(msg)
+                else:
+                    # Fallback - try to convert to dict
+                    result.append(dict(msg))
+            return result
+        
+        message_dicts = await asyncio.to_thread(_serialize_messages)
 
         payload = {
             "model": self.model,

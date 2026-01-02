@@ -102,7 +102,12 @@ class OpenAIAsyncClient(LLMClient):
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         logger = logging.getLogger(__name__)
         try:
-            opts = {"model": self.model, "messages": [m.model_dump(exclude_none=True, mode='json') for m in messages]}
+            # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
+            def _serialize() -> list:
+                return [m.model_dump(exclude_none=True, mode='json') for m in messages]
+            serialized = await asyncio.to_thread(_serialize)
+            
+            opts = {"model": self.model, "messages": serialized}
             opts.update(self._default_extra)
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff
@@ -269,11 +274,17 @@ class OpenAIAsyncClient(LLMClient):
     async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
         """Original Chat Completions API implementation."""
         logger = logging.getLogger(__name__)
-        msgs: list[dict] = []
-        for m in messages:
-            # Use model_dump() to properly serialize nested Pydantic models
-            d = m.model_dump(exclude_none=True, mode='json')
-            msgs.append(d)
+        
+        # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
+        def _serialize_messages() -> list[dict]:
+            result = []
+            for m in messages:
+                # Use model_dump() to properly serialize nested Pydantic models
+                d = m.model_dump(exclude_none=True, mode='json')
+                result.append(d)
+            return result
+        
+        msgs = await asyncio.to_thread(_serialize_messages)
 
         normalized_tools: list[dict] = []
         for idx, t in enumerate(tools):
@@ -604,10 +615,16 @@ class OpenAIAsyncClient(LLMClient):
     async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
         """Original Chat Completions API streaming implementation."""
         logger = logging.getLogger(__name__)
-        msgs: list[dict] = []
-        for m in messages:
-            d = m.model_dump(exclude_none=True, mode='json')
-            msgs.append(d)
+        
+        # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
+        def _serialize_messages() -> list[dict]:
+            result = []
+            for m in messages:
+                d = m.model_dump(exclude_none=True, mode='json')
+                result.append(d)
+            return result
+        
+        msgs = await asyncio.to_thread(_serialize_messages)
 
         # Normalize tools (same as non-streaming)
         normalized_tools: list[dict] = []
