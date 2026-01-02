@@ -33,8 +33,10 @@ plugins:
         # Queue handler timeouts (prevent cross-session blocking)
         status_queue_put_timeout: 5.0  # seconds
         
-        # LLM task timeout (only for truly stuck LLM calls)
-        llm_task_max_iterations: 6000  # 6000 * 0.1s = 10 minutes max
+        # LLM task timeout - safety net only!
+        # For batch mode: actual timeout is max_wait_hours in llm.yaml
+        # For sync mode: actual timeout is request_timeout in model config
+        llm_task_max_iterations: 864000  # 864000 * 0.1s = 24h safety net
         
         # Session lock timeout (prevent same-session deadlock)
         session_lock_timeout: 5.0  # seconds
@@ -59,8 +61,10 @@ plugins:
           # Queue handler timeouts (prevent cross-session blocking)
           status_queue_put_timeout: 5.0  # seconds
           
-          # LLM task timeout (only for truly stuck LLM calls)
-          llm_task_max_iterations: 6000  # 6000 * 0.1s = 10 minutes max
+          # LLM task timeout - safety net only!
+          # For batch mode: actual timeout is max_wait_hours in llm.yaml
+          # For sync mode: actual timeout is request_timeout in model config
+          llm_task_max_iterations: 864000  # 864000 * 0.1s = 24h safety net
           
           # Session lock timeout (prevent same-session deadlock)
           session_lock_timeout: 5.0  # seconds

@@ -1076,9 +1076,12 @@ class Agent(MCPServer):
             # Create task for LLM call
             llm_task = asyncio.create_task(llm.chat_tools(messages, tools_schema, cancellation_token=cancellation_token))
 
-            # Poll for status events while waiting (with safety limit)
-            # Send heartbeat events to prevent SSE connection timeout
-            max_llm_iterations = self.timeouts.llm_task_max_iterations if self.timeouts else 6000
+            # Poll for status events while waiting
+            # For batch mode: The batch queue manager has its own timeout (max_wait_hours in llm.yaml)
+            # so we don't need an agent-side timeout. We use a very high limit (24h) as safety net.
+            # For sync mode: The HTTPX client has its own request_timeout.
+            # The agent-side limit is just a safety net for truly stuck calls.
+            max_llm_iterations = self.timeouts.llm_task_max_iterations if self.timeouts else 864000  # 24h default
             llm_iteration_count = 0
             # Calculate heartbeat interval in iterations (config is in seconds, we poll every 0.1s)
             heartbeat_interval_seconds = self.system_config.status.llm_heartbeat_interval
@@ -1087,10 +1090,19 @@ class Agent(MCPServer):
             while not llm_task.done():
                 llm_iteration_count += 1
                 if llm_iteration_count > max_llm_iterations:
-                    logger.error("LLM task polling exceeded max iterations (%d), forcing exit", max_llm_iterations)
+                    timeout_seconds = max_llm_iterations * 0.1
+                    logger.error(
+                        "LLM task polling exceeded max iterations (%d = %.0fs), forcing exit",
+                        max_llm_iterations, timeout_seconds
+                    )
                     llm_task.cancel()
                     await asyncio.sleep(0.1)
-                    break
+                    # Raise timeout error so it can be caught and handled appropriately
+                    # This is different from CancelledError (user cancellation)
+                    raise asyncio.TimeoutError(
+                        f"LLM task timed out after {timeout_seconds:.0f} seconds "
+                        f"(max_iterations={max_llm_iterations})"
+                    )
 
                 # Check for status events
                 for status_event in yield_pending_status_fn():
@@ -1374,6 +1386,22 @@ class Agent(MCPServer):
                     for status_event in context.status_forwarder.get_pending_events():
                         yield status_event
                     yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                    return
+                
+                except asyncio.TimeoutError as e:
+                    # LLM task timed out (e.g., batch job taking too long)
+                    # This is different from user cancellation - report as timeout error
+                    timeout_msg = str(e) if str(e) else "LLM request timed out"
+                    logger.error(f"Request {request_id} timed out during LLM call at step {step + 1}: {timeout_msg}")
+                    await status_worker.error(f"timeout at step {step + 1}: {timeout_msg}",
+                                          meta={"step": step + 1, "reason": "timeout"})
+                    await status_coordinator.error(f"timeout at step {step + 1}",
+                                                meta={"step": step + 1, "reason": "timeout"})
+                    await asyncio.sleep(0.01)
+                    for status_event in context.status_forwarder.get_pending_events():
+                        yield status_event
+                    yield {"type": "error", "request_id": request_id, "step": step + 1, 
+                           "message": timeout_msg, "error_type": "timeout"}
                     return
 
             # Signal LLM call completion

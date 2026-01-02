@@ -162,8 +162,11 @@ class TimeoutConfig(BaseModel):
     # Queue handler timeouts
     status_queue_put_timeout: float = 5.0  # Timeout for status queue.put() operations (seconds)
     
-    # LLM task polling timeout (only for truly stuck LLM calls, not normal long responses)
-    llm_task_max_iterations: int = 6000  # LLM task polling: 6000 * 0.1s = 10 minutes max
+    # LLM task polling timeout - safety net only!
+    # For batch mode: The actual timeout is controlled by max_wait_hours in llm.yaml
+    # For sync mode: The actual timeout is controlled by request_timeout in model config
+    # This is just a safety net for truly stuck calls (default: 24 hours)
+    llm_task_max_iterations: int = 864000  # 864000 * 0.1s = 24 hours safety net
     
     # Session lock timeout
     session_lock_timeout: float = 5.0  # Timeout for acquiring session lock (seconds)
