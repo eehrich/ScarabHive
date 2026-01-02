@@ -537,8 +537,8 @@ class GeminiBatchClient(BatchProviderClient):
                 if hasattr(batch_job.dest, 'inlined_responses') and batch_job.dest.inlined_responses:
                     responses = batch_job.dest.inlined_responses
                 
-                # Only process if responses exist
-                if responses:
+                # Only process if responses exist and is iterable
+                if responses is not None and len(responses) > 0:
                     # Safely access job.requests
                     job_requests = job.requests or []
                     
