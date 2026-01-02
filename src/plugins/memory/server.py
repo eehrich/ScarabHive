@@ -776,7 +776,10 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Recalled: {result['title']}")
+                    if "error" in result:
+                        await status.error(result.get("message", result["error"]))
+                    else:
+                        await status.end(f"Recalled: {result['title']}")
                 return result
 
             elif operation == "search":
@@ -839,7 +842,10 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Deleted: {memory_id}")
+                    if "error" in result:
+                        await status.error(result.get("message", result["error"]))
+                    else:
+                        await status.end(f"Deleted: {memory_id}")
                 return result
 
             elif operation == "update":
@@ -866,7 +872,10 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Updated: {memory_id}")
+                    if "error" in result:
+                        await status.error(result.get("message", result["error"]))
+                    else:
+                        await status.end(f"Updated: {memory_id}")
                 return result
 
             else:
