@@ -52,6 +52,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self.max_history = int(getattr(mcp_config, 'max_message_history', 100))
         self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
         self.max_sub_agents_per_type = int(getattr(mcp_config, 'max_sub_agents_per_type', 3))
+        
+        # Timeout configuration
+        self.default_wait_timeout = int(getattr(mcp_config, 'default_wait_timeout', 3600))  # Default 1 hour
 
         # Agent filtering (multi-instance support - by instance name, not type)
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
@@ -1313,7 +1316,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     await status_ctx.error("Wait: 'instance_id' is required")
                 return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
             
-            timeout = params.get("timeout", 3600)  # Default 1 hour
+            timeout = self.default_wait_timeout  # Use configured timeout only
 
             if status_ctx:
                 await status_ctx.progress(f"Waiting for {instance_id}...")
@@ -1402,7 +1405,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 if status_ctx:
                     await status_ctx.error("Wait_all: 'instance_ids' is required")
                 return {"status": "error", "error": "Missing required parameter: 'instance_ids'"}
-            timeout = params.get("timeout", 3600)
+            timeout = self.default_wait_timeout  # Use configured timeout only
 
             if not isinstance(instance_ids, list):
                 return {"status": "error", "error": "instance_ids must be a list"}

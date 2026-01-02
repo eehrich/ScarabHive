@@ -52,11 +52,6 @@ tools:
             description: "Use better LLM (create/continue, default=false)"
             default: false
 
-          timeout:
-            type: number
-            description: "Timeout seconds (wait/wait_all)"
-            default: 3600
-
           instance_id:
             type: string
             description: "Instance ID (continue/poll/wait/cancel/info/delete). Use 'instance_id' from create response, NOT instance_label."
@@ -158,6 +153,7 @@ config:
   max_nesting_depth: 5
   max_message_history: 100
   max_sub_agents_per_type: 3
+  default_wait_timeout: 3600  # Default timeout in seconds for wait/wait_all operations (1 hour)
   allowed_agents:
     - basic_agent
     - web_research_agent
