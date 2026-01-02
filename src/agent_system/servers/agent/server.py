@@ -218,8 +218,7 @@ class Agent(MCPServer):
         # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
         self._tool_execution_manager = ToolExecutionManager(
             self.registry,
-            self,
-            status_forwarder=None  # Will be set per-request
+            self
         )
 
         # Context management now handled by hook plugins via HookIntegrationManager
@@ -726,20 +725,21 @@ class Agent(MCPServer):
         await status_forwarder.start_forwarding(request_id)
         
         try:
-            async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
-                       status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
-                async for event in self._run_events(
-                    task_text,
-                    request_id=request_id,
-                    session_id=session_id,
-                    status_coordinator=status_coordinator,
-                    status_worker=status_worker,
-                    initial_message=initial_message,
-                    llm_override=llm_override,
-                    llm_profile_info_override=llm_profile_info_override,
-                    status_forwarder=status_forwarder
-                ):
-                    yield event
+            # Pass status_scope parameters to _run_events which will open them AFTER
+            # sending the 'start' event - this ensures frontend has currentRequestId
+            # before any status events arrive
+            async for event in self._run_events(
+                task_text,
+                request_id=request_id,
+                session_id=session_id,
+                coordinator_request_id=coordinator_request_id,
+                worker_request_id=worker_request_id,
+                initial_message=initial_message,
+                llm_override=llm_override,
+                llm_profile_info_override=llm_profile_info_override,
+                status_forwarder=status_forwarder
+            ):
+                yield event
         except GeneratorExit:
             # Generator is being closed early - clean exit without error
             raise
@@ -1580,8 +1580,9 @@ class Agent(MCPServer):
                 else:
                     logger.warning("[TOOL_EXEC] No _session_tracker available")
 
-                # CRITICAL: Inject per-request status_forwarder so tool execution can stream sub-agent status events
-                self._tool_execution_manager._status_forwarder = context.status_forwarder
+                # CRITICAL: Pass per-request status_forwarder as parameter to avoid race conditions
+                # when multiple requests share the same agent instance (e.g., parent + sub-agent)
+                # DO NOT set self._tool_execution_manager._status_forwarder - that causes race conditions!
 
                 async for item in self._tool_execution_manager.execute_tools_streaming(
                     tool_calls=tool_calls,
@@ -1590,7 +1591,8 @@ class Agent(MCPServer):
                     step=step,
                     request_id=request_id,
                     session_id=session_id,
-                    user_id=user_id
+                    user_id=user_id,
+                    status_forwarder=context.status_forwarder
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution
@@ -1823,8 +1825,8 @@ class Agent(MCPServer):
         task: str,
         request_id: str,
         session_id: str,
-        status_coordinator: StatusScope,
-        status_worker: StatusScope,
+        coordinator_request_id: str,
+        worker_request_id: str,
         initial_message: Optional[ChatMessage] = None,
         llm_override: Optional[object] = None,
         llm_profile_info_override: Optional[str] = None,
@@ -1844,8 +1846,8 @@ class Agent(MCPServer):
             task: Text task description (may be empty if initial_message is provided)
             request_id: Request ID for tracking and cancellation
             session_id: Session ID for conversation history persistence
-            status_coordinator: Status scope for coordinator-level events
-            status_worker: Status scope for worker-level events
+            coordinator_request_id: Request ID for coordinator status scope
+            worker_request_id: Request ID for worker status scope
             initial_message: Optional ChatMessage with multimodal content
             llm_override: Optional LLM client override
             llm_profile_info_override: Optional profile info for status display
@@ -1883,91 +1885,106 @@ class Agent(MCPServer):
             yield {"type": "end"}
             return
 
-        # Emit start event (even if initialization fails later)
+        # Emit start event BEFORE opening status_scope contexts
+        # This ensures frontend has currentRequestId set before any status events arrive
         yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
-        try:
-            # Phase 1: Initialize request and build conversation context
+        # Now open status_scope contexts - their START events will arrive AFTER the start event
+        async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
+                   status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
             try:
-                context = await self._initialize_request_and_conversation(
-                    task=task,
-                    request_id=request_id,
-                    session_id=session_id,
-                    initial_message=initial_message,
-                    llm_override=llm_override,
-                    status_forwarder=status_forwarder
-                )
-            except RuntimeError as e:
-                # LLM not available - emit error and end stream
-                yield {"type": "error", "message": str(e), "request_id": request_id}
-                yield {"type": "end"}
-                return
+                # Phase 1: Initialize request and build conversation context
+                try:
+                    context = await self._initialize_request_and_conversation(
+                        task=task,
+                        request_id=request_id,
+                        session_id=session_id,
+                        initial_message=initial_message,
+                        llm_override=llm_override,
+                        status_forwarder=status_forwarder
+                    )
+                except RuntimeError as e:
+                    # LLM not available - emit error and end stream
+                    yield {"type": "error", "message": str(e), "request_id": request_id}
+                    yield {"type": "end"}
+                    return
 
-            # Helper function to yield any pending status events from per-request forwarder
-            def yield_pending_status_events():
-                if context and context.status_forwarder:
-                    for event in context.status_forwarder.get_pending_events():
-                        yield event
+                # Helper function to yield any pending status events from per-request forwarder
+                def yield_pending_status_events():
+                    if context and context.status_forwarder:
+                        events = context.status_forwarder.get_pending_events()
+                        for event in events:
+                            yield event
 
-            # Track messages from context for updates during loop
-            messages = context.messages
-
-            # Phase 2: Execute main LLM loop with tool execution
-            loop_generator = self._execute_llm_loop(
-                context=context,
-                request_id=request_id,
-                session_id=session_id,
-                status_coordinator=status_coordinator,
-                status_worker=status_worker,
-                llm_override=llm_override,
-                llm_profile_info_override=llm_profile_info_override
-            )
-
-            async for event in loop_generator:
-                yield event
-
-                # Yield any pending status events after each main event
-                # This ensures status messages are delivered in real-time, not batched at the end
+                # CRITICAL: Give the forwarder task CPU time to process queued events
+                # During Phase 1 (synchronous initialization), the forwarder task may not
+                # have had a chance to read events from its queue. This sleep allows it to catch up.
+                await asyncio.sleep(0)
+                
+                # CRITICAL: Yield any pending status events from Phase 1 initialization
+                # This ensures START events from status_scope are delivered before LLM loop
                 for status_event in yield_pending_status_events():
                     yield status_event
 
-                # Track messages updates from context during loop execution
-                if context:
-                    messages = context.messages
+                # Track messages from context for updates during loop
+                messages = context.messages
 
-                # Capture summary and errors from events
-                if event.get("type") == "final" and "summary" in event:
-                    results["summary"] = event["summary"]
-                elif event.get("type") == "error":
-                    results.setdefault("errors", []).append(event.get("message", "Unknown error"))
-                elif event.get("type") == "cancelled":
-                    # Loop was cancelled, update step from event
-                    step = event.get("step", 0) - 1  # Convert to 0-indexed
+                # Phase 2: Execute main LLM loop with tool execution
+                loop_generator = self._execute_llm_loop(
+                    context=context,
+                    request_id=request_id,
+                    session_id=session_id,
+                    status_coordinator=status_coordinator,
+                    status_worker=status_worker,
+                    llm_override=llm_override,
+                    llm_profile_info_override=llm_profile_info_override
+                )
 
-        except Exception as e:
-            logger.exception("Agent execution failed with exception:")
-            yield {"type": "error", "message": f"Agent execution failed: {e}"}
-        finally:
-            # Phase 3: Finalize and cleanup
-            # Note: This runs even if generator is closed early, but we can't yield in that case
-            await self._finalize_request(
-                request_id=request_id,
-                session_id=session_id,
-                status_coordinator=status_coordinator,
-                status_worker=status_worker,
-                context=context,
-                messages=messages if messages else (context.messages if context else None),
-                results=results,
-                step=step
-            )
+                async for event in loop_generator:
+                    yield event
 
-        # Yield final status events and end marker
-        # These won't execute if generator was closed early (GeneratorExit), which is fine
-        if 'yield_pending_status_events' in locals():
-            for status_event in yield_pending_status_events():
-                yield status_event
+                    # Yield any pending status events after each main event
+                    # This ensures status messages are delivered in real-time, not batched at the end
+                    for status_event in yield_pending_status_events():
+                        yield status_event
 
-        yield {"type": "end"}
+                    # Track messages updates from context during loop execution
+                    if context:
+                        messages = context.messages
+
+                    # Capture summary and errors from events
+                    if event.get("type") == "final" and "summary" in event:
+                        results["summary"] = event["summary"]
+                    elif event.get("type") == "error":
+                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
+                    elif event.get("type") == "cancelled":
+                        # Loop was cancelled, update step from event
+                        step = event.get("step", 0) - 1  # Convert to 0-indexed
+
+            except Exception as e:
+                logger.exception("Agent execution failed with exception:")
+                yield {"type": "error", "message": f"Agent execution failed: {e}"}
+            finally:
+                # Phase 3: Finalize and cleanup
+                # Note: This runs even if generator is closed early, but we can't yield in that case
+                await self._finalize_request(
+                    request_id=request_id,
+                    session_id=session_id,
+                    status_coordinator=status_coordinator,
+                    status_worker=status_worker,
+                    context=context,
+                    messages=messages if messages else (context.messages if context else None),
+                    results=results,
+                    step=step
+                )
+
+            # Yield final status events and end marker
+            # These won't execute if generator was closed early (GeneratorExit), which is fine
+            if 'yield_pending_status_events' in locals():
+                for status_event in yield_pending_status_events():
+                    yield status_event
+
+            yield {"type": "end"}
 
 
     async def shutdown(self) -> None:

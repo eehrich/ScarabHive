@@ -27,13 +27,10 @@ logger = logging.getLogger(__name__)
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
-    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None,
-                 status_forwarder: Optional[StatusEventForwarder] = None):
+    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None):
         self.registry = registry  # Legacy registry (empty for now)
         # Optional Agent instance for centralized counters and MCP integration access
         self._agent = agent
-        # Optional StatusEventForwarder for real-time status streaming during tool execution
-        self._status_forwarder = status_forwarder
         # Current session ID and user ID for tool execution context
         self._current_session_id: Optional[str] = None
         self._current_user_id: Optional[str] = None
@@ -144,7 +141,8 @@ class ToolExecutionManager:
         step: int,
         request_id: str | None = None,
         session_id: str | None = None,
-        user_id: str | None = None
+        user_id: str | None = None,
+        status_forwarder: Optional[StatusEventForwarder] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
 
@@ -155,6 +153,8 @@ class ToolExecutionManager:
         Args:
             session_id: Agent session ID to inject into tool params for session-aware tools
             user_id: User ID to inject into tool params for multi-user isolation
+            status_forwarder: Per-request status forwarder for streaming events (MUST be passed per-request
+                             to avoid race conditions with concurrent requests)
 
         Yields:
             Dict with either:
@@ -245,8 +245,10 @@ class ToolExecutionManager:
                 done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
 
                 # Yield any pending status events from sub-agents
-                if self._status_forwarder:
-                    status_events = self._status_forwarder.get_pending_events()
+                # CRITICAL: Use the passed status_forwarder parameter, NOT self._status_forwarder
+                # to avoid race conditions when multiple requests share the same agent instance
+                if status_forwarder:
+                    status_events = status_forwarder.get_pending_events()
                     for status_event in status_events:
                         yield {"type": "status", "event": status_event}
 
@@ -270,16 +272,16 @@ class ToolExecutionManager:
 
             # Drain any remaining status events after all tools complete
             # This ensures .end() events are not lost due to timing issues
-            if self._status_forwarder:
+            if status_forwarder:
                 # Use drain to ensure all events are consumed
                 # Reduced timeout for faster response
-                drained_events = await self._status_forwarder.drain_pending_events(max_wait_ms=30)
+                drained_events = await status_forwarder.drain_pending_events(max_wait_ms=30)
                 for status_event in drained_events:
                     yield {"type": "status", "event": status_event}
 
             # Final check for any remaining status events
-            if self._status_forwarder:
-                status_events = self._status_forwarder.get_pending_events()
+            if status_forwarder:
+                status_events = status_forwarder.get_pending_events()
                 for status_event in status_events:
                     yield {"type": "status", "event": status_event}
 

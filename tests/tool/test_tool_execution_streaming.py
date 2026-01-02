@@ -44,8 +44,7 @@ async def manager_with_streaming(mock_registry):
     forwarder = StatusEventForwarder()
     manager = ToolExecutionManager(
         mock_registry,
-        agent=None,
-        status_forwarder=forwarder
+        agent=None
     )
     
     yield manager, forwarder
@@ -81,7 +80,8 @@ class TestStreamingToolExecution:
             tool_name_mapping={"test_tool": "test_tool"},
             available_tools=["test_tool"],
             step=1,
-            request_id="test123"
+            request_id="test123",
+            status_forwarder=forwarder
         ):
             if item["type"] == "complete":
                 complete_received = True
@@ -113,7 +113,8 @@ class TestStreamingToolExecution:
             tool_name_mapping={"test_tool": "test_tool"},
             available_tools=["test_tool"],
             step=1,
-            request_id="test456"
+            request_id="test456",
+            status_forwarder=forwarder
         ):
             if item["type"] == "complete":
                 messages = item["messages"]
@@ -165,7 +166,8 @@ class TestStreamingToolExecution:
             tool_name_mapping={"test_tool": "test_tool"},
             available_tools=["test_tool"],
             step=1,
-            request_id="req1"
+            request_id="req1",
+            status_forwarder=forwarder
         ):
             if item["type"] == "complete":
                 completed_first = True
@@ -180,7 +182,8 @@ class TestStreamingToolExecution:
             tool_name_mapping={"test_tool": "test_tool"},
             available_tools=["test_tool"],
             step=1,
-            request_id="req2"
+            request_id="req2",
+            status_forwarder=forwarder
         ):
             if item["type"] == "complete":
                 completed_second = True
@@ -205,7 +208,8 @@ class TestStreamingToolExecution:
             tool_name_mapping={"test_tool": "test_tool"},
             available_tools=["test_tool"],
             step=1,
-            request_id="stream_test"
+            request_id="stream_test",
+            status_forwarder=forwarder
         ):
             if item["type"] == "complete":
                 streaming_messages = item["messages"]

@@ -345,7 +345,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                         raise FileNotFoundError(f"Temp file disappeared: {temp_path}")
                     temp_path.replace(file_path)
                     break
-                except (PermissionError, FileNotFoundError) as e:
+                except (PermissionError, FileNotFoundError):
                     if attempt < max_retries - 1:
                         time.sleep(0.01)  # 10ms delay
                     else:
