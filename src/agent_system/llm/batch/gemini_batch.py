@@ -528,9 +528,12 @@ class GeminiBatchClient(BatchProviderClient):
                 if hasattr(batch_job.dest, 'inlined_responses') and batch_job.dest.inlined_responses:
                     responses = batch_job.dest.inlined_responses
                 
+                # Safely access job.requests
+                job_requests = job.requests or []
+                
                 for i, inline_response in enumerate(responses):
-                    if i < len(job.requests):
-                        custom_id = job.requests[i].custom_id
+                    if i < len(job_requests):
+                        custom_id = job_requests[i].custom_id
                     else:
                         custom_id = f"request_{i}"
                     
@@ -626,16 +629,24 @@ class GeminiBatchClient(BatchProviderClient):
                 "custom_id": req.custom_id,
                 "response": None,
                 "error": {"message": "No results found in batch job"},
-            } for req in job.requests]
+            } for req in (job.requests or [])]
             
         except Exception as e:
             logger.error(f"Failed to get batch results: {e}")
             # Return error for all requests
+            requests = job.requests or []
+            if not requests:
+                # No requests to report errors for - return single generic error
+                return [{
+                    "custom_id": "unknown",
+                    "response": None,
+                    "error": {"message": str(e)},
+                }]
             return [{
                 "custom_id": req.custom_id,
                 "response": None,
                 "error": {"message": str(e)},
-            } for req in job.requests]
+            } for req in requests]
     
     async def cancel_batch(self, job_name: str) -> Dict[str, Any]:
         """Cancel a batch job.

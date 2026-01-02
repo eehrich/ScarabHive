@@ -180,8 +180,13 @@ class OpenAIBatchClient(BatchProviderClient):
             }
         }
         """
+        requests = job.requests or []
+        if not requests:
+            logger.warning(f"Batch job {job.job_id} has no requests to write")
+            return
+            
         with open(file_path, "w", encoding="utf-8") as f:
-            for request in job.requests:
+            for request in requests:
                 body: Dict[str, Any] = {
                     "model": request.model,
                     "messages": request.messages,
@@ -200,7 +205,7 @@ class OpenAIBatchClient(BatchProviderClient):
                 # Use custom encoder to handle datetime objects
                 f.write(json.dumps(line, cls=_DateTimeEncoder) + "\n")
         
-        logger.debug(f"Created input file with {len(job.requests)} requests: {file_path}")
+        logger.debug(f"Created input file with {len(requests)} requests: {file_path}")
     
     async def _upload_file(self, file_path: Path) -> str:
         """Upload a file to OpenAI Files API.

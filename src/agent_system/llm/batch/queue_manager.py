@@ -752,12 +752,12 @@ class BatchQueueManager:
             self._active_jobs.pop(job.job_id, None)
             self._completed_jobs[job.job_id] = job
             # Clean up request-to-job mapping for this job's requests
-            for request in job.requests:
+            for request in (job.requests or []):
                 self._request_to_job.pop(request.request_id, None)
         
         # Notify any remaining waiting callers of failure
         if job.status != BatchStatus.COMPLETED:
-            for request in job.requests:
+            for request in (job.requests or []):
                 future = self._request_futures.pop(request.request_id, None)
                 if future and not future.done() and not future.cancelled():
                     future.set_exception(
