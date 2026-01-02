@@ -759,10 +759,17 @@ class BatchQueueManager:
         if job.status != BatchStatus.COMPLETED:
             for request in (job.requests or []):
                 future = self._request_futures.pop(request.request_id, None)
-                if future and not future.done() and not future.cancelled():
-                    future.set_exception(
-                        RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
-                    )
+                if future and not future.done():
+                    # Only set exception if not already cancelled
+                    # (cancelled futures should not have exceptions set on them)
+                    if not future.cancelled():
+                        try:
+                            future.set_exception(
+                                RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
+                            )
+                        except Exception as e:
+                            # Future might be in invalid state, log and continue
+                            logger.debug(f"Could not set exception on future for {request.request_id}: {e}")
         
         logger.debug(
             f"Batch job {job.job_id} completed with status {job.status.value}, "
