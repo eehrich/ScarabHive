@@ -272,9 +272,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.info("Lifespan startup: Initializing MCP integration...")
         await _init_mcp_for_app(app)
         logger.info("MCP integration initialized during lifespan startup")
+        
+        # Start profiling if enabled
+        from .utils.profiling import start_profiling, stop_profiling, PROFILING_ENABLED
+        if PROFILING_ENABLED:
+            await start_profiling()
+            logger.info("Performance profiling started")
+        
         yield
         # Shutdown
         try:
+            # Stop profiling
+            if PROFILING_ENABLED:
+                await stop_profiling()
+                logger.info("Performance profiling stopped")
+            
             # Shutdown batch queue manager first
             await _shutdown_batch_queue_manager(logger)
             
@@ -571,6 +583,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Include API router
     app.include_router(api_router)
+
+    # Include debug/profiling router (available when AGENT_ENABLE_PROFILING=1)
+    from .api.debug_endpoints import router as debug_router
+    app.include_router(debug_router)
+
+    # Add profiling middleware if enabled
+    from .utils.profiling import PROFILING_ENABLED, create_profiling_middleware
+    if PROFILING_ENABLED:
+        import asyncio
+        # Schedule middleware installation (needs event loop)
+        @app.on_event("startup")
+        async def _install_profiling_middleware():
+            await create_profiling_middleware(app)
+            logger.info("Profiling middleware installed")
 
     # Initialize authentication system if enabled
     if config.auth and config.auth.enabled:
