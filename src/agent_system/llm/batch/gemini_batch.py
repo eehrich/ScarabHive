@@ -16,7 +16,7 @@ import base64
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 try:
     from google import genai
@@ -111,17 +111,28 @@ class GeminiBatchClient(BatchProviderClient):
         # Each request is a dict with 'contents' key and optional 'config'
         inline_requests = []
         for req in job.requests:
+            # Extract system instruction from messages
+            system_instruction = self._extract_system_instruction(req.messages)
             contents = self._convert_messages_to_contents(req.messages)
             
             request_dict: Dict[str, Any] = {
                 'contents': contents,
             }
             
+            # Build config with system_instruction and tools
+            config: Dict[str, Any] = {}
+            
+            if system_instruction:
+                config['system_instruction'] = system_instruction
+            
             # Add tools if present - use SDK types.Tool objects
             if req.tools:
                 sdk_tools = self._convert_tools_to_sdk(req.tools)
                 if sdk_tools:
-                    request_dict['config'] = {'tools': sdk_tools}
+                    config['tools'] = sdk_tools
+            
+            if config:
+                request_dict['config'] = config
             
             inline_requests.append(request_dict)
         
@@ -164,6 +175,40 @@ class GeminiBatchClient(BatchProviderClient):
                 ) from e
             raise
     
+    def _extract_system_instruction(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Extract and merge system messages into a single system instruction.
+        
+        Args:
+            messages: List of OpenAI-style messages
+            
+        Returns:
+            Merged system instruction string, or None if no system messages
+        """
+        system_parts: List[str] = []
+        
+        for msg in messages:
+            if msg.get("role") == "system":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    system_parts.append(content.strip())
+                elif isinstance(content, list):
+                    # Handle multimodal content (extract text parts)
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text = part.get("text", "")
+                            if text.strip():
+                                system_parts.append(text.strip())
+        
+        if system_parts:
+            merged = "\n\n".join(system_parts)
+            logger.debug(f"Extracted system instruction: {len(merged)} chars from {len(system_parts)} parts")
+            return merged
+        
+        return None
+
     def _convert_messages_to_contents(
         self,
         messages: List[Dict[str, Any]],

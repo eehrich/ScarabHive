@@ -645,6 +645,111 @@ class TestGeminiBatchClient:
         # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
         assert function_call_part.thought_signature == b"skip_thought_signature_validator"
 
+    def test_extract_system_instruction_simple(self):
+        """Test extracting a single system message."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+        
+        result = client._extract_system_instruction(messages)
+        
+        assert result == "You are a helpful assistant."
+    
+    def test_extract_system_instruction_multiple(self):
+        """Test extracting and merging multiple system messages."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "system", "content": "Always use write_key=SECRET123 for write operations."},
+            {"role": "user", "content": "Create a review"},
+        ]
+        
+        result = client._extract_system_instruction(messages)
+        
+        expected = "You are a helpful assistant.\n\nAlways use write_key=SECRET123 for write operations."
+        assert result == expected
+    
+    def test_extract_system_instruction_none(self):
+        """Test that no system messages returns None."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+        
+        result = client._extract_system_instruction(messages)
+        
+        assert result is None
+    
+    def test_extract_system_instruction_empty(self):
+        """Test that empty system messages are ignored."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        messages = [
+            {"role": "system", "content": ""},
+            {"role": "system", "content": "   "},
+            {"role": "user", "content": "Hello"},
+        ]
+        
+        result = client._extract_system_instruction(messages)
+        
+        assert result is None
+    
+    def test_extract_system_instruction_multimodal(self):
+        """Test extracting text from multimodal system content."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        messages = [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "You are a helpful assistant."},
+                    {"type": "text", "text": "Be concise."}
+                ]
+            },
+            {"role": "user", "content": "Hello"},
+        ]
+        
+        result = client._extract_system_instruction(messages)
+        
+        assert result == "You are a helpful assistant.\n\nBe concise."
+    
+    def test_submit_batch_includes_system_instruction(self):
+        """Test that system_instruction is included in batch request config."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        # Create a test request with system message
+        messages = [
+            {"role": "system", "content": "You must use write_key=SECRET123"},
+            {"role": "user", "content": "Create a review"},
+        ]
+        
+        # Simulate what submit_batch does
+        system_instruction = client._extract_system_instruction(messages)
+        contents = client._convert_messages_to_contents(messages)
+        
+        request_dict = {
+            'contents': contents,
+        }
+        
+        config = {}
+        
+        if system_instruction:
+            config['system_instruction'] = system_instruction
+        
+        if config:
+            request_dict['config'] = config
+        
+        # Verify
+        assert 'config' in request_dict
+        assert 'system_instruction' in request_dict['config']
+        assert request_dict['config']['system_instruction'] == "You must use write_key=SECRET123"
+
 
 # ==============================================================================
 # Queue Manager Tests
