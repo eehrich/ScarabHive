@@ -544,6 +544,18 @@
                             </tr>
                         `;
                     }
+                    
+                    // Also show pending requests row if there are any (requests waiting to be batched)
+                    if (queue.pending_requests > 0) {
+                        rows += `
+                            <tr>
+                                <td><span class="queue-key">${escapeHtml(queue.queue_key)}</span></td>
+                                <td><span class="queue-info">—</span></td>
+                                <td><span class="queue-status-badge status-pending">◐ pending</span></td>
+                                <td colspan="2"><span class="queue-info">${queue.pending_requests} pending (batching in ~${collectionWindow}s)</span></td>
+                            </tr>
+                        `;
+                    }
                 } else {
                     // Queue with no active jobs
                     const info = queue.pending_requests > 0
