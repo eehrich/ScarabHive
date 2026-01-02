@@ -2,6 +2,7 @@
 Security Middleware
 
 Provides rate limiting, CORS, and security headers middleware.
+Uses Pure ASGI implementation for better performance (avoids BaseHTTPMiddleware overhead).
 """
 
 from __future__ import annotations
@@ -11,25 +12,25 @@ from collections import defaultdict
 from typing import Dict, Optional
 import logging
 
-from fastapi import Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 
 logger = logging.getLogger(__name__)
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
+class RateLimitMiddleware:
     """
-    Rate limiting middleware.
+    Rate limiting middleware (Pure ASGI implementation).
     
     Limits requests per IP address to prevent abuse.
+    Uses Pure ASGI for better performance (no BaseHTTPMiddleware overhead).
     """
     
     def __init__(
         self,
-        app,
+        app: ASGIApp,
         requests_per_minute: int = 60,
         enabled: bool = True,
     ):
@@ -37,22 +38,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         Initialize rate limiter.
         
         Args:
-            app: FastAPI application
+            app: ASGI application
             requests_per_minute: Maximum requests per minute per IP
             enabled: Whether rate limiting is enabled
         """
-        super().__init__(app)
+        self.app = app
         self.requests_per_minute = requests_per_minute
         self.enabled = enabled
         self.request_counts: Dict[str, list] = defaultdict(list)
     
-    async def dispatch(self, request: Request, call_next):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Process request with rate limiting."""
-        if not self.enabled:
-            return await call_next(request)
+        if scope["type"] != "http" or not self.enabled:
+            await self.app(scope, receive, send)
+            return
         
-        # Get client IP
-        client_ip = request.client.host if request.client else "unknown"
+        # Get client IP from scope
+        client = scope.get("client")
+        client_ip = client[0] if client else "unknown"
         
         # Clean up old requests (older than 1 minute)
         current_time = time.time()
@@ -64,54 +67,85 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Check rate limit
         if len(self.request_counts[client_ip]) >= self.requests_per_minute:
             logger.warning(f"Rate limit exceeded for IP: {client_ip}")
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many requests. Please try again later."
-            )
+            # Send 429 response directly
+            await send({
+                "type": "http.response.start",
+                "status": 429,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                ],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b'{"detail": "Too many requests. Please try again later."}',
+            })
+            return
         
         # Record this request
         self.request_counts[client_ip].append(current_time)
         
         # Process request
-        response = await call_next(request)
-        return response
+        await self.app(scope, receive, send)
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+class SecurityHeadersMiddleware:
     """
-    Security headers middleware.
+    Security headers middleware (Pure ASGI implementation).
     
     Adds security headers to all responses.
     Allows SAMEORIGIN for plugin panels that need iframe embedding.
+    Uses Pure ASGI for better performance (no BaseHTTPMiddleware overhead).
     """
     
-    async def dispatch(self, request: Request, call_next):
+    def __init__(self, app: ASGIApp):
+        self.app = app
+    
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Add security headers to response."""
-        response = await call_next(request)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         
-        # Security headers
-        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Get path for plugin detection
+        path = scope.get("path", "")
+        is_plugin_path = path.startswith("/plugins/")
         
-        # Allow SAMEORIGIN for plugin panels (they need iframe embedding in the main UI)
-        # Check if the response already set X-Frame-Options or if it's a plugin path
-        if "X-Frame-Options" in response.headers:
-            # Keep existing header (e.g., from plugin endpoints)
-            pass
-        elif request.url.path.startswith("/plugins/"):
-            # Allow iframe embedding for plugin panels
-            response.headers["X-Frame-Options"] = "SAMEORIGIN"
-            # Also set CSP frame-ancestors for better browser compatibility
-            response.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
-        else:
-            # Default: deny iframe embedding for security
-            response.headers["X-Frame-Options"] = "DENY"
-            response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                # Get existing headers
+                headers = list(message.get("headers", []))
+                header_names = {h[0].lower() for h in headers}
+                
+                # Add security headers if not already present
+                if b"x-content-type-options" not in header_names:
+                    headers.append((b"x-content-type-options", b"nosniff"))
+                
+                if b"x-frame-options" not in header_names:
+                    if is_plugin_path:
+                        headers.append((b"x-frame-options", b"SAMEORIGIN"))
+                        headers.append((b"content-security-policy", b"frame-ancestors 'self'"))
+                    else:
+                        headers.append((b"x-frame-options", b"DENY"))
+                        headers.append((b"content-security-policy", b"frame-ancestors 'none'"))
+                
+                if b"x-xss-protection" not in header_names:
+                    headers.append((b"x-xss-protection", b"1; mode=block"))
+                
+                if b"strict-transport-security" not in header_names:
+                    headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
+                
+                if b"referrer-policy" not in header_names:
+                    headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
+                
+                message = {
+                    "type": message["type"],
+                    "status": message["status"],
+                    "headers": headers,
+                }
+            
+            await send(message)
         
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        
-        return response
+        await self.app(scope, receive, send_with_headers)
 
 
 def configure_cors(

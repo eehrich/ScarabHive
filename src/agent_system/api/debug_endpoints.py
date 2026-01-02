@@ -223,6 +223,9 @@ async def profile_dashboard() -> HTMLResponse:
             padding: 8px 12px;
             text-align: left;
             border-bottom: 1px solid #333;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            max-width: 300px;
         }
         th {
             color: #00d4ff;
@@ -236,6 +239,9 @@ async def profile_dashboard() -> HTMLResponse:
             margin: 5px 0;
             font-family: monospace;
             font-size: 12px;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            word-break: break-all;
         }
         .refresh-btn {
             background: #00d4ff;
