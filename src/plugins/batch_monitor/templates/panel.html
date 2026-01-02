@@ -366,16 +366,16 @@
                         <div class="stat-item-value" id="totalQueues">0</div>
                     </div>
                     <div class="stat-item">
-                        <div class="stat-item-label">Active Jobs</div>
+                        <div class="stat-item-label">Jobs Running</div>
                         <div class="stat-item-value" id="activeJobs">0</div>
                     </div>
                 </div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card" title="Pending: Waiting to be batched&#10;Completed/Failed: Total across all batches">
                 <div class="stat-label">Requests</div>
                 <div class="stat-multi">
                     <div class="stat-item">
-                        <div class="stat-item-label">Queued</div>
+                        <div class="stat-item-label">Pending</div>
                         <div class="stat-item-value warning" id="pendingRequests">0</div>
                     </div>
                     <div class="stat-item">
@@ -467,7 +467,8 @@
             
             // Update stats
             document.getElementById('totalQueues').textContent = data.queue_count || 0;
-            const activeCount = data.queues.filter(q => q.active_job).length;
+            // Count all active jobs across all queues
+            const activeCount = data.queues.reduce((sum, q) => sum + (q.active_jobs?.length || 0), 0);
             document.getElementById('activeJobs').textContent = activeCount;
             
             // Calculate pending from queues data
@@ -546,7 +547,7 @@
                 } else {
                     // Queue with no active jobs
                     const info = queue.pending_requests > 0
-                        ? `<span class="queue-info">${queue.pending_requests} queued (submit ~${collectionWindow}s)</span>`
+                        ? `<span class="queue-info">${queue.pending_requests} pending (batching in ~${collectionWindow}s)</span>`
                         : `<span class="queue-info">—</span>`;
                     
                     rows += `
