@@ -653,14 +653,16 @@
                     const historyList = document.getElementById('history-list');
                     historyList.innerHTML = history.slice().reverse().slice(0, 50).map(item => {
                         const date = new Date(item.timestamp * 1000);
-                        const cachedInfo = item.cached_tokens > 0 ? ` (${item.cached_tokens} cached)` : '';
+                        const cachePercent = item.total_tokens > 0
+                            ? ((item.cached_tokens || 0) / item.total_tokens * 100).toFixed(0)
+                            : 0;
+                        const cachedInfo = item.cached_tokens > 0 ? ` (${cachePercent}% cached)` : '';
                         return `
                             <div class="history-item">
                                 <div class="history-time">${date.toLocaleString()}</div>
                                 <div>
                                     <strong>${item.agent_name}</strong> -
-                                    ${item.total_tokens} tokens${cachedInfo}
-                                    (${item.usage_percentage.toFixed(1)}%) -
+                                    ${item.total_tokens} tokens${cachedInfo} -
                                     ${item.message_count} messages
                                 </div>
                             </div>
