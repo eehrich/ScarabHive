@@ -564,7 +564,7 @@ class GeminiBatchClient(BatchProviderClient):
                             
                             if hasattr(response_obj, "candidates") and response_obj.candidates:
                                 candidate = response_obj.candidates[0]
-                                if hasattr(candidate, "content") and candidate.content:
+                                if hasattr(candidate, "content") and candidate.content and hasattr(candidate.content, "parts") and candidate.content.parts:
                                     for part in candidate.content.parts:
                                         if hasattr(part, "function_call") and part.function_call:
                                             # Extract function call
