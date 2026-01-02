@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio  # noqa: F401 - used in nested closures in event_stream()
 import json
 import logging
 import os
@@ -1356,18 +1357,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Keep-alive mechanism: Send periodic heartbeat comments to prevent connection timeout
             # Browser/proxy may drop connection if no data sent for 30-60 seconds during long LLM calls
             keepalive_interval = config.status.sse_keepalive_interval
-            last_event_time = asyncio.get_event_loop().time()
+            
+            # Capture asyncio functions at closure level to avoid scoping issues
+            import asyncio as _asyncio
+            get_time = _asyncio.get_event_loop().time
+            create_task = _asyncio.create_task
+            sleep = _asyncio.sleep
+            CancelledError = _asyncio.CancelledError
+            Queue = _asyncio.Queue
+            QueueEmpty = _asyncio.QueueEmpty
+            
+            last_event_time = get_time()
             
             # Event batching for status events (optimization to reduce overhead)
             status_batch = []
-            last_batch_time = asyncio.get_event_loop().time()
+            last_batch_time = get_time()
             batch_interval = 0.3  # Send batches every 0.3 seconds max (increased from 50ms for better UX)
-            batch_flush_queue = asyncio.Queue()  # Queue for timer-triggered flushes
+            batch_flush_queue = Queue()  # Queue for timer-triggered flushes
             
             async def send_keepalive_if_needed():
                 """Send SSE comment to keep connection alive if no recent data"""
                 nonlocal last_event_time
-                now = asyncio.get_event_loop().time()
+                now = get_time()
                 if now - last_event_time > keepalive_interval:
                     last_event_time = now
                     return ":keepalive\n\n"
@@ -1381,7 +1392,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     batch_payload = {"type": "status_batch", "events": status_batch}
                     yield f"data: {json.dumps(batch_payload, ensure_ascii=False)}\n\n"
                     status_batch = []
-                    last_batch_time = asyncio.get_event_loop().time()
+                    last_batch_time = get_time()
                     last_event_time = last_batch_time
             
             async def batch_timer():
@@ -1389,18 +1400,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 nonlocal status_batch, last_batch_time
                 try:
                     while True:
-                        await asyncio.sleep(batch_interval)
-                        now = asyncio.get_event_loop().time()
+                        await sleep(batch_interval)
+                        now = get_time()
                         # Check if batch has pending events and timeout elapsed
                         if status_batch and (now - last_batch_time) >= batch_interval:
                             # Flush directly - we're in a separate task
                             logger.debug(f"[BATCH] Timer triggered flush: {len(status_batch)} events")
                             await batch_flush_queue.put(True)
-                except asyncio.CancelledError:
+                except CancelledError:
                     pass
             
             # Start background timer
-            timer_task = asyncio.create_task(batch_timer())
+            timer_task = create_task(batch_timer())
 
             try:
                 async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
@@ -1411,7 +1422,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             if status_batch:
                                 async for batch_msg in flush_status_batch():
                                     yield batch_msg
-                    except asyncio.QueueEmpty:
+                    except QueueEmpty:
                         pass
                     
                     # Send keepalive before processing event (in case event processing is slow)
@@ -1420,7 +1431,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         yield keepalive_msg
                     
                     # Update last event time since we're sending real data
-                    last_event_time = asyncio.get_event_loop().time()
+                    last_event_time = get_time()
                     
                     logger.debug("SSE event: %s", ev.get("type"))
 
@@ -1490,12 +1501,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         logger.error("Failed to serialize event %s: %s", ev, e)
                         error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
-            except asyncio.CancelledError:
+            except CancelledError:
                 # Cancel background timer
                 timer_task.cancel()
                 try:
                     await timer_task
-                except asyncio.CancelledError:
+                except CancelledError:
                     pass
                 
                 # Flush any remaining status events before cancellation
@@ -1529,7 +1540,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     timer_task.cancel()
                     try:
                         await timer_task
-                    except asyncio.CancelledError:
+                    except CancelledError:
                         pass
                 
                 # ALWAYS persist session after streaming, even if client disconnects

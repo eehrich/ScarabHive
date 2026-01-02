@@ -532,108 +532,109 @@ class GeminiBatchClient(BatchProviderClient):
             
             # Check for inline responses
             if hasattr(batch_job, 'dest') and batch_job.dest:
-                responses = []
-                
                 # Try inline responses first
+                responses = None
                 if hasattr(batch_job.dest, 'inlined_responses') and batch_job.dest.inlined_responses:
                     responses = batch_job.dest.inlined_responses
                 
-                # Safely access job.requests
-                job_requests = job.requests or []
-                
-                for i, inline_response in enumerate(responses):
-                    if i < len(job_requests):
-                        custom_id = job_requests[i].custom_id
-                    else:
-                        custom_id = f"request_{i}"
+                # Only process if responses exist
+                if responses:
+                    # Safely access job.requests
+                    job_requests = job.requests or []
                     
-                    # Check for error in response
-                    if hasattr(inline_response, "error") and inline_response.error:
-                        results.append({
-                            "custom_id": custom_id,
-                            "response": None,
-                            "error": {"message": str(inline_response.error)},
-                        })
-                    elif hasattr(inline_response, "response") and inline_response.response:
-                        # Extract content from response - check parts directly to avoid
-                        # warning when function_call parts are present
-                        response_obj = inline_response.response
-                        content = ""
-                        tool_calls = []
+                    for i, inline_response in enumerate(responses):
+                        if i < len(job_requests):
+                            custom_id = job_requests[i].custom_id
+                        else:
+                            custom_id = f"request_{i}"
                         
-                        if hasattr(response_obj, "candidates") and response_obj.candidates:
-                            candidate = response_obj.candidates[0]
-                            if hasattr(candidate, "content") and candidate.content:
-                                for part in candidate.content.parts:
-                                    if hasattr(part, "function_call") and part.function_call:
-                                        # Extract function call
-                                        fc = part.function_call
-                                        tool_calls.append({
-                                            "id": f"call_{fc.name}_{len(tool_calls)}",
-                                            "type": "function",
-                                            "function": {
-                                                "name": fc.name,
-                                                "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
-                                            }
-                                        })
-                                    elif hasattr(part, "text") and part.text:
-                                        content += part.text
-                        
-                        # Build message
-                        message: Dict[str, Any] = {
-                            "role": "assistant",
-                            "content": content if content else None,
-                        }
-                        if tool_calls:
-                            message["tool_calls"] = tool_calls
-                        
-                        # Extract usage metadata in OpenAI-compatible format
-                        usage = {}
-                        if hasattr(response_obj, "usage_metadata"):
-                            um = response_obj.usage_metadata
+                        # Check for error in response
+                        if hasattr(inline_response, "error") and inline_response.error:
+                            results.append({
+                                "custom_id": custom_id,
+                                "response": None,
+                                "error": {"message": str(inline_response.error)},
+                            })
+                        elif hasattr(inline_response, "response") and inline_response.response:
+                            # Extract content from response - check parts directly to avoid
+                            # warning when function_call parts are present
+                            response_obj = inline_response.response
+                            content = ""
+                            tool_calls = []
                             
-                            # Debug: Log the full usage_metadata structure
-                            logger.debug(f"SDK usage_metadata: {um}")
+                            if hasattr(response_obj, "candidates") and response_obj.candidates:
+                                candidate = response_obj.candidates[0]
+                                if hasattr(candidate, "content") and candidate.content:
+                                    for part in candidate.content.parts:
+                                        if hasattr(part, "function_call") and part.function_call:
+                                            # Extract function call
+                                            fc = part.function_call
+                                            tool_calls.append({
+                                                "id": f"call_{fc.name}_{len(tool_calls)}",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": fc.name,
+                                                    "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
+                                                }
+                                            })
+                                        elif hasattr(part, "text") and part.text:
+                                            content += part.text
                             
-                            prompt_tokens = getattr(um, "prompt_token_count", 0) or 0
-                            
-                            # SDK has both response_token_count and candidates_token_count
-                            # Try response_token_count first (newer API), fallback to candidates_token_count
-                            completion_tokens = getattr(um, "response_token_count", None) or getattr(um, "candidates_token_count", 0) or 0
-                            
-                            # cached_content_token_count can be None when no caching is used
-                            cached_tokens = getattr(um, "cached_content_token_count", None)
-                            cached_tokens = cached_tokens if cached_tokens is not None else 0
-                            
-                            logger.debug(f"Extracted tokens - prompt: {prompt_tokens}, completion: {completion_tokens}, cached: {cached_tokens}")
-                            
-                            usage = {
-                                "prompt_tokens": prompt_tokens,
-                                "completion_tokens": completion_tokens,
-                                "total_tokens": getattr(um, "total_token_count", 0) or 0,
+                            # Build message
+                            message: Dict[str, Any] = {
+                                "role": "assistant",
+                                "content": content if content else None,
                             }
+                            if tool_calls:
+                                message["tool_calls"] = tool_calls
                             
-                            # Add cached tokens if present
-                            if cached_tokens and cached_tokens > 0:
-                                usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
-                                logger.debug(f"Added cached tokens to usage: {cached_tokens}")
-                        
-                        results.append({
-                            "custom_id": custom_id,
-                            "response": {
-                                "choices": [{
-                                    "message": message,
-                                }],
-                                "usage": usage,  # Per-request token usage
-                            },
-                            "error": None,
-                        })
-                    else:
-                        results.append({
-                            "custom_id": custom_id,
-                            "response": None,
-                            "error": {"message": "No response or error in batch result"},
-                        })
+                            # Extract usage metadata in OpenAI-compatible format
+                            usage = {}
+                            if hasattr(response_obj, "usage_metadata"):
+                                um = response_obj.usage_metadata
+                                
+                                # Debug: Log the full usage_metadata structure
+                                logger.debug(f"SDK usage_metadata: {um}")
+                                
+                                prompt_tokens = getattr(um, "prompt_token_count", 0) or 0
+                                
+                                # SDK has both response_token_count and candidates_token_count
+                                # Try response_token_count first (newer API), fallback to candidates_token_count
+                                completion_tokens = getattr(um, "response_token_count", None) or getattr(um, "candidates_token_count", 0) or 0
+                                
+                                # cached_content_token_count can be None when no caching is used
+                                cached_tokens = getattr(um, "cached_content_token_count", None)
+                                cached_tokens = cached_tokens if cached_tokens is not None else 0
+                                
+                                logger.debug(f"Extracted tokens - prompt: {prompt_tokens}, completion: {completion_tokens}, cached: {cached_tokens}")
+                                
+                                usage = {
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "total_tokens": getattr(um, "total_token_count", 0) or 0,
+                                }
+                                
+                                # Add cached tokens if present
+                                if cached_tokens and cached_tokens > 0:
+                                    usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+                                    logger.debug(f"Added cached tokens to usage: {cached_tokens}")
+                            
+                            results.append({
+                                "custom_id": custom_id,
+                                "response": {
+                                    "choices": [{
+                                        "message": message,
+                                    }],
+                                    "usage": usage,  # Per-request token usage
+                                },
+                                "error": None,
+                            })
+                        else:
+                            results.append({
+                                "custom_id": custom_id,
+                                "response": None,
+                                "error": {"message": "No response or error in batch result"},
+                            })
             
             return results if results else [{
                 "custom_id": req.custom_id,
