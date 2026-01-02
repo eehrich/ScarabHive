@@ -12,7 +12,9 @@ Reference: https://ai.google.dev/gemini-api/docs/batch
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import functools
 import json
 import logging
 from pathlib import Path
@@ -146,13 +148,15 @@ class GeminiBatchClient(BatchProviderClient):
             logger.debug("Submitting batch via SDK: model=%s, requests=%d", 
                         model_name, len(inline_requests))
             
-            batch_job = self._sdk_client.batches.create(
+            # Run sync SDK call in thread pool to avoid blocking event loop
+            # Use functools.partial since to_thread doesn't pass kwargs
+            create_fn = functools.partial(
+                self._sdk_client.batches.create,
                 model=model_name,
                 src=inline_requests,
-                config={
-                    'display_name': f"batch_{job.job_id}",
-                },
+                config={'display_name': f"batch_{job.job_id}"},
             )
+            batch_job = await asyncio.to_thread(create_fn)
             logger.info("Created Gemini batch job: %s", batch_job.name)
             return batch_job.name
         except Exception as e:
@@ -460,7 +464,9 @@ class GeminiBatchClient(BatchProviderClient):
             Status info dict with 'status' key mapping to BatchStatus
         """
         try:
-            job = self._sdk_client.batches.get(name=job_name)
+            # Run sync SDK call in thread pool to avoid blocking event loop
+            get_fn = functools.partial(self._sdk_client.batches.get, name=job_name)
+            job = await asyncio.to_thread(get_fn)
             
             # Map Gemini status to our BatchStatus
             # The state is an enum, access .name for string comparison
@@ -516,7 +522,11 @@ class GeminiBatchClient(BatchProviderClient):
             - total_tokens (Gemini: total_token_count)
         """
         try:
-            batch_job = self._sdk_client.batches.get(name=job.provider_job_id)
+            # Run sync SDK call in thread pool to avoid blocking event loop
+            get_fn = functools.partial(
+                self._sdk_client.batches.get, name=job.provider_job_id
+            )
+            batch_job = await asyncio.to_thread(get_fn)
             
             results = []
             
@@ -658,7 +668,9 @@ class GeminiBatchClient(BatchProviderClient):
             Cancellation response
         """
         try:
-            self._sdk_client.batches.cancel(name=job_name)
+            # Run sync SDK call in thread pool to avoid blocking event loop
+            cancel_fn = functools.partial(self._sdk_client.batches.cancel, name=job_name)
+            await asyncio.to_thread(cancel_fn)
             return {"status": "cancelled"}
         except Exception as e:
             if is_rate_limit_error(e):
@@ -689,7 +701,8 @@ class GeminiBatchClient(BatchProviderClient):
         """
         try:
             # SDK's list() doesn't take page_size, just iterate
-            batches = self._sdk_client.batches.list()
+            # Run sync SDK call in thread pool to avoid blocking event loop
+            batches = await asyncio.to_thread(self._sdk_client.batches.list)
             result = []
             for i, b in enumerate(batches):
                 if i >= limit:
