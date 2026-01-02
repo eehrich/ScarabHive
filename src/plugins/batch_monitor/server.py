@@ -114,14 +114,26 @@ class BatchMonitorWebFactory:
         queues = []
         now = datetime.now(timezone.utc)
         
+        # Retention time for finished jobs (show for 180 seconds after completion)
+        FINISHED_JOB_RETENTION_SECONDS = 60*3
+        
         # _queues is Dict[str, List[BatchRequest]] - queue_key -> pending requests
         # _active_jobs is Dict[str, BatchJob] - job_id -> active job
+        # _completed_jobs is Dict[str, BatchJob] - job_id -> recently completed job
         
-        # Collect all known queue keys (from pending + active jobs)
+        # Collect all known queue keys (from pending + active jobs + recent completed jobs)
         all_queue_keys = set(manager._queues.keys())
         for job in manager._active_jobs.values():
             queue_key = f"{job.provider}:{job.model}"
             all_queue_keys.add(queue_key)
+        
+        # Also include recently completed jobs
+        for job in manager._completed_jobs.values():
+            if job.completed_at:
+                age_seconds = (now - job.completed_at).total_seconds()
+                if age_seconds <= FINISHED_JOB_RETENTION_SECONDS:
+                    queue_key = f"{job.provider}:{job.model}"
+                    all_queue_keys.add(queue_key)
         
         for queue_key in all_queue_keys:
             # Parse provider:model from queue_key
@@ -150,6 +162,27 @@ class BatchMonitorWebFactory:
                         "submitted_at": job.submitted_at.isoformat() if job.submitted_at else None,
                         "elapsed_seconds": elapsed_seconds,
                     })
+            
+            # Also include recently completed jobs (finished within retention period)
+            for job in manager._completed_jobs.values():
+                if f"{job.provider}:{job.model}" == queue_key:
+                    if job.completed_at:
+                        age_seconds = (now - job.completed_at).total_seconds()
+                        if age_seconds <= FINISHED_JOB_RETENTION_SECONDS:
+                            elapsed_seconds = None
+                            if job.submitted_at:
+                                elapsed_seconds = int((job.completed_at - job.submitted_at).total_seconds())
+                            
+                            active_jobs.append({
+                                "job_id": job.job_id,
+                                "provider_job_id": job.provider_job_id,
+                                "status": job.status.value,
+                                "total_requests": len(job.requests) if job.requests else 0,
+                                "completed_count": job.completed_count,
+                                "failed_count": job.failed_count,
+                                "submitted_at": job.submitted_at.isoformat() if job.submitted_at else None,
+                                "elapsed_seconds": elapsed_seconds,
+                            })
             
             # Determine queue status from jobs
             if active_jobs:
