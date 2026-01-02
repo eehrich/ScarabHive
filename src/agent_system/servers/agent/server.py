@@ -1054,13 +1054,19 @@ class Agent(MCPServer):
                 elif chunk_type == "tool_call_delta":
                     # Tool calls are accumulated server-side, we can skip yielding deltas for now
                     # Future: could yield tool_call_delta events for UI to show "Calling get_weather..."
-                    pass
+                    # Still yield status events to prevent delays
+                    for status_event in yield_pending_status_fn():
+                        yield status_event
 
                 elif chunk_type == "final":
                     final_assistant = chunk["assistant"]
                     # Preserve usage data from final chunk
                     if "usage" in chunk:
                         final_usage = chunk["usage"]
+
+            # Yield any remaining status events after streaming completes
+            for status_event in yield_pending_status_fn():
+                yield status_event
 
             # Yield final response with usage data
             if final_assistant:

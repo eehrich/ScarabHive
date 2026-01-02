@@ -423,7 +423,9 @@ class BatchQueueManager:
         
         # Wait for result with cancellation support
         timeout = timeout or (self._max_wait_hours * 3600)
-        check_interval = 0.5  # Check cancellation every 0.5 seconds
+        # Use short interval (50ms) to allow status events to flow through the agent's polling loop
+        # The agent polls every 100ms, so 50ms ensures we yield control frequently enough
+        check_interval = 0.05
         elapsed = 0.0
         
         try:
