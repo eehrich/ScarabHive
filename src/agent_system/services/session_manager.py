@@ -76,6 +76,24 @@ class SessionManager:
         """
         return user_id.replace('..', '_').replace('/', '_').replace('\\', '_')
 
+    def _validate_session_id(self, session_id: str) -> str:
+        """Validate and sanitize session ID.
+        
+        Args:
+            session_id: Raw session ID
+            
+        Returns:
+            Sanitized session ID
+            
+        Raises:
+            ValueError: If session ID contains invalid characters
+        """
+        import re
+        # Session IDs should be alphanumeric with underscores/hyphens only
+        if not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+            raise ValueError(f"Invalid session ID format: {session_id!r}")
+        return session_id
+
     def _get_session_path(self, user_id: str, session_id: str) -> Path:
         """Get the file path for a session.
         
@@ -85,13 +103,19 @@ class SessionManager:
         
         Returns:
             Path object for the session file
+            
+        Raises:
+            ValueError: If session_id contains invalid characters
         """
         # Sanitize user_id to prevent directory traversal
         safe_user_id = self._sanitize_user_id(user_id)
+        # Validate session_id format
+        safe_session_id = self._validate_session_id(session_id)
+        
         user_dir = self.storage_path / safe_user_id
         user_dir.mkdir(parents=True, exist_ok=True)
         
-        return user_dir / f"{session_id}.json"
+        return user_dir / f"{safe_session_id}.json"
 
     def _generate_session_id(self) -> str:
         """Generate a unique session ID.
