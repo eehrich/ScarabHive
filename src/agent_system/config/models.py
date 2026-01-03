@@ -94,7 +94,7 @@ class BatchSystemConfig(BaseModel):
 
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
-    provider: Literal["ollama", "openai", "openai_httpx", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
+    provider: Literal["ollama", "openai", "openai_httpx", "anthropic", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
     model: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # Custom base URL for API endpoint (e.g. Gemini, Ollama, OpenAI-compatible)
@@ -108,7 +108,7 @@ class LLMModelConfig(BaseModel):
     thinking_budget: Optional[int] = None  # Token budget for thinking process (Gemini 2.5+, default: 8192)
     
     # Batch provider (only for provider="batch")
-    batch_provider: Optional[Literal["gemini", "openai"]] = None  # Which batch API to use
+    batch_provider: Optional[Literal["gemini", "openai", "anthropic"]] = None  # Which batch API to use
 
 
 class LLMProfile(BaseModel):
