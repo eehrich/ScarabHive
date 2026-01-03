@@ -1,0 +1,94 @@
+# ComfyUI Plugin Tool Schema
+# Single tool with multiple operations for workflow management
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_workflow"
+      description: >
+        Execute and manage ComfyUI workflows for generating images, audio, video, and other media.
+        Use operation='list' to see available workflows, then 'execute' to run them.
+        Track progress with 'status' and retrieve outputs with 'result'.
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum:
+              - list
+              - execute
+              - status
+              - result
+              - wait_for_completion
+              - server_status
+              - queue
+              - cancel
+            description: >
+              The operation to perform:
+              - list: List available workflows (filterable by category)
+              - execute: Execute a workflow with given parameters
+              - status: Get the current status of a job
+              - result: Retrieve output files from completed job
+              - wait_for_completion: Wait synchronously until a job completes (with timeout)
+              - server_status: Check ComfyUI server connectivity
+              - queue: View pending and running jobs
+              - cancel: Cancel a job by prompt_id
+          
+          workflow_id:
+            type: string
+            description: >
+              ID of the workflow to execute.
+              Required for operation='execute'.
+              Use operation='list' to see available workflow IDs.
+          
+          parameters:
+            type: object
+            description: >
+              Parameters to pass to the workflow.
+              Each workflow has different parameters.
+              Use operation='list' to see required parameters for each workflow.
+            additionalProperties: true
+          
+          prompt_id:
+            type: string
+            description: >
+              The job ID returned from a previous 'execute' operation.
+              Required for operations: status, result, cancel, wait_for_completion.
+          
+          timeout:
+            type: integer
+            default: 300
+            description: >
+              Maximum time in seconds to wait for job completion (for operation='wait_for_completion').
+              Default: 300 seconds (5 minutes).
+          
+          poll_interval:
+            type: integer
+            default: 2
+            description: >
+              Time in seconds between status checks (for operation='wait_for_completion').
+              Default: 2 seconds.
+          
+          category:
+            type: string
+            description: >
+              Filter workflows by category (for operation='list').
+              Common categories: image_generation, audio, video, tts
+          
+          download:
+            type: boolean
+            default: true
+            description: >
+              For operation='result': whether to download files locally.
+              If true (default), files are saved to the output directory.
+          
+          output_prefix:
+            type: string
+            default: "comfy"
+            description: >
+              Prefix for downloaded output files.
+              Useful for organizing outputs from different jobs.
+        
+        required:
+          - operation
+        additionalProperties: false

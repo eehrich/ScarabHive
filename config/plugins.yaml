@@ -139,6 +139,116 @@ plugins:
       enabled: true
       description: "Monitor and query batch queue status"
 
+    comfyui:
+      type: comfyui
+      enabled: true  # ComfyUI server must be running on localhost:8188
+      description: "Execute ComfyUI workflows for image, audio, and video generation"
+      host: "127.0.0.1"
+      port: 8188
+      timeout_seconds: 300
+      output_dir: "data/comfyui/outputs"
+      workflow_files_dir: "config/comfyui_workflows"
+      workflows:
+        - id: stable_audio
+          name: "Stable Audio Generation"
+          description: "Generate audio clips using Stable Audio Open 1.0 with T5 text encoder"
+          category: audio
+          workflow_file: stable_audio.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the audio to generate (e.g., 'ambient electronic music')"
+              node_id: "3"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "noise, distortion, vocals, speech"
+              description: "Things to avoid in the audio"
+              node_id: "4"
+              field: inputs.text
+            - name: duration
+              type: float
+              default: 10.0
+              description: "Audio duration in seconds (1-47)"
+              node_id: "5"
+              field: inputs.seconds_total
+            - name: duration_latent
+              type: float
+              default: 10.0
+              description: "Audio duration in seconds for latent"
+              node_id: "6"
+              field: inputs.seconds
+            - name: steps
+              type: integer
+              default: 50
+              description: "Number of sampling steps (10-200)"
+              node_id: "7"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.0
+              description: "Classifier-free guidance scale (1-20)"
+              node_id: "7"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random-like behavior)"
+              node_id: "7"
+              field: inputs.seed
+
+        - id: sdxl_txt2img
+          name: "Stable Diffusion XL Text-to-Image"
+          description: "High-quality image generation using SDXL base model. Requires sd_xl_base_1.0.safetensors checkpoint."
+          category: image_generation
+          workflow_file: sdxl_txt2img.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the image to generate"
+              node_id: "6"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed"
+              description: "Things to avoid in the image"
+              node_id: "7"
+              field: inputs.text
+            - name: width
+              type: integer
+              default: 1024
+              description: "Image width (512-2048, should be divisible by 8)"
+              node_id: "5"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1024
+              description: "Image height (512-2048, should be divisible by 8)"
+              node_id: "5"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 20
+              description: "Number of sampling steps (15-30 recommended)"
+              node_id: "3"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.0
+              description: "Classifier-free guidance scale (5-10 recommended)"
+              node_id: "3"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "3"
+              field: inputs.seed
+
     twitter_search:
       type: twitter_search
       enabled: false

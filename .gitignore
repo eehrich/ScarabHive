@@ -11,6 +11,7 @@ tmp/
 .DS_Store
 logs/
 *.log
+*.db
 .tmp
 .cache/
 tmp_backlog.md
@@ -24,9 +25,10 @@ data/writer/
 data/context_engineer/
 data/batch_jobs/
 data/batch/
-
+data/comfyui/
 nul
 data/context_usage_tracker.json
 .coverage
 data/writer_books.db
 tests/data/
+

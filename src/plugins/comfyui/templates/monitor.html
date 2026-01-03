@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-green: #3fb950;
+            --accent-blue: #58a6ff;
+            --accent-yellow: #d29922;
+            --accent-red: #f85149;
+            --accent-purple: #a371f7;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .server-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+        
+        .status-online { background: var(--accent-green); }
+        .status-offline { background: var(--accent-red); }
+        .status-pending { background: var(--accent-yellow); }
+        .status-running { background: var(--accent-blue); animation: pulse 1.5s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .stat-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 32px;
+            font-weight: 600;
+            color: var(--accent-blue);
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+        
+        .section {
+            margin-bottom: 24px;
+        }
+        
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .badge-queued { background: rgba(210, 153, 34, 0.2); color: var(--accent-yellow); }
+        .badge-running { background: rgba(88, 166, 255, 0.2); color: var(--accent-blue); }
+        .badge-completed { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
+        .badge-failed { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
+        .badge-cancelled { background: rgba(139, 148, 158, 0.2); color: var(--text-secondary); }
+        
+        .jobs-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .jobs-table th,
+        .jobs-table td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .jobs-table th {
+            background: var(--bg-tertiary);
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+        }
+        
+        .jobs-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .jobs-table tr:hover td {
+            background: var(--bg-tertiary);
+        }
+        
+        .job-id {
+            font-family: monospace;
+            font-size: 12px;
+            color: var(--accent-purple);
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .workflow-name {
+            font-weight: 500;
+        }
+        
+        .timestamp {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: opacity 0.2s;
+        }
+        
+        .btn:hover {
+            opacity: 0.8;
+        }
+        
+        .btn-cancel {
+            background: var(--accent-red);
+            color: white;
+        }
+        
+        .btn-refresh {
+            background: var(--accent-blue);
+            color: white;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+        
+        .outputs-preview {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .output-thumb {
+            width: 48px;
+            height: 48px;
+            border-radius: 4px;
+            background: var(--bg-tertiary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+        
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        
+        .auto-refresh input {
+            accent-color: var(--accent-blue);
+        }
+        
+        footer {
+            margin-top: 40px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎨 {{ title }}</h1>
+            <div class="server-status">
+                <span class="status-indicator" id="serverIndicator"></span>
+                <span id="serverStatus">Checking...</span>
+                <span id="serverHost" style="color: var(--text-secondary)">{{ host }}:{{ port }}</span>
+            </div>
+        </header>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="statTotal">-</div>
+                <div class="stat-label">Total Jobs</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statCompleted">-</div>
+                <div class="stat-label">Completed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statFailed">-</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statPending">-</div>
+                <div class="stat-label">In Queue</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">🔄 Active Jobs</span>
+                <div class="auto-refresh">
+                    <input type="checkbox" id="autoRefresh" checked>
+                    <label for="autoRefresh">Auto-refresh (5s)</label>
+                    <button class="btn btn-refresh" onclick="refreshData()">Refresh Now</button>
+                </div>
+            </div>
+            <table class="jobs-table">
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Workflow</th>
+                        <th>Status</th>
+                        <th>Submitted</th>
+                        <th>Duration</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="activeJobs">
+                    <tr>
+                        <td colspan="6" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">✅ Recent Completed</span>
+            </div>
+            <table class="jobs-table">
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Workflow</th>
+                        <th>Status</th>
+                        <th>Completed</th>
+                        <th>Duration</th>
+                        <th>Outputs</th>
+                    </tr>
+                </thead>
+                <tbody id="completedJobs">
+                    <tr>
+                        <td colspan="6" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <footer>
+            ComfyUI Plugin Monitor • AgentSystem
+        </footer>
+    </div>
+    
+    <script>
+        let refreshInterval = null;
+        const pluginName = '{{ plugin_name }}';
+        
+        function getStatusBadge(status) {
+            const badges = {
+                'queued': '<span class="badge badge-queued">Queued</span>',
+                'running': '<span class="badge badge-running">Running</span>',
+                'completed': '<span class="badge badge-completed">Completed</span>',
+                'failed': '<span class="badge badge-failed">Failed</span>',
+                'cancelled': '<span class="badge badge-cancelled">Cancelled</span>'
+            };
+            return badges[status] || `<span class="badge">${status}</span>`;
+        }
+        
+        function formatTimestamp(ts) {
+            if (!ts) return '-';
+            const date = new Date(ts);
+            return date.toLocaleString();
+        }
+        
+        function formatDuration(seconds) {
+            if (!seconds && seconds !== 0) return '-';
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.round(seconds % 60);
+            return `${mins}m ${secs}s`;
+        }
+        
+        function formatOutputs(outputs) {
+            if (!outputs) return '-';
+            const counts = [];
+            if (outputs.images?.length) counts.push(`🖼️ ${outputs.images.length}`);
+            if (outputs.audio?.length) counts.push(`🔊 ${outputs.audio.length}`);
+            if (outputs.video?.length) counts.push(`🎬 ${outputs.video.length}`);
+            return counts.length ? counts.join(' ') : '-';
+        }
+        
+        async function cancelJob(promptId) {
+            if (!confirm('Cancel this job?')) return;
+            try {
+                const response = await fetch(`/plugins/${pluginName}/jobs/${promptId}/cancel`, {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    refreshData();
+                }
+            } catch (error) {
+                console.error('Cancel failed:', error);
+            }
+        }
+        
+        async function refreshData() {
+            try {
+                const response = await fetch(`/plugins/${pluginName}/jobs`);
+                const data = await response.json();
+                
+                // Update server status
+                const indicator = document.getElementById('serverIndicator');
+                const statusText = document.getElementById('serverStatus');
+                if (data.server_online) {
+                    indicator.className = 'status-indicator status-online';
+                    statusText.textContent = 'Online';
+                } else {
+                    indicator.className = 'status-indicator status-offline';
+                    statusText.textContent = 'Offline';
+                }
+                
+                // Update stats
+                const stats = data.stats || {};
+                document.getElementById('statTotal').textContent = stats.total || 0;
+                document.getElementById('statCompleted').textContent = stats.completed || 0;
+                document.getElementById('statFailed').textContent = stats.failed || 0;
+                document.getElementById('statPending').textContent = 
+                    (data.queue_pending || 0) + (data.queue_running || 0);
+                
+                // Update active jobs table
+                const activeBody = document.getElementById('activeJobs');
+                if (data.jobs && data.jobs.length > 0) {
+                    activeBody.innerHTML = data.jobs.map(job => `
+                        <tr>
+                            <td class="job-id" title="${job.prompt_id}">${job.prompt_id.substring(0, 12)}...</td>
+                            <td class="workflow-name">${job.workflow_name || job.workflow_id || '-'}</td>
+                            <td>${getStatusBadge(job.status)}</td>
+                            <td class="timestamp">${formatTimestamp(job.submitted_at)}</td>
+                            <td>${formatDuration(job.duration_seconds)}</td>
+                            <td>
+                                ${['queued', 'running'].includes(job.status) 
+                                    ? `<button class="btn btn-cancel" onclick="cancelJob('${job.prompt_id}')">Cancel</button>` 
+                                    : '-'}
+                            </td>
+                        </tr>
+                    `).join('');
+                } else {
+                    activeBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active jobs</td></tr>';
+                }
+                
+                // Update completed jobs table
+                const completedBody = document.getElementById('completedJobs');
+                if (data.recent_completed && data.recent_completed.length > 0) {
+                    completedBody.innerHTML = data.recent_completed.map(job => `
+                        <tr>
+                            <td class="job-id" title="${job.prompt_id}">${job.prompt_id.substring(0, 12)}...</td>
+                            <td class="workflow-name">${job.workflow_name || job.workflow_id || '-'}</td>
+                            <td>${getStatusBadge(job.status)}</td>
+                            <td class="timestamp">${formatTimestamp(job.completed_at)}</td>
+                            <td>${formatDuration(job.duration_seconds)}</td>
+                            <td>${formatOutputs(job.outputs)}</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    completedBody.innerHTML = '<tr><td colspan="6" class="empty-state">No completed jobs yet</td></tr>';
+                }
+                
+            } catch (error) {
+                console.error('Refresh failed:', error);
+                document.getElementById('serverIndicator').className = 'status-indicator status-offline';
+                document.getElementById('serverStatus').textContent = 'Error';
+            }
+        }
+        
+        function setupAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            if (checkbox.checked) {
+                refreshInterval = setInterval(refreshData, 5000);
+            }
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) {
+                    refreshInterval = setInterval(refreshData, 5000);
+                } else {
+                    clearInterval(refreshInterval);
+                }
+            });
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshData();
+            setupAutoRefresh();
+        });
+    </script>
+</body>
+</html>

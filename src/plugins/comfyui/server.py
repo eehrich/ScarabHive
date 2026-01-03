@@ -1,0 +1,620 @@
+"""ComfyUI Plugin Server.
+
+MCP server for executing ComfyUI workflows with web monitoring interface.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from pathlib import Path
+from typing import Any, TYPE_CHECKING
+
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from .comfyui_client import ComfyUIClient
+from .job_tracker import ComfyUIJobTracker
+
+if TYPE_CHECKING:
+    from agent_system.config import AgentSystemConfig, MCPConfig
+
+logger = logging.getLogger(__name__)
+
+
+class ComfyUIServer(SchemaBasedMCPServer):
+    """MCP Server for ComfyUI workflow execution.
+    
+    Provides tools for:
+    - Listing configured workflows
+    - Executing workflows with parameters
+    - Checking job status
+    - Retrieving results
+    - Server status monitoring
+    
+    Also provides a web UI for job monitoring.
+    """
+    
+    def __init__(
+        self,
+        name: str,
+        system_config: "AgentSystemConfig",
+        mcp_config: "MCPConfig"
+    ) -> None:
+        """Initialize ComfyUI server.
+        
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration
+        """
+        super().__init__(name, system_config, mcp_config)
+        
+        # Server configuration - directly from mcp_config attributes
+        self.host = getattr(mcp_config, 'host', "127.0.0.1")
+        self.port = getattr(mcp_config, 'port', 8188)
+        self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
+        self.output_dir = Path(getattr(mcp_config, 'output_dir', "data/comfyui/outputs"))
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Parse workflow configurations
+        self.workflows: dict[str, dict[str, Any]] = {}
+        self.workflow_files_dir = Path(getattr(mcp_config, 'workflow_files_dir', "config/comfyui_workflows"))
+        
+        for wf_config in getattr(mcp_config, 'workflows', []):
+            wf_id = wf_config.get("id") if isinstance(wf_config, dict) else None
+            if wf_id:
+                self.workflows[wf_id] = wf_config
+        
+        # Initialize client
+        self.client = ComfyUIClient(
+            host=self.host,
+            port=self.port,
+            output_dir=self.output_dir,
+            timeout=float(self.timeout)
+        )
+        
+        # Initialize job tracker
+        db_path = self.output_dir.parent / "jobs.db"
+        self.job_tracker = ComfyUIJobTracker(db_path)
+        
+        # Templates for web UI
+        self.templates_dir = Path(__file__).parent / "templates"
+        self.templates: Jinja2Templates | None = None
+        if self.templates_dir.exists():
+            self.templates = Jinja2Templates(directory=str(self.templates_dir))
+        
+        logger.info(
+            "ComfyUI plugin initialized: %s:%s with %d workflows",
+            self.host, self.port, len(self.workflows)
+        )
+    
+    # =========================================================================
+    # MCP Tool: workflow
+    # =========================================================================
+    
+    async def workflow(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Main workflow management tool.
+        
+        Operations:
+        - list: Show all configured workflows
+        - execute: Run a workflow with parameters
+        - status: Check execution status of a job
+        - result: Get output files from completed job
+        - server_status: Check if ComfyUI server is online
+        - queue: View current queue
+        - cancel: Cancel a running/queued job
+        
+        Args:
+            params: Tool parameters including operation and args
+            
+        Returns:
+            Dict with operation result
+        """
+        status = params.get("_status")
+        operation = params.get("operation")
+        
+        if not operation:
+            return {"error": "operation is required"}
+        
+        # ===== LIST =====
+        if operation == "list":
+            return await self._op_list(params)
+        
+        # ===== EXECUTE =====
+        elif operation == "execute":
+            return await self._op_execute(params, status)
+        
+        # ===== STATUS =====
+        elif operation == "status":
+            return await self._op_status(params)
+        
+        # ===== RESULT =====
+        elif operation == "result":
+            return await self._op_result(params, status)
+        
+        # ===== WAIT_FOR_COMPLETION =====
+        elif operation == "wait_for_completion":
+            return await self._op_wait_for_completion(params, status)
+        
+        # ===== SERVER_STATUS =====
+        elif operation == "server_status":
+            return await self.client.ping()
+        
+        # ===== QUEUE =====
+        elif operation == "queue":
+            queue_data = await self.client.get_queue()
+            return {
+                "status": "success",
+                "pending": len(queue_data.get("queue_pending", [])),
+                "running": len(queue_data.get("queue_running", [])),
+                "queue": queue_data
+            }
+        
+        # ===== CANCEL =====
+        elif operation == "cancel":
+            prompt_id = params.get("prompt_id")
+            if not prompt_id:
+                return {"error": "prompt_id is required"}
+            
+            result = await self.client.cancel(prompt_id)
+            self.job_tracker.update_status(prompt_id, "cancelled")
+            return result
+        
+        return {"error": f"Unknown operation: {operation}"}
+    
+    async def _op_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List available workflows."""
+        category = params.get("category")
+        workflows = []
+        
+        for wf_id, wf_config in self.workflows.items():
+            if category and wf_config.get("category") != category:
+                continue
+            
+            workflows.append({
+                "id": wf_id,
+                "name": wf_config.get("name", wf_id),
+                "description": wf_config.get("description", ""),
+                "category": wf_config.get("category", "general"),
+                "parameters": [
+                    {
+                        "name": p["name"],
+                        "type": p.get("type", "string"),
+                        "required": p.get("required", False),
+                        "default": p.get("default"),
+                        "description": p.get("description", "")
+                    }
+                    for p in wf_config.get("parameters", [])
+                ]
+            })
+        
+        return {"workflows": workflows, "count": len(workflows)}
+    
+    async def _op_execute(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
+        """Execute a workflow."""
+        workflow_id = params.get("workflow_id")
+        if not workflow_id:
+            return {"error": "workflow_id is required"}
+        
+        if workflow_id not in self.workflows:
+            return {
+                "error": f"Unknown workflow: {workflow_id}",
+                "available": list(self.workflows.keys())
+            }
+        
+        wf_config = self.workflows[workflow_id]
+        workflow_file = self.workflow_files_dir / wf_config.get("workflow_file", f"{workflow_id}.json")
+        
+        # Check if workflow file exists
+        if not workflow_file.exists():
+            return {
+                "error": f"Workflow file not found: {workflow_file}",
+                "hint": "Export workflow from ComfyUI using 'Save (API Format)'"
+            }
+        
+        # Load workflow JSON
+        try:
+            with open(workflow_file, "r", encoding="utf-8") as f:
+                workflow_json = json.load(f)
+        except Exception as e:
+            return {"error": f"Failed to load workflow: {e}"}
+        
+        # Inject parameters
+        user_params = params.get("parameters", {})
+        for param_def in wf_config.get("parameters", []):
+            param_name = param_def["name"]
+            node_id = param_def.get("node_id")
+            field_path = param_def.get("field", "")
+            
+            # Get value: user-provided or default
+            if param_name in user_params:
+                value = user_params[param_name]
+            elif param_def.get("required"):
+                return {"error": f"Required parameter missing: {param_name}"}
+            else:
+                value = param_def.get("default")
+            
+            # Inject into workflow
+            if node_id and field_path and value is not None:
+                self._inject_value(workflow_json, node_id, field_path, value)
+        
+        if status:
+            await status.progress(f"Executing workflow: {wf_config.get('name', workflow_id)}")
+        
+        # Queue workflow
+        queue_result = await self.client.queue_prompt(workflow_json)
+        
+        if "error" in queue_result:
+            return {"error": queue_result["error"]}
+        
+        prompt_id = queue_result.get("prompt_id")
+        if not prompt_id:
+            return {"error": "No prompt_id returned from ComfyUI"}
+        
+        # Register job in tracker
+        self.job_tracker.register_job(
+            prompt_id=prompt_id,
+            workflow_id=workflow_id,
+            workflow_name=wf_config.get("name", workflow_id),
+            parameters=user_params,
+            output_prefix=params.get("output_prefix", "comfy")
+        )
+        
+        if status:
+            await status.end(f"Workflow queued: {prompt_id}")
+        
+        return {
+            "status": "queued",
+            "prompt_id": prompt_id,
+            "workflow_id": workflow_id,
+            "workflow_name": wf_config.get("name", workflow_id),
+            "message": f"Job queued. Check status with operation='status', prompt_id='{prompt_id}'"
+        }
+    
+    async def _op_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Get job status."""
+        prompt_id = params.get("prompt_id")
+        if not prompt_id:
+            return {"error": "prompt_id is required"}
+        
+        # Get live status from ComfyUI
+        live_status = await self.client.get_status(prompt_id)
+        
+        # Update tracker if status changed
+        if live_status["status"] == "running":
+            self.job_tracker.update_status(prompt_id, "running")
+        elif live_status["status"] == "completed":
+            self.job_tracker.update_status(prompt_id, "completed")
+        elif live_status["status"] == "failed":
+            error_msg = str(live_status.get("error", "Unknown error"))
+            self.job_tracker.update_status(prompt_id, "failed", error_msg)
+        
+        # Get tracker data
+        job = self.job_tracker.get_job(prompt_id)
+        
+        if job:
+            return {
+                "status": live_status["status"],
+                "prompt_id": prompt_id,
+                "workflow_id": job.get("workflow_id"),
+                "workflow_name": job.get("workflow_name"),
+                "submitted_at": job.get("submitted_at"),
+                "started_at": job.get("started_at"),
+                "completed_at": job.get("completed_at"),
+                "duration_seconds": job.get("duration_seconds"),
+                "error": live_status.get("error"),
+                "position": live_status.get("position")
+            }
+        
+        return live_status
+    
+    async def _op_result(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
+        """Get job results."""
+        prompt_id = params.get("prompt_id")
+        if not prompt_id:
+            return {"error": "prompt_id is required"}
+        
+        download = params.get("download", True)
+        output_prefix = params.get("output_prefix", "comfy")
+        
+        if status:
+            await status.progress(f"Fetching results for {prompt_id}")
+        
+        # Get history from ComfyUI
+        history = await self.client.get_history(prompt_id)
+        
+        if prompt_id not in history:
+            return {
+                "error": "Job not found or not completed",
+                "prompt_id": prompt_id,
+                "hint": "Use operation='status' to check job state"
+            }
+        
+        job_data = history[prompt_id]
+        
+        # Check for errors
+        if job_data.get("status", {}).get("status_str") == "error":
+            self.job_tracker.update_status(
+                prompt_id, "failed",
+                str(job_data.get("status", {}).get("messages", []))
+            )
+            return {
+                "status": "failed",
+                "prompt_id": prompt_id,
+                "error": job_data.get("status", {}).get("messages", [])
+            }
+        
+        # Process outputs
+        outputs: dict[str, list[dict[str, Any]]] = {
+            "images": [],
+            "audio": [],
+            "video": [],
+            "other": []
+        }
+        
+        for node_id, node_output in job_data.get("outputs", {}).items():
+            for output_type in ["images", "audio", "video", "gifs"]:
+                if output_type in node_output:
+                    for file_info in node_output[output_type]:
+                        file_record: dict[str, Any] = {
+                            "filename": file_info["filename"],
+                            "subfolder": file_info.get("subfolder", ""),
+                            "type": file_info.get("type", "output")
+                        }
+                        
+                        if download:
+                            # Download file locally
+                            try:
+                                file_data = await self.client.get_file(
+                                    file_info["filename"],
+                                    file_info.get("subfolder", ""),
+                                    file_info.get("type", "output")
+                                )
+                                local_filename = f"{output_prefix}_{file_info['filename']}"
+                                local_path = self.output_dir / local_filename
+                                local_path.parent.mkdir(parents=True, exist_ok=True)
+                                local_path.write_bytes(file_data)
+                                file_record["local_path"] = str(local_path)
+                            except Exception as e:
+                                logger.error("Failed to download %s: %s", file_info["filename"], e)
+                                file_record["download_error"] = str(e)
+                        
+                        # Categorize
+                        if output_type == "images":
+                            outputs["images"].append(file_record)
+                        elif output_type == "audio":
+                            outputs["audio"].append(file_record)
+                        elif output_type in ["video", "gifs"]:
+                            outputs["video"].append(file_record)
+                        else:
+                            outputs["other"].append(file_record)
+        
+        # Update tracker
+        self.job_tracker.update_status(prompt_id, "completed")
+        
+        # Store output paths
+        output_paths = {
+            k: [f.get("local_path", f["filename"]) for f in v]
+            for k, v in outputs.items() if v
+        }
+        self.job_tracker.set_outputs(prompt_id, output_paths)
+        
+        if status:
+            total_files = sum(len(v) for v in outputs.values())
+            await status.end(f"Retrieved {total_files} output files")
+        
+        return {
+            "status": "completed",
+            "prompt_id": prompt_id,
+            "outputs": outputs,
+            "total_files": sum(len(v) for v in outputs.values())
+        }
+    
+    async def _op_wait_for_completion(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
+        """Wait synchronously until a job completes or times out.
+        
+        This operation polls the job status internally, eliminating the need
+        for the agent to manually poll with wait + status operations.
+        """
+        prompt_id = params.get("prompt_id")
+        if not prompt_id:
+            return {"error": "prompt_id is required"}
+        
+        timeout = params.get("timeout", 300)  # Default 5 minutes
+        poll_interval = params.get("poll_interval", 2)  # Default 2 seconds
+        
+        import time
+        start_time = time.time()
+        
+        if status:
+            await status.progress(f"Waiting for job {prompt_id} to complete (timeout: {timeout}s)")
+        
+        while True:
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed >= timeout:
+                if status:
+                    await status.error(f"Job {prompt_id} timed out after {timeout}s")
+                return {
+                    "status": "timeout",
+                    "prompt_id": prompt_id,
+                    "elapsed_seconds": elapsed,
+                    "message": f"Job did not complete within {timeout} seconds"
+                }
+            
+            # Check cancellation
+            cancellation_token = params.get("_cancellation_token")
+            if cancellation_token and cancellation_token.is_cancelled:
+                if status:
+                    await status.error(f"Job {prompt_id} wait cancelled by user")
+                return {
+                    "status": "cancelled",
+                    "prompt_id": prompt_id,
+                    "elapsed_seconds": elapsed
+                }
+            
+            # Get job status
+            job_status = await self.client.get_status(prompt_id)
+            current_status = job_status.get("status", "unknown")
+            
+            # Update status message periodically (every 10s)
+            if status and int(elapsed) % 10 == 0:
+                await status.progress(
+                    f"Job {prompt_id}: {current_status} "
+                    f"(elapsed: {int(elapsed)}s, timeout in: {int(timeout - elapsed)}s)"
+                )
+            
+            # Check if completed or failed
+            if current_status == "completed":
+                if status:
+                    await status.end(f"Job {prompt_id} completed after {int(elapsed)}s")
+                return {
+                    "status": "completed",
+                    "prompt_id": prompt_id,
+                    "elapsed_seconds": elapsed
+                }
+            elif current_status == "failed":
+                if status:
+                    await status.error(f"Job {prompt_id} failed after {int(elapsed)}s")
+                return {
+                    "status": "failed",
+                    "prompt_id": prompt_id,
+                    "elapsed_seconds": elapsed,
+                    "error": job_status.get("error", "Unknown error")
+                }
+            
+            # Wait before next poll
+            await asyncio.sleep(poll_interval)
+        
+        return {
+            "prompt_id": prompt_id,
+            "outputs": outputs,
+            "total_files": sum(len(v) for v in outputs.values())
+        }
+    
+    def _inject_value(
+        self,
+        workflow: dict[str, Any],
+        node_id: str,
+        field_path: str,
+        value: Any
+    ) -> None:
+        """Inject a value into the workflow at the specified path.
+        
+        Args:
+            workflow: Workflow dict to modify
+            node_id: Node ID in the workflow
+            field_path: Dot-separated path (e.g., "inputs.text")
+            value: Value to inject
+        """
+        if node_id not in workflow:
+            logger.warning("Node %s not found in workflow", node_id)
+            return
+        
+        parts = field_path.split(".")
+        obj = workflow[node_id]
+        
+        for part in parts[:-1]:
+            if part not in obj:
+                obj[part] = {}
+            obj = obj[part]
+        
+        obj[parts[-1]] = value
+    
+    # =========================================================================
+    # Web UI Router
+    # =========================================================================
+    
+    def get_web_router(self) -> APIRouter:
+        """Get FastAPI router for web monitoring endpoints.
+        
+        Returns:
+            APIRouter with monitoring endpoints
+        """
+        router = APIRouter()
+        
+        @router.get("/", response_class=HTMLResponse)
+        async def monitor_panel(request: Request) -> HTMLResponse:
+            """Render the job monitoring panel."""
+            if not self.templates:
+                return HTMLResponse(
+                    "<h1>ComfyUI Monitor</h1><p>Templates not found</p>",
+                    status_code=500
+                )
+            return self.templates.TemplateResponse(
+                request=request,
+                name="monitor.html",
+                context={
+                    "plugin_name": "comfyui",
+                    "title": "ComfyUI Job Monitor",
+                    "host": self.host,
+                    "port": self.port
+                }
+            )
+        
+        @router.get("/jobs")
+        async def get_jobs() -> JSONResponse:
+            """Get all tracked jobs."""
+            server_status = await self.client.ping()
+            active = self.job_tracker.get_active_jobs()
+            recent = self.job_tracker.get_recent_completed(limit=10)
+            stats = self.job_tracker.get_stats()
+            
+            return JSONResponse({
+                "status": "success",
+                "server_online": server_status.get("status") == "online",
+                "server_host": f"{self.host}:{self.port}",
+                "queue_pending": server_status.get("queue_pending", 0),
+                "queue_running": server_status.get("queue_running", 0),
+                "jobs": active,
+                "recent_completed": recent,
+                "stats": stats
+            })
+        
+        @router.get("/jobs/{prompt_id}")
+        async def get_job_detail(prompt_id: str) -> JSONResponse:
+            """Get details for a specific job."""
+            job = self.job_tracker.get_job(prompt_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="Job not found")
+            
+            # Also get live status
+            live_status = await self.client.get_status(prompt_id)
+            job["live_status"] = live_status.get("status", "unknown")
+            
+            return JSONResponse({"status": "success", "job": job})
+        
+        @router.post("/jobs/{prompt_id}/cancel")
+        async def cancel_job(prompt_id: str) -> JSONResponse:
+            """Cancel a job."""
+            result = await self.client.cancel(prompt_id)
+            self.job_tracker.update_status(prompt_id, "cancelled")
+            return JSONResponse(result)
+        
+        @router.get("/workflows")
+        async def list_workflows() -> JSONResponse:
+            """List configured workflows."""
+            result = await self._op_list({})
+            return JSONResponse(result)
+        
+        @router.get("/stats")
+        async def get_stats() -> JSONResponse:
+            """Get job statistics."""
+            server_status = await self.client.ping()
+            job_stats = self.job_tracker.get_stats()
+            
+            return JSONResponse({
+                "status": "success",
+                "server": server_status,
+                "jobs": job_stats
+            })
+        
+        return router
+
+
+# Plugin factory for discovery
+PLUGIN_FACTORY = ComfyUIServer
