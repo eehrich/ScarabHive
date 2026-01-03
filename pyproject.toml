@@ -8,7 +8,7 @@ version = "0.4.0"
 description = "Flexible AI Agent System using MCP with pluggable servers and FastAPI UI"
 authors = [{ name = "Enrico Ehrich" }]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"  # Python 3.13 not supported due to chromadb compatibility issues
 dependencies = [
     "pydantic>=2.7,<2.11",  # <2.11 needed for chromadb 0.6.3 compatibility
     "pyyaml>=6.0",
