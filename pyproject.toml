@@ -24,6 +24,7 @@ dependencies = [
     "snscrape>=0.7.0",
     "tweepy>=4.14.0",
     "openai>=1.37.0",
+    "anthropic>=0.40.0",  # Anthropic Claude SDK
     "ollama>=0.3.0",
     "google-genai>=1.0.0",  # Official Google Gen AI SDK for Gemini
     "jinja2>=3.1",

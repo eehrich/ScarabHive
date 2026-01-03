@@ -1,7 +1,7 @@
 """Compatibility shim for LLM clients.
 
 This module preserves the old public API (`make_llm`) while the
-implementations live in separate modules for OpenAI, Ollama, and Gemini.
+implementations live in separate modules for OpenAI, Ollama, Gemini, and Anthropic.
 """
 
 from __future__ import annotations
@@ -17,16 +17,18 @@ from .ollama_client import OllamaNativeAsyncClient  # type: ignore
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig  # type: ignore
 from .gemini_client import GeminiClient  # type: ignore
 from .gemini_sdk_client import GeminiSDKClient  # type: ignore
+from .anthropic_client import AnthropicAsyncClient  # type: ignore
 from ..config.models import ModelCapabilitiesConfig
 
 
-def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None) -> LLMClient:
+def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
     - provider=openai_httpx: use HTTPX-based OpenAI client.
     - provider=gemini: use HTTP-based Google Gemini API.
     - provider=gemini_sdk: use official Google Gen AI SDK.
+    - provider=anthropic: use official Anthropic SDK for Claude models.
     - provider=ollama: use Ollama (native or openai-compat) depending on mode.
     """
     import os
@@ -35,6 +37,25 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
         logger.debug("make_llm called provider=%s model=%s api_key_set=%s base_url=%s ollama_mode=%s request_timeout=%s ssl_verify=%s client_type=%s httpx_timeouts=%s", provider, model, bool(api_key), base_url, ollama_mode, request_timeout, ssl_verify, client_type, httpx_timeouts)
     except Exception:
         pass
+
+    if provider == "anthropic":
+        if not api_key:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required when provider=anthropic")
+        
+        return AnthropicAsyncClient(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            context_window=context_window or 200000,
+            request_timeout=request_timeout or 180,
+            max_retries=3,
+            max_tokens=max_tokens or 8192,
+            include_thinking=include_thoughts or False,
+            thinking_budget=thinking_budget,
+            enable_prompt_caching=enable_prompt_caching if enable_prompt_caching is not None else True,
+        )
 
     if provider == "gemini":
         if not api_key:

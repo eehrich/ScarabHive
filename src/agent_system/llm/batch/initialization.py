@@ -408,8 +408,26 @@ async def _register_batch_clients(
                 log.info("Registered Gemini batch client")
                 
             elif batch_provider == "anthropic":
-                # Anthropic batch support can be added here when needed
-                log.debug("Anthropic batch not yet implemented")
+                from .anthropic_batch import AnthropicBatchClient
+                
+                # Get API key from model config or environment
+                api_key = model_config.api_key
+                if not api_key:
+                    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                
+                if not api_key:
+                    log.warning("No Anthropic API key found, skipping Anthropic batch client")
+                    continue
+                
+                # Get default model from config if available
+                default_model = model_config.model or "claude-sonnet-4-20250514"
+                
+                client = AnthropicBatchClient(
+                    api_key=api_key,
+                    default_model=default_model,
+                )
+                queue_manager.register_batch_client("anthropic", client)
+                log.info("Registered Anthropic batch client")
                 
             else:
                 log.warning(f"Unknown batch provider: {batch_provider}")
