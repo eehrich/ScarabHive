@@ -10,7 +10,7 @@ from typing import Any
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
 except Exception:
-    tabulate = None
+    tabulate = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

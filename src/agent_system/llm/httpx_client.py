@@ -69,6 +69,7 @@ class HTTPXOpenAIClient(LLMClient):
         self.parallel_tool_calls = parallel_tool_calls
         self.extra_params = extra_params
         self.capabilities = capabilities or {}
+        self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
 
         # Validate API type - HTTPX client only supports chat_completions
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
@@ -366,12 +367,12 @@ class HTTPXOpenAIClient(LLMClient):
         url = f"{self.base_url}/chat/completions"
 
         # Accumulators for building complete response
-        accumulated_content = []
-        accumulated_tool_calls = {}  # index -> tool call data
+        accumulated_content: list[str] = []
+        accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
         accumulated_usage = None  # usage information from final chunk
 
         # Retry logic with exponential backoff
-        last_exception = None
+        last_exception: Exception | None = None
         for attempt in range(self.max_retries + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
@@ -558,7 +559,7 @@ class HTTPXOpenAIClient(LLMClient):
                     raise Exception(f"Request timed out: {e}") from e
 
             except httpx.HTTPStatusError as e:
-                last_exception = e
+                last_exception = e  # type: ignore[assignment]  # Can be HTTPStatusError, TimeoutException, or NetworkError
                 if e.response.status_code >= 500 and attempt < self.max_retries:
                     # Server error - retry
                     backoff_time = self.retry_backoff * (2 ** attempt)
@@ -573,7 +574,7 @@ class HTTPXOpenAIClient(LLMClient):
                     raise Exception(error_msg) from e
 
             except (httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-                last_exception = e
+                last_exception = e  # type: ignore[assignment]  # Multiple exception types possible
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")

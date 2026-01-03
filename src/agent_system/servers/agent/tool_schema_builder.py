@@ -446,7 +446,8 @@ class ToolSchemaBuilder:
             added_tool_names = []
             for tool_schema in server_tools:
                 if tool_schema.get("type") == "function" and "function" in tool_schema:
-                    individual_tool_name = tool_schema["function"].get("name")
+                    func_schema = tool_schema["function"]
+                    individual_tool_name = func_schema.get("name") if isinstance(func_schema, dict) else None
                     if individual_tool_name:
                         tool_name_mapping[individual_tool_name] = server_name
                         added_tool_names.append(individual_tool_name)

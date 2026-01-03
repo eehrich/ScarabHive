@@ -203,7 +203,7 @@ class BatchQueueManager:
         recovered_count = 0
         
         # Determine which providers to recover from
-        providers_to_check = self._batch_clients.items()
+        providers_to_check: list[tuple[str, Any]] = list(self._batch_clients.items())
         if providers:
             providers_to_check = [
                 (p, c) for p, c in self._batch_clients.items() 

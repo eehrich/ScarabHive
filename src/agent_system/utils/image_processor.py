@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from PIL import Image as PILImage
 
@@ -140,7 +140,7 @@ def create_multimodal_message(
         ImageProcessingError: If any image processing fails
     """
     # Start with text content
-    content_list = [TextContent(text=text)]
+    content_list: List[Union[TextContent, ImageContent]] = [TextContent(text=text)]
     
     # Process each image
     for img_path in image_paths:
@@ -170,4 +170,5 @@ def create_multimodal_message(
             raise ImageProcessingError(f"Unexpected error processing {img_path}: {e}") from e
     
     # Create ChatMessage with multimodal content
-    return ChatMessage(role="user", content=content_list)
+    # Cast to expected union type (TextContent | ImageContent is subset of full union)
+    return ChatMessage(role="user", content=content_list)  # type: ignore[arg-type]  # List type compatible with union

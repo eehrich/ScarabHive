@@ -76,7 +76,7 @@ def convert_openai_messages_to_gemini(
                 result_data = {"error": error_message}
                 logger.warning(f"[Gemini] DEPRECATED: Tool returned old error format. Converted for {tool_name}: {error_message[:100]}")
             
-            content = {
+            content: dict[str, Any] = {
                 "role": "tool",
                 "parts": [{
                     "functionResponse": {
@@ -85,7 +85,7 @@ def convert_openai_messages_to_gemini(
                     }
                 }]
             }
-            contents.append(content)
+            contents.append(content)  # type: ignore[arg-type]
             continue
 
         # Handle assistant with tool_calls

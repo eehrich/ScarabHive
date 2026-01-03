@@ -15,7 +15,7 @@ def get_datetime_context(timezone_str: str = "UTC", location: str = "Unknown") -
     """Generate current datetime context for prompt templates."""
     try:
         if timezone_str.upper() == "UTC":
-            tz = pytz.UTC
+            tz: Any = pytz.UTC  # pytz types are complex, use Any
         else:
             tz = pytz.timezone(timezone_str)
         

@@ -86,8 +86,8 @@ class ToolService:
         server_config = self._mcp.configured_external_servers[server_name]
         
         # Get filtering configuration
-        allowed_tools = server_config.tools.allowed if server_config.tools else None
-        blocked_tools = server_config.tools.blocked if server_config.tools else None
+        allowed_tools: list[str] | None = server_config.tools.allowed if server_config.tools else None
+        blocked_tools: list[str] | None = server_config.tools.blocked if server_config.tools else None
         
         # Get available tools from server
         try:
@@ -127,7 +127,7 @@ class ToolService:
             else:
                 effective_tools = available_tools
             
-            result = {
+            result: dict[str, Any] = {
                 "server": server_name,
                 "available_tools": available_tools,
                 "effective_tools": effective_tools
@@ -135,8 +135,8 @@ class ToolService:
             
             if include_filtering:
                 result["filtering"] = {
-                    "allowed_tools": allowed_tools,
-                    "blocked_tools": blocked_tools
+                    "allowed_tools": allowed_tools or [],
+                    "blocked_tools": blocked_tools or []
                 }
             
             # Clean up temporary client

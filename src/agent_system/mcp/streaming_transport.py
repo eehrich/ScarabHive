@@ -55,7 +55,7 @@ class HTTPStreamingTransport(MCPTransport):
     4. Optional: GET request opens standalone SSE stream for server messages
     """
 
-    def __init__(self, url: str = None, base_url: str = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True,
+    def __init__(self, url: Optional[str] = None, base_url: Optional[str] = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True,
                  connection_limit: int = 10, connection_limit_per_host: int = 5):
         """
         Initialize Streamable HTTP transport.
@@ -72,7 +72,7 @@ class HTTPStreamingTransport(MCPTransport):
         # Accept both url and base_url for backward compatibility
         if url is None and base_url is None:
             raise ValueError("Either url or base_url must be provided")
-        self.url = url or base_url
+        self.url: str = url or base_url  # type: ignore[assignment]  # Either url or base_url is guaranteed non-None
         self.timeout = timeout
         self.ssl_verify = ssl_verify
         self.connection_limit = connection_limit
@@ -342,7 +342,7 @@ class HTTPStreamingTransport(MCPTransport):
 
     def _message_to_dict(self, message: MCPMessage) -> Dict[str, Any]:
         """Convert MCPMessage to JSON-RPC dict"""
-        payload = {
+        payload: Dict[str, Any] = {
             'jsonrpc': message.jsonrpc or '2.0'
         }
         
@@ -355,12 +355,13 @@ class HTTPStreamingTransport(MCPTransport):
         if message.result is not None:
             payload['result'] = message.result
         if message.error:
-            payload['error'] = {
+            error_dict: Dict[str, Any] = {
                 'code': message.error.code,
                 'message': message.error.message
             }
             if message.error.data:
-                payload['error']['data'] = message.error.data
+                error_dict['data'] = message.error.data
+            payload['error'] = error_dict
         
         return payload
 

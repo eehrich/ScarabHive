@@ -298,7 +298,7 @@ class MCPServerRateLimitConfig(BaseModel):
 class MCPServerAuthConfig(BaseModel):
     """Authentication configuration for MCP server mode"""
     required: bool = True
-    methods: List[Literal["jwt", "api_key"]] = Field(default_factory=lambda: ["jwt", "api_key"])
+    methods: List[Literal["jwt", "api_key"]] = Field(default_factory=lambda: ["jwt", "api_key"])  # type: ignore[arg-type]  # Pydantic default_factory complexity
 
 
 class MCPServerModeConfig(BaseModel):

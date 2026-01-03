@@ -216,8 +216,9 @@ class ToolDiscoveryService:
         """
         try:
             server = self.registry.get(tool_name)
-            if hasattr(server, '_mcp_tool_visible'):
-                if not server._mcp_tool_visible:
+            if server and hasattr(server, '_mcp_tool_visible'):
+                visible = getattr(server, '_mcp_tool_visible', True)
+                if not visible:
                     logger.debug(
                         f"Skipping agent '{tool_name}' in tool discovery "
                         f"(not exposed as tool: _mcp_tool_visible=False)"
