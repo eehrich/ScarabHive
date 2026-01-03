@@ -101,6 +101,9 @@ class BasicOperationsServer(SchemaBasedMCPServer):
             # Initial status update (English) - always include message (user message or "Waiting")
             await status.progress(f"{message}: starting countdown - {seconds:.1f}s")
             
+            last_update_time = start_time  # Track when we last sent an update
+            status_update_interval = 10.0  # Send status updates every 10 seconds
+            
             while True:
                 current_time = time.time()
                 remaining = end_time - current_time
@@ -121,8 +124,10 @@ class BasicOperationsServer(SchemaBasedMCPServer):
                         "cancelled": True
                     }
                 
-                # Update status with countdown (English) - always include message
-                await status.progress(f"{message}: {remaining:.1f}s remaining")
+                # Only send status update every 10 seconds
+                if current_time - last_update_time >= status_update_interval:
+                    await status.progress(f"{message}: {remaining:.1f}s remaining")
+                    last_update_time = current_time
                 
                 # Sleep for update interval or remaining time, whichever is smaller
                 sleep_time = min(update_interval, remaining)
