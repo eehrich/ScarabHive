@@ -490,10 +490,15 @@ class ComfyUIServer(SchemaBasedMCPServer):
             # Wait before next poll
             await asyncio.sleep(poll_interval)
         
+        # Timeout reached
+        if status:
+            await status.error(f"Job {prompt_id} did not complete within {timeout}s")
+        
         return {
+            "status": "timeout",
             "prompt_id": prompt_id,
-            "outputs": outputs,
-            "total_files": sum(len(v) for v in outputs.values())
+            "elapsed_seconds": elapsed,
+            "error": f"Job did not complete within {timeout} seconds"
         }
     
     def _inject_value(
