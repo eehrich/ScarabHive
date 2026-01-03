@@ -105,7 +105,7 @@ class ComfyUIClient:
         except asyncio.TimeoutError:
             logger.warning("Timeout queuing prompt to ComfyUI")
             return {"status": "error", "error": "Connection timeout - ComfyUI server may be busy"}
-        except aiohttp.ClientConnectorError as e:
+        except aiohttp.ClientConnectorError:
             logger.warning("Cannot connect to ComfyUI server at %s:%s", self.host, self.port)
             return {"status": "error", "error": f"Cannot connect to ComfyUI server at {self.host}:{self.port}. Is it running?"}
         except Exception as e:
