@@ -5,6 +5,7 @@ Provides web UI endpoints for real-time log streaming and viewing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -98,6 +99,68 @@ class LogViewerWebEndpoints(PluginWebInterface):
             grouped.append(current_entry)
 
         return grouped
+
+    async def _read_last_lines_async(self, file_path: Path, max_lines: int) -> List[str]:
+        """Read last N lines from file efficiently (from end backwards)"""
+        try:
+            # Run file reading in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._read_last_lines_sync, file_path, max_lines)
+        except Exception as e:
+            log_viewer_logger.error(f"Error reading file {file_path}: {e}")
+            return []
+
+    def _read_last_lines_sync(self, file_path: Path, max_lines: int) -> List[str]:
+        """Read last N lines from file efficiently using tail-like approach"""
+        CHUNK_SIZE = 8192  # Read in 8KB chunks
+        
+        with open(file_path, 'rb') as f:
+            # Get file size
+            f.seek(0, 2)  # Seek to end
+            file_size = f.tell()
+            
+            if file_size == 0:
+                return []
+            
+            # Start from end and read backwards
+            lines = []
+            remaining = file_size
+            
+            while remaining > 0 and len(lines) < max_lines:
+                # Calculate how much to read
+                chunk_size = min(CHUNK_SIZE, remaining)
+                remaining -= chunk_size
+                
+                # Seek to position and read chunk
+                f.seek(remaining)
+                chunk = f.read(chunk_size)
+                
+                # Decode chunk (handle potential encoding issues)
+                try:
+                    text = chunk.decode('utf-8')
+                except UnicodeDecodeError:
+                    text = chunk.decode('utf-8', errors='replace')
+                
+                # Split into lines
+                chunk_lines = text.split('\n')
+                
+                # If not first chunk, merge with previous partial line
+                if lines:
+                    chunk_lines[-1] += lines[0]
+                    lines = chunk_lines + lines[1:]
+                else:
+                    lines = chunk_lines
+                
+                # If we have enough lines, stop
+                if len(lines) >= max_lines:
+                    break
+            
+            # Remove empty line at end if exists
+            if lines and not lines[-1]:
+                lines = lines[:-1]
+            
+            # Return last N lines in correct order
+            return lines[-max_lines:] if len(lines) > max_lines else lines
 
     def _parse_log_line(self, line: str) -> Dict[str, Any]:
         """Parse log line to extract timestamp, level, and message"""
@@ -209,90 +272,94 @@ class LogViewerWebEndpoints(PluginWebInterface):
             return True
 
         try:
-            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                # Get all lines for proper line number calculation
-                file_lines = f.readlines()
+            # Get file stats first (fast operation)
+            file_stat = log_path.stat()
+            parsed_lines = []
 
-                parsed_lines = []
-                file_stat = log_path.stat()
+            if since_timestamp is None:
+                # Initial load - read last N*buffer_multiplier lines from file efficiently
+                buffer_multiplier = 10 if (level_filter or search_term) else 3
+                max_lines_to_read = lines * buffer_multiplier
+                
+                # Read from end of file asynchronously
+                recent_lines = await self._read_last_lines_async(log_path, max_lines_to_read)
+                
+                # Group multiline entries
+                grouped_entries = self._group_multiline_entries(recent_lines)
 
-                if since_timestamp is None:
-                    # Initial load - get last N lines and group multiline entries
-                    # Read more lines than needed to account for filtering
-                    buffer_multiplier = 10 if (level_filter or search_term) else 3
-                    recent_lines = file_lines[-lines*buffer_multiplier:] if len(file_lines) > lines*buffer_multiplier else file_lines
-                    grouped_entries = self._group_multiline_entries(recent_lines)
+                # Apply filters and collect matching entries
+                for entry in grouped_entries:
+                    # Filter out log viewer requests to avoid recursion
+                    if '/plugins/log_viewer' in entry['main_line']:
+                        continue
 
-                    # Apply filters and collect matching entries
-                    for entry in grouped_entries:
+                    parsed_line = self._parse_log_line(entry['main_line'].rstrip())
+                    parsed_line['line_number'] = entry['line_number']
+                    parsed_line['full_content'] = entry['full_content']
+                    parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
+                    
+                    # Apply filters
+                    if matches_filters(parsed_line):
+                        parsed_lines.append(parsed_line)
+                
+                # Take only the last N filtered entries
+                parsed_lines = parsed_lines[-lines:]
+            else:
+                # Streaming mode - read last N*3 lines efficiently
+                buffer_multiplier = 3
+                max_lines_to_read = lines * buffer_multiplier
+                
+                # Read from end of file asynchronously
+                recent_lines = await self._read_last_lines_async(log_path, max_lines_to_read)
+                
+                # Calculate starting line number (approximate)
+                start_line_num = 1  # We don't know total lines anymore, but line_num is mainly for debugging
+                
+                for idx, line in enumerate(recent_lines):
+                    line_num = start_line_num + idx
+                    if line.strip():  # Skip empty lines
                         # Filter out log viewer requests to avoid recursion
-                        if '/plugins/log_viewer' in entry['main_line']:
+                        if '/plugins/log_viewer' in line:
                             continue
 
-                        parsed_line = self._parse_log_line(entry['main_line'].rstrip())
-                        parsed_line['line_number'] = entry['line_number']
-                        parsed_line['full_content'] = entry['full_content']
-                        parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
+                        # Only process lines that look like new log entries (have timestamp)
+                        timestamp_pattern = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})'
+                        if not re.match(timestamp_pattern, line):
+                            continue  # Skip continuation lines during streaming for now
+
+                        parsed_line = self._parse_log_line(line.rstrip())
+
+                        # Only include lines newer than since_timestamp
+                        try:
+                            # Handle timestamp format: "2025-09-25 01:34:13,790"
+                            timestamp_str = parsed_line['timestamp']
+                            # Convert comma to dot for microseconds
+                            timestamp_str = timestamp_str.replace(',', '.')
+                            line_time = time.mktime(time.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f'))
+                            if line_time <= since_timestamp:
+                                continue
+                            log_viewer_logger.debug(f"Including line {line_num} with timestamp {line_time} > {since_timestamp}")
+                        except (ValueError, KeyError) as e:
+                            # If we can't parse timestamp, skip to be safe during streaming
+                            log_viewer_logger.debug(f"Skipping line {line_num} due to timestamp parse error: {e}")
+                            continue
+
+                        parsed_line['line_number'] = line_num
+                        parsed_line['full_content'] = line.rstrip()  # For streaming, same as main line for now
+                        parsed_line['has_multiline'] = False
                         
                         # Apply filters
                         if matches_filters(parsed_line):
                             parsed_lines.append(parsed_line)
-                    
-                    # Take only the last N filtered entries
-                    parsed_lines = parsed_lines[-lines:]
-                else:
-                    # Streaming mode - only check recent lines for efficiency
-                    # Get last N*3 lines to have enough buffer for filtering
-                    recent_lines = file_lines[-lines*3:] if len(file_lines) > lines*3 else file_lines
-                    
-                    # Calculate starting line number for recent_lines
-                    start_line_num = max(1, len(file_lines) - len(recent_lines) + 1)
-                    
-                    for idx, line in enumerate(recent_lines):
-                        line_num = start_line_num + idx
-                        if line.strip():  # Skip empty lines
-                            # Filter out log viewer requests to avoid recursion
-                            if '/plugins/log_viewer' in line:
-                                continue
 
-                            # Only process lines that look like new log entries (have timestamp)
-                            timestamp_pattern = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})'
-                            if not re.match(timestamp_pattern, line):
-                                continue  # Skip continuation lines during streaming for now
-
-                            parsed_line = self._parse_log_line(line.rstrip())
-
-                            # Only include lines newer than since_timestamp
-                            try:
-                                # Handle timestamp format: "2025-09-25 01:34:13,790"
-                                timestamp_str = parsed_line['timestamp']
-                                # Convert comma to dot for microseconds
-                                timestamp_str = timestamp_str.replace(',', '.')
-                                line_time = time.mktime(time.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f'))
-                                if line_time <= since_timestamp:
-                                    continue
-                                log_viewer_logger.debug(f"Including line {line_num} with timestamp {line_time} > {since_timestamp}")
-                            except (ValueError, KeyError) as e:
-                                # If we can't parse timestamp, skip to be safe during streaming
-                                log_viewer_logger.debug(f"Skipping line {line_num} due to timestamp parse error: {e}")
-                                continue
-
-                            parsed_line['line_number'] = line_num
-                            parsed_line['full_content'] = line.rstrip()  # For streaming, same as main line for now
-                            parsed_line['has_multiline'] = False
-                            
-                            # Apply filters
-                            if matches_filters(parsed_line):
-                                parsed_lines.append(parsed_line)
-
-                log_viewer_logger.debug(f"Returning {len(parsed_lines)} lines for {log_name} (streaming: {since_timestamp is not None}, filters: levels={levels}, search={search})")
-                return JSONResponse({
-                    "lines": parsed_lines,
-                    "total_lines": len(file_lines),
-                    "file_size": file_stat.st_size,
-                    "last_modified": file_stat.st_mtime,
-                    "current_timestamp": time.time()
-                })
+            log_viewer_logger.debug(f"Returning {len(parsed_lines)} lines for {log_name} (streaming: {since_timestamp is not None}, filters: levels={levels}, search={search})")
+            return JSONResponse({
+                "lines": parsed_lines,
+                "total_lines": -1,  # Unknown when reading from end (would need full file scan)
+                "file_size": file_stat.st_size,
+                "last_modified": file_stat.st_mtime,
+                "current_timestamp": time.time()
+            })
         except Exception as e:
             log_viewer_logger.error(f"Failed to read log file {log_name}: {str(e)}")
             return JSONResponse({"error": f"Failed to read log file: {str(e)}"})
