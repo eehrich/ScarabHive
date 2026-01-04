@@ -5,293 +5,300 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }}</title>
     <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --bg-tertiary: #21262d;
-            --border-color: #30363d;
-            --text-primary: #c9d1d9;
-            --text-secondary: #8b949e;
-            --accent-green: #3fb950;
-            --accent-blue: #58a6ff;
-            --accent-yellow: #d29922;
-            --accent-red: #f85149;
-            --accent-purple: #a371f7;
-        }
-        
         * {
-            box-sizing: border-box;
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
         }
-        
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.5;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
             padding: 20px;
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
+            padding-right: 10px;
         }
-        
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
+
         h1 {
             font-size: 24px;
-            font-weight: 600;
+            margin-bottom: 20px;
+            color: #569cd6;
         }
-        
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 30px;
+            margin-right: 5px;
+        }
+
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 12px;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #858585;
+            margin-bottom: 5px;
+            white-space: nowrap;
+        }
+
+        .stat-value {
+            font-size: clamp(12px, 3vw, 22px);
+            font-weight: 600;
+            color: #4ec9b0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+
+        button.btn-cancel {
+            background: #a1260d;
+            padding: 4px 12px;
+            font-size: 12px;
+        }
+
+        button.btn-cancel:hover {
+            background: #c72e0d;
+        }
+
+        .section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #ce9178;
+        }
+
         .server-status {
             display: flex;
             align-items: center;
             gap: 8px;
-            padding: 8px 16px;
-            background: var(--bg-secondary);
-            border-radius: 6px;
-            font-size: 14px;
+            padding: 8px 12px;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            font-size: 13px;
+            margin-bottom: 20px;
         }
-        
+
         .status-indicator {
             width: 10px;
             height: 10px;
             border-radius: 50%;
         }
-        
-        .status-online { background: var(--accent-green); }
-        .status-offline { background: var(--accent-red); }
-        .status-pending { background: var(--accent-yellow); }
-        .status-running { background: var(--accent-blue); animation: pulse 1.5s infinite; }
-        
+
+        .status-online { background: #4ec9b0; }
+        .status-offline { background: #f48771; }
+        .status-running { 
+            background: #569cd6; 
+            animation: pulse 1.5s infinite;
+        }
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }
-        
-        .stat-card {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 16px;
-            text-align: center;
-        }
-        
-        .stat-value {
-            font-size: 32px;
-            font-weight: 600;
-            color: var(--accent-blue);
-        }
-        
-        .stat-label {
-            font-size: 12px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-        }
-        
-        .section {
-            margin-bottom: 24px;
-        }
-        
-        .section-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-        
-        .section-title {
-            font-size: 16px;
-            font-weight: 600;
-        }
-        
-        .badge {
-            display: inline-flex;
-            align-items: center;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        
-        .badge-queued { background: rgba(210, 153, 34, 0.2); color: var(--accent-yellow); }
-        .badge-running { background: rgba(88, 166, 255, 0.2); color: var(--accent-blue); }
-        .badge-completed { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
-        .badge-failed { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
-        .badge-cancelled { background: rgba(139, 148, 158, 0.2); color: var(--text-secondary); }
-        
-        .jobs-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: var(--bg-secondary);
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        
-        .jobs-table th,
-        .jobs-table td {
-            padding: 12px 16px;
-            text-align: left;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .jobs-table th {
-            background: var(--bg-tertiary);
-            font-weight: 600;
-            font-size: 12px;
-            text-transform: uppercase;
-            color: var(--text-secondary);
-        }
-        
-        .jobs-table tr:last-child td {
-            border-bottom: none;
-        }
-        
-        .jobs-table tr:hover td {
-            background: var(--bg-tertiary);
-        }
-        
-        .job-id {
-            font-family: monospace;
-            font-size: 12px;
-            color: var(--accent-purple);
-            max-width: 150px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        
-        .workflow-name {
-            font-weight: 500;
-        }
-        
-        .timestamp {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-        
-        .btn {
-            padding: 6px 12px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 12px;
-            font-weight: 500;
-            transition: opacity 0.2s;
-        }
-        
-        .btn:hover {
-            opacity: 0.8;
-        }
-        
-        .btn-cancel {
-            background: var(--accent-red);
-            color: white;
-        }
-        
-        .btn-refresh {
-            background: var(--accent-blue);
-            color: white;
-        }
-        
-        .empty-state {
-            text-align: center;
-            padding: 40px;
-            color: var(--text-secondary);
-        }
-        
-        .outputs-preview {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        
-        .output-thumb {
-            width: 48px;
-            height: 48px;
-            border-radius: 4px;
-            background: var(--bg-tertiary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-            color: var(--text-secondary);
-        }
-        
+
         .auto-refresh {
             display: flex;
             align-items: center;
             gap: 8px;
-            font-size: 14px;
+            font-size: 13px;
+            color: #858585;
         }
-        
+
         .auto-refresh input {
-            accent-color: var(--accent-blue);
+            accent-color: #0e639c;
         }
-        
-        footer {
-            margin-top: 40px;
-            padding-top: 16px;
-            border-top: 1px solid var(--border-color);
-            text-align: center;
-            color: var(--text-secondary);
+
+        .jobs-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .jobs-table th,
+        .jobs-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .jobs-table th {
+            background: #1e1e1e;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #858585;
+        }
+
+        .jobs-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .jobs-table tr:hover td {
+            background: #2a2d2e;
+        }
+
+        .job-id {
+            font-family: 'Consolas', monospace;
             font-size: 12px;
+            color: #a371f7;
+        }
+
+        .workflow-name {
+            font-weight: 500;
+            color: #569cd6;
+        }
+
+        .timestamp {
+            font-size: 12px;
+            color: #858585;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .badge-queued {
+            background: rgba(206, 145, 120, 0.2);
+            color: #ce9178;
+        }
+
+        .badge-running {
+            background: rgba(86, 156, 214, 0.2);
+            color: #569cd6;
+        }
+
+        .badge-completed {
+            background: rgba(78, 201, 176, 0.2);
+            color: #4ec9b0;
+        }
+
+        .badge-failed {
+            background: rgba(244, 135, 113, 0.2);
+            color: #f48771;
+        }
+
+        .badge-cancelled {
+            background: rgba(133, 133, 133, 0.2);
+            color: #858585;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #858585;
+            font-size: 13px;
+        }
+
+        .outputs-preview {
+            font-size: 12px;
+        }
+
+        .error {
+            color: #f48771;
+            padding: 10px;
+            background: rgba(244, 135, 113, 0.1);
+            border-radius: 4px;
+            margin-bottom: 10px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>🎨 {{ title }}</h1>
-            <div class="server-status">
-                <span class="status-indicator" id="serverIndicator"></span>
-                <span id="serverStatus">Checking...</span>
-                <span id="serverHost" style="color: var(--text-secondary)">{{ host }}:{{ port }}</span>
-            </div>
-        </header>
+        <h1>🎨 {{ title }}</h1>
+        
+        <div class="server-status">
+            <span class="status-indicator" id="serverIndicator"></span>
+            <span id="serverStatus">Checking...</span>
+            <span style="color: #858585; margin-left: 8px;">{{ host }}:{{ port }}</span>
+        </div>
         
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-value" id="statTotal">-</div>
                 <div class="stat-label">Total Jobs</div>
+                <div class="stat-value" id="statTotal">-</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="statCompleted">-</div>
                 <div class="stat-label">Completed</div>
+                <div class="stat-value" id="statCompleted">-</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="statFailed">-</div>
                 <div class="stat-label">Failed</div>
+                <div class="stat-value" id="statFailed">-</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="statPending">-</div>
                 <div class="stat-label">In Queue</div>
+                <div class="stat-value" id="statPending">-</div>
             </div>
         </div>
         
         <div class="section">
-            <div class="section-header">
-                <span class="section-title">🔄 Active Jobs</span>
-                <div class="auto-refresh">
-                    <input type="checkbox" id="autoRefresh" checked>
-                    <label for="autoRefresh">Auto-refresh (5s)</label>
-                    <button class="btn btn-refresh" onclick="refreshData()">Refresh Now</button>
-                </div>
+            <h2>🔄 Active Jobs</h2>
+            <div class="controls">
+                <button class="icon-only" onclick="refreshData()" title="Refresh">🔄</button>
+                <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">⏱️</button>
             </div>
             <table class="jobs-table">
                 <thead>
@@ -313,9 +320,7 @@
         </div>
         
         <div class="section">
-            <div class="section-header">
-                <span class="section-title">✅ Recent Completed</span>
-            </div>
+            <h2>✅ Recent Completed</h2>
             <table class="jobs-table">
                 <thead>
                     <tr>
@@ -334,10 +339,6 @@
                 </tbody>
             </table>
         </div>
-        
-        <footer>
-            ComfyUI Plugin Monitor • AgentSystem
-        </footer>
     </div>
     
     <script>
@@ -461,24 +462,24 @@
             }
         }
         
-        function setupAutoRefresh() {
-            const checkbox = document.getElementById('autoRefresh');
-            if (checkbox.checked) {
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Inactive';
+            } else {
                 refreshInterval = setInterval(refreshData, 5000);
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
             }
-            checkbox.addEventListener('change', () => {
-                if (checkbox.checked) {
-                    refreshInterval = setInterval(refreshData, 5000);
-                } else {
-                    clearInterval(refreshInterval);
-                }
-            });
         }
         
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             refreshData();
-            setupAutoRefresh();
+            refreshInterval = setInterval(refreshData, 5000);
         });
     </script>
 </body>
