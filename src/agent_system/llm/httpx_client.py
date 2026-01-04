@@ -121,6 +121,18 @@ class HTTPXOpenAIClient(LLMClient):
             "User-Agent": "AgentSystem-HTTPX/1.0"
         }
 
+    def _create_multimodal_injection(self, tool_msg) -> Optional[dict]:
+        """Create injected user message for multimodal tool content.
+        
+        Delegates to the central utility function in multimodal_tool_content.py.
+        """
+        from ..utils.multimodal_tool_content import create_multimodal_injection, check_vision_support
+        return create_multimodal_injection(
+            tool_msg=tool_msg,
+            supports_vision=check_vision_support(self.capabilities),
+            model_name=self.model
+        )
+
     async def chat(
         self,
         messages: list,
@@ -220,7 +232,16 @@ class HTTPXOpenAIClient(LLMClient):
             result = []
             for msg in messages:
                 if hasattr(msg, 'model_dump'):
-                    result.append(msg.model_dump(exclude_none=True, mode='json'))
+                    d = msg.model_dump(exclude_none=True, mode='json')
+                    # Remove multimodal_content from serialized dict - it's processed separately
+                    d.pop('multimodal_content', None)
+                    result.append(d)
+                    
+                    # Inject multimodal content as synthetic user message after tool response
+                    if getattr(msg, 'role', None) == 'tool' and getattr(msg, 'multimodal_content', None):
+                        injection = self._create_multimodal_injection(msg)
+                        if injection:
+                            result.append(injection)
                 elif isinstance(msg, dict):
                     result.append(msg)
                 else:
@@ -339,7 +360,16 @@ class HTTPXOpenAIClient(LLMClient):
             for msg in messages:
                 if hasattr(msg, 'model_dump'):
                     # ChatMessage object - convert to dict, exclude None values for API compatibility
-                    result.append(msg.model_dump(exclude_none=True, mode='json'))
+                    d = msg.model_dump(exclude_none=True, mode='json')
+                    # Remove multimodal_content from serialized dict - it's processed separately
+                    d.pop('multimodal_content', None)
+                    result.append(d)
+                    
+                    # Inject multimodal content as synthetic user message after tool response
+                    if getattr(msg, 'role', None) == 'tool' and getattr(msg, 'multimodal_content', None):
+                        injection = self._create_multimodal_injection(msg)
+                        if injection:
+                            result.append(injection)
                 elif isinstance(msg, dict):
                     # Already a dict
                     result.append(msg)

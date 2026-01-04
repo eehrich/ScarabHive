@@ -253,12 +253,32 @@ class GeminiBatchClient(BatchProviderClient):
                 else:
                     result_data = content if content else {}
                 
-                contents.append(types.Content(
-                    role="tool",  # Gemini 2.0+ uses "tool" role
-                    parts=[types.Part.from_function_response(
+                # Build parts starting with function response
+                tool_parts: List[types.Part] = [
+                    types.Part.from_function_response(
                         name=tool_name,
                         response=result_data
-                    )]
+                    )
+                ]
+                
+                # Add multimodal content as inline parts (Gemini native support)
+                if msg.get("multimodal_content"):
+                    from ...utils.multimodal_tool_content import create_gemini_multimodal_parts_from_dict
+                    encoded_items = create_gemini_multimodal_parts_from_dict(msg)
+                    if encoded_items:
+                        for item in encoded_items:
+                            # Decode base64 to bytes for Blob
+                            data_bytes = base64.b64decode(item.data)
+                            tool_parts.append(types.Part(
+                                inline_data=types.Blob(
+                                    mime_type=item.mime_type,
+                                    data=data_bytes
+                                )
+                            ))
+                
+                contents.append(types.Content(
+                    role="tool",  # Gemini 2.0+ uses "tool" role
+                    parts=tool_parts
                 ))
                 continue
             

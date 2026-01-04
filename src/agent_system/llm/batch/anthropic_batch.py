@@ -183,6 +183,17 @@ class AnthropicBatchClient(BatchProviderClient):
                     "role": "user",
                     "content": [tool_result]
                 })
+                
+                # Check for multimodal content in tool response
+                if msg.get("multimodal_content"):
+                    from ...utils.multimodal_tool_content import create_anthropic_multimodal_injection_from_dict
+                    # Most Anthropic models support vision
+                    injection = create_anthropic_multimodal_injection_from_dict(
+                        msg, supports_vision=True, model_name="anthropic-batch"
+                    )
+                    if injection:
+                        anthropic_messages.append(injection)
+                
                 continue
             
             # Handle assistant messages with tool_calls

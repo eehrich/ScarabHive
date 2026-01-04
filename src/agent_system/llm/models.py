@@ -84,6 +84,20 @@ class VideoContent(BaseModel):
     media_type: Optional[str] = None  # e.g., "video/mp4", "video/webm"
 
 
+class MultimodalToolContent(BaseModel):
+    """Multimodal content returned by a tool for LLM analysis.
+    
+    This is attached to tool response messages (role='tool') and processed
+    by LLM clients according to their capabilities:
+    - Gemini: Native multimodal tool response
+    - OpenAI/Anthropic: Injected as synthetic user message
+    """
+    type: str  # "image", "audio", "video"
+    path: str  # Local file path to the content
+    mime_type: str  # e.g., "image/png", "audio/wav"
+    description: Optional[str] = None  # Optional description for context
+
+
 # Union type for all content types
 ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, str, Dict[str, Any]]
 
@@ -130,6 +144,8 @@ class ChatMessage(BaseModel):
     tool_calls: Optional[List[Dict[str, Any]]] = None
     content_format: Optional[str] = None  # 'text', 'html', 'markdown', 'ansi', etc.
     timestamp: Optional[datetime] = None  # Timestamp when message was created
+    # Multimodal content from tool responses - processed by LLM clients
+    multimodal_content: Optional[List[MultimodalToolContent]] = None
 
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""

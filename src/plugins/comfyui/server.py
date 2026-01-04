@@ -104,6 +104,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         - execute: Run a workflow with parameters
         - status: Check execution status of a job
         - result: Get output files from completed job
+        - load: Load previously generated media for LLM analysis
         - server_status: Check if ComfyUI server is online
         - queue: View current queue
         - cancel: Cancel a running/queued job
@@ -163,6 +164,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
             result = await self.client.cancel(prompt_id)
             self.job_tracker.update_status(prompt_id, "cancelled")
             return result
+        
+        # ===== LOAD =====
+        elif operation == "load":
+            return await self._op_load(params, status)
         
         return {"error": f"Unknown operation: {operation}"}
     
@@ -319,6 +324,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
             return {"error": "prompt_id is required"}
         
         download = params.get("download", True)
+        include_content = params.get("include_content", False)
         output_prefix = params.get("output_prefix", "comfy")
         
         if status:
@@ -407,18 +413,247 @@ class ComfyUIServer(SchemaBasedMCPServer):
             total_files = sum(len(v) for v in outputs.values())
             await status.end(f"Retrieved {total_files} output files")
         
-        return {
+        result: dict[str, Any] = {
             "status": "completed",
             "prompt_id": prompt_id,
             "outputs": outputs,
             "total_files": sum(len(v) for v in outputs.values())
         }
+        
+        # Include multimodal content for LLM analysis if requested
+        if include_content:
+            multimodal = self._build_multimodal_content(outputs)
+            if multimodal:
+                result["_multimodal_content"] = multimodal
+        
+        return result
+    
+    def _build_multimodal_content(self, outputs: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        """Build multimodal content list from outputs for LLM analysis.
+        
+        Args:
+            outputs: Dict with keys 'images', 'audio', 'video', 'other', each containing
+                    file records with 'local_path', 'filename', etc.
+        
+        Returns:
+            List of multimodal content items: [{type, path, mime_type, description}, ...]
+        """
+        multimodal: list[dict[str, Any]] = []
+        
+        # Map output types to content types
+        type_mapping = {
+            "images": "image",
+            "audio": "audio",
+            "video": "video",
+        }
+        
+        for output_type, content_type in type_mapping.items():
+            for file_record in outputs.get(output_type, []):
+                local_path = file_record.get("local_path")
+                if local_path:
+                    filename = file_record.get("filename", "")
+                    mime_type = self._guess_mime_type(filename, content_type)
+                    
+                    multimodal.append({
+                        "type": content_type,
+                        "path": local_path,
+                        "mime_type": mime_type,
+                        "description": f"Generated {content_type}: {filename}"
+                    })
+        
+        return multimodal
+    
+    def _guess_mime_type(self, filename: str, content_type: str) -> str:
+        """Guess MIME type from filename extension."""
+        filename_lower = filename.lower()
+        
+        # Image types
+        if filename_lower.endswith(".jpg") or filename_lower.endswith(".jpeg"):
+            return "image/jpeg"
+        elif filename_lower.endswith(".png"):
+            return "image/png"
+        elif filename_lower.endswith(".gif"):
+            return "image/gif"
+        elif filename_lower.endswith(".webp"):
+            return "image/webp"
+        # Audio types
+        elif filename_lower.endswith(".mp3"):
+            return "audio/mpeg"
+        elif filename_lower.endswith(".wav"):
+            return "audio/wav"
+        elif filename_lower.endswith(".flac"):
+            return "audio/flac"
+        elif filename_lower.endswith(".ogg"):
+            return "audio/ogg"
+        # Video types
+        elif filename_lower.endswith(".mp4"):
+            return "video/mp4"
+        elif filename_lower.endswith(".webm"):
+            return "video/webm"
+        elif filename_lower.endswith(".avi"):
+            return "video/x-msvideo"
+        
+        # Default fallbacks
+        defaults = {
+            "image": "image/png",
+            "audio": "audio/wav",
+            "video": "video/mp4",
+        }
+        return defaults.get(content_type, "application/octet-stream")
+    
+    async def _op_load(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
+        """Load previously generated media for LLM analysis.
+        
+        This allows the LLM to view images, audio, or video that were generated
+        earlier (e.g., from a previous job) without re-generating them.
+        
+        Can load by:
+        - prompt_id: Load all outputs from a completed job
+        - file_path: Load a specific file by path (absolute or relative to output_dir)
+        - filename: Load by filename (searches in output_dir)
+        
+        Args:
+            params: Must include one of: prompt_id, file_path, or filename
+            status: Status reporter
+            
+        Returns:
+            Dict with file info and _multimodal_content for LLM analysis
+        """
+        prompt_id = params.get("prompt_id")
+        file_path = params.get("file_path")
+        filename = params.get("filename")
+        
+        if not any([prompt_id, file_path, filename]):
+            return {
+                "error": "One of prompt_id, file_path, or filename is required",
+                "hint": "Use prompt_id to load outputs from a job, or file_path/filename to load a specific file"
+            }
+        
+        if status:
+            await status.progress("Loading media for analysis...")
+        
+        multimodal: list[dict[str, Any]] = []
+        loaded_files: list[dict[str, Any]] = []
+        
+        # Load by prompt_id - get all outputs from job
+        if prompt_id:
+            job = self.job_tracker.get_job(prompt_id)
+            if not job:
+                return {"error": f"Job not found: {prompt_id}"}
+            
+            outputs = job.get("outputs", {})
+            if not outputs:
+                return {
+                    "error": f"No outputs found for job {prompt_id}",
+                    "hint": "Job may not have completed yet. Use operation='result' first to download outputs."
+                }
+            
+            for output_type, paths in outputs.items():
+                content_type = {
+                    "images": "image",
+                    "audio": "audio",
+                    "video": "video"
+                }.get(output_type)
+                
+                if not content_type:
+                    continue
+                
+                for path in paths:
+                    path_obj = Path(path)
+                    if path_obj.exists():
+                        mime_type = self._guess_mime_type(path_obj.name, content_type)
+                        multimodal.append({
+                            "type": content_type,
+                            "path": str(path_obj),
+                            "mime_type": mime_type,
+                            "description": f"Generated {content_type} from job {prompt_id}: {path_obj.name}"
+                        })
+                        loaded_files.append({
+                            "path": str(path_obj),
+                            "filename": path_obj.name,
+                            "type": content_type,
+                            "size_bytes": path_obj.stat().st_size
+                        })
+        
+        # Load by file_path or filename
+        else:
+            # Determine path
+            if file_path:
+                path_obj = Path(file_path)
+                if not path_obj.is_absolute():
+                    path_obj = self.output_dir / path_obj
+            else:
+                # Search by filename
+                path_obj = self.output_dir / filename
+                if not path_obj.exists():
+                    # Try to find in subdirectories
+                    matches = list(self.output_dir.rglob(filename))
+                    if matches:
+                        path_obj = matches[0]
+            
+            if not path_obj.exists():
+                return {
+                    "error": f"File not found: {file_path or filename}",
+                    "searched_in": str(self.output_dir),
+                    "hint": "Provide a valid file path or use prompt_id to load job outputs"
+                }
+            
+            # Determine content type from extension
+            content_type = self._get_content_type_from_path(path_obj)
+            mime_type = self._guess_mime_type(path_obj.name, content_type)
+            
+            multimodal.append({
+                "type": content_type,
+                "path": str(path_obj),
+                "mime_type": mime_type,
+                "description": f"Loaded {content_type}: {path_obj.name}"
+            })
+            loaded_files.append({
+                "path": str(path_obj),
+                "filename": path_obj.name,
+                "type": content_type,
+                "size_bytes": path_obj.stat().st_size
+            })
+        
+        if not multimodal:
+            return {"error": "No valid media files found to load"}
+        
+        if status:
+            await status.end(f"Loaded {len(multimodal)} media file(s) for analysis")
+        
+        return {
+            "status": "success",
+            "loaded_files": loaded_files,
+            "count": len(loaded_files),
+            "message": f"Loaded {len(loaded_files)} file(s). You can now analyze the content.",
+            "_multimodal_content": multimodal
+        }
+    
+    def _get_content_type_from_path(self, path: Path) -> str:
+        """Determine content type from file extension."""
+        suffix = path.suffix.lower()
+        
+        image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+        audio_exts = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
+        video_exts = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+        
+        if suffix in image_exts:
+            return "image"
+        elif suffix in audio_exts:
+            return "audio"
+        elif suffix in video_exts:
+            return "video"
+        else:
+            return "other"
     
     async def _op_wait_for_completion(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
         """Wait synchronously until a job completes or times out.
         
         This operation polls the job status internally, eliminating the need
         for the agent to manually poll with wait + status operations.
+        
+        If include_content is True and the job completes successfully, this
+        also retrieves outputs and includes multimodal content for LLM analysis.
         """
         prompt_id = params.get("prompt_id")
         if not prompt_id:
@@ -426,6 +661,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         timeout = params.get("timeout", 300)  # Default 5 minutes
         poll_interval = params.get("poll_interval", 2)  # Default 2 seconds
+        include_content = params.get("include_content", False)
         
         import time
         start_time = time.time()
@@ -472,6 +708,19 @@ class ComfyUIServer(SchemaBasedMCPServer):
             if current_status == "completed":
                 if status:
                     await status.end(f"Job {prompt_id} completed after {int(elapsed)}s")
+                
+                # If include_content, fetch results to get multimodal content
+                if include_content:
+                    result_params = {
+                        "prompt_id": prompt_id,
+                        "download": True,
+                        "include_content": True,
+                        "output_prefix": params.get("output_prefix", "comfy")
+                    }
+                    result = await self._op_result(result_params, None)
+                    result["elapsed_seconds"] = elapsed
+                    return result
+                
                 return {
                     "status": "completed",
                     "prompt_id": prompt_id,
@@ -490,7 +739,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
             # Wait before next poll
             await asyncio.sleep(poll_interval)
         
-        # Timeout reached
+        # Timeout reached (unreachable code but kept for completeness)
         if status:
             await status.error(f"Job {prompt_id} did not complete within {timeout}s")
         

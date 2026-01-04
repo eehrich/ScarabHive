@@ -99,6 +99,18 @@ class OpenAIAsyncClient(LLMClient):
         self._timeout = timeout
         self.capabilities = capabilities  # Pydantic model or None
 
+    def _create_multimodal_injection(self, tool_msg: ChatMessage) -> Optional[dict]:
+        """Create injected user message for multimodal tool content.
+        
+        Delegates to the central utility function in multimodal_tool_content.py.
+        """
+        from ..utils.multimodal_tool_content import create_multimodal_injection, check_vision_support
+        return create_multimodal_injection(
+            tool_msg=tool_msg,
+            supports_vision=check_vision_support(self.capabilities),
+            model_name=self.model
+        )
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         logger = logging.getLogger(__name__)
         try:
@@ -281,7 +293,17 @@ class OpenAIAsyncClient(LLMClient):
             for m in messages:
                 # Use model_dump() to properly serialize nested Pydantic models
                 d = m.model_dump(exclude_none=True, mode='json')
+                # Remove multimodal_content from serialized dict - it's processed separately
+                d.pop('multimodal_content', None)
                 result.append(d)
+                
+                # Inject multimodal content as synthetic user message after tool response
+                # OpenAI doesn't support native multimodal tool responses, so we inject
+                # the content as a user message with a clear prefix
+                if m.role == "tool" and m.multimodal_content:
+                    injection = self._create_multimodal_injection(m)
+                    if injection:
+                        result.append(injection)
             return result
         
         msgs = await asyncio.to_thread(_serialize_messages)
@@ -391,11 +413,11 @@ class OpenAIAsyncClient(LLMClient):
                         if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                             raise LLMQuotaExhaustedError(
                                 f"Quota exhausted: {error_text}",
-                                provider="openai", model=self._model, retry_after=wait
+                                provider="openai", model=self.model, retry_after=wait
                             )
                         raise LLMRateLimitError(
                             f"Rate limit exceeded: {error_text}",
-                            provider="openai", model=self._model, retry_after=wait
+                            provider="openai", model=self.model, retry_after=wait
                         )
                     # Handle server errors (5xx) - retry with exponential backoff
                     if status is not None and status >= 500 and attempt < max_attempts:
@@ -621,7 +643,15 @@ class OpenAIAsyncClient(LLMClient):
             result = []
             for m in messages:
                 d = m.model_dump(exclude_none=True, mode='json')
+                # Remove multimodal_content from serialized dict - it's processed separately
+                d.pop('multimodal_content', None)
                 result.append(d)
+                
+                # Inject multimodal content as synthetic user message after tool response
+                if m.role == "tool" and m.multimodal_content:
+                    injection = self._create_multimodal_injection(m)
+                    if injection:
+                        result.append(injection)
             return result
         
         msgs = await asyncio.to_thread(_serialize_messages)

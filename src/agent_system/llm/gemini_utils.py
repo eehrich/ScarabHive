@@ -76,14 +76,35 @@ def convert_openai_messages_to_gemini(
                 result_data = {"error": error_message}
                 logger.warning(f"[Gemini] DEPRECATED: Tool returned old error format. Converted for {tool_name}: {error_message[:100]}")
             
+            # Build parts for the tool response
+            # Gemini supports native multimodal in functionResponse
+            parts: list[dict[str, Any]] = [{
+                "functionResponse": {
+                    "name": tool_name,
+                    "response": result_data
+                }
+            }]
+            
+            # Add multimodal content as inlineData parts (Gemini native support!)
+            if msg.multimodal_content:
+                from ..utils.multimodal_tool_content import encode_multimodal_item
+                for item in msg.multimodal_content:
+                    encoded = encode_multimodal_item(item)
+                    if encoded:
+                        parts.append({
+                            "inlineData": {
+                                "mimeType": encoded.mime_type,
+                                "data": encoded.data
+                            }
+                        })
+                        logger.debug(
+                            "[Gemini] Added native multimodal content: %s (%s)",
+                            encoded.type, encoded.mime_type
+                        )
+            
             content: dict[str, Any] = {
                 "role": "tool",
-                "parts": [{
-                    "functionResponse": {
-                        "name": tool_name,
-                        "response": result_data
-                    }
-                }]
+                "parts": parts
             }
             contents.append(content)  # type: ignore[arg-type]
             continue

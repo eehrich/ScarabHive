@@ -580,3 +580,96 @@ class TestGeminiSDKClientThoughtSignatureRestoration:
         # we use Google's documented bypass token to skip validation
         # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
         assert function_call_part.thought_signature == b"skip_thought_signature_validator"
+
+
+class TestGeminiSDKClientMultimodalToolResponse:
+    """Test native multimodal content in tool responses."""
+    
+    def test_tool_response_with_multimodal_content(self, gemini_sdk_client, tmp_path):
+        """Test that multimodal content is added as inlineData parts."""
+        from agent_system.llm.models import MultimodalToolContent
+        
+        # Create test image
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"fake image data")
+        
+        messages = [
+            ChatMessage(role="user", content="Generate an image"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "function": {"name": "comfyui_workflow", "arguments": "{}"}
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                name="comfyui_workflow",
+                content='{"status": "completed"}',
+                multimodal_content=[
+                    MultimodalToolContent(
+                        type="image",
+                        path=str(image_path),
+                        mime_type="image/png",
+                        description="Generated image"
+                    )
+                ]
+            ),
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        # Find the tool response message
+        tool_content = None
+        for content in contents:
+            if content.role == "tool":
+                tool_content = content
+                break
+        
+        assert tool_content is not None
+        # Should have 2 parts: functionResponse + inlineData
+        assert len(tool_content.parts) == 2
+        
+        # First part is functionResponse
+        assert tool_content.parts[0].function_response is not None
+        assert tool_content.parts[0].function_response.name == "comfyui_workflow"
+        
+        # Second part is inlineData with the image
+        assert tool_content.parts[1].inline_data is not None
+        assert tool_content.parts[1].inline_data.mime_type == "image/png"
+        assert len(tool_content.parts[1].inline_data.data) > 0  # Base64 encoded
+    
+    def test_tool_response_without_multimodal_content(self, gemini_sdk_client):
+        """Test that tool responses without multimodal work normally."""
+        messages = [
+            ChatMessage(role="user", content="What's the weather?"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                name="get_weather",
+                content='{"temp": 20, "condition": "sunny"}'
+                # No multimodal_content
+            ),
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        # Find the tool response message
+        tool_content = None
+        for content in contents:
+            if content.role == "tool":
+                tool_content = content
+                break
+        
+        assert tool_content is not None
+        # Should have only 1 part: functionResponse
+        assert len(tool_content.parts) == 1
+        assert tool_content.parts[0].function_response is not None

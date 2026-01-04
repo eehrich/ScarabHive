@@ -579,6 +579,27 @@ class ToolExecutionManager:
 
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
+            # Extract multimodal content from tool result (if present)
+            # Tools can return _multimodal_content: [{type, path, mime_type, description}]
+            multimodal_content = None
+            if isinstance(tool_result, dict):
+                raw_multimodal = tool_result.pop("_multimodal_content", None)
+                if raw_multimodal:
+                    from ....llm.models import MultimodalToolContent
+                    # Convert to Pydantic models
+                    multimodal_content = []
+                    items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
+                    for item in items:
+                        if isinstance(item, dict):
+                            multimodal_content.append(MultimodalToolContent(**item))
+                        elif isinstance(item, MultimodalToolContent):
+                            multimodal_content.append(item)
+                    if multimodal_content:
+                        logger.debug(
+                            "Extracted %d multimodal items from tool %s",
+                            len(multimodal_content), tool_name
+                        )
+
             results.append({
                 "server": tool_name,
                 "action": openai_tool_name,
@@ -589,7 +610,7 @@ class ToolExecutionManager:
             result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": openai_tool_name, "result": tool_result, "request_id": event_request_id}
             events.append(result_event)
 
-            # Create tool result message
+            # Create tool result message with optional multimodal content
             tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
             tool_msg_content = sanitize_json_content(json.dumps(tool_result, ensure_ascii=False))
             message = ChatMessage(
@@ -597,7 +618,8 @@ class ToolExecutionManager:
                 tool_call_id=tool_call_id,
                 name=openai_tool_name,
                 content=tool_msg_content,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
+                multimodal_content=multimodal_content  # Attach multimodal content
             )
             return message, events, results
 

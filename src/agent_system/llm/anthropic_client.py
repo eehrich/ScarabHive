@@ -160,6 +160,21 @@ class AnthropicAsyncClient(LLMClient):
                     "role": "user",
                     "content": [tool_result_content]
                 })
+                
+                # Inject multimodal content as separate user message if present
+                if msg.multimodal_content:
+                    from ..utils.multimodal_tool_content import (
+                        create_anthropic_multimodal_injection,
+                        check_vision_support
+                    )
+                    # Anthropic Claude models generally support vision
+                    supports_vision = check_vision_support(self.capabilities) if self.capabilities else True
+                    injection = create_anthropic_multimodal_injection(
+                        msg, supports_vision=supports_vision, model_name=self.model
+                    )
+                    if injection:
+                        converted_messages.append(injection)
+                
                 continue
             
             # Handle assistant messages with tool calls

@@ -19,6 +19,7 @@ tools:
               - execute
               - status
               - result
+              - load
               - wait_for_completion
               - server_status
               - queue
@@ -29,6 +30,7 @@ tools:
               - execute: Execute a workflow with given parameters
               - status: Get the current status of a job
               - result: Retrieve output files from completed job
+              - load: Load previously generated media for LLM analysis (view existing outputs)
               - wait_for_completion: Wait synchronously until a job completes (with timeout)
               - server_status: Check ComfyUI server connectivity
               - queue: View pending and running jobs
@@ -79,8 +81,17 @@ tools:
             type: boolean
             default: true
             description: >
-              For operation='result': whether to download files locally.
+              For operation='result' and 'wait_for_completion': whether to download files locally.
               If true (default), files are saved to the output directory.
+          
+          include_content:
+            type: boolean
+            default: false
+            description: >
+              For operation='result' and 'wait_for_completion': whether to include the generated
+              media content in the response for LLM analysis. When true, images/audio/video
+              will be attached so the LLM can see and analyze the generated content.
+              Useful for workflows where you want the LLM to describe or evaluate the output.
           
           output_prefix:
             type: string
@@ -88,6 +99,18 @@ tools:
             description: >
               Prefix for downloaded output files.
               Useful for organizing outputs from different jobs.
+          
+          file_path:
+            type: string
+            description: >
+              For operation='load': Path to a specific file to load (absolute or relative to output directory).
+              Use this to load a file you already know the path to.
+          
+          filename:
+            type: string
+            description: >
+              For operation='load': Filename to search for in the output directory.
+              The plugin will search for this file and load it for analysis.
         
         required:
           - operation
