@@ -12,9 +12,9 @@
         }
 
         body {
-            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
-            background: #0c0c0c;
-            color: #cccccc;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
             height: 100vh;
             overflow: hidden;
             font-size: 14px;
@@ -25,6 +25,8 @@
             flex-direction: column;
             height: 100vh;
             padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
         }
 
         /* Header */
@@ -33,14 +35,12 @@
             justify-content: space-between;
             align-items: center;
             margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 2px solid #007acc;
         }
 
         .header h1 {
-            color: #4fc3f7;
+            color: #569cd6;
             font-size: 24px;
-            font-weight: 600;
+            font-weight: 400;
         }
 
         .stats-summary {
@@ -58,12 +58,10 @@
         .stat-label {
             color: #858585;
             font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
 
         .stat-value {
-            color: #6ee56e;
+            color: #4ec9b0;
             font-size: 18px;
             font-weight: 600;
             margin-top: 2px;
@@ -72,46 +70,57 @@
         /* Controls */
         .controls {
             display: flex;
-            gap: 15px;
+            gap: 10px;
             margin-bottom: 20px;
             align-items: center;
         }
 
-        .btn {
-            padding: 8px 16px;
-            background: #2d2d2d;
-            border: 1px solid #3c3c3c;
-            color: #cccccc;
-            cursor: pointer;
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
             border-radius: 4px;
-            font-size: 13px;
-            transition: all 0.2s;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.2s;
         }
 
-        .btn:hover {
-            background: #3e3e3e;
-            border-color: #007acc;
+        button:hover {
+            background: #1177bb;
         }
 
-        .btn.active {
-            background: #007acc;
-            border-color: #007acc;
-            color: #ffffff;
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
         }
 
         /* History List */
         .history-container {
             flex: 1;
             overflow-y: auto;
-            background: #1e1e1e;
-            border: 1px solid #3c3c3c;
+            background: #252526;
+            border: 1px solid #3e3e42;
             border-radius: 6px;
             padding: 15px;
         }
 
         .history-item {
-            background: #2d2d2d;
-            border: 1px solid #3c3c3c;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
             border-radius: 6px;
             padding: 15px;
             margin-bottom: 15px;
@@ -120,12 +129,12 @@
         }
 
         .history-item:hover {
-            background: #3e3e3e;
-            border-color: #007acc;
+            background: #2a2a2a;
+            border-color: #569cd6;
         }
 
         .history-item.expanded {
-            border-color: #4fc3f7;
+            border-color: #569cd6;
         }
 
         .item-header {
@@ -136,8 +145,8 @@
         }
 
         .item-timestamp {
-            color: #4fc3f7;
-            font-weight: 600;
+            color: #569cd6;
+            font-weight: 500;
             font-size: 14px;
         }
 
@@ -165,16 +174,16 @@
         }
 
         .item-stat-value {
-            color: #ffffff;
+            color: #d4d4d4;
             font-weight: 500;
         }
 
         .item-stat-value.positive {
-            color: #6ee56e;
+            color: #4ec9b0;
         }
 
         .item-stat-value.reduction {
-            color: #9ad4f5;
+            color: #569cd6;
         }
 
         .status-badge {
@@ -184,25 +193,24 @@
             font-size: 11px;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
 
         .status-badge.success {
-            background: #1e4620;
-            color: #6ee56e;
+            background: #1e3e1e;
+            color: #4ec9b0;
             border: 1px solid #2d6a2f;
         }
 
         .status-badge.rejected {
-            background: #4a3d1f;
-            color: #f5d76e;
+            background: #3e3e1e;
+            color: #dcdcaa;
             border: 1px solid #6b5a2d;
         }
 
         .status-badge.skipped {
-            background: #3a3a3a;
-            color: #b0b0b0;
-            border: 1px solid #4a4a4a;
+            background: #2d2d30;
+            color: #858585;
+            border: 1px solid #3e3e42;
         }
 
         /* Expandable Details */
@@ -210,7 +218,7 @@
             display: none;
             margin-top: 15px;
             padding-top: 15px;
-            border-top: 1px solid #3c3c3c;
+            border-top: 1px solid #3e3e42;
         }
 
         .item-details.visible {
@@ -225,38 +233,36 @@
         }
 
         .message-column {
-            background: #1e1e1e;
-            border: 1px solid #3c3c3c;
+            background: #252526;
+            border: 1px solid #3e3e42;
             border-radius: 4px;
             padding: 12px;
         }
 
         .message-column-title {
-            color: #4fc3f7;
+            color: #569cd6;
             font-weight: 600;
             margin-bottom: 10px;
             font-size: 13px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
 
         .message-item {
-            background: #2d2d2d;
+            background: #1e1e1e;
             padding: 8px;
             margin-bottom: 8px;
             border-radius: 4px;
             font-size: 12px;
-            border-left: 3px solid #007acc;
+            border-left: 3px solid #569cd6;
         }
 
         .message-role {
-            color: #9ad4f5;
+            color: #569cd6;
             font-weight: 600;
             margin-bottom: 4px;
         }
 
         .message-content {
-            color: #cccccc;
+            color: #d4d4d4;
             line-height: 1.4;
             white-space: pre-wrap;
             word-break: break-word;
@@ -288,11 +294,11 @@
         }
 
         .history-container::-webkit-scrollbar-track {
-            background: #1e1e1e;
+            background: #252526;
         }
 
         .history-container::-webkit-scrollbar-thumb {
-            background: #3c3c3c;
+            background: #3e3e42;
             border-radius: 5px;
         }
 
@@ -308,8 +314,8 @@
         }
 
         .spinner {
-            border: 3px solid #3c3c3c;
-            border-top: 3px solid #007acc;
+            border: 3px solid #3e3e42;
+            border-top: 3px solid #569cd6;
             border-radius: 50%;
             width: 30px;
             height: 30px;
@@ -346,9 +352,9 @@
 
         <!-- Controls -->
         <div class="controls">
-            <button class="btn active" onclick="refreshHistory()">🔄 Refresh</button>
-            <button class="btn" onclick="clearHistory()">🗑️ Clear History</button>
-            <span style="color: #858585; margin-left: auto; font-size: 12px;" id="last-updated">
+            <button class="icon-only" onclick="refreshHistory()" title="Refresh">🔄</button>
+            <button class="icon-only" onclick="clearHistory()" title="Clear History" style="margin-left: auto;">🗑️</button>
+            <span style="color: #858585; margin-left: 10px; font-size: 12px;" id="last-updated">
                 Last updated: Never
             </span>
         </div>

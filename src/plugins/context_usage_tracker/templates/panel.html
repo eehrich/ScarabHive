@@ -22,7 +22,6 @@
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding-right: 10px;
         }
 
         h1 {
@@ -36,7 +35,6 @@
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 12px;
             margin-bottom: 30px;
-            margin-right: 5px;
         }
 
         .stat-card {
@@ -185,8 +183,9 @@
             border: 1px solid #3e3e42;
             border-radius: 6px;
             padding: 20px;
-            margin-bottom: 20px;
-            height: 300px;
+            padding-bottom: 40px;
+            margin-bottom: 30px;
+            height: 320px;
             position: relative;
         }
 
@@ -333,14 +332,14 @@
             <button class="icon-only" onclick="refreshData()" title="Refresh">
                 🔄
             </button>
-            <button class="icon-only" onclick="clearHistory()" title="Clear History">
-                🗑️
-            </button>
             <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
                 ⏱️
             </button>
             <button class="icon-only active" id="session-filter-btn" onclick="toggleSessionFilter()" title="Showing: Current Session">
                 🎯
+            </button>
+            <button class="icon-only" onclick="clearHistory()" title="Clear History" style="margin-left: auto;">
+                🗑️
             </button>
         </div>
 

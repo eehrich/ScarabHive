@@ -16,8 +16,8 @@
 
 .log-viewer-wrapper {
     font-family: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
-    background-color: #0d1117;
-    color: #c9d1d9;
+    background-color: #252526;
+    color: #d4d4d4;
     font-size: 13px;
     line-height: 1.4;
 }
@@ -39,8 +39,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 8px 12px;
-    background-color: #21262d;
-    border-bottom: 1px solid #30363d;
+    background-color: #1e1e1e;
+    border-bottom: 1px solid #3e3e42;
     box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     flex-shrink: 0;
 }
@@ -59,9 +59,9 @@
 
 .log-controls-left select, .log-controls-left button {
     padding: 4px 8px;
-    background-color: #21262d;
-    color: #c9d1d9;
-    border: 1px solid #30363d;
+    background-color: #3e3e42;
+    color: #d4d4d4;
+    border: 1px solid #3e3e42;
     border-radius: 4px;
     cursor: pointer;
     font-size: 12px;
@@ -69,33 +69,33 @@
 }
 
 .log-controls-left button:hover {
-    background-color: #30363d;
-    border-color: #58a6ff;
+    background-color: #505050;
+    border-color: #569cd6;
 }
 
 .log-controls-left button.active {
-    background-color: #238636;
-    border-color: #2ea043;
+    background-color: #16825d;
+    border-color: #1a9970;
     color: white;
 }
 
 .log-controls-left select:focus, .log-controls-left button:focus {
     outline: none;
-    border-color: #58a6ff;
-    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+    border-color: #569cd6;
+    box-shadow: 0 0 0 2px rgba(86, 156, 214, 0.2);
 }
 
 .log-controls-left label {
     font-size: 12px;
-    color: #c9d1d9;
+    color: #d4d4d4;
     font-weight: 500;
 }
 
 .log-controls-left input[type="text"] {
     padding: 4px 8px;
-    background-color: #21262d;
-    color: #c9d1d9;
-    border: 1px solid #30363d;
+    background-color: #3e3e42;
+    color: #d4d4d4;
+    border: 1px solid #3e3e42;
     border-radius: 4px;
     font-size: 12px;
     transition: all 0.2s ease;
@@ -103,8 +103,8 @@
 
 .log-controls-left input[type="text"]:focus {
     outline: none;
-    border-color: #58a6ff;
-    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+    border-color: #569cd6;
+    box-shadow: 0 0 0 2px rgba(86, 156, 214, 0.2);
 }
 
 .filter-dropdown {
@@ -117,9 +117,9 @@
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    background-color: #21262d;
-    color: #c9d1d9;
-    border: 1px solid #30363d;
+    background-color: #3e3e42;
+    color: #d4d4d4;
+    border: 1px solid #3e3e42;
     border-radius: 4px;
     cursor: pointer;
     font-size: 12px;
@@ -127,14 +127,14 @@
 }
 
 .dropdown-btn:hover {
-    background-color: #30363d;
-    border-color: #58a6ff;
+    background-color: #505050;
+    border-color: #569cd6;
 }
 
 .dropdown-btn:focus {
     outline: none;
-    border-color: #58a6ff;
-    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+    border-color: #569cd6;
+    box-shadow: 0 0 0 2px rgba(86, 156, 214, 0.2);
 }
 
 .dropdown-arrow {
@@ -152,8 +152,8 @@
     right: 0;
     z-index: 1000;
     min-width: 140px;
-    background-color: #21262d;
-    border: 1px solid #30363d;
+    background-color: #252526;
+    border: 1px solid #3e3e42;
     border-radius: 6px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
     padding: 4px 0;
@@ -181,17 +181,17 @@
 
 .filter-checkbox input[type="checkbox"] {
     margin: 0;
-    accent-color: #58a6ff;
+    accent-color: #569cd6;
 }
 
 .filter-checkbox input[type="checkbox"]:checked ~ * {
-    color: #58a6ff;
+    color: #569cd6;
     font-weight: 500;
 }
 
 .dropdown-divider {
     height: 1px;
-    background-color: #30363d;
+    background-color: #3e3e42;
     margin: 4px 0;
 }
 
@@ -210,21 +210,21 @@
 
 .dropdown-action:hover {
     background-color: rgba(255,255,255,0.05);
-    color: #c9d1d9;
+    color: #d4d4d4;
 }
 
 .status {
     font-size: 12px;
-    color: #7d8590;
+    color: #858585;
     padding: 2px 6px;
-    background-color: #21262d;
+    background-color: #3e3e42;
     border-radius: 3px;
-    border: 1px solid #30363d;
+    border: 1px solid #3e3e42;
 }
 
 .status-bar {
     padding: 6px 12px;
-    background-color: #238636;
+    background-color: #16825d;
     color: white;
     border-radius: 4px;
     margin-bottom: 8px;
@@ -234,17 +234,18 @@
 }
 
 .status-bar.error {
-    background-color: #da3633;
+    background-color: #a1260d;
 }
 
 .log-container {
     flex: 1;
     overflow-y: auto; /* Sole scroll region */
     overflow-x: hidden;
-    background-color: #0d1117;
+    background-color: #1e1e1e;
     padding: 0;
     font-family: inherit;
     min-height: 0;
+    max-height: calc(100vh - 150px); /* Force scrolling by limiting height */
     width: 100%;
 }
 
@@ -277,8 +278,8 @@
 }
 
 .log-line.info {
-    color: #79c0ff;
-    border-left-color: #1f6feb;
+    color: #569cd6;
+    border-left-color: #569cd6;
 }
 
 .log-line.debug {
@@ -287,7 +288,7 @@
 }
 
 .log-timestamp {
-    color: #7d8590;
+    color: #858585;
     font-weight: 500;
 }
 
@@ -413,9 +414,7 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    max-height: 100%;
-    /* Keep visible so dropdown isn't clipped when no logs produce scroll */
-    overflow: visible;
+    overflow: hidden;
 }
 
 /* Removed internal .resize-handle element; do NOT hide global panel resize handles */
@@ -445,66 +444,31 @@
     background: #484f58;
 }
 
-/* Icon Button Styles */
-.icon-btn {
+/* Icon Button Styles - matching other panels */
+button.icon-only {
+    padding: 8px;
+    width: 36px;
+    height: 36px;
+    justify-content: center;
+    background: #0e639c;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 4px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background 0.2s;
 }
 
-.icon-btn.active {
-    background-color: #238636 !important; /* green for active state */
-    border-color: #1f6f2a !important;
-    color: #fff !important;
+button.icon-only:hover {
+    background: #1177bb;
 }
 
-/* Auto-refresh specific styling - different color to distinguish from auto-scroll */
-#autoRefreshBtn.active {
-    background-color: #da3633 !important; /* red for auto-refresh */
-    border-color: #b91c1c !important;
-    color: #fff !important;
+button.icon-only.active {
+    background: #16825d;
 }
 
-.icon-btn.active svg,
-.icon-btn.active svg path {
-    stroke: #fff !important;
-}
-
-.icon-btn:hover {
-    background: rgba(255,255,255,0.05);
-    border-color: #30363d;
-}
-
-.icon-btn svg {
-    width: 16px;
-    height: 16px;
-    stroke-width: 2;
-}
-
-/* Icon Button Group */
-.icon-button-group {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    background-color: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    align-items: center;
-}
-
-.icon-button-group .icon-btn {
-    border-radius: 4px;
-}
-
-.icon-button-group .icon-btn:hover {
-    background: rgba(255,255,255,0.08);
-    border-color: transparent;
+button.icon-only.active:hover {
+    background: #1a9970;
 }

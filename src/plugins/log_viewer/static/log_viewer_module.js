@@ -81,7 +81,8 @@ window.AgentSystem.log_viewer = {
     if (viewerContainer) {
       viewerContainer.style.height = '';
       viewerContainer.style.flex = '1';
-      viewerContainer.style.overflow = 'hidden';  // No scroll on container
+      viewerContainer.style.minHeight = '0';
+      viewerContainer.style.overflow = 'hidden';  // Critical for flex child height calculation
     }
 
     this.setupEventHandlers();
@@ -465,10 +466,12 @@ window.AgentSystem.log_viewer = {
 
     // Auto-scroll if enabled
     if (this.autoScroll) {
-      const scrollContainer = this.rootElement.querySelector('#logContainer');
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      }
+      requestAnimationFrame(() => {
+        const scrollContainer = this.rootElement.querySelector('#logContainer');
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+      });
     }
 
     // Limit number of lines to user's selection (or 1000 max for memory)
@@ -633,10 +636,7 @@ window.AgentSystem.log_viewer = {
     const logContainer = this.rootElement.querySelector('#logContainer');
     if (!logContainer || !newLines) return;
 
-    // Store current scroll position
-    const scrollContainer = this.rootElement.querySelector('#logContainer');
-    const wasScrolledToBottom = scrollContainer ?
-      scrollContainer.scrollHeight - scrollContainer.scrollTop <= scrollContainer.clientHeight + 100 : false;    // Limit lines to user's selection (take last N lines to show most recent)
+    // Limit lines to user's selection (take last N lines to show most recent)
     const linesToShow = newLines.slice(-this.lineLimit);
 
     // Create document fragment for efficient DOM manipulation
@@ -655,12 +655,14 @@ window.AgentSystem.log_viewer = {
     // Apply filters to all content
     this.applyFilters();
 
-    // Restore scroll position
-    if (wasScrolledToBottom && this.autoScroll) {
-      const scrollContainer = this.rootElement.querySelector('#logContainer');
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      }
+    // Auto-scroll to bottom if enabled (after filters are applied)
+    if (this.autoScroll) {
+      requestAnimationFrame(() => {
+        const scrollContainer = this.rootElement.querySelector('#logContainer');
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+      });
     }
   },
 
