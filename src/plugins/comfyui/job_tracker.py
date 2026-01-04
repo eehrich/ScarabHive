@@ -321,6 +321,66 @@ class ComfyUIJobTracker:
             logger.info("Cleaned up %d old jobs", deleted)
         return deleted
     
+    def sync_with_queue(self, queue_data: dict[str, Any]) -> int:
+        """Sync database state with live ComfyUI queue.
+        
+        Updates stale "queued" or "running" jobs that are no longer
+        in the ComfyUI queue (e.g., after server restart).
+        
+        Args:
+            queue_data: Queue data from ComfyUI API containing queue_pending and queue_running
+            
+        Returns:
+            Number of jobs updated
+        """
+        # Extract prompt IDs from queue
+        queue_pending = queue_data.get("queue_pending", [])
+        queue_running = queue_data.get("queue_running", [])
+        
+        live_prompt_ids = set()
+        
+        # queue_pending format: [[item_number, prompt_id, workflow_dict, ...], ...]
+        for item in queue_pending:
+            if len(item) >= 2:
+                live_prompt_ids.add(item[1])
+        
+        # queue_running format: [[item_number, prompt_id, workflow_dict, ...], ...]
+        for item in queue_running:
+            if len(item) >= 2:
+                live_prompt_ids.add(item[1])
+        
+        # Find stale jobs (queued/running in DB but not in live queue)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT prompt_id FROM jobs 
+                WHERE status IN ('queued', 'running', 'pending')
+                """
+            )
+            db_active_ids = {row[0] for row in cursor.fetchall()}
+            
+            stale_ids = db_active_ids - live_prompt_ids
+            
+            if stale_ids:
+                # Mark stale jobs as failed (server was restarted or job lost)
+                placeholders = ",".join("?" * len(stale_ids))
+                conn.execute(
+                    f"""
+                    UPDATE jobs 
+                    SET status = 'failed', 
+                        error_message = 'Job lost (server restart or queue cleared)',
+                        completed_at = ?
+                    WHERE prompt_id IN ({placeholders})
+                    """,
+                    (datetime.now(timezone.utc).isoformat(), *stale_ids)
+                )
+                conn.commit()
+                
+                logger.info("Marked %d stale jobs as failed", len(stale_ids))
+                return len(stale_ids)
+        
+        return 0
+    
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Convert database row to dict with parsed JSON fields.
         

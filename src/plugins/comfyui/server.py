@@ -87,10 +87,35 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if self.templates_dir.exists():
             self.templates = Jinja2Templates(directory=str(self.templates_dir))
         
+        # Sync job tracker with ComfyUI queue on startup (async via task)
+        import asyncio
+        asyncio.create_task(self._startup_sync())
+        
         logger.info(
             "ComfyUI plugin initialized: %s:%s with %d workflows",
             self.host, self.port, len(self.workflows)
         )
+    
+    async def _startup_sync(self) -> None:
+        """Sync job tracker with ComfyUI queue on startup.
+        
+        Marks stale jobs (queued/running in DB but not in ComfyUI) as failed.
+        This handles the case where the API server was restarted.
+        """
+        try:
+            # Give ComfyUI a moment to be ready
+            await asyncio.sleep(2)
+            
+            server_status = await self.client.ping()
+            if server_status.get("status") == "online":
+                queue_data = await self.client.get_queue()
+                updated = self.job_tracker.sync_with_queue(queue_data)
+                if updated > 0:
+                    logger.info("Startup sync: marked %d stale jobs as failed", updated)
+            else:
+                logger.warning("ComfyUI server not online, skipping startup sync")
+        except Exception as e:
+            logger.warning("Failed to sync jobs on startup: %s", e)
     
     # =========================================================================
     # MCP Tool: workflow
@@ -814,6 +839,12 @@ class ComfyUIServer(SchemaBasedMCPServer):
         async def get_jobs() -> JSONResponse:
             """Get all tracked jobs."""
             server_status = await self.client.ping()
+            
+            # Sync DB with live queue to clean up stale jobs
+            if server_status.get("status") == "online":
+                queue_data = await self.client.get_queue()
+                self.job_tracker.sync_with_queue(queue_data)
+            
             active = self.job_tracker.get_active_jobs()
             recent = self.job_tracker.get_recent_completed(limit=10)
             stats = self.job_tracker.get_stats()
