@@ -127,13 +127,22 @@ window.AgentSystem.log_viewer = {
       autoScrollBtn.classList.toggle('active', this.autoScroll);
     }
 
-    // Search input
+    // Search input - reload logs on change
     const searchInput = controls.querySelector('#searchInput');
     if (searchInput) {
+      // Use debounce to avoid too many requests
+      let searchTimeout;
       searchInput.addEventListener('input', (e) => {
         this.searchTerm = e.target.value.toLowerCase();
-        this.applyFilters();
         this.saveState();
+        
+        // Debounce search - reload after 500ms of no typing
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
+        }, 500);
       });
     }
 
@@ -176,7 +185,10 @@ window.AgentSystem.log_viewer = {
         checkbox.addEventListener('change', () => {
           this.levelFilters[checkbox.value] = checkbox.checked;
           this.updateDropdownLabel();
-          this.applyFilters();
+          // Reload logs with new filter
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
           this.saveState();
         });
       });
@@ -193,7 +205,10 @@ window.AgentSystem.log_viewer = {
             if (checkbox) checkbox.checked = true;
           });
           this.updateDropdownLabel();
-          this.applyFilters();
+          // Reload logs with new filter
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
           this.saveState();
         });
       }
@@ -206,7 +221,10 @@ window.AgentSystem.log_viewer = {
             if (checkbox) checkbox.checked = false;
           });
           this.updateDropdownLabel();
-          this.applyFilters();
+          // Reload logs with new filter
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
           this.saveState();
         });
       }
@@ -360,8 +378,20 @@ window.AgentSystem.log_viewer = {
     try {
       // Always respect user's line limit selection
       const lines = this.lineLimit;
-      // For initial load, don't send since_timestamp to enable multiline grouping
-      const url = `/plugins/log_viewer/logs/content/${encodeURIComponent(filename)}?lines=${lines}`;
+      
+      // Build URL with filters
+      let url = `/plugins/log_viewer/logs/content/${encodeURIComponent(filename)}?lines=${lines}`;
+      
+      // Add level filter if not all levels are selected
+      const activeLevels = Object.keys(this.levelFilters).filter(level => this.levelFilters[level]);
+      if (activeLevels.length > 0 && activeLevels.length < Object.keys(this.levelFilters).length) {
+        url += `&levels=${activeLevels.join(',')}`;
+      }
+      
+      // Add search term if present
+      if (this.searchTerm) {
+        url += `&search=${encodeURIComponent(this.searchTerm)}`;
+      }
 
       const response = await fetch(url);
       if (!response.ok) {
@@ -409,7 +439,19 @@ window.AgentSystem.log_viewer = {
     if (!this.currentFile) return;
 
     try {
-      const url = `/plugins/log_viewer/logs/content/${encodeURIComponent(this.currentFile)}?lines=${this.lineLimit}&since_timestamp=${this.lastTimestamp}`;
+      // Build URL with filters
+      let url = `/plugins/log_viewer/logs/content/${encodeURIComponent(this.currentFile)}?lines=${this.lineLimit}&since_timestamp=${this.lastTimestamp}`;
+      
+      // Add level filter if not all levels are selected
+      const activeLevels = Object.keys(this.levelFilters).filter(level => this.levelFilters[level]);
+      if (activeLevels.length > 0 && activeLevels.length < Object.keys(this.levelFilters).length) {
+        url += `&levels=${activeLevels.join(',')}`;
+      }
+      
+      // Add search term if present
+      if (this.searchTerm) {
+        url += `&search=${encodeURIComponent(this.searchTerm)}`;
+      }
 
       const response = await fetch(url);
       if (!response.ok) {

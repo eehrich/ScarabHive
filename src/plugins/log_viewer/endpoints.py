@@ -163,12 +163,21 @@ class LogViewerWebEndpoints(PluginWebInterface):
 
         return JSONResponse({"logs": available_logs})
 
-    async def get_log_content(self, request: Request, log_name: str, lines: int = 500, since_timestamp: float = None):
-        """Get log file content with optional filtering by timestamp"""
+    async def get_log_content(self, request: Request, log_name: str, lines: int = 500, since_timestamp: float = None, 
+                              levels: str = None, search: str = None):
+        """Get log file content with optional filtering by timestamp, level, and search term
+        
+        Args:
+            log_name: Name of the log file to read
+            lines: Maximum number of lines to return (after filtering)
+            since_timestamp: Only return lines after this timestamp (for streaming)
+            levels: Comma-separated list of log levels to include (e.g., "error,warning")
+            search: Search term to filter log messages
+        """
         from fastapi.responses import JSONResponse
         
         # Use the silent logger to avoid recursive logging
-        log_viewer_logger.debug(f"Fetching log content for {log_name}, lines={lines}, since_timestamp={since_timestamp}")
+        log_viewer_logger.debug(f"Fetching log content for {log_name}, lines={lines}, since_timestamp={since_timestamp}, levels={levels}, search={search}")
 
         # Security check - only allow configured log files
         if log_name not in self.log_files:
@@ -177,6 +186,27 @@ class LogViewerWebEndpoints(PluginWebInterface):
         log_path = Path(log_name)
         if not log_path.exists():
             return JSONResponse({"error": f"Log file {log_name} not found"})
+
+        # Parse filter parameters
+        level_filter = set(levels.lower().split(',')) if levels else None
+        search_term = search.lower() if search else None
+
+        def matches_filters(parsed_line: Dict[str, Any]) -> bool:
+            """Check if a parsed line matches the current filters"""
+            # Level filter
+            if level_filter:
+                line_level = parsed_line.get('level', '').lower()
+                if line_level not in level_filter:
+                    return False
+            
+            # Search filter
+            if search_term:
+                message = parsed_line.get('message', '').lower()
+                full_content = parsed_line.get('full_content', '').lower()
+                if search_term not in message and search_term not in full_content:
+                    return False
+            
+            return True
 
         try:
             with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -188,12 +218,12 @@ class LogViewerWebEndpoints(PluginWebInterface):
 
                 if since_timestamp is None:
                     # Initial load - get last N lines and group multiline entries
-                    recent_lines = file_lines[-lines*3:] if len(file_lines) > lines*3 else file_lines
+                    # Read more lines than needed to account for filtering
+                    buffer_multiplier = 10 if (level_filter or search_term) else 3
+                    recent_lines = file_lines[-lines*buffer_multiplier:] if len(file_lines) > lines*buffer_multiplier else file_lines
                     grouped_entries = self._group_multiline_entries(recent_lines)
 
-                    # Take only the last N grouped entries
-                    grouped_entries = grouped_entries[-lines:]
-
+                    # Apply filters and collect matching entries
                     for entry in grouped_entries:
                         # Filter out log viewer requests to avoid recursion
                         if '/plugins/log_viewer' in entry['main_line']:
@@ -203,7 +233,13 @@ class LogViewerWebEndpoints(PluginWebInterface):
                         parsed_line['line_number'] = entry['line_number']
                         parsed_line['full_content'] = entry['full_content']
                         parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
-                        parsed_lines.append(parsed_line)
+                        
+                        # Apply filters
+                        if matches_filters(parsed_line):
+                            parsed_lines.append(parsed_line)
+                    
+                    # Take only the last N filtered entries
+                    parsed_lines = parsed_lines[-lines:]
                 else:
                     # Streaming mode - only check recent lines for efficiency
                     # Get last N*3 lines to have enough buffer for filtering
@@ -244,9 +280,12 @@ class LogViewerWebEndpoints(PluginWebInterface):
                             parsed_line['line_number'] = line_num
                             parsed_line['full_content'] = line.rstrip()  # For streaming, same as main line for now
                             parsed_line['has_multiline'] = False
-                            parsed_lines.append(parsed_line)
+                            
+                            # Apply filters
+                            if matches_filters(parsed_line):
+                                parsed_lines.append(parsed_line)
 
-                log_viewer_logger.debug(f"Returning {len(parsed_lines)} lines for {log_name} (streaming: {since_timestamp is not None})")
+                log_viewer_logger.debug(f"Returning {len(parsed_lines)} lines for {log_name} (streaming: {since_timestamp is not None}, filters: levels={levels}, search={search})")
                 return JSONResponse({
                     "lines": parsed_lines,
                     "total_lines": len(file_lines),
