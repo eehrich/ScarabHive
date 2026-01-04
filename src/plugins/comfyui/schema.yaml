@@ -115,3 +115,76 @@ tools:
         required:
           - operation
         additionalProperties: false
+
+# Web UI configuration for ComfyUI Monitor
+web_ui:
+  # Button in plugin bar
+  button:
+    enabled: true
+    text: "ComfyUI"
+    icon: "🎨"
+  
+  # Dropdown menu integration
+  menu:
+    enabled: true
+    items:
+      - id: "comfyui_monitor"
+        menu_id: "user"
+        section: "Tools"
+        label: "ComfyUI Monitor"
+        action: "openPanel"
+        panel_id: "comfyui_monitor"
+        icon: "🎨"
+        requires_admin: false
+        order: 150
+        tooltip: "Monitor ComfyUI workflow jobs"
+
+  # Panel configuration
+  panel:
+    enabled: true
+    panel_id: "comfyui_monitor"
+    title: "ComfyUI Monitor"
+    endpoint: "/plugins/{{ name }}/"
+    type: "iframe"
+    icon: "🎨"
+    position: "right"
+    width: "700px"
+    height: "550px"
+    description: "Monitor and manage ComfyUI workflow jobs"
+
+  # Access control
+  requires_auth: false
+  requires_role: null
+
+  # Web endpoints documentation
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "monitor_panel"
+      response_type: "html"
+      description: "ComfyUI job monitoring panel"
+    - path: "/jobs"
+      method: "GET"
+      handler: "list_jobs"
+      response_type: "json"
+      description: "List all jobs with optional filters"
+    - path: "/jobs/{prompt_id}"
+      method: "GET"
+      handler: "get_job_detail"
+      response_type: "json"
+      description: "Get details for a specific job"
+    - path: "/jobs/{prompt_id}/cancel"
+      method: "POST"
+      handler: "cancel_job"
+      response_type: "json"
+      description: "Cancel a running or queued job"
+    - path: "/workflows"
+      method: "GET"
+      handler: "list_workflows"
+      response_type: "json"
+      description: "List configured workflows"
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get server and job statistics"
