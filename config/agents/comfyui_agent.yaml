@@ -48,7 +48,7 @@ plugins:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: false
+              enabled: true
       
       metadata:
         visibility: "ui"
