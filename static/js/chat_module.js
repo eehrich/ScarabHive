@@ -30,7 +30,7 @@
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
 
-  function addUser(chatContainer, text, images = []) {
+  function addUser(chatContainer, text, images = [], audioFiles = [], textFiles = []) {
     // Ensure text is always a string
     const displayText = typeof text === 'string' ? text : String(text);
     const row = document.createElement('div');
@@ -67,6 +67,102 @@
       });
       
       msgDiv.appendChild(previewContainer);
+    }
+    
+    // Add audio previews if any
+    if (audioFiles && audioFiles.length > 0) {
+      const audioContainer = document.createElement('div');
+      audioContainer.className = 'user-audio-previews';
+      audioContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+      
+      audioFiles.forEach((file, index) => {
+        const audioWrapper = document.createElement('div');
+        audioWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+        
+        // Create object URL for the audio file
+        const audioUrl = URL.createObjectURL(file);
+        
+        // Create play button
+        const playBtn = document.createElement('button');
+        playBtn.textContent = '▶️ ' + file.name;
+        playBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;';
+        playBtn.title = 'Click to play';
+        
+        // Create hidden audio element
+        const audioEl = document.createElement('audio');
+        audioEl.src = audioUrl;
+        audioEl.style.display = 'none';
+        
+        let isPlaying = false;
+        playBtn.onclick = () => {
+          if (isPlaying) {
+            audioEl.pause();
+            playBtn.textContent = '▶️ ' + file.name;
+            isPlaying = false;
+          } else {
+            audioEl.play();
+            playBtn.textContent = '⏸️ ' + file.name;
+            isPlaying = true;
+          }
+        };
+        
+        audioEl.onended = () => {
+          playBtn.textContent = '▶️ ' + file.name;
+          isPlaying = false;
+        };
+        
+        audioWrapper.appendChild(playBtn);
+        audioWrapper.appendChild(audioEl);
+        audioContainer.appendChild(audioWrapper);
+      });
+      
+      msgDiv.appendChild(audioContainer);
+    }
+    
+    // Add text file previews if any
+    if (textFiles && textFiles.length > 0) {
+      const textContainer = document.createElement('div');
+      textContainer.className = 'user-text-file-previews';
+      textContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+      
+      textFiles.forEach((file, index) => {
+        const textWrapper = document.createElement('div');
+        textWrapper.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+        
+        // Create view button
+        const viewBtn = document.createElement('button');
+        viewBtn.textContent = '📄 ' + file.name;
+        viewBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; text-align: left;';
+        viewBtn.title = 'Click to view';
+        
+        // Create hidden content div
+        const contentDiv = document.createElement('pre');
+        contentDiv.style.cssText = 'display: none; margin: 0; padding: 10px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 0.85em; white-space: pre-wrap; word-wrap: break-word;';
+        
+        viewBtn.onclick = () => {
+          // Toggle content display
+          if (contentDiv.style.display === 'none') {
+            contentDiv.style.display = 'block';
+            viewBtn.textContent = '📄 ' + file.name + ' ▼';
+          } else {
+            contentDiv.style.display = 'none';
+            viewBtn.textContent = '📄 ' + file.name;
+          }
+        };
+        
+        // Read file content
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          contentDiv.textContent = e.target.result;
+        };
+        reader.readAsText(file);
+        
+        textWrapper.appendChild(viewBtn);
+        textWrapper.appendChild(contentDiv);
+        textContainer.appendChild(textWrapper);
+      });
+      
+      msgDiv.appendChild(textContainer);
     }
     
     row.appendChild(msgDiv);
@@ -753,16 +849,13 @@
       // Require either task text or files
       if (!task && !hasFiles) return;
       
-      // Add user message to chat (with file indicator if files present)
-      let displayText = task || '(Image upload)';
-      if (files.length > 0) {
-        if (task) {
-          displayText += ` [${files.length} image${files.length > 1 ? 's' : ''}]`;
-        } else {
-          displayText = `[${files.length} image${files.length > 1 ? 's' : ''}]`;
-        }
-      }
-      addUser(chatContainer, displayText, files);
+      // Add user message to chat
+      let displayText = task || '';
+      // Get file breakdown by type from file upload module
+      const filesByType = window.fileUploadModule ? window.fileUploadModule.getFilesByType() : { images: [], audio: [], text: [] };
+      
+      // Pass images, audio and text files separately to addUser
+      addUser(chatContainer, displayText, filesByType.images, filesByType.audio, filesByType.text);
       taskInput.value = '';
       // Trigger input event so auto-resize logic recalculates height immediately
       try {
@@ -1396,9 +1489,166 @@
           row.className = 'row';
           const msgDiv = document.createElement('div');
           msgDiv.className = 'msg user';
+          
+          // Handle multimodal content (array) or simple string content
+          let displayText = '';
+          let images = [];
+          let audioFiles = [];
+          let textFiles = [];
+          
+          if (Array.isArray(msg.content)) {
+            // Parse multimodal content array
+            const textParts = [];
+            msg.content.forEach(item => {
+              if (item.type === 'text') {
+                textParts.push(item.text);
+              } else if (item.type === 'image_url' || item.type === 'image') {
+                images.push(item);
+              } else if (item.type === 'audio') {
+                audioFiles.push(item);
+              } else if (item.type === 'text_file') {
+                textFiles.push(item);
+              }
+            });
+            displayText = textParts.join(' ') || '(File upload)';
+          } else {
+            displayText = msg.content || '';
+          }
+          
           const textSpan = document.createElement('div');
-          textSpan.innerHTML = formatTextWithLineBreaks(msg.content || '');
+          textSpan.innerHTML = formatTextWithLineBreaks(displayText);
           msgDiv.appendChild(textSpan);
+          
+          // Add image previews if any
+          if (images.length > 0) {
+            const previewContainer = document.createElement('div');
+            previewContainer.className = 'user-image-previews';
+            
+            images.forEach(item => {
+              const img = document.createElement('img');
+              const imageUrl = item.image_url?.url || item.url;
+              img.src = imageUrl;
+              img.alt = 'Uploaded image';
+              img.title = 'Click to view full size';
+              
+              // Optional: click to view full size
+              img.onclick = () => {
+                window.open(imageUrl, '_blank');
+              };
+              
+              previewContainer.appendChild(img);
+            });
+            
+            msgDiv.appendChild(previewContainer);
+          }
+          
+          // Add audio previews if any
+          if (audioFiles.length > 0) {
+            const audioContainer = document.createElement('div');
+            audioContainer.className = 'user-audio-previews';
+            audioContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+            
+            audioFiles.forEach((item, index) => {
+              const audioWrapper = document.createElement('div');
+              audioWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+              
+              // Extract audio data URL - handle different formats
+              // Format 1: item.audio_url (from session storage)
+              // Format 2: item.audio.data (alternative format)
+              // Format 3: item.data (fallback)
+              const audioData = item.audio_url || item.audio?.data || item.data;
+              const mediaType = item.audio?.media_type || item.media_type || 'audio/flac';
+              const audioName = item.name || `Audio ${index + 1}`;
+              
+              if (audioData) {
+                // Create play button that plays audio directly
+                const playBtn = document.createElement('button');
+                playBtn.textContent = '▶️ ' + audioName;
+                playBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;';
+                playBtn.title = 'Click to play';
+                
+                // Create hidden audio element
+                const audioEl = document.createElement('audio');
+                audioEl.src = audioData;
+                audioEl.style.display = 'none';
+                
+                let isPlaying = false;
+                playBtn.onclick = () => {
+                  if (isPlaying) {
+                    audioEl.pause();
+                    playBtn.textContent = '▶️ ' + audioName;
+                    isPlaying = false;
+                  } else {
+                    audioEl.play();
+                    playBtn.textContent = '⏸️ ' + audioName;
+                    isPlaying = true;
+                  }
+                };
+                
+                audioEl.onended = () => {
+                  playBtn.textContent = '▶️ ' + audioName;
+                  isPlaying = false;
+                };
+                
+                audioWrapper.appendChild(playBtn);
+                audioWrapper.appendChild(audioEl);
+              } else {
+                // Fallback: Show audio indicator if data not found
+                const indicator = document.createElement('span');
+                indicator.textContent = `🔊 Audio ${index + 1}`;
+                indicator.style.cssText = 'color: #888; font-size: 0.95em;';
+                audioWrapper.appendChild(indicator);
+              }
+              
+              audioContainer.appendChild(audioWrapper);
+            });
+            
+            msgDiv.appendChild(audioContainer);
+          }
+          
+          // Add text file previews if any
+          if (textFiles.length > 0) {
+            const textContainer = document.createElement('div');
+            textContainer.className = 'user-text-file-previews';
+            textContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+            
+            textFiles.forEach((item, index) => {
+              const textWrapper = document.createElement('div');
+              textWrapper.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+              
+              const fileName = item.name || `File ${index + 1}`;
+              const fileContent = item.content || '';
+              
+              // Create view button
+              const viewBtn = document.createElement('button');
+              viewBtn.textContent = '📄 ' + fileName;
+              viewBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; width: fit-content;';
+              viewBtn.title = 'Click to view';
+              
+              // Create hidden content div
+              const contentDiv = document.createElement('pre');
+              contentDiv.style.cssText = 'display: none; margin: 0; padding: 10px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;';
+              contentDiv.textContent = fileContent;
+              
+              viewBtn.onclick = () => {
+                // Toggle content display
+                if (contentDiv.style.display === 'none') {
+                  contentDiv.style.display = 'block';
+                  viewBtn.textContent = '📄 ' + fileName + ' ▼';
+                } else {
+                  contentDiv.style.display = 'none';
+                  viewBtn.textContent = '📄 ' + fileName;
+                }
+              };
+              
+              textWrapper.appendChild(viewBtn);
+              textWrapper.appendChild(contentDiv);
+              textContainer.appendChild(textWrapper);
+            });
+            
+            msgDiv.appendChild(textContainer);
+          }
+          
           row.appendChild(msgDiv);
           chatEl.appendChild(row);
         } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {

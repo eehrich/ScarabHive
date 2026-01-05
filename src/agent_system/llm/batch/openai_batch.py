@@ -24,6 +24,7 @@ from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
 from .job_tracker import get_job_tracker
 from ..models import LLMRateLimitError, LLMQuotaExhaustedError
+from .. import openai_utils
 
 logger = logging.getLogger(__name__)
 
@@ -187,9 +188,12 @@ class OpenAIBatchClient(BatchProviderClient):
             
         with open(file_path, "w", encoding="utf-8") as f:
             for request in requests:
+                # Normalize messages for OpenAI API compatibility
+                normalized_messages = openai_utils.normalize_messages(request.messages)
+                
                 body: Dict[str, Any] = {
                     "model": request.model,
-                    "messages": request.messages,
+                    "messages": normalized_messages,
                 }
                 
                 if request.tools:

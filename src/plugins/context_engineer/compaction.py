@@ -257,6 +257,8 @@ class LayeredCompactionStrategy:
                 # Handle multimodal content - extract text for token estimation
                 if isinstance(content, list):
                     # Multimodal content - skip archival, preserve as-is
+                    # TODO: Support compaction of text_file content within multimodal lists
+                    # For now, we keep multimodal messages intact to avoid breaking references
                     continue
                 token_count = estimate_content_tokens(content)
                 

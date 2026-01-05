@@ -54,6 +54,7 @@ class ImageContent(BaseModel):
     source: Optional[ImageSource] = None  # Anthropic format
     image_url: Optional[Union[str, Dict[str, str]]] = None  # OpenAI format
     detail: Optional[ImageDetail] = None  # OpenAI image detail control
+    name: Optional[str] = None  # Original filename
 
 
 class TextContent(BaseModel):
@@ -72,6 +73,7 @@ class AudioContent(BaseModel):
     source: Optional[ImageSource] = None  # Reuse ImageSource for consistent structure
     audio_url: Optional[str] = None
     media_type: Optional[str] = None  # e.g., "audio/wav", "audio/mp3"
+    name: Optional[str] = None  # Original filename
 
 
 class VideoContent(BaseModel):
@@ -82,6 +84,15 @@ class VideoContent(BaseModel):
     source: Optional[ImageSource] = None
     video_url: Optional[str] = None
     media_type: Optional[str] = None  # e.g., "video/mp4", "video/webm"
+
+
+class TextFileContent(BaseModel):
+    """Text file content for multimodal messages (displayed separately from main text)."""
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["text_file"] = "text_file"
+    content: str  # File text content
+    name: Optional[str] = None  # Original filename
 
 
 class MultimodalToolContent(BaseModel):
@@ -99,7 +110,7 @@ class MultimodalToolContent(BaseModel):
 
 
 # Union type for all content types
-ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, str, Dict[str, Any]]
+ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextFileContent, str, Dict[str, Any]]
 
 
 class ChatMessage(BaseModel):
@@ -163,7 +174,7 @@ class ChatMessage(BaseModel):
         return False
 
     def get_text_content(self) -> str:
-        """Extract text content from message."""
+        """Extract text content from message (including text file content)."""
         if isinstance(self.content, str):
             return self.content
         if isinstance(self.content, list):
@@ -173,9 +184,20 @@ class ChatMessage(BaseModel):
                     texts.append(item)
                 elif isinstance(item, TextContent):
                     texts.append(item.text)
-                elif hasattr(item, "type") and getattr(item, "type") == "text":
-                    # Pydantic model with text
-                    texts.append(getattr(item, "text", ""))
+                elif isinstance(item, TextFileContent):
+                    # Include text file content with filename header
+                    filename = item.name or "file"
+                    texts.append(f"[File: {filename}]\n{item.content}")
+                elif hasattr(item, "type"):
+                    item_type = getattr(item, "type", "")
+                    if item_type == "text":
+                        # Pydantic model with text
+                        texts.append(getattr(item, "text", ""))
+                    elif item_type == "text_file":
+                        # Dict-style text file content
+                        filename = getattr(item, "name", None) or "file"
+                        content = getattr(item, "content", "")
+                        texts.append(f"[File: {filename}]\n{content}")
             return " ".join(texts)
         return ""
 

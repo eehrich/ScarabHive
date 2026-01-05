@@ -200,11 +200,13 @@ class TestAnthropicClientToolConversion:
         assert anthropic_tools[1]["name"] == "tool2"
 
 
-class TestAnthropicClientImageConversion:
-    """Test image content conversion to Anthropic format."""
+class TestAnthropicImageConversion:
+    """Test image content conversion using anthropic_utils."""
 
-    def test_convert_base64_image(self, anthropic_client):
+    def test_convert_base64_image(self):
         """Test conversion of base64 image."""
+        from agent_system.llm import anthropic_utils
+        
         item = {
             "type": "image",
             "source": {
@@ -214,14 +216,16 @@ class TestAnthropicClientImageConversion:
             }
         }
         
-        result = anthropic_client._convert_image_content(item)
+        result = anthropic_utils._convert_image_content(item)
         
         assert result["type"] == "image"
         assert result["source"]["type"] == "base64"
         assert result["source"]["media_type"] == "image/png"
 
-    def test_convert_data_url_image(self, anthropic_client):
+    def test_convert_data_url_image(self):
         """Test conversion of data URL image."""
+        from agent_system.llm import anthropic_utils
+        
         item = {
             "type": "image_url",
             "image_url": {
@@ -229,14 +233,16 @@ class TestAnthropicClientImageConversion:
             }
         }
         
-        result = anthropic_client._convert_image_content(item)
+        result = anthropic_utils._convert_image_content(item)
         
         assert result["type"] == "image"
         assert result["source"]["type"] == "base64"
         assert result["source"]["media_type"] == "image/jpeg"
 
-    def test_convert_url_image(self, anthropic_client):
+    def test_convert_url_image(self):
         """Test conversion of URL image."""
+        from agent_system.llm import anthropic_utils
+        
         item = {
             "type": "image_url",
             "image_url": {
@@ -244,7 +250,7 @@ class TestAnthropicClientImageConversion:
             }
         }
         
-        result = anthropic_client._convert_image_content(item)
+        result = anthropic_utils._convert_image_content(item)
         
         assert result["type"] == "image"
         assert result["source"]["type"] == "url"

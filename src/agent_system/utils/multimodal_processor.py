@@ -14,7 +14,7 @@ from typing import List, Optional, Union
 
 from PIL import Image as PILImage
 
-from ..llm.models import ChatMessage, TextContent, ImageContent, AudioContent
+from ..llm.models import ChatMessage, TextContent, ImageContent, AudioContent, TextFileContent
 
 
 logger = logging.getLogger(__name__)
@@ -407,16 +407,22 @@ def create_multimodal_message_extended(
         AudioProcessingError: If any audio processing fails
         TextFileProcessingError: If any text file processing fails
     """
-    content_list: List[Union[TextContent, ImageContent, AudioContent]] = []
+    content_list: List[Union[TextContent, ImageContent, AudioContent, TextFileContent]] = []
     
-    # Process text files first - prepend their content to the message
-    text_file_contents = []
+    # Add the main text content first
+    content_list.append(TextContent(text=text))
+    
+    # Process text files as separate TextFileContent items
     if text_file_paths:
         for txt_path in text_file_paths:
             try:
                 content, metadata = read_text_file(txt_path, max_size_mb=max_text_size_mb)
                 filename = Path(txt_path).name
-                text_file_contents.append(f"--- Content of {filename} ---\n{content}\n--- End of {filename} ---")
+                content_list.append(TextFileContent(
+                    type="text_file",
+                    content=content,
+                    name=filename
+                ))
                 logger.debug(
                     f"Attached text file: {metadata['path']} "
                     f"({metadata['extension']}, {metadata['lines']} lines, {metadata['size_mb']:.2f} MB)"
@@ -425,15 +431,6 @@ def create_multimodal_message_extended(
                 raise
             except Exception as e:
                 raise TextFileProcessingError(f"Unexpected error processing {txt_path}: {e}") from e
-    
-    # Combine text files content with user message
-    if text_file_contents:
-        combined_text = "\n\n".join(text_file_contents) + "\n\n" + text
-    else:
-        combined_text = text
-    
-    # Add the combined text content
-    content_list.append(TextContent(text=combined_text))
     
     # Process images
     if image_paths:
@@ -445,7 +442,8 @@ def create_multimodal_message_extended(
                 )
                 content_list.append(ImageContent(
                     type="image_url",
-                    image_url={"url": data_url}
+                    image_url={"url": data_url},
+                    name=metadata.get("original_filename") or Path(img_path).name
                 ))
                 logger.debug(
                     f"Attached image: {metadata['path']} "
@@ -468,7 +466,8 @@ def create_multimodal_message_extended(
                 content_list.append(AudioContent(
                     type="audio",
                     audio_url=data_url,
-                    media_type=metadata["mime_type"]
+                    media_type=metadata["mime_type"],
+                    name=metadata.get("original_filename") or Path(audio_path).name
                 ))
                 logger.debug(
                     f"Attached audio: {metadata['path']} "

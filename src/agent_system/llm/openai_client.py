@@ -11,6 +11,7 @@ from ..utils.id import short_id
 from .models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from ..config.models import ModelCapabilitiesConfig
 from .retry_utils import execute_with_cancellation
+from . import openai_utils
 
 
 class OpenAIAsyncClient(LLMClient):
@@ -119,14 +120,11 @@ class OpenAIAsyncClient(LLMClient):
                 result = []
                 for m in messages:
                     d = m.model_dump(exclude_none=True, mode='json')
-                    # Filter out audio/video content - OpenAI Chat Completions 
-                    # only supports text and image_url
+                    # Normalize content for OpenAI API
                     if isinstance(d.get('content'), list):
-                        filtered = [
-                            item for item in d['content']
-                            if not (isinstance(item, dict) and item.get('type') in ('audio', 'video'))
-                        ]
-                        d['content'] = filtered if filtered else ""
+                        d['content'] = openai_utils.normalize_content_list(d['content'])
+                        if not d['content']:
+                            d['content'] = ""
                     result.append(d)
                 return result
             serialized = await asyncio.to_thread(_serialize)
@@ -309,21 +307,11 @@ class OpenAIAsyncClient(LLMClient):
                 d.pop('multimodal_content', None)
                 
                 # Filter out audio content from user messages - OpenAI Chat Completions
-                # only supports text and image_url content types, not audio
+                # Normalize content for OpenAI API
                 if isinstance(d.get('content'), list):
-                    filtered_content = []
-                    for item in d['content']:
-                        if isinstance(item, dict):
-                            item_type = item.get('type', '')
-                            # Skip audio/video types - not supported by Chat Completions API
-                            if item_type in ('audio', 'video'):
-                                logger.warning(
-                                    "[OpenAI] Filtering out %s content - not supported by Chat Completions API",
-                                    item_type
-                                )
-                                continue
-                        filtered_content.append(item)
-                    d['content'] = filtered_content if filtered_content else ""
+                    d['content'] = openai_utils.normalize_content_list(d['content'])
+                    if not d['content']:
+                        d['content'] = ""
                 
                 result.append(d)
                 
@@ -676,21 +664,11 @@ class OpenAIAsyncClient(LLMClient):
                 # Remove multimodal_content from serialized dict - it's processed separately
                 d.pop('multimodal_content', None)
                 
-                # Filter out audio/video content from user messages - OpenAI Chat Completions
-                # only supports text and image_url content types
+                # Normalize content for OpenAI API
                 if isinstance(d.get('content'), list):
-                    filtered_content = []
-                    for item in d['content']:
-                        if isinstance(item, dict):
-                            item_type = item.get('type', '')
-                            if item_type in ('audio', 'video'):
-                                logger.warning(
-                                    "[OpenAI] Filtering out %s content - not supported by Chat Completions API",
-                                    item_type
-                                )
-                                continue
-                        filtered_content.append(item)
-                    d['content'] = filtered_content if filtered_content else ""
+                    d['content'] = openai_utils.normalize_content_list(d['content'])
+                    if not d['content']:
+                        d['content'] = ""
                 
                 result.append(d)
                 

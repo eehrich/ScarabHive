@@ -159,7 +159,8 @@ class TestOllamaClientMessageMapping:
             
             assert len(mapped) == 1
             assert mapped[0]["role"] == "assistant"
-            assert "content" not in mapped[0]
+            # Ollama always expects content field, even if empty
+            assert mapped[0]["content"] == ""
 
 
 class TestOllamaClientChat:

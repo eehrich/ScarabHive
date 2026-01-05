@@ -6,6 +6,7 @@ from ..utils.id import short_id
 
 from .models import ChatMessage, LLMClient
 from ..config.models import ModelCapabilitiesConfig
+from . import ollama_utils
 
 
 class OllamaNativeAsyncClient(LLMClient):
@@ -131,6 +132,8 @@ class OllamaNativeAsyncClient(LLMClient):
                                 # If parsing fails, leave as-is or use empty dict
                                 tc["function"]["arguments"] = {}
 
+            # Normalize for Ollama format (extract images to separate field)
+            d = ollama_utils.normalize_message(d)
             out.append(d)
         return out
 

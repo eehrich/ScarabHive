@@ -334,6 +334,13 @@ def _convert_multimodal_content(content_list: List[Any]) -> List[Dict[str, Any]]
                         logger.warning(f"[Gemini] Failed to parse audio data URL from Pydantic model: {e}")
                 elif audio_url:
                     logger.warning(f"[Gemini] External audio URLs not supported: {audio_url[:100]}")
+            
+            elif item.type == "text_file":
+                # Extract from Pydantic TextFileContent model - convert to text
+                content = getattr(item, "content", "")
+                name = getattr(item, "name", None) or "file"
+                if content:
+                    parts.append({"text": f"[File: {name}]\n{content}"})
     
     return parts
 

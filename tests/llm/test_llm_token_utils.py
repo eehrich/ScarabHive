@@ -491,6 +491,33 @@ class TestMultimodalTokenEstimation:
         # 4 words * 1.3 = 5.2 -> 5 + 4 overhead = 9
         assert tokens == 9
 
+    def test_extract_text_from_text_file_content(self):
+        """Test text extraction from text_file content type."""
+        from agent_system.llm.token_utils import extract_text_from_content
+        
+        content = [
+            {"type": "text", "text": "Here is the file:"},
+            {"type": "text_file", "name": "example.py", "content": "def hello(): print('world')"}
+        ]
+        result = extract_text_from_content(content)
+        assert "Here is the file:" in result
+        assert "def hello(): print('world')" in result
+
+    def test_estimate_tokens_with_text_file(self):
+        """Test token estimation includes text_file content."""
+        multimodal_content = [
+            {"type": "text", "text": "Review this code:"},
+            {"type": "text_file", "name": "script.py", "content": "import sys\n\ndef main():\n    print('Hello')\n\nif __name__ == '__main__':\n    main()"}
+        ]
+        msg = ChatMessage(role="user", content=multimodal_content)
+        tokens = estimate_token_count([msg])
+        
+        # Should include tokens for both the text and the file content
+        # "Review this code:" = 4 words
+        # File content = ~10-15 words of code
+        # Total should be meaningful
+        assert tokens > 15  # At least overhead + reasonable word count
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

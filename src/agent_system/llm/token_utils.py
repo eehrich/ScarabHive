@@ -39,11 +39,18 @@ def extract_text_from_content(content: Union[str, List[Any], Any]) -> str:
                 item_type = item.get('type', '')
                 if item_type == 'text':
                     text_parts.append(item.get('text', ''))
+                elif item_type == 'text_file':
+                    # Include text file content for token counting
+                    text_parts.append(item.get('content', ''))
                 # For image/audio, we don't extract text but they contribute to tokens
             elif hasattr(item, 'type'):
                 # Pydantic model (TextContent, ImageContent, etc.)
-                if getattr(item, 'type', '') == 'text':
+                item_type = getattr(item, 'type', '')
+                if item_type == 'text':
                     text_parts.append(getattr(item, 'text', ''))
+                elif item_type == 'text_file':
+                    # Include text file content for token counting
+                    text_parts.append(getattr(item, 'content', ''))
         return ' '.join(text_parts)
     
     # Fallback for other types

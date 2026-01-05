@@ -17,6 +17,7 @@ import ssl
 from agent_system.llm.clients import LLMClient
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.core.cancellation import CancellationToken
+from agent_system.llm import openai_utils
 
 logger = logging.getLogger(__name__)
 
@@ -134,45 +135,17 @@ class HTTPXOpenAIClient(LLMClient):
         )
 
     def _filter_audio_from_content(self, content: Any) -> Any:
-        """Filter out audio content blocks from message content.
+        """Filter and normalize content for OpenAI API.
         
-        OpenAI Chat Completions API only supports text and image_url content types.
-        Audio content must be filtered out (with warning logged).
+        Uses shared openai_utils for consistent normalization across all OpenAI clients.
         
         Args:
             content: Message content (str, list, or dict)
             
         Returns:
-            Filtered content with audio blocks removed
+            Normalized content for OpenAI API
         """
-        if isinstance(content, str):
-            return content
-        
-        if isinstance(content, list):
-            filtered = []
-            audio_filtered = False
-            for item in content:
-                if isinstance(item, dict):
-                    item_type = item.get("type", "")
-                    # Skip audio and video content - not supported by Chat Completions API
-                    if item_type in ("audio", "input_audio", "video"):
-                        audio_filtered = True
-                        continue
-                filtered.append(item)
-            
-            if audio_filtered:
-                logger.debug(
-                    "Filtered audio/video content from message - "
-                    "OpenAI Chat Completions API only supports text and image_url types"
-                )
-            
-            # If only one text item remains, simplify to string
-            if len(filtered) == 1 and isinstance(filtered[0], dict) and filtered[0].get("type") == "text":
-                return filtered[0].get("text", "")
-            
-            return filtered if filtered else ""
-        
-        return content
+        return openai_utils.normalize_message_content(content)
 
     async def chat(
         self,

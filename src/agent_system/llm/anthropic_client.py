@@ -25,6 +25,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
+from agent_system.llm import anthropic_utils
 
 logger = logging.getLogger(__name__)
 
@@ -210,34 +211,7 @@ class AnthropicAsyncClient(LLMClient):
             
             # Handle multimodal content
             if isinstance(msg.content, list):
-                content_blocks = []
-                audio_filtered = False
-                for item in msg.content:
-                    if isinstance(item, str):
-                        content_blocks.append({"type": "text", "text": item})
-                    elif isinstance(item, dict):
-                        item_type = item.get("type", "")
-                        if item_type == "text":
-                            content_blocks.append({"type": "text", "text": item.get("text", "")})
-                        elif item_type in ("image", "image_url"):
-                            # Convert to Anthropic image format
-                            image_block = self._convert_image_content(item)
-                            if image_block:
-                                content_blocks.append(image_block)
-                        elif item_type in ("audio", "input_audio", "video"):
-                            # Anthropic Messages API does not support audio/video input
-                            audio_filtered = True
-                            continue
-                    else:
-                        # Try to get text content
-                        text = getattr(item, "text", None) or str(item)
-                        content_blocks.append({"type": "text", "text": text})
-                
-                if audio_filtered:
-                    logger.debug(
-                        "Filtered audio/video content from message - "
-                        "Anthropic Messages API only supports text and image types"
-                    )
+                content_blocks = anthropic_utils.normalize_content_list(msg.content)
                 
                 converted_messages.append({
                     "role": anthropic_role,
@@ -251,54 +225,6 @@ class AnthropicAsyncClient(LLMClient):
                 })
         
         return system_prompt, converted_messages
-
-    def _convert_image_content(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Convert image content to Anthropic format."""
-        item_type = item.get("type", "")
-        
-        if item_type == "image":
-            source = item.get("source", {})
-            if source.get("type") == "base64":
-                return {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": source.get("media_type", "image/jpeg"),
-                        "data": source.get("data", "")
-                    }
-                }
-        elif item_type == "image_url":
-            image_url = item.get("image_url", {})
-            url = image_url.get("url", "") if isinstance(image_url, dict) else image_url
-            
-            # Check if it's a data URL
-            if url.startswith("data:"):
-                # Parse data URL: data:image/jpeg;base64,/9j/4AAQ...
-                try:
-                    header, data = url.split(",", 1)
-                    media_type = header.split(":")[1].split(";")[0]
-                    return {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": data
-                        }
-                    }
-                except (ValueError, IndexError):
-                    logger.warning(f"Failed to parse data URL: {url[:50]}...")
-                    return None
-            else:
-                # External URL
-                return {
-                    "type": "image",
-                    "source": {
-                        "type": "url",
-                        "url": url
-                    }
-                }
-        
-        return None
 
     def _convert_tools(self, tools: List[Dict]) -> List[Dict[str, Any]]:
         """Convert OpenAI tool schema to Anthropic format."""

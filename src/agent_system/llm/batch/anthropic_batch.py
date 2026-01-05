@@ -28,6 +28,7 @@ from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
 from .job_tracker import get_job_tracker
 from ..models import LLMRateLimitError, LLMQuotaExhaustedError
+from .. import anthropic_utils
 
 logger = logging.getLogger(__name__)
 
@@ -229,19 +230,7 @@ class AnthropicBatchClient(BatchProviderClient):
             
             # Handle multimodal content
             if isinstance(content, list):
-                content_blocks = []
-                for item in content:
-                    if isinstance(item, str):
-                        content_blocks.append({"type": "text", "text": item})
-                    elif isinstance(item, dict):
-                        item_type = item.get("type", "")
-                        if item_type == "text":
-                            content_blocks.append({"type": "text", "text": item.get("text", "")})
-                        elif item_type in ("image", "image_url"):
-                            # Convert image to Anthropic format
-                            image_block = self._convert_image(item)
-                            if image_block:
-                                content_blocks.append(image_block)
+                content_blocks = anthropic_utils.normalize_content_list(content)
                 
                 anthropic_messages.append({
                     "role": anthropic_role,
@@ -255,52 +244,6 @@ class AnthropicBatchClient(BatchProviderClient):
                 })
         
         return system_prompt, anthropic_messages
-
-    def _convert_image(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Convert image content to Anthropic format."""
-        item_type = item.get("type", "")
-        
-        if item_type == "image":
-            source = item.get("source", {})
-            if source.get("type") == "base64":
-                return {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": source.get("media_type", "image/jpeg"),
-                        "data": source.get("data", "")
-                    }
-                }
-        elif item_type == "image_url":
-            image_url = item.get("image_url", {})
-            url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
-            
-            # Handle data URLs
-            if url.startswith("data:"):
-                try:
-                    header, data = url.split(",", 1)
-                    media_type = header.split(":")[1].split(";")[0]
-                    return {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": data
-                        }
-                    }
-                except (ValueError, IndexError):
-                    return None
-            else:
-                # URL source
-                return {
-                    "type": "image",
-                    "source": {
-                        "type": "url",
-                        "url": url
-                    }
-                }
-        
-        return None
 
     def _convert_openai_tools_to_anthropic(
         self, tools: List[Dict[str, Any]]

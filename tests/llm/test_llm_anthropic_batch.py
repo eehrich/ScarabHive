@@ -331,10 +331,12 @@ class TestAnthropicBatchSubmission:
 
 
 class TestAnthropicBatchImageConversion:
-    """Test image content conversion."""
+    """Test image content conversion using anthropic_utils."""
 
-    def test_convert_base64_image(self, anthropic_batch_client):
+    def test_convert_base64_image(self):
         """Test base64 image conversion."""
+        from agent_system.llm import anthropic_utils
+        
         item = {
             "type": "image",
             "source": {
@@ -344,34 +346,38 @@ class TestAnthropicBatchImageConversion:
             }
         }
         
-        result = anthropic_batch_client._convert_image(item)
+        result = anthropic_utils._convert_image_content(item)
         
         assert result["type"] == "image"
         assert result["source"]["type"] == "base64"
         assert result["source"]["media_type"] == "image/png"
         assert result["source"]["data"] == "abc123"
 
-    def test_convert_url_image(self, anthropic_batch_client):
+    def test_convert_url_image(self):
         """Test URL image conversion."""
+        from agent_system.llm import anthropic_utils
+        
         item = {
             "type": "image_url",
             "image_url": {"url": "https://example.com/img.png"}
         }
         
-        result = anthropic_batch_client._convert_image(item)
+        result = anthropic_utils._convert_image_content(item)
         
         assert result["type"] == "image"
         assert result["source"]["type"] == "url"
         assert result["source"]["url"] == "https://example.com/img.png"
 
-    def test_convert_data_url_image(self, anthropic_batch_client):
+    def test_convert_data_url_image(self):
         """Test data URL image conversion."""
+        from agent_system.llm import anthropic_utils
+        
         item = {
             "type": "image_url",
             "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQ"}
         }
         
-        result = anthropic_batch_client._convert_image(item)
+        result = anthropic_utils._convert_image_content(item)
         
         assert result["type"] == "image"
         assert result["source"]["type"] == "base64"
