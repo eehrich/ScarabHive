@@ -144,11 +144,17 @@ class ComfyUIServer(SchemaBasedMCPServer):
         operation = params.get("operation")
         
         if not operation:
+            if status:
+                await status.error("Operation parameter is required")
             return {"error": "operation is required"}
         
         # ===== LIST =====
         if operation == "list":
-            return await self._op_list(params)
+            result = await self._op_list(params)
+            if status:
+                count = result.get("count", 0)
+                await status.end(f"Listed {count} available workflow(s)")
+            return result
         
         # ===== EXECUTE =====
         elif operation == "execute":
@@ -156,7 +162,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # ===== STATUS =====
         elif operation == "status":
-            return await self._op_status(params)
+            result = await self._op_status(params)
+            if status:
+                job_status = result.get("status", "unknown")
+                await status.end(f"Job status: {job_status}")
+            return result
         
         # ===== RESULT =====
         elif operation == "result":
@@ -168,32 +178,47 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # ===== SERVER_STATUS =====
         elif operation == "server_status":
-            return await self.client.ping()
+            result = await self.client.ping()
+            if status:
+                is_online = result.get("status") == "online"
+                await status.end(f"ComfyUI server is {'online' if is_online else 'offline'}")
+            return result
         
         # ===== QUEUE =====
         elif operation == "queue":
             queue_data = await self.client.get_queue()
-            return {
+            result = {
                 "status": "success",
                 "pending": len(queue_data.get("queue_pending", [])),
                 "running": len(queue_data.get("queue_running", [])),
                 "queue": queue_data
             }
+            if status:
+                pending = result["pending"]
+                running = result["running"]
+                await status.end(f"Queue status: {running} running, {pending} pending")
+            return result
         
         # ===== CANCEL =====
         elif operation == "cancel":
             prompt_id = params.get("prompt_id")
             if not prompt_id:
+                if status:
+                    await status.error("Prompt ID is required for cancel operation")
                 return {"error": "prompt_id is required"}
             
             result = await self.client.cancel(prompt_id)
             self.job_tracker.update_status(prompt_id, "cancelled")
+            if status:
+                await status.end("Job cancelled")
             return result
         
         # ===== LOAD =====
         elif operation == "load":
             return await self._op_load(params, status)
         
+        if status:
+            await status.error(f"Unknown operation: {operation}")
         return {"error": f"Unknown operation: {operation}"}
     
     async def _op_list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -295,7 +320,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         )
         
         if status:
-            await status.end(f"Workflow queued: {prompt_id}")
+            wf_name = wf_config.get("name", workflow_id)
+            await status.end(f"Queued '{wf_name}'")
         
         return {
             "status": "queued",
@@ -487,7 +513,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         if status:
             total_files = sum(len(v) for v in outputs.values())
-            await status.end(f"Retrieved {total_files} output files")
+            await status.end(f"Retrieved {total_files} output file(s)")
         
         result: dict[str, Any] = {
             "status": "completed",
@@ -758,7 +784,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
             return {"error": "No valid media files found to load"}
         
         if status:
-            await status.end(f"Loaded {len(multimodal)} file(s) for analysis")
+            await status.end(f"Loaded {len(multimodal)} file(s)")
         
         return {
             "status": "success",
@@ -849,7 +875,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
             # Check if completed or failed
             if current_status == "completed":
                 if status:
-                    await status.end(f"Job {prompt_id} completed after {int(elapsed)}s")
+                    job_info = self.job_tracker.get_job(prompt_id)
+                    wf_name = job_info.get("workflow_name", "workflow") if job_info else "workflow"
+                    await status.end(f"'{wf_name}' completed ({int(elapsed)}s)")
                 
                 # If include_content, fetch results to get multimodal content
                 if include_content:
