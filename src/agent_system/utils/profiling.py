@@ -30,6 +30,51 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Dedicated profiling logger - writes to separate file
+profiling_logger = logging.getLogger("agent_system.profiling")
+
+
+def setup_profiling_logger() -> None:
+    """Setup dedicated file logging for profiling output.
+    
+    Profiling logs go to logs/profiling.log instead of api.log
+    to avoid cluttering the main log file.
+    """
+    from pathlib import Path
+    
+    # Create logs directory if needed
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    log_file = log_dir / "profiling.log"
+    
+    # Remove existing handlers to prevent duplicates
+    for handler in profiling_logger.handlers[:]:
+        profiling_logger.removeHandler(handler)
+    
+    # File handler for profiling logs
+    file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    
+    profiling_logger.addHandler(file_handler)
+    profiling_logger.setLevel(logging.DEBUG)
+    # Don't propagate to root logger (avoids duplicate output in api.log)
+    profiling_logger.propagate = False
+    
+    # Also redirect asyncio logger to profiling log (for slow callback warnings from loop.set_debug(True))
+    asyncio_logger = logging.getLogger("asyncio")
+    asyncio_logger.addHandler(file_handler)
+    asyncio_logger.propagate = False
+    
+    profiling_logger.info("=" * 60)
+    profiling_logger.info("Profiling log started")
+    profiling_logger.info("=" * 60)
+
+
 # Configuration from environment
 PROFILING_ENABLED = os.getenv("AGENT_ENABLE_PROFILING", "0") == "1"
 SLOW_CALLBACK_THRESHOLD = float(os.getenv("AGENT_SLOW_CALLBACK_MS", "100")) / 1000  # Convert ms to seconds
@@ -199,7 +244,7 @@ class AsyncTaskMonitor:
         if hasattr(loop, 'set_debug'):
             loop.set_debug(True)
         
-        logger.info(f"Async task monitoring started (slow_threshold={self.slow_threshold*1000:.0f}ms)")
+        profiling_logger.info(f"Async task monitoring started (slow_threshold={self.slow_threshold*1000:.0f}ms)")
     
     def stop_monitoring(self) -> None:
         """Stop monitoring."""
@@ -210,7 +255,7 @@ class AsyncTaskMonitor:
                 loop.set_debug(False)
         except RuntimeError:
             pass
-        logger.info("Async task monitoring stopped")
+        profiling_logger.info("Async task monitoring stopped")
     
     def track_task(self, task: asyncio.Task) -> None:
         """Add a task to tracking."""
@@ -314,7 +359,7 @@ class EventLoopMonitor:
             return
         self._running = True
         self._monitor_task = asyncio.create_task(self._monitor_loop())
-        logger.info("Event loop monitor started")
+        profiling_logger.info("Event loop monitor started")
     
     async def stop(self) -> None:
         """Stop the event loop monitor."""
@@ -325,7 +370,7 @@ class EventLoopMonitor:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
-        logger.info("Event loop monitor stopped")
+        profiling_logger.info("Event loop monitor stopped")
     
     async def _monitor_loop(self) -> None:
         """Background task that measures event loop responsiveness."""
@@ -345,7 +390,7 @@ class EventLoopMonitor:
                 
                 # Warn on significant lag
                 if lag > 100:  # More than 100ms lag
-                    logger.warning(f"Event loop lag detected: {lag:.1f}ms")
+                    profiling_logger.warning(f"Event loop lag detected: {lag:.1f}ms")
     
     def get_lag_stats(self) -> dict[str, float]:
         """Get event loop lag statistics."""
@@ -476,14 +521,14 @@ async def create_profiling_middleware(app: "FastAPI") -> None:
             finally:
                 metrics = profiler.end_request(request_id, status_code, error)
                 if metrics and metrics.duration_ms and metrics.duration_ms > SLOW_REQUEST_THRESHOLD * 1000:
-                    logger.warning(
+                    profiling_logger.warning(
                         f"Slow request: {method} {path} took {metrics.duration_ms:.1f}ms "
                         f"(threshold: {SLOW_REQUEST_THRESHOLD*1000:.0f}ms)"
                     )
     
     # Wrap the ASGI app
     app.add_middleware(ProfilingMiddleware)
-    logger.info("Profiling middleware installed")
+    profiling_logger.info("Profiling middleware installed")
 
 
 def profile_async(name: Optional[str] = None):
@@ -502,7 +547,7 @@ def profile_async(name: Optional[str] = None):
             finally:
                 duration = (time.perf_counter() - start) * 1000
                 if duration > SLOW_CALLBACK_THRESHOLD * 1000:
-                    logger.warning(f"Slow async function: {func_name} took {duration:.1f}ms")
+                    profiling_logger.warning(f"Slow async function: {func_name} took {duration:.1f}ms")
         
         return wrapper
     return decorator
@@ -586,7 +631,12 @@ async def start_profiling() -> None:
         logger.info("Profiling disabled (set AGENT_ENABLE_PROFILING=1 to enable)")
         return
     
-    logger.info("Starting performance profiling...")
+    # Setup dedicated profiling logger
+    setup_profiling_logger()
+    
+    profiling_logger.info("Starting performance profiling...")
+    profiling_logger.info(f"Slow request threshold: {SLOW_REQUEST_THRESHOLD * 1000}ms")
+    profiling_logger.info(f"Slow callback threshold: {SLOW_CALLBACK_THRESHOLD * 1000}ms")
     
     # Start monitors
     task_monitor = get_task_monitor()
@@ -595,7 +645,8 @@ async def start_profiling() -> None:
     loop_monitor = get_loop_monitor()
     await loop_monitor.start()
     
-    logger.info("Performance profiling started")
+    profiling_logger.info("Performance profiling started")
+    logger.info("Performance profiling started (logs in logs/profiling.log)")
 
 
 async def stop_profiling() -> None:
@@ -606,4 +657,6 @@ async def stop_profiling() -> None:
     loop_monitor = get_loop_monitor()
     await loop_monitor.stop()
     
+    profiling_logger.info("Performance profiling stopped")
+    profiling_logger.info("=" * 60)
     logger.info("Performance profiling stopped")

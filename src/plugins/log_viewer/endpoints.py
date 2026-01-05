@@ -73,7 +73,10 @@ class LogViewerWebEndpoints(PluginWebInterface):
                 continue
 
             # Check if this line starts a new log entry (has timestamp pattern)
-            timestamp_pattern = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})'
+            # Support both formats:
+            # - "2025-09-25 00:23:32,790" (api.log with milliseconds)
+            # - "2026-01-05 20:47:21" (profiling.log without milliseconds)
+            timestamp_pattern = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)'
             if re.match(timestamp_pattern, line):
                 # Save previous entry if exists
                 if current_entry:
@@ -178,14 +181,29 @@ class LogViewerWebEndpoints(PluginWebInterface):
                 'line': line,
                 'type': 'parsed'
             }
-        else:
-            # Fallback for unparseable lines
+        
+        # Try alternate format: "2026-01-05 20:47:21 INFO [logger_name] message" (profiling.log format)
+        pattern_alt = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(\w+)\s+\[([^\]]+)\]\s+(.*)$'
+        match_alt = re.match(pattern_alt, line)
+        
+        if match_alt:
+            timestamp, level, logger_name, message = match_alt.groups()
             return {
-                'message': line,
+                'timestamp': timestamp + ',000',  # Add fake milliseconds for consistency
+                'level': level,
+                'logger': logger_name,
+                'message': f"{logger_name} {message}",
                 'line': line,
-                'level': 'INFO',
-                'type': 'raw'
+                'type': 'parsed'
             }
+        
+        # Fallback for unparseable lines
+        return {
+            'message': line,
+            'line': line,
+            'level': 'INFO',
+            'type': 'raw'
+        }
 
     def get_web_router(self) -> APIRouter:
         """Get the FastAPI router for this plugin's web endpoints."""

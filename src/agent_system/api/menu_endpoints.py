@@ -140,6 +140,43 @@ async def get_menu_items(
                 "divider_before": True
             }
         ])
+        
+        # Add profiling menu items for admins when enabled
+        if current_user.role == UserRole.ADMIN:
+            from agent_system.utils.profiling import PROFILING_ENABLED
+            from agent_system.utils.memory_profiling import MEMORY_PROFILING_ENABLED
+            
+            if PROFILING_ENABLED:
+                items.append({
+                    "id": "performance_dashboard",
+                    "menu_id": "user",
+                    "section": "admin",  # Same section as user_management
+                    "label": "Performance",
+                    "action": "openPanel",
+                    "panel_endpoint": "/debug/profile/dashboard",
+                    "panel_title": "Performance Profiling",
+                    "icon": "🔬",
+                    "order": 55,  # After user_management (50)
+                    "builtin": True,
+                    "requires_admin": True,
+                    "badge": "Active"
+                })
+            
+            if MEMORY_PROFILING_ENABLED:
+                items.append({
+                    "id": "memory_dashboard",
+                    "menu_id": "user",
+                    "section": "admin",  # Same section as user_management
+                    "label": "Memory",
+                    "action": "openPanel",
+                    "panel_endpoint": "/debug/memory/dashboard",
+                    "panel_title": "Memory Profiling",
+                    "icon": "🧠",
+                    "order": 56,  # After performance
+                    "builtin": True,
+                    "requires_admin": True,
+                    "badge": "Active"
+                })
     
     # Add plugin menu items
     # Load menu items from schema.yaml (already rendered with Jinja2 templates)

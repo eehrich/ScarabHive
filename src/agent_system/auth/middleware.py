@@ -108,7 +108,8 @@ class SecurityHeadersMiddleware:
         
         # Get path for plugin detection
         path = scope.get("path", "")
-        is_plugin_path = path.startswith("/plugins/")
+        # Allow iframes for plugin panels and debug dashboards
+        is_embeddable_path = path.startswith("/plugins/") or path.startswith("/debug/")
         
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -121,7 +122,7 @@ class SecurityHeadersMiddleware:
                     headers.append((b"x-content-type-options", b"nosniff"))
                 
                 if b"x-frame-options" not in header_names:
-                    if is_plugin_path:
+                    if is_embeddable_path:
                         headers.append((b"x-frame-options", b"SAMEORIGIN"))
                         headers.append((b"content-security-policy", b"frame-ancestors 'self'"))
                     else:

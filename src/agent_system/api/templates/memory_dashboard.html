@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Profiling</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #3e3e42;
+            padding-bottom: 10px;
+        }
+
+        .nav-tabs a {
+            color: #858585;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .nav-tabs a:hover {
+            color: #d4d4d4;
+            background: #2d2d30;
+        }
+
+        .nav-tabs a.active {
+            color: #569cd6;
+            background: #252526;
+            border: 1px solid #3e3e42;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 12px;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #858585;
+            margin-bottom: 5px;
+            white-space: nowrap;
+        }
+
+        .stat-value {
+            font-size: clamp(12px, 3vw, 22px);
+            font-weight: 600;
+            color: #4ec9b0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .stat-value.warning {
+            color: #dcdcaa;
+        }
+
+        .stat-value.danger {
+            color: #f48771;
+        }
+
+        .section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section h2 {
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: #ce9178;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button.btn-secondary {
+            background: #3e3e42;
+        }
+
+        button.btn-secondary:hover {
+            background: #505050;
+        }
+
+        button.btn-success {
+            background: #16825d;
+        }
+
+        button.btn-success:hover {
+            background: #1a9970;
+        }
+
+        button.btn-danger {
+            background: #a1260d;
+        }
+
+        button.btn-danger:hover {
+            background: #c72e0d;
+        }
+
+        button:disabled {
+            background: #3e3e42;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #3e3e42;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        th {
+            color: #569cd6;
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 500;
+        }
+
+        .two-columns {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+
+        #lastUpdate {
+            color: #858585;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+
+        .empty-state {
+            color: #858585;
+            font-style: italic;
+            padding: 10px 0;
+        }
+
+        .trend-positive { color: #f48771; }
+        .trend-negative { color: #4ec9b0; }
+        .trend-neutral { color: #858585; }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .badge-active {
+            background: #16825d;
+            color: white;
+        }
+
+        .badge-inactive {
+            background: #3e3e42;
+            color: #858585;
+        }
+
+        .tracemalloc-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #3e3e42;
+        }
+
+        .object-list {
+            max-height: 400px;
+            overflow-y: auto;
+            padding-bottom: 20px;
+            padding-right: 10px;
+        }
+
+        .object-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #3e3e42;
+            font-size: 13px;
+        }
+
+        .object-type {
+            font-family: 'Consolas', 'Monaco', monospace;
+            color: #dcdcaa;
+            max-width: 70%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .object-count {
+            font-weight: 500;
+        }
+
+        .leak-item {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 5px 0;
+        }
+
+        .leak-type {
+            font-family: 'Consolas', 'Monaco', monospace;
+            color: #f48771;
+            font-weight: 500;
+        }
+
+        .leak-stats {
+            font-size: 12px;
+            color: #858585;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧠 Memory Profiling</h1>
+        
+        <nav class="nav-tabs">
+            <a href="/debug/profile/dashboard">🔬 Performance</a>
+            <a href="/debug/memory/dashboard" class="active">🧠 Memory</a>
+        </nav>
+        
+        <div class="controls">
+            <button class="icon-only" onclick="refresh()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only active" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (10s) - Active">
+                ⏱️
+            </button>
+            <button class="icon-only" onclick="takeSnapshot()" title="Take Snapshot">
+                📷
+            </button>
+            <button class="icon-only" onclick="triggerGC()" title="Force GC">
+                🗑️
+            </button>
+            <button class="icon-only" onclick="resetBaseline()" title="Reset Baseline">
+                🎯
+            </button>
+            <span id="lastUpdate"></span>
+        </div>
+        
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <div class="stat-label">Loading...</div>
+                <div class="stat-value">-</div>
+            </div>
+        </div>
+        
+        <div class="section" id="tracemalloc">
+            <h2>📍 Tracemalloc</h2>
+            <div class="empty-state">Loading...</div>
+        </div>
+        
+        <div class="two-columns">
+            <div class="section" id="topObjects">
+                <h2>📦 Top Objects by Count</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+            
+            <div class="section" id="likelyLeaks">
+                <h2>🔍 Potential Memory Leaks</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+        
+        <div class="two-columns">
+            <div class="section" id="trendAnalysis">
+                <h2>📈 Memory Trend</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+            
+            <div class="section" id="gcStats">
+                <h2>♻️ Garbage Collector</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let refreshInterval;
+        let tracemallocActive = false;
+        
+        async function refresh() {
+            try {
+                const response = await fetch('/debug/memory');
+                const data = await response.json();
+                renderDashboard(data);
+                document.getElementById('lastUpdate').textContent = 
+                    'Updated: ' + new Date().toLocaleTimeString();
+            } catch (error) {
+                console.error('Failed to fetch memory data:', error);
+            }
+        }
+        
+        async function takeSnapshot() {
+            try {
+                const response = await fetch('/debug/memory/snapshot', { method: 'POST' });
+                const data = await response.json();
+                alert(`Snapshot taken: ${data.total_mb?.toFixed(1)}MB, ${data.object_count} objects`);
+                refresh();
+            } catch (error) {
+                alert('Failed to take snapshot: ' + error.message);
+            }
+        }
+        
+        async function triggerGC() {
+            try {
+                const response = await fetch('/debug/profile/gc', { method: 'POST' });
+                const data = await response.json();
+                alert(`GC completed: ${data.collected_objects} objects collected, freed ${data.freed_mb?.toFixed(1)}MB`);
+                refresh();
+            } catch (error) {
+                alert('Failed to trigger GC: ' + error.message);
+            }
+        }
+        
+        async function resetBaseline() {
+            try {
+                await fetch('/debug/memory/baseline', { method: 'POST' });
+                alert('Baseline reset successfully');
+                refresh();
+            } catch (error) {
+                alert('Failed to reset baseline: ' + error.message);
+            }
+        }
+        
+        async function startTracemalloc() {
+            try {
+                const response = await fetch('/debug/memory/tracemalloc/start', { method: 'POST' });
+                const data = await response.json();
+                alert(data.message);
+                refresh();
+            } catch (error) {
+                alert('Failed to start tracemalloc: ' + error.message);
+            }
+        }
+        
+        async function stopTracemalloc() {
+            try {
+                const response = await fetch('/debug/memory/tracemalloc/stop', { method: 'POST' });
+                const data = await response.json();
+                alert(`${data.message}\nPeak: ${data.final_peak_mb?.toFixed(1)}MB`);
+                refresh();
+            } catch (error) {
+                alert('Failed to stop tracemalloc: ' + error.message);
+            }
+        }
+        
+        function getValueClass(value, warningThreshold, dangerThreshold) {
+            if (value >= dangerThreshold) return 'danger';
+            if (value >= warningThreshold) return 'warning';
+            return '';
+        }
+        
+        function formatNumber(n) {
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+            return n.toString();
+        }
+        
+        function renderDashboard(data) {
+            tracemallocActive = data.tracemalloc_active;
+            
+            // Stats grid
+            const mem = data.memory || {};
+            const gc = data.gc || {};
+            const trend = data.trend_analysis || {};
+            
+            const memClass = getValueClass(mem.rss_mb || 0, 500, 1000);
+            const growthRate = trend.memory_mb?.growth_rate_mb_per_hour || 0;
+            const growthClass = growthRate > 50 ? 'danger' : growthRate > 10 ? 'warning' : '';
+            
+            document.getElementById('statsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">RSS Memory</div>
+                    <div class="stat-value ${memClass}">${(mem.rss_mb || 0).toFixed(0)}MB</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Virtual Memory</div>
+                    <div class="stat-value">${(mem.vms_mb || 0).toFixed(0)}MB</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Memory %</div>
+                    <div class="stat-value">${(mem.percent || 0).toFixed(1)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Objects</div>
+                    <div class="stat-value">${formatNumber(gc.total_objects || 0)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Snapshots</div>
+                    <div class="stat-value">${trend.snapshots || 0}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Growth Rate</div>
+                    <div class="stat-value ${growthClass}">${growthRate.toFixed(1)}MB/h</div>
+                </div>
+            `;
+            
+            // Tracemalloc section
+            const tmStatus = tracemallocActive ? 
+                '<span class="badge badge-active">Active</span>' : 
+                '<span class="badge badge-inactive">Inactive</span>';
+            
+            let tmContent = `
+                <h2>📍 Tracemalloc ${tmStatus}</h2>
+                <p style="color: #858585; font-size: 13px; margin-bottom: 10px;">
+                    Tracemalloc tracks memory allocations with file/line info. 
+                    <strong>Warning:</strong> Causes overhead, use only for debugging.
+                </p>
+                <div class="tracemalloc-controls">
+                    ${tracemallocActive ? 
+                        `<button onclick="stopTracemalloc()" class="btn-danger">⏹️ Stop Tracemalloc</button>` :
+                        `<button onclick="startTracemalloc()" class="btn-success">▶️ Start Tracemalloc</button>`
+                    }
+                </div>
+            `;
+            
+            if (tracemallocActive && data.tracemalloc_top && data.tracemalloc_top.length > 0) {
+                tmContent += `
+                    <table style="margin-top: 15px;">
+                        <tr><th>Location</th><th>Size</th><th>Count</th></tr>
+                        ${data.tracemalloc_top.slice(0, 15).map(t => `
+                            <tr>
+                                <td style="font-family: monospace; font-size: 11px;">${t.location}</td>
+                                <td>${(t.size_kb || 0).toFixed(1)}KB</td>
+                                <td>${t.count}</td>
+                            </tr>
+                        `).join('')}
+                    </table>
+                `;
+            }
+            
+            document.getElementById('tracemalloc').innerHTML = tmContent;
+            
+            // Top Objects
+            const topObjects = data.top_objects || [];
+            document.getElementById('topObjects').innerHTML = `
+                <h2>📦 Top Objects by Count</h2>
+                <div class="object-list">
+                    ${topObjects.length === 0 ? '<div class="empty-state">No object data</div>' :
+                    topObjects.map(o => `
+                        <div class="object-item">
+                            <span class="object-type" title="${o.type}">${o.type}</span>
+                            <span class="object-count">${formatNumber(o.count)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            
+            // Likely Leaks
+            const leaks = trend.likely_leaks || [];
+            document.getElementById('likelyLeaks').innerHTML = `
+                <h2>🔍 Potential Memory Leaks</h2>
+                ${leaks.length === 0 ? '<div class="empty-state">No leaks detected (need multiple snapshots)</div>' :
+                leaks.slice(0, 10).map(l => `
+                    <div class="leak-item">
+                        <div class="leak-type">${l.type}</div>
+                        <div class="leak-stats">
+                            Growth: +${formatNumber(l.total_growth)} objects in ${l.count} intervals
+                        </div>
+                    </div>
+                `).join('')}
+            `;
+            
+            // Trend Analysis
+            const trendMem = trend.memory_mb || {};
+            document.getElementById('trendAnalysis').innerHTML = `
+                <h2>📈 Memory Trend</h2>
+                ${trend.status === 'insufficient_data' ? 
+                    '<div class="empty-state">Need more snapshots for trend analysis</div>' : `
+                    <table>
+                        <tr>
+                            <td>Time Span</td>
+                            <td>${(trend.time_span_seconds / 60).toFixed(1)} minutes</td>
+                        </tr>
+                        <tr>
+                            <td>Start Memory</td>
+                            <td>${(trendMem.start || 0).toFixed(1)}MB</td>
+                        </tr>
+                        <tr>
+                            <td>Current Memory</td>
+                            <td>${(trendMem.end || 0).toFixed(1)}MB</td>
+                        </tr>
+                        <tr>
+                            <td>Total Growth</td>
+                            <td class="${(trendMem.growth || 0) > 50 ? 'trend-positive' : 'trend-neutral'}">
+                                ${(trendMem.growth || 0) >= 0 ? '+' : ''}${(trendMem.growth || 0).toFixed(1)}MB
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>Growth Rate</td>
+                            <td class="${(trendMem.growth_rate_mb_per_hour || 0) > 50 ? 'trend-positive' : 'trend-neutral'}">
+                                ${(trendMem.growth_rate_mb_per_hour || 0).toFixed(1)}MB/hour
+                            </td>
+                        </tr>
+                    </table>`
+                }
+            `;
+            
+            // GC Stats
+            const counts = gc.counts || [0, 0, 0];
+            const thresholds = gc.thresholds || [700, 10, 10];
+            document.getElementById('gcStats').innerHTML = `
+                <h2>♻️ Garbage Collector</h2>
+                <table>
+                    <tr>
+                        <th>Generation</th>
+                        <th>Objects</th>
+                        <th>Threshold</th>
+                    </tr>
+                    <tr>
+                        <td>Gen 0 (young)</td>
+                        <td>${counts[0]}</td>
+                        <td>${thresholds[0]}</td>
+                    </tr>
+                    <tr>
+                        <td>Gen 1 (middle)</td>
+                        <td>${counts[1]}</td>
+                        <td>${thresholds[1]}</td>
+                    </tr>
+                    <tr>
+                        <td>Gen 2 (old)</td>
+                        <td>${counts[2]}</td>
+                        <td>${thresholds[2]}</td>
+                    </tr>
+                    <tr>
+                        <td>Garbage (uncollectable)</td>
+                        <td colspan="2" class="${(gc.garbage_count || 0) > 0 ? 'danger' : ''}">${gc.garbage_count || 0}</td>
+                    </tr>
+                </table>
+            `;
+        }
+        
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('autoRefreshBtn');
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (10s) - Paused';
+            } else {
+                refreshInterval = setInterval(refresh, 10000);
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (10s) - Active';
+            }
+        }
+        
+        // Initial load
+        refresh();
+        
+        // Start auto-refresh by default (slower for memory dashboard)
+        refreshInterval = setInterval(refresh, 10000);
+    </script>
+</body>
+</html>

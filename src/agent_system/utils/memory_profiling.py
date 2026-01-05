@@ -45,6 +45,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Use dedicated profiling logger for memory profiling output
+memory_profiling_logger = logging.getLogger("agent_system.profiling.memory")
+
 # Configuration from environment
 MEMORY_PROFILING_ENABLED = os.getenv("AGENT_ENABLE_MEMORY_PROFILING", "0") == "1"
 TRACEMALLOC_FRAMES = int(os.getenv("AGENT_TRACEMALLOC_FRAMES", "25"))
@@ -146,14 +149,14 @@ class ObjectTracker:
         """Set current object counts as baseline (blocking)."""
         with self._lock:
             self._baseline = self._get_object_counts_sync()
-        logger.info(f"Memory baseline set: {sum(self._baseline.values())} objects")
+        memory_profiling_logger.info(f"Memory baseline set: {sum(self._baseline.values())} objects")
     
     async def set_baseline_async(self) -> None:
         """Set current object counts as baseline (non-blocking)."""
         counts = await self.get_object_counts_async()
         with self._lock:
             self._baseline = counts
-        logger.info(f"Memory baseline set: {sum(self._baseline.values())} objects")
+        memory_profiling_logger.info(f"Memory baseline set: {sum(self._baseline.values())} objects")
     
     def get_changes_from_baseline(self) -> dict[str, int]:
         """Get object count changes from baseline (blocking)."""
@@ -188,19 +191,30 @@ class MemoryLeakDetector:
         self._max_snapshots = 10
         self._lock = threading.Lock()
         self._object_tracker = ObjectTracker()
+        self._include_tracemalloc = False  # Only include tracemalloc on demand
     
-    def _take_snapshot_sync(self) -> MemorySnapshot:
-        """Take a memory snapshot (synchronous, blocking)."""
+    def _take_snapshot_sync(self, include_tracemalloc: bool = False) -> MemorySnapshot:
+        """Take a memory snapshot (synchronous, blocking).
+        
+        Args:
+            include_tracemalloc: If True, include tracemalloc stats (expensive!)
+        """
         gc.collect()
         
         # Get object counts
         object_counts = self._object_tracker._get_object_counts_sync()
         
-        # Get tracemalloc stats if enabled
-        top_allocations = []
-        if tracemalloc.is_tracing():
-            snapshot = tracemalloc.take_snapshot()
-            top_stats = snapshot.statistics('lineno')[:20]
+        # Get tracemalloc stats only if explicitly requested (expensive!)
+        top_allocations: list[dict[str, Any]] = []
+        if include_tracemalloc and tracemalloc.is_tracing():
+            tm_snapshot = tracemalloc.take_snapshot()
+            # Filter out tracemalloc's own allocations
+            tm_snapshot = tm_snapshot.filter_traces([
+                tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+                tracemalloc.Filter(False, "<frozen importlib._bootstrap_external>"),
+                tracemalloc.Filter(False, tracemalloc.__file__),
+            ])
+            top_stats = tm_snapshot.statistics('lineno')[:20]
             for stat in top_stats:
                 top_allocations.append({
                     "file": str(stat.traceback),
@@ -219,7 +233,7 @@ class MemoryLeakDetector:
             "garbage": len(gc.garbage)
         }
         
-        snapshot = MemorySnapshot(
+        mem_snapshot = MemorySnapshot(
             timestamp=datetime.now(),
             total_mb=total_mb,
             object_counts=object_counts,
@@ -228,20 +242,24 @@ class MemoryLeakDetector:
         )
         
         with self._lock:
-            self._snapshots.append(snapshot)
+            self._snapshots.append(mem_snapshot)
             if len(self._snapshots) > self._max_snapshots:
                 self._snapshots = self._snapshots[-self._max_snapshots:]
         
-        return snapshot
+        return mem_snapshot
     
-    def take_snapshot(self) -> MemorySnapshot:
+    def take_snapshot(self, include_tracemalloc: bool = False) -> MemorySnapshot:
         """Take a memory snapshot (blocking - use async version when possible)."""
-        return self._take_snapshot_sync()
+        return self._take_snapshot_sync(include_tracemalloc=include_tracemalloc)
     
-    async def take_snapshot_async(self) -> MemorySnapshot:
+    async def take_snapshot_async(self, include_tracemalloc: bool = False) -> MemorySnapshot:
         """Take a memory snapshot (non-blocking)."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(_get_executor(), self._take_snapshot_sync)
+        from functools import partial
+        return await loop.run_in_executor(
+            _get_executor(), 
+            partial(self._take_snapshot_sync, include_tracemalloc=include_tracemalloc)
+        )
     
     def compare_snapshots(
         self,
@@ -328,13 +346,13 @@ class MemoryLeakDetector:
             
             # Filter to types that grew consistently
             snapshot_count = len(self._snapshots) - 1
-            likely_leaks = [
+            likely_leaks: list[dict[str, Any]] = [
                 {"type": t, **info}
                 for t, info in consistent_growers.items()
                 if info["count"] >= snapshot_count * 0.7  # Grew in 70%+ of intervals
                 and info["total_growth"] >= self.min_growth_threshold
             ]
-            likely_leaks.sort(key=lambda x: x["total_growth"], reverse=True)
+            likely_leaks.sort(key=lambda x: int(x["total_growth"]), reverse=True)
             
             return {
                 "status": "analyzed",
@@ -371,10 +389,10 @@ class ReferenceTracker:
         try:
             self._tracked[obj_id] = weakref.ref(obj)
             self._names[obj_id] = name or f"object_{obj_id}"
-            logger.debug(f"Tracking object: {self._names[obj_id]}")
+            memory_profiling_logger.debug(f"Tracking object: {self._names[obj_id]}")
         except TypeError:
             # Can't create weakref for this type
-            logger.warning(f"Cannot track {type(obj).__name__} - weakref not supported")
+            memory_profiling_logger.warning(f"Cannot track {type(obj).__name__} - weakref not supported")
     
     def get_referrers(self, obj: Any, depth: int = 2) -> list[dict[str, Any]]:
         """Get objects that reference this object."""
@@ -416,7 +434,7 @@ class ReferenceTracker:
         return result
 
 
-def find_reference_cycles() -> list[list[Any]]:
+def find_reference_cycles() -> list[dict[str, Any]]:
     """Find reference cycles that may cause memory leaks."""
     gc.collect()
     
@@ -428,7 +446,7 @@ def find_reference_cycles() -> list[list[Any]]:
     gc.garbage.clear()
     
     # Group cycles by type
-    cycle_info = []
+    cycle_info: list[dict[str, Any]] = []
     for obj in cycles[:50]:  # Limit output
         try:
             cycle_info.append({
@@ -472,41 +490,56 @@ async def start_memory_profiling() -> None:
         logger.info("Memory profiling disabled (set AGENT_ENABLE_MEMORY_PROFILING=1 to enable)")
         return
     
-    logger.info("Starting memory profiling...")
+    # memory_profiling_logger inherits from profiling_logger setup
+    memory_profiling_logger.info("Starting memory profiling...")
     
-    # Start tracemalloc
-    if not tracemalloc.is_tracing():
-        tracemalloc.start(TRACEMALLOC_FRAMES)
-        logger.info(f"Tracemalloc started with {TRACEMALLOC_FRAMES} frames")
+    # NOTE: tracemalloc is NOT started by default anymore because it causes
+    # memory leaks itself (FrameSummary objects accumulate). Use the
+    # /debug/memory/tracemalloc endpoint to get tracemalloc data on-demand.
+    # If you need tracemalloc, set AGENT_START_TRACEMALLOC=1
+    if os.getenv("AGENT_START_TRACEMALLOC", "0") == "1":
+        if not tracemalloc.is_tracing():
+            tracemalloc.start(TRACEMALLOC_FRAMES)
+            memory_profiling_logger.info(f"Tracemalloc started with {TRACEMALLOC_FRAMES} frames")
+    else:
+        memory_profiling_logger.info("Tracemalloc disabled (set AGENT_START_TRACEMALLOC=1 to enable)")
     
     # Set baseline (async to avoid blocking)
     detector = get_leak_detector()
     await detector._object_tracker.set_baseline_async()
     
-    # Take initial snapshot (async to avoid blocking)
-    await detector.take_snapshot_async()
+    # Take initial snapshot (async to avoid blocking) - no tracemalloc
+    await detector.take_snapshot_async(include_tracemalloc=False)
     
-    # Start periodic snapshot task
+    # Start periodic snapshot task with longer default interval
     async def periodic_snapshots():
-        interval = int(os.getenv("AGENT_MEMORY_SNAPSHOT_INTERVAL", "60"))
+        # Default to 5 minutes to reduce overhead
+        interval = int(os.getenv("AGENT_MEMORY_SNAPSHOT_INTERVAL", "300"))
+        memory_profiling_logger.info(f"Memory snapshot interval: {interval}s")
         while True:
             await asyncio.sleep(interval)
             try:
                 # Use async version to avoid blocking event loop
-                await detector.take_snapshot_async()
+                # Don't include tracemalloc in periodic snapshots (too expensive)
+                await detector.take_snapshot_async(include_tracemalloc=False)
                 diff = detector.get_latest_diff()
                 if diff and diff.memory_delta_mb > 50:  # 50MB growth
-                    logger.warning(
+                    memory_profiling_logger.warning(
                         f"Significant memory growth: {diff.memory_delta_mb:.1f}MB "
                         f"in {diff.time_delta_seconds:.0f}s"
                     )
                     if diff.top_growth:
-                        logger.warning(f"Top growers: {diff.top_growth[:5]}")
+                        memory_profiling_logger.warning(f"Top growers: {diff.top_growth[:5]}")
+                else:
+                    memory_profiling_logger.debug(
+                        f"Memory snapshot: delta={diff.memory_delta_mb:.1f}MB" if diff else "No diff"
+                    )
             except Exception as e:
-                logger.error(f"Error taking memory snapshot: {e}")
+                memory_profiling_logger.error(f"Error taking memory snapshot: {e}")
     
     _snapshot_task = asyncio.create_task(periodic_snapshots())
-    logger.info("Memory profiling started")
+    memory_profiling_logger.info("Memory profiling started")
+    logger.info("Memory profiling started (logs in logs/profiling.log)")
 
 
 async def stop_memory_profiling() -> None:
@@ -529,6 +562,7 @@ async def stop_memory_profiling() -> None:
         _profiling_executor.shutdown(wait=False)
         _profiling_executor = None
     
+    memory_profiling_logger.info("Memory profiling stopped")
     logger.info("Memory profiling stopped")
 
 

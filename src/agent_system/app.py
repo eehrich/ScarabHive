@@ -284,6 +284,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             start_memory_profiling, stop_memory_profiling, MEMORY_PROFILING_ENABLED
         )
         if MEMORY_PROFILING_ENABLED:
+            # Setup profiling logger if not already done (e.g., if only memory profiling enabled)
+            if not PROFILING_ENABLED:
+                from .utils.profiling import setup_profiling_logger
+                setup_profiling_logger()
             await start_memory_profiling()
             logger.info("Memory profiling started")
         

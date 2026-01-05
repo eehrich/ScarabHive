@@ -9,6 +9,7 @@ import asyncio
 import gc
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -26,6 +27,17 @@ from ..utils.profiling import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/debug", tags=["debug"])
+
+# Template directory
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+def _load_template(name: str) -> str:
+    """Load an HTML template from the templates directory."""
+    template_path = TEMPLATES_DIR / name
+    if not template_path.exists():
+        raise HTTPException(status_code=500, detail=f"Template {name} not found")
+    return template_path.read_text(encoding="utf-8")
 
 
 def _check_profiling_enabled():
@@ -157,270 +169,14 @@ async def reset_profile_stats() -> dict[str, str]:
 async def profile_dashboard() -> HTMLResponse:
     """Interactive HTML dashboard for profiling data."""
     _check_profiling_enabled()
-    
-    html = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Agent System - Performance Dashboard</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: #1a1a2e;
-            color: #eee;
+    html = _load_template("profiling_dashboard.html")
+    return HTMLResponse(
+        content=html,
+        headers={
+            "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": "frame-ancestors 'self'"
         }
-        h1 {
-            color: #00d4ff;
-            border-bottom: 2px solid #00d4ff;
-            padding-bottom: 10px;
-        }
-        h2 {
-            color: #ff6b6b;
-            margin-top: 30px;
-        }
-        .dashboard {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-        }
-        .card {
-            background: #16213e;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
-        .card h3 {
-            margin-top: 0;
-            color: #00d4ff;
-            font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .metric {
-            font-size: 36px;
-            font-weight: bold;
-            color: #4ade80;
-        }
-        .metric.warning {
-            color: #fbbf24;
-        }
-        .metric.danger {
-            color: #f87171;
-        }
-        .label {
-            font-size: 12px;
-            color: #888;
-            text-transform: uppercase;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-        }
-        th, td {
-            padding: 8px 12px;
-            text-align: left;
-            border-bottom: 1px solid #333;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            max-width: 300px;
-        }
-        th {
-            color: #00d4ff;
-            font-size: 12px;
-            text-transform: uppercase;
-        }
-        .task-item {
-            background: #0f0f23;
-            border-radius: 5px;
-            padding: 10px;
-            margin: 5px 0;
-            font-family: monospace;
-            font-size: 12px;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            word-break: break-all;
-        }
-        .refresh-btn {
-            background: #00d4ff;
-            color: #1a1a2e;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-        .refresh-btn:hover {
-            background: #00b4df;
-        }
-        .auto-refresh {
-            margin-left: 20px;
-        }
-        #lastUpdate {
-            color: #666;
-            font-size: 12px;
-            margin-left: 20px;
-        }
-    </style>
-</head>
-<body>
-    <nav style="background: #0f0f23; padding: 10px 20px; margin: -20px -20px 20px -20px; display: flex; gap: 20px;">
-        <a href="/debug/profile/dashboard" style="color: #00d4ff; text-decoration: none; font-weight: bold;">🔬 Performance</a>
-        <a href="/debug/memory/dashboard" style="color: #888; text-decoration: none;">🧠 Memory</a>
-    </nav>
-    <h1>🔬 Agent System Performance Dashboard</h1>
-    <div>
-        <button class="refresh-btn" onclick="refresh()">Refresh Now</button>
-        <label class="auto-refresh">
-            <input type="checkbox" id="autoRefresh" checked> Auto-refresh (5s)
-        </label>
-        <span id="lastUpdate"></span>
-    </div>
-    
-    <div class="dashboard" id="dashboard">
-        <div class="card">
-            <h3>Loading...</h3>
-            <p>Fetching profiling data...</p>
-        </div>
-    </div>
-
-    <script>
-        let refreshInterval;
-        
-        async function refresh() {
-            try {
-                const response = await fetch('/debug/profile');
-                const data = await response.json();
-                renderDashboard(data);
-                document.getElementById('lastUpdate').textContent = 
-                    'Last update: ' + new Date().toLocaleTimeString();
-            } catch (error) {
-                console.error('Failed to fetch profile data:', error);
-            }
-        }
-        
-        function renderDashboard(data) {
-            const dashboard = document.getElementById('dashboard');
-            
-            const lagClass = data.event_loop.current_ms > 100 ? 'danger' : 
-                            data.event_loop.current_ms > 50 ? 'warning' : '';
-            const memClass = data.memory.rss_mb > 1000 ? 'danger' :
-                            data.memory.rss_mb > 500 ? 'warning' : '';
-            
-            let html = `
-                <div class="card">
-                    <h3>📊 Overview</h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                        <div>
-                            <div class="metric">${data.requests.active.length}</div>
-                            <div class="label">Active Requests</div>
-                        </div>
-                        <div>
-                            <div class="metric">${data.async_tasks.total_count}</div>
-                            <div class="label">Async Tasks</div>
-                        </div>
-                        <div>
-                            <div class="metric ${lagClass}">${data.event_loop.current_ms?.toFixed(1) || 0}ms</div>
-                            <div class="label">Event Loop Lag</div>
-                        </div>
-                        <div>
-                            <div class="metric ${memClass}">${data.memory.rss_mb?.toFixed(0) || 0}MB</div>
-                            <div class="label">Memory Usage</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="card">
-                    <h3>🚨 Active Requests</h3>
-                    ${data.requests.active.length === 0 ? '<p>No active requests</p>' : `
-                    <table>
-                        <tr><th>Path</th><th>Method</th><th>Duration</th></tr>
-                        ${data.requests.active.map(r => `
-                            <tr>
-                                <td>${r.path}</td>
-                                <td>${r.method}</td>
-                                <td class="${r.duration_ms > 1000 ? 'danger' : ''}">${r.duration_ms?.toFixed(0)}ms</td>
-                            </tr>
-                        `).join('')}
-                    </table>`}
-                </div>
-                
-                <div class="card">
-                    <h3>🐢 Slow Requests (Recent)</h3>
-                    ${data.requests.slow_recent.length === 0 ? '<p>No slow requests recorded</p>' : `
-                    <table>
-                        <tr><th>Path</th><th>Duration</th><th>Status</th></tr>
-                        ${data.requests.slow_recent.map(r => `
-                            <tr>
-                                <td>${r.path}</td>
-                                <td class="danger">${r.duration_ms?.toFixed(0)}ms</td>
-                                <td>${r.status}</td>
-                            </tr>
-                        `).join('')}
-                    </table>`}
-                </div>
-                
-                <div class="card">
-                    <h3>⚡ Async Tasks (Top 10)</h3>
-                    ${data.async_tasks.tasks.slice(0, 10).map(t => `
-                        <div class="task-item">
-                            <strong>${t.name}</strong><br>
-                            ${t.coro}<br>
-                            <span style="color: ${t.done ? '#4ade80' : '#fbbf24'}">
-                                ${t.done ? '✓ Done' : t.cancelled ? '✗ Cancelled' : '⏳ Running'}
-                            </span>
-                        </div>
-                    `).join('')}
-                </div>
-                
-                <div class="card">
-                    <h3>📈 Request Stats by Path</h3>
-                    <table>
-                        <tr><th>Path</th><th>Count</th><th>Avg</th><th>Slow %</th></tr>
-                        ${Object.entries(data.requests.stats_by_path).map(([path, stats]) => `
-                            <tr>
-                                <td>${path}</td>
-                                <td>${stats.count}</td>
-                                <td>${stats.avg_ms?.toFixed(0)}ms</td>
-                                <td class="${stats.slow_pct > 10 ? 'danger' : ''}">${stats.slow_pct?.toFixed(1)}%</td>
-                            </tr>
-                        `).join('')}
-                    </table>
-                </div>
-                
-                <div class="card">
-                    <h3>🧵 Threads</h3>
-                    <div class="metric">${data.threads.count}</div>
-                    <div class="label">Active Threads</div>
-                    <div style="margin-top: 10px; font-family: monospace; font-size: 11px;">
-                        ${data.threads.names.join('<br>')}
-                    </div>
-                </div>
-            `;
-            
-            dashboard.innerHTML = html;
-        }
-        
-        // Initial load
-        refresh();
-        
-        // Auto-refresh
-        document.getElementById('autoRefresh').addEventListener('change', function() {
-            if (this.checked) {
-                refreshInterval = setInterval(refresh, 5000);
-            } else {
-                clearInterval(refreshInterval);
-            }
-        });
-        
-        refreshInterval = setInterval(refresh, 5000);
-    </script>
-</body>
-</html>
-    """
-    return HTMLResponse(content=html)
+    )
 
 
 @router.get("/health")
@@ -577,14 +333,25 @@ async def get_tracemalloc_stats() -> dict[str, Any]:
     
     Shows top memory allocations with file:line information.
     Requires AGENT_ENABLE_MEMORY_PROFILING=1.
+    
+    Note: tracemalloc is not started by default (causes memory overhead).
+    Use POST /debug/memory/tracemalloc/start to enable it temporarily.
     """
     _check_memory_profiling_enabled()
     import tracemalloc
     
     if not tracemalloc.is_tracing():
-        return {"status": "not_tracing", "message": "tracemalloc not started"}
+        return {
+            "status": "not_tracing", 
+            "message": "tracemalloc not started. Use POST /debug/memory/tracemalloc/start to enable."
+        }
     
     snapshot = tracemalloc.take_snapshot()
+    # Filter out tracemalloc's own allocations
+    snapshot = snapshot.filter_traces([
+        tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+        tracemalloc.Filter(False, "<frozen importlib._bootstrap_external>"),
+    ])
     
     # Get stats by line
     top_by_line = []
@@ -615,291 +382,60 @@ async def get_tracemalloc_stats() -> dict[str, Any]:
     }
 
 
+@router.post("/memory/tracemalloc/start")
+async def start_tracemalloc(nframes: int = 10) -> dict[str, Any]:
+    """Start tracemalloc for detailed allocation tracking.
+    
+    WARNING: tracemalloc causes significant overhead and memory growth
+    from FrameSummary accumulation. Use only for short debugging sessions.
+    """
+    import tracemalloc
+    
+    if tracemalloc.is_tracing():
+        return {
+            "status": "already_running",
+            "message": "tracemalloc is already active"
+        }
+    
+    tracemalloc.start(nframes)
+    return {
+        "status": "started",
+        "nframes": nframes,
+        "message": "tracemalloc started - remember to stop it after debugging"
+    }
+
+
+@router.post("/memory/tracemalloc/stop")
+async def stop_tracemalloc() -> dict[str, Any]:
+    """Stop tracemalloc and release memory."""
+    import tracemalloc
+    
+    if not tracemalloc.is_tracing():
+        return {
+            "status": "not_running",
+            "message": "tracemalloc is not active"
+        }
+    
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    
+    return {
+        "status": "stopped",
+        "final_current_mb": current / (1024 * 1024),
+        "final_peak_mb": peak / (1024 * 1024),
+        "message": "tracemalloc stopped, memory released"
+    }
+
+
 @router.get("/memory/dashboard", response_class=HTMLResponse)
 async def memory_dashboard() -> HTMLResponse:
     """Interactive HTML dashboard for memory profiling."""
     _check_memory_profiling_enabled()
-    
-    html = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Agent System - Memory Profiling Dashboard</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: #1a1a2e;
-            color: #eee;
+    html = _load_template("memory_dashboard.html")
+    return HTMLResponse(
+        content=html,
+        headers={
+            "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": "frame-ancestors 'self'"
         }
-        h1 {
-            color: #00d4ff;
-            border-bottom: 2px solid #00d4ff;
-            padding-bottom: 10px;
-        }
-        h2 {
-            color: #ff6b6b;
-            margin-top: 30px;
-        }
-        .dashboard {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-        }
-        .card {
-            background: #16213e;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
-        .card h3 {
-            margin-top: 0;
-            color: #00d4ff;
-            font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .metric {
-            font-size: 36px;
-            font-weight: bold;
-            color: #4ade80;
-        }
-        .metric.warning { color: #fbbf24; }
-        .metric.danger { color: #f87171; }
-        .label {
-            font-size: 12px;
-            color: #888;
-            text-transform: uppercase;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-        }
-        th, td {
-            padding: 8px 12px;
-            text-align: left;
-            border-bottom: 1px solid #333;
-            font-size: 13px;
-        }
-        th { color: #00d4ff; font-size: 12px; text-transform: uppercase; }
-        .btn {
-            background: #00d4ff;
-            color: #1a1a2e;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin-right: 10px;
-            font-weight: bold;
-        }
-        .btn:hover { background: #00b4d8; }
-        .btn.secondary { background: #ff6b6b; }
-        .controls { margin-bottom: 20px; }
-        .leak-warning {
-            background: #7f1d1d;
-            border: 1px solid #dc2626;
-            border-radius: 5px;
-            padding: 15px;
-            margin: 10px 0;
-        }
-        .growth-positive { color: #f87171; }
-        .growth-negative { color: #4ade80; }
-    </style>
-</head>
-<body>
-    <nav style="background: #0f0f23; padding: 10px 20px; margin: -20px -20px 20px -20px; display: flex; gap: 20px;">
-        <a href="/debug/profile/dashboard" style="color: #888; text-decoration: none;">🔬 Performance</a>
-        <a href="/debug/memory/dashboard" style="color: #00d4ff; text-decoration: none; font-weight: bold;">🧠 Memory</a>
-    </nav>
-    <h1>🧠 Memory Profiling Dashboard</h1>
-    
-    <div class="controls">
-        <button class="btn" onclick="takeSnapshot()">📸 Take Snapshot</button>
-        <button class="btn" onclick="setBaseline()">🎯 Set Baseline</button>
-        <button class="btn" onclick="triggerGC()">🗑️ Trigger GC</button>
-        <button class="btn" onclick="refresh()">🔄 Refresh</button>
-        <label style="margin-left: 20px;">
-            <input type="checkbox" id="autoRefresh" checked> Auto-refresh (10s)
-        </label>
-    </div>
-    
-    <div class="dashboard">
-        <div class="card">
-            <h3>Current Memory</h3>
-            <div class="metric" id="memoryMB">--</div>
-            <div class="label">MB (RSS)</div>
-            <div style="margin-top: 10px; color: #888;">
-                Peak: <span id="peakMB">--</span> MB |
-                Objects: <span id="objectCount">--</span>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h3>Memory Trend</h3>
-            <div class="metric" id="growthRate">--</div>
-            <div class="label">MB/hour growth rate</div>
-            <div style="margin-top: 10px; color: #888;">
-                Snapshots: <span id="snapshotCount">--</span> |
-                Time span: <span id="timeSpan">--</span>s
-            </div>
-        </div>
-        
-        <div class="card">
-            <h3>GC Stats</h3>
-            <div id="gcStats">Loading...</div>
-        </div>
-        
-        <div class="card">
-            <h3>Potential Memory Leaks</h3>
-            <div id="leaks">Loading...</div>
-        </div>
-    </div>
-    
-    <h2>Top Object Types by Count</h2>
-    <div class="card">
-        <table>
-            <thead>
-                <tr><th>Type</th><th>Count</th><th>Growth</th></tr>
-            </thead>
-            <tbody id="objectsTable"></tbody>
-        </table>
-    </div>
-    
-    <h2>Top Memory Allocations (tracemalloc)</h2>
-    <div class="card">
-        <table>
-            <thead>
-                <tr><th>Location</th><th>Size (KB)</th><th>Count</th></tr>
-            </thead>
-            <tbody id="allocTable"></tbody>
-        </table>
-    </div>
-
-    <script>
-        let refreshInterval;
-        
-        async function refresh() {
-            try {
-                // Get main report
-                const report = await fetch('/debug/memory').then(r => r.json());
-                
-                // Update metrics
-                if (report.memory) {
-                    const mem = report.memory.rss_mb || 0;
-                    const el = document.getElementById('memoryMB');
-                    el.textContent = mem.toFixed(1);
-                    el.className = 'metric' + (mem > 500 ? ' danger' : mem > 200 ? ' warning' : '');
-                    document.getElementById('objectCount').textContent = 
-                        report.gc?.total_objects?.toLocaleString() || '--';
-                }
-                
-                // Tracemalloc peak
-                const tm = await fetch('/debug/memory/tracemalloc').then(r => r.json());
-                if (tm.peak_mb) {
-                    document.getElementById('peakMB').textContent = tm.peak_mb.toFixed(1);
-                }
-                
-                // GC stats
-                if (report.gc) {
-                    document.getElementById('gcStats').innerHTML = `
-                        <div>Generation counts: ${report.gc.counts?.join(', ') || '--'}</div>
-                        <div>Thresholds: ${report.gc.threshold?.join(', ') || '--'}</div>
-                        <div>Garbage items: ${report.gc.garbage_count || 0}</div>
-                    `;
-                }
-                
-                // Trend analysis
-                const trend = await fetch('/debug/memory/trend').then(r => r.json());
-                if (trend.memory_mb) {
-                    const rate = trend.memory_mb.growth_rate_mb_per_hour || 0;
-                    const el = document.getElementById('growthRate');
-                    el.textContent = rate.toFixed(2);
-                    el.className = 'metric' + (rate > 10 ? ' danger' : rate > 2 ? ' warning' : '');
-                    document.getElementById('snapshotCount').textContent = trend.snapshots || '--';
-                    document.getElementById('timeSpan').textContent = 
-                        (trend.time_span_seconds || 0).toFixed(0);
-                }
-                
-                // Potential leaks
-                if (trend.likely_leaks?.length > 0) {
-                    document.getElementById('leaks').innerHTML = trend.likely_leaks
-                        .slice(0, 10)
-                        .map(l => `<div class="leak-warning">
-                            <strong>${l.type}</strong>: +${l.total_growth} objects
-                        </div>`)
-                        .join('');
-                } else {
-                    document.getElementById('leaks').innerHTML = 
-                        '<div style="color: #4ade80;">No obvious leaks detected</div>';
-                }
-                
-                // Object table
-                if (report.top_objects) {
-                    const growth = await fetch('/debug/memory/objects').then(r => r.json());
-                    document.getElementById('objectsTable').innerHTML = report.top_objects
-                        .slice(0, 20)
-                        .map(o => {
-                            const g = growth.growth?.[o.type] || 0;
-                            const gClass = g > 0 ? 'growth-positive' : g < 0 ? 'growth-negative' : '';
-                            return `<tr>
-                                <td>${o.type}</td>
-                                <td>${o.count.toLocaleString()}</td>
-                                <td class="${gClass}">${g > 0 ? '+' : ''}${g}</td>
-                            </tr>`;
-                        })
-                        .join('');
-                }
-                
-                // Allocation table
-                if (tm.top_by_line) {
-                    document.getElementById('allocTable').innerHTML = tm.top_by_line
-                        .slice(0, 15)
-                        .map(a => `<tr>
-                            <td style="font-family: monospace; font-size: 11px;">${a.file}</td>
-                            <td>${a.size_kb.toFixed(1)}</td>
-                            <td>${a.count}</td>
-                        </tr>`)
-                        .join('');
-                }
-                
-            } catch (e) {
-                console.error('Refresh error:', e);
-            }
-        }
-        
-        async function takeSnapshot() {
-            await fetch('/debug/memory/snapshot', {method: 'POST'});
-            refresh();
-        }
-        
-        async function setBaseline() {
-            await fetch('/debug/memory/baseline', {method: 'POST'});
-            refresh();
-        }
-        
-        async function triggerGC() {
-            const result = await fetch('/debug/profile/gc', {method: 'POST'}).then(r => r.json());
-            alert(`GC collected ${result.collected_objects} objects, freed ${result.freed_mb?.toFixed(2) || 0} MB`);
-            refresh();
-        }
-        
-        // Initial load
-        refresh();
-        
-        // Auto-refresh
-        document.getElementById('autoRefresh').addEventListener('change', function() {
-            if (this.checked) {
-                refreshInterval = setInterval(refresh, 10000);
-            } else {
-                clearInterval(refreshInterval);
-            }
-        });
-        
-        refreshInterval = setInterval(refresh, 10000);
-    </script>
-</body>
-</html>
-    """
-    return HTMLResponse(content=html)
+    )

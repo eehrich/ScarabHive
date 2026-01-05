@@ -381,13 +381,12 @@ window.AgentSystem.DropdownMenu = {
         }
       } else if (item.action === 'openPanel') {
         // Open plugin panel in floating panel
-        if (item.panel_id && window.AgentSystem && window.AgentSystem.PluginManager) {
-          // Create a pseudo-plugin object from the panel_id
-          // We need to fetch the plugin metadata first or construct it
+        if ((item.panel_id || item.panel_endpoint) && window.AgentSystem && window.AgentSystem.PluginManager) {
+          // Create a pseudo-plugin object from the panel_id or panel_endpoint
           const pseudoPlugin = {
-            id: item.panel_id,
-            panel_title: item.label || 'Plugin Panel',
-            panel_endpoint: `/plugins/${item.panel_id}/`,
+            id: item.panel_id || item.id,
+            panel_title: item.panel_title || item.label || 'Panel',
+            panel_endpoint: item.panel_endpoint || `/plugins/${item.panel_id}/`,
             panel_type: 'iframe',
             description: item.tooltip || ''
           };
@@ -395,7 +394,7 @@ window.AgentSystem.DropdownMenu = {
           // Use PluginManager's togglePluginPanel method
           window.AgentSystem.PluginManager.togglePluginPanel(pseudoPlugin);
         } else {
-          console.error('Panel ID not provided or PluginManager not available');
+          console.error('Panel ID or endpoint not provided, or PluginManager not available');
         }
       } else if (typeof window[item.action] === 'function') {
         // Call global function

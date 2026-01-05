@@ -297,11 +297,12 @@ window.AgentSystem.log_viewer = {
 
       this.populateFileSelect(data.logs || []);
 
-      // Auto-select first existing file if available
-      const existingFiles = (data.logs || []).filter(file => file.exists);
-      if (existingFiles.length > 0) {
-        this.selectLogFile(existingFiles[0].name);
-      } else {
+      // Auto-select first existing file ONLY if no saved selection was restored
+      if (!this._desiredFileSelection) {
+        const existingFiles = (data.logs || []).filter(file => file.exists);
+        if (existingFiles.length > 0) {
+          this.selectLogFile(existingFiles[0].name);
+        }
       }
 
     } catch (error) {
