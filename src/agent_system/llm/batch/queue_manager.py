@@ -634,18 +634,43 @@ class BatchQueueManager:
                     job.error_message = f"Cancelled after {job.retry_count} retries"
                     await self._complete_job(job)
                     
-            elif job.status in (BatchStatus.FAILED, BatchStatus.EXPIRED):
+            elif job.status == BatchStatus.FAILED:
                 job.error_message = status_info.get("error", "Unknown error")
                 await self._complete_job(job)
                 
-            # Check for timeout
+            elif job.status == BatchStatus.EXPIRED:
+                # Provider-side expiration - retry if under limit
+                if job.retry_count < self._max_retries:
+                    job.retry_count += 1
+                    logger.warning(
+                        f"Batch job {job.job_id} expired on provider, "
+                        f"retrying ({job.retry_count}/{self._max_retries})"
+                    )
+                    await self._retry_job(job)
+                else:
+                    job.error_message = status_info.get("error", "Batch expired on provider")
+                    await self._complete_job(job)
+                
+            # Check for local timeout
             elif job.submitted_at:
                 elapsed = (_utc_now() - job.submitted_at).total_seconds()
                 if elapsed > self._max_wait_hours * 3600:
-                    logger.warning(f"Batch job {job.job_id} expired after {elapsed}s")
-                    job.status = BatchStatus.EXPIRED
-                    job.error_message = f"Exceeded max wait time of {self._max_wait_hours} hours"
-                    await self._complete_job(job)
+                    # Local timeout - retry if under limit
+                    if job.retry_count < self._max_retries:
+                        job.retry_count += 1
+                        logger.warning(
+                            f"Batch job {job.job_id} expired locally after {elapsed:.0f}s, "
+                            f"retrying ({job.retry_count}/{self._max_retries})"
+                        )
+                        await self._retry_job(job)
+                    else:
+                        logger.warning(
+                            f"Batch job {job.job_id} expired after {elapsed:.0f}s "
+                            f"and {job.retry_count} retries, giving up"
+                        )
+                        job.status = BatchStatus.EXPIRED
+                        job.error_message = f"Exceeded max wait time of {self._max_wait_hours} hours after {job.retry_count} retries"
+                        await self._complete_job(job)
                     
         except Exception as e:
             logger.error(f"Error polling batch job {job.job_id}: {e}")

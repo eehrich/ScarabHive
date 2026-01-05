@@ -990,6 +990,121 @@ class TestBatchQueueManager:
         for req in requests:
             assert req.request_id not in manager._request_to_job
 
+    @pytest.mark.asyncio
+    async def test_expired_job_retries(self, mock_config, tmp_path):
+        """Test that expired jobs are retried up to max_retries times."""
+        # Create a properly structured mock config with max_retries
+        mock_config.providers = MagicMock()
+        mock_config.providers.gemini = MagicMock()
+        mock_config.providers.gemini.collection_window_seconds = 1.0
+        mock_config.providers.gemini.max_requests_per_batch = 10
+        mock_config.providers.gemini.poll_interval_seconds = 0.5
+        mock_config.providers.gemini.max_wait_hours = 24
+        mock_config.providers.gemini.max_retries = 3
+        mock_config.providers.openai = None
+        mock_config.storage_path = str(tmp_path / "batch")
+        
+        manager = BatchQueueManager(mock_config)
+        await manager.start()
+        
+        # Create a job
+        request = BatchRequest(
+            request_id="test-expire-1",
+            custom_id="custom-expire",
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Test"}],
+        )
+        job = BatchJob(
+            job_id="job-expire",
+            provider="openai",
+            model="gpt-4",
+            requests=[request],
+        )
+        job.provider_job_id = "batch_expired_123"
+        job.status = BatchStatus.IN_PROGRESS
+        
+        manager._active_jobs[job.job_id] = job
+        
+        # Register a mock client that reports expired status
+        mock_client = AsyncMock()
+        mock_client.get_batch_status = AsyncMock(return_value={
+            "status": "expired",
+            "error": "Batch expired on provider"
+        })
+        # For retry, we need submit_batch to work
+        mock_client.submit_batch = AsyncMock(return_value="batch_retry_123")
+        manager.register_batch_client("openai", mock_client)
+        
+        # Poll the job - should trigger first retry
+        await manager._poll_job(job)
+        
+        # Verify retry happened
+        assert job.retry_count == 1
+        assert job.status == BatchStatus.SUBMITTED
+        assert job.provider_job_id == "batch_retry_123"
+        
+        await manager.stop()
+
+    @pytest.mark.asyncio
+    async def test_expired_job_fails_after_max_retries(self, mock_config, tmp_path):
+        """Test that expired jobs fail after max_retries attempts."""
+        # Create a properly structured mock config with max_retries
+        mock_config.providers = MagicMock()
+        mock_config.providers.gemini = MagicMock()
+        mock_config.providers.gemini.collection_window_seconds = 1.0
+        mock_config.providers.gemini.max_requests_per_batch = 10
+        mock_config.providers.gemini.poll_interval_seconds = 0.5
+        mock_config.providers.gemini.max_wait_hours = 24
+        mock_config.providers.gemini.max_retries = 3
+        mock_config.providers.openai = None
+        mock_config.storage_path = str(tmp_path / "batch")
+        
+        manager = BatchQueueManager(mock_config)
+        
+        # Create a job that has already been retried max times
+        request = BatchRequest(
+            request_id="test-expire-max",
+            custom_id="custom-expire-max",
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Test"}],
+        )
+        job = BatchJob(
+            job_id="job-expire-max",
+            provider="openai",
+            model="gpt-4",
+            requests=[request],
+        )
+        job.provider_job_id = "batch_expired_max"
+        job.status = BatchStatus.IN_PROGRESS
+        job.retry_count = 3  # Already at max (manager._max_retries is 3)
+        
+        manager._active_jobs[job.job_id] = job
+        
+        # Create a future for the request
+        future = asyncio.get_event_loop().create_future()
+        manager._request_futures[request.request_id] = future
+        
+        # Register a mock client that reports expired status
+        mock_client = AsyncMock()
+        mock_client.get_batch_status = AsyncMock(return_value={
+            "status": "expired",
+            "error": "Batch expired on provider"
+        })
+        manager.register_batch_client("openai", mock_client)
+        
+        # Poll the job - should fail since max retries reached
+        await manager._poll_job(job)
+        
+        # Verify job completed with error
+        assert job.status == BatchStatus.EXPIRED
+        assert job.job_id not in manager._active_jobs
+        assert job.job_id in manager._completed_jobs
+        
+        # Verify the future got an exception
+        assert future.done()
+        with pytest.raises(RuntimeError, match="expired"):
+            future.result()
+
 
 # ==============================================================================
 # Integration Tests
