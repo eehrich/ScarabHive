@@ -424,6 +424,65 @@ class TestGeminiSDKClientMultimodalMessages:
         assert contents[0].parts[2].text == "and"
         assert hasattr(contents[0].parts[3], 'inline_data')
 
+    def test_convert_multimodal_message_with_audio_dict(self, gemini_sdk_client):
+        """Test conversion of message with audio content as dict."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Transcribe this audio"},
+                    {
+                        "type": "audio",
+                        "audio_url": "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAA==",
+                        "media_type": "audio/wav"
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        assert len(contents) == 1
+        parts = contents[0].parts
+        assert len(parts) == 2
+        
+        # Check text part
+        assert parts[0].text == "Transcribe this audio"
+        
+        # Check audio converted to inlineData
+        assert hasattr(parts[1], 'inline_data')
+        assert parts[1].inline_data.mime_type == "audio/wav"
+        assert isinstance(parts[1].inline_data.data, bytes)
+
+    def test_convert_multimodal_message_with_audio_pydantic(self, gemini_sdk_client):
+        """Test conversion of message with audio content as AudioContent model."""
+        from agent_system.llm.models import AudioContent
+        
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "What is being said?"},
+                    AudioContent(
+                        type="audio",
+                        audio_url="data:audio/mp3;base64,//uQxAAAAAANIAAAAAE=",
+                        media_type="audio/mp3"
+                    )
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_sdk_client._convert_messages_to_sdk(messages)
+        
+        assert len(contents) == 1
+        parts = contents[0].parts
+        assert len(parts) == 2
+        
+        # Check audio converted to inlineData
+        assert hasattr(parts[1], 'inline_data')
+        assert parts[1].inline_data.mime_type == "audio/mp3"
+        assert isinstance(parts[1].inline_data.data, bytes)
+
 
 class TestGeminiSDKClientInfiniteThinkingLoop:
     """Test detection and abort of infinite thinking loop (Gemini bug)."""

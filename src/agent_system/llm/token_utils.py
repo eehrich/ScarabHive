@@ -1,12 +1,91 @@
 """Token estimation utilities for LLM interactions."""
 
 import re
-from typing import List
+from typing import List, Union, Any
 from .models import ChatMessage
+
+
+# Constants for multimodal token estimation
+TOKENS_PER_IMAGE = 1000  # Approximate tokens for an embedded image
+TOKENS_PER_AUDIO_SECOND = 25  # Approximate tokens per second of audio
+
+
+def extract_text_from_content(content: Union[str, List[Any], Any]) -> str:
+    """Extract text content from potentially multimodal message content.
+    
+    Handles:
+    - Plain string content (most common)
+    - List of content items (multimodal: text, image, audio, etc.)
+    - Dict content items
+    
+    Args:
+        content: Message content (str, list, or other)
+        
+    Returns:
+        Extracted text as string
+    """
+    if content is None:
+        return ""
+    
+    if isinstance(content, str):
+        return content
+    
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+            elif isinstance(item, dict):
+                item_type = item.get('type', '')
+                if item_type == 'text':
+                    text_parts.append(item.get('text', ''))
+                # For image/audio, we don't extract text but they contribute to tokens
+            elif hasattr(item, 'type'):
+                # Pydantic model (TextContent, ImageContent, etc.)
+                if getattr(item, 'type', '') == 'text':
+                    text_parts.append(getattr(item, 'text', ''))
+        return ' '.join(text_parts)
+    
+    # Fallback for other types
+    return str(content)
+
+
+def count_multimodal_items(content: Union[str, List[Any], Any]) -> dict:
+    """Count multimodal items in content.
+    
+    Args:
+        content: Message content
+        
+    Returns:
+        Dict with counts: {'images': N, 'audio': N, 'video': N}
+    """
+    counts = {'images': 0, 'audio': 0, 'video': 0}
+    
+    if not isinstance(content, list):
+        return counts
+    
+    for item in content:
+        if isinstance(item, dict):
+            item_type = item.get('type', '')
+        elif hasattr(item, 'type'):
+            item_type = getattr(item, 'type', '')
+        else:
+            continue
+            
+        if item_type in ('image', 'image_url'):
+            counts['images'] += 1
+        elif item_type == 'audio':
+            counts['audio'] += 1
+        elif item_type == 'video':
+            counts['video'] += 1
+    
+    return counts
 
 
 def estimate_token_count(messages: List[ChatMessage]) -> int:
     """Enhanced token count estimation with improved accuracy for different content types.
+
+    Supports multimodal content (images, audio, video) in addition to text.
 
     Args:
         messages: List of chat messages to estimate tokens for
@@ -24,8 +103,17 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
 
         # Count content tokens with content-type aware ratios
         if msg.content:
-            content = str(msg.content)
-            msg_tokens += estimate_content_tokens(content)
+            # Extract text content (handles multimodal lists)
+            text_content = extract_text_from_content(msg.content)
+            msg_tokens += estimate_content_tokens(text_content)
+            
+            # Add tokens for multimodal items (images, audio, video)
+            multimodal_counts = count_multimodal_items(msg.content)
+            msg_tokens += multimodal_counts['images'] * TOKENS_PER_IMAGE
+            # Audio tokens estimated at ~25 tokens/second, assume ~10 seconds average
+            msg_tokens += multimodal_counts['audio'] * (TOKENS_PER_AUDIO_SECOND * 10)
+            # Video similar to audio but larger
+            msg_tokens += multimodal_counts['video'] * (TOKENS_PER_AUDIO_SECOND * 30)
 
         # Count tool calls with detailed breakdown
         if hasattr(msg, 'tool_calls') and msg.tool_calls:
@@ -47,8 +135,8 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
         if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
             # Tool call ID overhead
             msg_tokens += 8
-            # Tool result content
-            content = str(msg.content or "")
+            # Tool result content - extract text for multimodal
+            content = extract_text_from_content(msg.content) if msg.content else ""
             if content:
                 msg_tokens += estimate_tool_result_tokens(content)
 

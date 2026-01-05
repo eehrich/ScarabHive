@@ -249,6 +249,27 @@ def _convert_multimodal_content(content_list: List[Any]) -> List[Dict[str, Any]]
                         # External URL - Gemini doesn't support external URLs directly
                         # Would need to download and convert to base64
                         logger.warning(f"[Gemini] External image URLs not yet supported: {data_url[:100]}")
+            
+            elif content_type == "audio":
+                # Extract audio data - same format as image but with audio_url
+                audio_url = item.get("audio_url")
+                media_type = item.get("media_type", "audio/wav")
+                
+                if audio_url and audio_url.startswith("data:"):
+                    try:
+                        header, base64_data = audio_url.split(",", 1)
+                        # Use media_type from header or fallback to provided
+                        parsed_mime = header.split(":")[1].split(";")[0]
+                        parts.append({
+                            "inlineData": {
+                                "mimeType": parsed_mime or media_type,
+                                "data": base64_data
+                            }
+                        })
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"[Gemini] Failed to parse audio data URL: {e}")
+                elif audio_url:
+                    logger.warning(f"[Gemini] External audio URLs not supported: {audio_url[:100]}")
         
         # Handle Pydantic model objects (TextContent, ImageContent, etc.)
         elif hasattr(item, "type"):
@@ -293,6 +314,26 @@ def _convert_multimodal_content(content_list: List[Any]) -> List[Dict[str, Any]]
                             logger.warning(f"[Gemini] Failed to parse data URL from Pydantic model: {e}")
                     else:
                         logger.warning(f"[Gemini] External image URLs not yet supported: {data_url[:100]}")
+            
+            elif item.type == "audio":
+                # Extract from Pydantic AudioContent model
+                audio_url = getattr(item, "audio_url", None)
+                media_type = getattr(item, "media_type", "audio/wav")
+                
+                if audio_url and audio_url.startswith("data:"):
+                    try:
+                        header, base64_data = audio_url.split(",", 1)
+                        parsed_mime = header.split(":")[1].split(";")[0]
+                        parts.append({
+                            "inlineData": {
+                                "mimeType": parsed_mime or media_type,
+                                "data": base64_data
+                            }
+                        })
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"[Gemini] Failed to parse audio data URL from Pydantic model: {e}")
+                elif audio_url:
+                    logger.warning(f"[Gemini] External audio URLs not supported: {audio_url[:100]}")
     
     return parts
 

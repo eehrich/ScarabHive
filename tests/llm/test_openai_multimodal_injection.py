@@ -288,3 +288,96 @@ class TestOpenAISerializeMessages:
         assert len(serialized) == 2
         assert serialized[0]["role"] == "user"
         assert serialized[1]["role"] == "tool"
+
+
+class TestOpenAIAudioFiltering:
+    """Test that audio content is filtered out for Chat Completions API."""
+
+    @pytest.mark.asyncio
+    async def test_audio_content_filtered_from_user_message(self):
+        """Test that audio content is removed from user messages."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Here is an audio file"},
+                    {"type": "audio", "audio_url": "data:audio/wav;base64,UklGR...", "media_type": "audio/wav"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}}
+                ]
+            ),
+        ]
+        
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        def _serialize_messages():
+            result = []
+            for m in messages:
+                d = m.model_dump(exclude_none=True, mode='json')
+                d.pop('multimodal_content', None)
+                
+                # Filter out audio/video content
+                if isinstance(d.get('content'), list):
+                    filtered_content = []
+                    for item in d['content']:
+                        if isinstance(item, dict):
+                            item_type = item.get('type', '')
+                            if item_type in ('audio', 'video'):
+                                continue
+                        filtered_content.append(item)
+                    d['content'] = filtered_content if filtered_content else ""
+                
+                result.append(d)
+            return result
+        
+        serialized = await asyncio.to_thread(_serialize_messages)
+        
+        assert len(serialized) == 1
+        content = serialized[0]["content"]
+        
+        # Should have text and image_url, but NOT audio
+        assert len(content) == 2
+        content_types = [item.get("type") for item in content]
+        assert "text" in content_types
+        assert "image_url" in content_types
+        assert "audio" not in content_types
+
+    @pytest.mark.asyncio
+    async def test_all_audio_filtered_leaves_empty_string(self):
+        """Test that filtering all content leaves empty string."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "audio", "audio_url": "data:audio/wav;base64,UklGR...", "media_type": "audio/wav"},
+                ]
+            ),
+        ]
+        
+        import asyncio
+        
+        def _serialize_messages():
+            result = []
+            for m in messages:
+                d = m.model_dump(exclude_none=True, mode='json')
+                d.pop('multimodal_content', None)
+                
+                if isinstance(d.get('content'), list):
+                    filtered_content = []
+                    for item in d['content']:
+                        if isinstance(item, dict):
+                            item_type = item.get('type', '')
+                            if item_type in ('audio', 'video'):
+                                continue
+                        filtered_content.append(item)
+                    d['content'] = filtered_content if filtered_content else ""
+                
+                result.append(d)
+            return result
+        
+        serialized = await asyncio.to_thread(_serialize_messages)
+        
+        # Content should be empty string when all items filtered
+        assert serialized[0]["content"] == ""

@@ -211,6 +211,7 @@ class AnthropicAsyncClient(LLMClient):
             # Handle multimodal content
             if isinstance(msg.content, list):
                 content_blocks = []
+                audio_filtered = False
                 for item in msg.content:
                     if isinstance(item, str):
                         content_blocks.append({"type": "text", "text": item})
@@ -223,10 +224,20 @@ class AnthropicAsyncClient(LLMClient):
                             image_block = self._convert_image_content(item)
                             if image_block:
                                 content_blocks.append(image_block)
+                        elif item_type in ("audio", "input_audio", "video"):
+                            # Anthropic Messages API does not support audio/video input
+                            audio_filtered = True
+                            continue
                     else:
                         # Try to get text content
                         text = getattr(item, "text", None) or str(item)
                         content_blocks.append({"type": "text", "text": text})
+                
+                if audio_filtered:
+                    logger.debug(
+                        "Filtered audio/video content from message - "
+                        "Anthropic Messages API only supports text and image types"
+                    )
                 
                 converted_messages.append({
                     "role": anthropic_role,

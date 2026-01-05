@@ -65,6 +65,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: true
+        audio_input: true
         streaming: true
         json_mode: true
         supported_api_types: [chat_completions]
@@ -83,6 +84,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: true
+        audio_input: true
         streaming: false
         json_mode: true
         supported_api_types: [chat_completions]
@@ -101,6 +103,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: true
+        audio_input: true
         streaming: true
         json_mode: true
         supported_api_types: [chat_completions]
@@ -119,6 +122,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: true
+        audio_input: true
         streaming: false
         json_mode: true
         supported_api_types: [chat_completions]
@@ -139,6 +143,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: true
+        audio_input: true
         streaming: false
         json_mode: true
 
@@ -154,6 +159,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: true
+        audio_input: true
         streaming: false
         json_mode: true
 

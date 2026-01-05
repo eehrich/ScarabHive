@@ -133,6 +133,47 @@ class HTTPXOpenAIClient(LLMClient):
             model_name=self.model
         )
 
+    def _filter_audio_from_content(self, content: Any) -> Any:
+        """Filter out audio content blocks from message content.
+        
+        OpenAI Chat Completions API only supports text and image_url content types.
+        Audio content must be filtered out (with warning logged).
+        
+        Args:
+            content: Message content (str, list, or dict)
+            
+        Returns:
+            Filtered content with audio blocks removed
+        """
+        if isinstance(content, str):
+            return content
+        
+        if isinstance(content, list):
+            filtered = []
+            audio_filtered = False
+            for item in content:
+                if isinstance(item, dict):
+                    item_type = item.get("type", "")
+                    # Skip audio and video content - not supported by Chat Completions API
+                    if item_type in ("audio", "input_audio", "video"):
+                        audio_filtered = True
+                        continue
+                filtered.append(item)
+            
+            if audio_filtered:
+                logger.debug(
+                    "Filtered audio/video content from message - "
+                    "OpenAI Chat Completions API only supports text and image_url types"
+                )
+            
+            # If only one text item remains, simplify to string
+            if len(filtered) == 1 and isinstance(filtered[0], dict) and filtered[0].get("type") == "text":
+                return filtered[0].get("text", "")
+            
+            return filtered if filtered else ""
+        
+        return content
+
     async def chat(
         self,
         messages: list,
@@ -235,6 +276,9 @@ class HTTPXOpenAIClient(LLMClient):
                     d = msg.model_dump(exclude_none=True, mode='json')
                     # Remove multimodal_content from serialized dict - it's processed separately
                     d.pop('multimodal_content', None)
+                    # Filter out audio/video content - not supported by Chat Completions API
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
                     result.append(d)
                     
                     # Inject multimodal content as synthetic user message after tool response
@@ -243,7 +287,10 @@ class HTTPXOpenAIClient(LLMClient):
                         if injection:
                             result.append(injection)
                 elif isinstance(msg, dict):
-                    result.append(msg)
+                    d = dict(msg)
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
+                    result.append(d)
                 else:
                     result.append(dict(msg))
             return result
@@ -363,6 +410,9 @@ class HTTPXOpenAIClient(LLMClient):
                     d = msg.model_dump(exclude_none=True, mode='json')
                     # Remove multimodal_content from serialized dict - it's processed separately
                     d.pop('multimodal_content', None)
+                    # Filter out audio/video content - not supported by Chat Completions API
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
                     result.append(d)
                     
                     # Inject multimodal content as synthetic user message after tool response
@@ -371,8 +421,11 @@ class HTTPXOpenAIClient(LLMClient):
                         if injection:
                             result.append(injection)
                 elif isinstance(msg, dict):
-                    # Already a dict
-                    result.append(msg)
+                    # Already a dict - also filter audio
+                    d = dict(msg)
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
+                    result.append(d)
                 else:
                     # Fallback - try to convert to dict
                     result.append(dict(msg))

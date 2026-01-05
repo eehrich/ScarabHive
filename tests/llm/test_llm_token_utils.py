@@ -378,5 +378,119 @@ class TestTokenEstimationAccuracy:
         assert code_tokens >= text_tokens
 
 
+class TestMultimodalTokenEstimation:
+    """Test token estimation for multimodal content (images, audio, etc.)."""
+
+    def test_extract_text_from_string_content(self):
+        """Test text extraction from plain string content."""
+        from agent_system.llm.token_utils import extract_text_from_content
+        
+        content = "Hello, world!"
+        result = extract_text_from_content(content)
+        assert result == "Hello, world!"
+
+    def test_extract_text_from_none_content(self):
+        """Test text extraction from None content."""
+        from agent_system.llm.token_utils import extract_text_from_content
+        
+        result = extract_text_from_content(None)
+        assert result == ""
+
+    def test_extract_text_from_multimodal_list(self):
+        """Test text extraction from multimodal content list."""
+        from agent_system.llm.token_utils import extract_text_from_content
+        
+        content = [
+            {"type": "text", "text": "What is in this image?"},
+            {"type": "image", "source": {"type": "base64", "data": "..."}}
+        ]
+        result = extract_text_from_content(content)
+        assert result == "What is in this image?"
+
+    def test_extract_text_from_multiple_text_parts(self):
+        """Test text extraction from content with multiple text parts."""
+        from agent_system.llm.token_utils import extract_text_from_content
+        
+        content = [
+            {"type": "text", "text": "First part."},
+            {"type": "image", "source": {"type": "base64", "data": "..."}},
+            {"type": "text", "text": "Second part."}
+        ]
+        result = extract_text_from_content(content)
+        assert result == "First part. Second part."
+
+    def test_count_multimodal_items_images(self):
+        """Test counting images in multimodal content."""
+        from agent_system.llm.token_utils import count_multimodal_items
+        
+        content = [
+            {"type": "text", "text": "Describe these images"},
+            {"type": "image", "source": {"type": "base64", "data": "..."}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
+        ]
+        counts = count_multimodal_items(content)
+        assert counts['images'] == 2
+        assert counts['audio'] == 0
+        assert counts['video'] == 0
+
+    def test_count_multimodal_items_audio(self):
+        """Test counting audio in multimodal content."""
+        from agent_system.llm.token_utils import count_multimodal_items
+        
+        content = [
+            {"type": "text", "text": "Transcribe this audio"},
+            {"type": "audio", "source": {"type": "base64", "data": "..."}}
+        ]
+        counts = count_multimodal_items(content)
+        assert counts['images'] == 0
+        assert counts['audio'] == 1
+        assert counts['video'] == 0
+
+    def test_count_multimodal_items_string_content(self):
+        """Test that string content returns zero counts."""
+        from agent_system.llm.token_utils import count_multimodal_items
+        
+        counts = count_multimodal_items("Just plain text")
+        assert counts['images'] == 0
+        assert counts['audio'] == 0
+        assert counts['video'] == 0
+
+    def test_estimate_tokens_multimodal_message(self):
+        """Test token estimation for multimodal ChatMessage."""
+        multimodal_content = [
+            {"type": "text", "text": "What is in this image?"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+        ]
+        msg = ChatMessage(role="user", content=multimodal_content)
+        tokens = estimate_token_count([msg])
+        
+        # Should include:
+        # - Base overhead: 4
+        # - Text tokens: "What is in this image?" ~ 6 words * 1.3 = 7.8 -> 7
+        # - Image tokens: 1000 (TOKENS_PER_IMAGE)
+        # Total: 4 + 7 + 1000 = 1011
+        assert tokens > 1000  # At least the image token estimate
+
+    def test_estimate_tokens_multimodal_with_audio(self):
+        """Test token estimation for multimodal message with audio."""
+        multimodal_content = [
+            {"type": "text", "text": "Transcribe this"},
+            {"type": "audio", "source": {"type": "base64", "media_type": "audio/wav", "data": "..."}}
+        ]
+        msg = ChatMessage(role="user", content=multimodal_content)
+        tokens = estimate_token_count([msg])
+        
+        # Should include audio token estimate (25 tokens/sec * 10 sec average = 250)
+        assert tokens > 200  # At least the audio token estimate
+
+    def test_estimate_tokens_text_only_message_unchanged(self):
+        """Test that text-only messages still work correctly."""
+        msg = ChatMessage(role="user", content="Hello, how are you?")
+        tokens = estimate_token_count([msg])
+        
+        # 4 words * 1.3 = 5.2 -> 5 + 4 overhead = 9
+        assert tokens == 9
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

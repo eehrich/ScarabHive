@@ -308,6 +308,9 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         For tool responses with JSON: intelligently truncates long strings within the JSON
         while keeping structure valid. For other messages: simple truncation with warning.
         
+        Handles multimodal content by extracting text for length checks while
+        preserving original structure for images/audio.
+        
         Args:
             messages: List of messages to truncate
             max_length: Max length for entire message (chars)
@@ -315,10 +318,19 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             keep_string_end: If True, keep end of strings; if False, keep beginning
         """
         import json
+        from agent_system.llm.token_utils import extract_text_from_content
         
         result = []
         for msg in messages:
-            content = str(msg.content)
+            # Handle multimodal content - extract text for length check
+            raw_content = msg.content
+            if isinstance(raw_content, list):
+                # Multimodal content - don't truncate, preserve structure
+                # Images/audio have their own size limits handled during upload
+                result.append(msg)
+                continue
+            
+            content = extract_text_from_content(raw_content)
             
             # Special handling for tool responses - try smart JSON truncation
             if msg.role == 'tool' and len(content) > max_length:

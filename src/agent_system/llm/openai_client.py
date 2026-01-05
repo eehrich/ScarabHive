@@ -116,7 +116,19 @@ class OpenAIAsyncClient(LLMClient):
         try:
             # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
             def _serialize() -> list:
-                return [m.model_dump(exclude_none=True, mode='json') for m in messages]
+                result = []
+                for m in messages:
+                    d = m.model_dump(exclude_none=True, mode='json')
+                    # Filter out audio/video content - OpenAI Chat Completions 
+                    # only supports text and image_url
+                    if isinstance(d.get('content'), list):
+                        filtered = [
+                            item for item in d['content']
+                            if not (isinstance(item, dict) and item.get('type') in ('audio', 'video'))
+                        ]
+                        d['content'] = filtered if filtered else ""
+                    result.append(d)
+                return result
             serialized = await asyncio.to_thread(_serialize)
             
             opts = {"model": self.model, "messages": serialized}
@@ -295,6 +307,24 @@ class OpenAIAsyncClient(LLMClient):
                 d = m.model_dump(exclude_none=True, mode='json')
                 # Remove multimodal_content from serialized dict - it's processed separately
                 d.pop('multimodal_content', None)
+                
+                # Filter out audio content from user messages - OpenAI Chat Completions
+                # only supports text and image_url content types, not audio
+                if isinstance(d.get('content'), list):
+                    filtered_content = []
+                    for item in d['content']:
+                        if isinstance(item, dict):
+                            item_type = item.get('type', '')
+                            # Skip audio/video types - not supported by Chat Completions API
+                            if item_type in ('audio', 'video'):
+                                logger.warning(
+                                    "[OpenAI] Filtering out %s content - not supported by Chat Completions API",
+                                    item_type
+                                )
+                                continue
+                        filtered_content.append(item)
+                    d['content'] = filtered_content if filtered_content else ""
+                
                 result.append(d)
                 
                 # Inject multimodal content as synthetic user message after tool response
@@ -645,6 +675,23 @@ class OpenAIAsyncClient(LLMClient):
                 d = m.model_dump(exclude_none=True, mode='json')
                 # Remove multimodal_content from serialized dict - it's processed separately
                 d.pop('multimodal_content', None)
+                
+                # Filter out audio/video content from user messages - OpenAI Chat Completions
+                # only supports text and image_url content types
+                if isinstance(d.get('content'), list):
+                    filtered_content = []
+                    for item in d['content']:
+                        if isinstance(item, dict):
+                            item_type = item.get('type', '')
+                            if item_type in ('audio', 'video'):
+                                logger.warning(
+                                    "[OpenAI] Filtering out %s content - not supported by Chat Completions API",
+                                    item_type
+                                )
+                                continue
+                        filtered_content.append(item)
+                    d['content'] = filtered_content if filtered_content else ""
+                
                 result.append(d)
                 
                 # Inject multimodal content as synthetic user message after tool response

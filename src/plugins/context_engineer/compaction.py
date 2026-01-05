@@ -254,6 +254,10 @@ class LayeredCompactionStrategy:
                 tool_results_seen += 1
                 
                 content = msg.get("content", "")
+                # Handle multimodal content - extract text for token estimation
+                if isinstance(content, list):
+                    # Multimodal content - skip archival, preserve as-is
+                    continue
                 token_count = estimate_content_tokens(content)
                 
                 # Always archive if exceeds max size (even if in last N)
