@@ -465,7 +465,7 @@ class AgentService:
         logger.debug("Creating multimodal message: task_length=%d, images=%d", len(task), len(images))
         
         try:
-            from agent_system.utils.image_processor import create_multimodal_message, ImageProcessingError
+            from agent_system.utils.multimodal_processor import create_multimodal_message, ImageProcessingError
             import tempfile
             from pathlib import Path
             

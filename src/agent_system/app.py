@@ -1161,23 +1161,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # Process uploaded files for multimodal input
         from .llm.capabilities import get_model_capabilities
-        from .utils.image_processor import create_multimodal_message, ImageProcessingError
+        from .utils.multimodal_processor import (
+            create_multimodal_message_extended,
+            ImageProcessingError, 
+            AudioProcessingError, 
+            TextFileProcessingError,
+            detect_file_type
+        )
         import tempfile
         from pathlib import Path
 
-        # Validate model supports images
-        model_name = selected_agent.llm.model if hasattr(selected_agent.llm, 'model') else None
-        if model_name:
-            caps = get_model_capabilities(model_name)
-            if not caps.image_input:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Model {model_name} does not support image input"
-                )
-
-        # Save uploaded files to temp directory
-        temp_files = []
+        # Categorize uploaded files by type
         image_paths = []
+        audio_paths = []
+        text_paths = []
+        temp_files = []
+        
         try:
             temp_dir = Path(tempfile.mkdtemp())
 
@@ -1187,15 +1186,59 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     content = await upload_file.read()
                     f.write(content)
                 temp_files.append(temp_path)
-                image_paths.append(str(temp_path))
-                logger.debug("Saved uploaded file %s (%d bytes) -> %s", upload_file.filename, len(content), temp_path)
+                
+                # Categorize by file type
+                file_type = detect_file_type(temp_path)
+                if file_type == 'image':
+                    image_paths.append(str(temp_path))
+                elif file_type == 'audio':
+                    audio_paths.append(str(temp_path))
+                elif file_type == 'text':
+                    text_paths.append(str(temp_path))
+                else:
+                    logger.warning("Unsupported file type for %s, skipping", upload_file.filename)
+                    
+                logger.debug("Saved uploaded file %s (%d bytes) -> %s [%s]", 
+                           upload_file.filename, len(content), temp_path, file_type)
 
-            # Create multimodal message
+            # Get model name for capability checks (use override if provided)
+            if llm_override and hasattr(llm_override, 'model'):
+                model_name = llm_override.model
+            else:
+                model_name = selected_agent.llm.model if hasattr(selected_agent.llm, 'model') else None
+
+            # Validate model supports images if we have any
+            if image_paths and model_name:
+                caps = get_model_capabilities(model_name)
+                if not caps.image_input:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model {model_name} does not support image input"
+                    )
+
+            # Validate model supports audio if we have any
+            if audio_paths and model_name:
+                caps = get_model_capabilities(model_name)
+                if not caps.audio_input:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model {model_name} does not support audio input"
+                    )
+
+            # Create multimodal message with all file types
             try:
-                multimodal_msg = create_multimodal_message(task, image_paths)
-                logger.info("Created multimodal message with %d image(s)", len(image_paths))
-            except ImageProcessingError as e:
-                logger.exception("Image processing failed while creating multimodal message: %s", e)
+                multimodal_msg = create_multimodal_message_extended(
+                    text=task,
+                    image_paths=image_paths if image_paths else None,
+                    audio_paths=audio_paths if audio_paths else None,
+                    text_file_paths=text_paths if text_paths else None
+                )
+                logger.info(
+                    "Created multimodal message with %d image(s), %d audio(s), %d text file(s)", 
+                    len(image_paths), len(audio_paths), len(text_paths)
+                )
+            except (ImageProcessingError, AudioProcessingError, TextFileProcessingError) as e:
+                logger.exception("File processing failed while creating multimodal message: %s", e)
                 raise HTTPException(status_code=400, detail=str(e))
 
             # Stream events for multimodal message (same as /events endpoint)

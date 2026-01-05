@@ -606,6 +606,8 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="Run an agent task (default)")
     run_parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
     run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
+    run_parser.add_argument("--audio", dest="audio", nargs="+", metavar="PATH", help="Path(s) to audio file(s) to attach to the task (mp3, wav, ogg, etc.)")
+    run_parser.add_argument("--text", "--files", dest="text_files", nargs="+", metavar="PATH", help="Path(s) to text file(s) to attach to the task (txt, md, py, json, etc.)")
     run_parser.add_argument("--agent", dest="agent_override", help="Override the default agent (use agent name from config)")
     run_parser.add_argument("--llm", dest="llm_profile_override", help="Override the LLM profile (use profile name from llm.yaml)")
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
@@ -1300,35 +1302,62 @@ def main() -> None:
         registry.register(entry_name, agent)
         vprint(f"[cli] created agent: {entry_name}")
 
-    # Process image attachments if provided
+    # Process multimodal attachments (images, audio, text files)
     task_input: Union[str, ChatMessage] = args.task
-    if getattr(args, "images", None):
-        vprint(f"[cli] processing {len(args.images)} image attachment(s)")
+    has_images = getattr(args, "images", None)
+    has_audio = getattr(args, "audio", None)
+    has_text_files = getattr(args, "text_files", None)
+    
+    if has_images or has_audio or has_text_files:
+        attachment_counts = []
+        if has_images:
+            attachment_counts.append(f"{len(has_images)} image(s)")
+        if has_audio:
+            attachment_counts.append(f"{len(has_audio)} audio(s)")
+        if has_text_files:
+            attachment_counts.append(f"{len(has_text_files)} text file(s)")
+        vprint(f"[cli] processing attachments: {', '.join(attachment_counts)}")
+        
         try:
-            from .utils.image_processor import create_multimodal_message, ImageProcessingError
+            from .utils.multimodal_processor import (
+                create_multimodal_message_extended,
+                ImageProcessingError,
+                AudioProcessingError,
+                TextFileProcessingError
+            )
 
-            # Convert string paths to Path objects
-            image_paths = [Path(img_path) for img_path in args.images]
+            # Convert string paths to lists of Path objects
+            image_paths = [Path(p) for p in has_images] if has_images else None
+            audio_paths = [Path(p) for p in has_audio] if has_audio else None
+            text_file_paths = [Path(p) for p in has_text_files] if has_text_files else None
 
-            # Create multimodal message with proper error handling
-            task_input = create_multimodal_message(
+            # Create multimodal message with all attachment types
+            task_input = create_multimodal_message_extended(
                 text=args.task,
                 image_paths=image_paths,
+                audio_paths=audio_paths,
+                text_file_paths=text_file_paths,
                 max_size_mb=None  # No hard limit, just warnings
             )
 
-            vprint(f"[cli] created multimodal message with {len(image_paths)} image(s)")
+            vprint("[cli] created multimodal message")
 
         except ImageProcessingError as e:
-            print(f"Error: {e}", file=sys.stderr)
+            print(f"Error processing image: {e}", file=sys.stderr)
+            return
+        except AudioProcessingError as e:
+            print(f"Error processing audio: {e}", file=sys.stderr)
+            return
+        except TextFileProcessingError as e:
+            print(f"Error processing text file: {e}", file=sys.stderr)
             return
         except ImportError as e:
-            print(f"Error: Image processing requires Pillow: {e}", file=sys.stderr)
+            print(f"Error: Multimodal processing requires Pillow: {e}", file=sys.stderr)
             print("Install with: pip install Pillow", file=sys.stderr)
             return
         except Exception as e:
-            print(f"Error processing images: {e}", file=sys.stderr)
-            logger.exception("Unexpected error in image processing")
+            print(f"Error processing attachments: {e}", file=sys.stderr)
+            logger.exception("Unexpected error in multimodal processing")
             return
 
     vprint(f"[cli] running task: {args.task}")

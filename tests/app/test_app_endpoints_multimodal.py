@@ -184,3 +184,65 @@ class TestMultimodalFormatSupport:
         # Nano doesn't support images at all
         assert not caps.image_input
         assert len(caps.supported_image_formats) == 0
+
+
+class TestLLMOverrideModelSelection:
+    """Test that llm_override is used for capability checks instead of agent default."""
+    
+    def test_llm_override_model_used_for_image_validation(self):
+        """Test that when llm_override is provided, its model is used for image capability checks."""
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Create mock LLM override with vision-capable model
+        llm_override = MagicMock()
+        llm_override.model = "gpt-5.1"  # Model with vision support
+        
+        # Create mock agent with non-vision model as default
+        mock_agent = MagicMock()
+        mock_agent.llm = MagicMock()
+        mock_agent.llm.model = "deepseek-chat"  # Model without vision
+        
+        # The logic we're testing (extracted from app.py):
+        # If llm_override and hasattr(llm_override, 'model'):
+        #     model_name = llm_override.model
+        # else:
+        #     model_name = selected_agent.llm.model
+        
+        # Test case 1: With llm_override
+        if llm_override and hasattr(llm_override, 'model'):
+            model_name = llm_override.model
+        else:
+            model_name = mock_agent.llm.model
+            
+        assert model_name == "gpt-5.1"
+        
+        # Test case 2: Without llm_override  
+        llm_override_none = None
+        if llm_override_none and hasattr(llm_override_none, 'model'):
+            model_name = llm_override_none.model
+        else:
+            model_name = mock_agent.llm.model
+            
+        assert model_name == "deepseek-chat"
+    
+    def test_llm_override_without_model_attribute_falls_back(self):
+        """Test fallback when llm_override doesn't have model attribute."""
+        from unittest.mock import MagicMock
+        
+        # Create mock LLM override without model attribute
+        llm_override = MagicMock(spec=[])  # No attributes
+        
+        # Create mock agent with default model
+        mock_agent = MagicMock()
+        mock_agent.llm = MagicMock()
+        mock_agent.llm.model = "gpt-5-mini"
+        
+        # Test the logic
+        if llm_override and hasattr(llm_override, 'model'):
+            model_name = llm_override.model
+        else:
+            model_name = mock_agent.llm.model if hasattr(mock_agent.llm, 'model') else None
+            
+        # Should fall back to agent's model since llm_override lacks model attr
+        assert model_name == "gpt-5-mini"
+

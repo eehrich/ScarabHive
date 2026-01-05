@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 from .config.settings import load_settings
 from .mcp.status import status_bus
@@ -32,6 +33,9 @@ from .cli_utils.common import (
     format_error
 )
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system
+
+if TYPE_CHECKING:
+    from .llm.models import ChatMessage
 
 
 logger = logging.getLogger(__name__)
@@ -93,18 +97,20 @@ async def create_agent(config, registry, agent_name: str, session_service=None):
     return await create_and_register_agent(config, registry, agent_name, session_service=session_service)
 
 
-async def run_agent_request(agent: Agent, request: str, session_id: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
+async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_id: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
     """Execute a request with the agent and return the result.
 
     Args:
         agent: The agent instance to execute the request with
-        request: The user's request/question
+        request: The user's request/question (string or ChatMessage for multimodal)
         session_id: Session ID for conversation history
         llm_override: Optional LLM client to override agent's default
         llm_profile_info: Optional profile info string for status display
     """
     try:
-        logger.info(f"Executing request: {request[:100]}{'...' if len(request) > 100 else ''}")
+        # Log request info (handle both string and ChatMessage)
+        request_preview = request if isinstance(request, str) else f"<multimodal message with {len(request.content)} parts>"
+        logger.info(f"Executing request: {str(request_preview)[:100]}{'...' if len(str(request_preview)) > 100 else ''}")
 
         # Use the same pattern as CLI - collect final result from run_events
         from .servers.agent.result_utils import collect_final_result
@@ -125,7 +131,9 @@ async def run_agent_request(agent: Agent, request: str, session_id: str, llm_ove
 
 async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
                      session_id: str | None = None, session_user: str = "cli_user",
-                     list_sessions: bool = False, session_title: str | None = None) -> None:
+                     list_sessions: bool = False, session_title: str | None = None,
+                     image_paths: list[str] | None = None, audio_paths: list[str] | None = None,
+                     text_file_paths: list[str] | None = None) -> None:
     """Async main function to run agent request with session support.
 
     Args:
@@ -137,6 +145,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         session_user: User ID for session storage
         list_sessions: List all sessions for user
         session_title: Title for new session (optional)
+        image_paths: List of image file paths to attach (optional)
+        audio_paths: List of audio file paths to attach (optional)
+        text_file_paths: List of text file paths to attach (optional)
     """
     try:
         # Handle --list-sessions flag (needs session_manager only)
@@ -270,6 +281,59 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             "llm_profile": effective_llm_profile
         })
 
+        # Process multimodal attachments (images, audio, text files)
+        from typing import Union
+        task_input: Union[str, ChatMessage] = request
+        
+        if image_paths or audio_paths or text_file_paths:
+            attachment_counts = []
+            if image_paths:
+                attachment_counts.append(f"{len(image_paths)} image(s)")
+            if audio_paths:
+                attachment_counts.append(f"{len(audio_paths)} audio(s)")
+            if text_file_paths:
+                attachment_counts.append(f"{len(text_file_paths)} text file(s)")
+            logger.info(f"Processing attachments: {', '.join(attachment_counts)}")
+            
+            try:
+                from pathlib import Path as PathLib
+                from .utils.multimodal_processor import (
+                    create_multimodal_message_extended,
+                    ImageProcessingError,
+                    AudioProcessingError,
+                    TextFileProcessingError
+                )
+
+                # Convert string paths to Path objects
+                images = [PathLib(p) for p in image_paths] if image_paths else None
+                audios = [PathLib(p) for p in audio_paths] if audio_paths else None
+                texts = [PathLib(p) for p in text_file_paths] if text_file_paths else None
+
+                # Create multimodal message with all attachment types
+                task_input = create_multimodal_message_extended(
+                    text=request,
+                    image_paths=images,
+                    audio_paths=audios,
+                    text_file_paths=texts,
+                    max_size_mb=None  # No hard limit, just warnings
+                )
+
+                logger.info("Created multimodal message")
+
+            except ImageProcessingError as e:
+                print(f"Error processing image: {e}", file=sys.stderr)
+                return
+            except AudioProcessingError as e:
+                print(f"Error processing audio: {e}", file=sys.stderr)
+                return
+            except TextFileProcessingError as e:
+                print(f"Error processing text file: {e}", file=sys.stderr)
+                return
+            except Exception as e:
+                print(f"Error processing attachments: {e}", file=sys.stderr)
+                logger.exception("Unexpected error in multimodal processing")
+                return
+
         # Subscribe to status events if enabled
         status_queue = None
         status_task = None
@@ -280,7 +344,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         # Execute the request
         logger.info("Executing request...")
         try:
-            result = await run_agent_request(agent, request, actual_session_id, llm_override, llm_profile_info)
+            result = await run_agent_request(agent, task_input, actual_session_id, llm_override, llm_profile_info)
             # Check if agent was cancelled and print message
             if result.get("cancelled", False):
                 msg = "\n✋ Cancelled by user"
@@ -456,6 +520,30 @@ Examples:
         help="Title for the new session (auto-generated from request if not provided)"
     )
 
+    parser.add_argument(
+        "--images", "--attach",
+        dest="images",
+        nargs="+",
+        metavar="PATH",
+        help="Path(s) to image file(s) to attach to the request"
+    )
+
+    parser.add_argument(
+        "--audio",
+        dest="audio",
+        nargs="+",
+        metavar="PATH",
+        help="Path(s) to audio file(s) to attach to the request (mp3, wav, ogg, etc.)"
+    )
+
+    parser.add_argument(
+        "--text", "--files",
+        dest="text_files",
+        nargs="+",
+        metavar="PATH",
+        help="Path(s) to text file(s) to attach to the request (txt, md, py, json, etc.)"
+    )
+
     args = parser.parse_args()
 
     # Validate that either --list-sessions or request is provided
@@ -492,7 +580,10 @@ Examples:
             session_id=getattr(args, "session_id", None),
             session_user=getattr(args, "session_user", "cli_user"),
             list_sessions=getattr(args, "list_sessions", False),
-            session_title=getattr(args, "session_title", None)
+            session_title=getattr(args, "session_title", None),
+            image_paths=getattr(args, "images", None),
+            audio_paths=getattr(args, "audio", None),
+            text_file_paths=getattr(args, "text_files", None)
         ))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
