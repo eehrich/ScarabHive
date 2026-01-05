@@ -223,6 +223,9 @@ async def get_session(
             formatting_agent = None
 
             # Try to get the specific agent from the session
+            # IMPORTANT: Do NOT fallback to default_agent if session agent not found!
+            # Different agents have different hook configurations (e.g., markdown_formatter enabled/disabled).
+            # Using a different agent's hooks would apply wrong formatting settings.
             if session_agent_name and mcp_registry:
                 try:
                     from agent_system.servers.agent.server import Agent as _Agent
@@ -230,17 +233,13 @@ async def get_session(
                     if isinstance(session_agent, _Agent):
                         formatting_agent = session_agent
                     else:
-                        logger.warning(f"Session agent '{session_agent_name}' is not an Agent instance, using default")
+                        logger.debug(f"Session agent '{session_agent_name}' is not an Agent instance, skipping formatting")
                 except KeyError:
-                    logger.warning(f"Session agent '{session_agent_name}' not found in registry, using default")
+                    logger.debug(f"Session agent '{session_agent_name}' not found in registry, skipping formatting")
                 except Exception as e:
-                    logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, using default")
+                    logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, skipping formatting")
 
-            # Fallback to default agent if session agent not available
-            if not formatting_agent:
-                formatting_agent = default_agent
-
-            # Format messages using the correct agent's hooks
+            # Only format if we found the exact session agent (no fallback to avoid wrong hook settings)
             if formatting_agent:
                 try:
                     # CRITICAL: Create a COPY of messages for formatting to avoid modifying stored session
@@ -308,6 +307,9 @@ async def get_session_messages(
             formatting_agent = None
 
             # Try to get the specific agent from the session
+            # IMPORTANT: Do NOT fallback to default_agent if session agent not found!
+            # Different agents have different hook configurations (e.g., markdown_formatter enabled/disabled).
+            # Using a different agent's hooks would apply wrong formatting settings.
             if session_agent_name and mcp_registry:
                 try:
                     from agent_system.servers.agent.server import Agent as _Agent
@@ -315,17 +317,13 @@ async def get_session_messages(
                     if isinstance(session_agent, _Agent):
                         formatting_agent = session_agent
                     else:
-                        logger.warning(f"Session agent '{session_agent_name}' is not an Agent instance, using default")
+                        logger.debug(f"Session agent '{session_agent_name}' is not an Agent instance, skipping formatting")
                 except KeyError:
-                    logger.warning(f"Session agent '{session_agent_name}' not found in registry, using default")
+                    logger.debug(f"Session agent '{session_agent_name}' not found in registry, skipping formatting")
                 except Exception as e:
-                    logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, using default")
+                    logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, skipping formatting")
 
-            # Fallback to default agent if session agent not available
-            if not formatting_agent:
-                formatting_agent = default_agent
-
-            # Format messages using the correct agent's hooks
+            # Only format if we found the exact session agent (no fallback to avoid wrong hook settings)
             if formatting_agent:
                 try:
                     # CRITICAL: Create a COPY of messages for formatting to avoid modifying stored session

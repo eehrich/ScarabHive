@@ -33,6 +33,12 @@ export class SessionManager {
     // Restore last session from sessionStorage (tab-specific)
     // Delay slightly to ensure chat_module event listeners are registered
     setTimeout(async () => {
+      // Don't auto-restore if a request is already active (user started new request quickly)
+      if (this.isRequestActive()) {
+        console.log('[SessionManager] Skipping auto-restore - request is active');
+        return;
+      }
+      
       const lastSessionId = sessionStorage.getItem('lastSessionId');
       if (lastSessionId && this.findSessionInHierarchy(lastSessionId)) {
         // Load the session messages into the chat

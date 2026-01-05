@@ -1360,6 +1360,13 @@
   window.addEventListener('session:loaded', (event) => {
     const { session, readOnly, reason } = event.detail;
     
+    // CRITICAL: Don't override chat if an SSE request is currently streaming!
+    // This prevents race condition where session restore overwrites live streaming output.
+    if (currentEventSource) {
+      console.warn('[session:loaded] Ignoring session load - SSE stream is active');
+      return;
+    }
+    
     if (session && session.messages) {
       // Clear current chat
       const chatEl = document.getElementById('chat');
