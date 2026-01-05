@@ -466,18 +466,32 @@ class LogViewerWebEndpoints(PluginWebInterface):
 
     async def panel_html(self, request: Request) -> HTMLResponse:
         """Serve the log viewer panel HTML"""
-        return self.templates.TemplateResponse(
+        content = self.templates.TemplateResponse(
             request=request,
             name="panel.html",
             context={"plugin_name": self.name, "timestamp": int(time.time())}
+        ).body.decode()
+        return HTMLResponse(
+            content=content,
+            headers={
+                "X-Frame-Options": "SAMEORIGIN",
+                "Content-Security-Policy": "frame-ancestors 'self'"
+            }
         )
 
     async def panel(self, request: Request) -> HTMLResponse:
         """Serve the log viewer panel HTML (alternate endpoint)"""
-        return self.templates.TemplateResponse(
+        content = self.templates.TemplateResponse(
             request=request,
             name="panel.html",
             context={"plugin_name": self.name, "timestamp": int(time.time())}
+        ).body.decode()
+        return HTMLResponse(
+            content=content,
+            headers={
+                "X-Frame-Options": "SAMEORIGIN",
+                "Content-Security-Policy": "frame-ancestors 'self'"
+            }
         )
 
     async def serve_static(self, request: Request, file_path: str):

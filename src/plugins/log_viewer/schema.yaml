@@ -60,7 +60,7 @@ web_ui:
     title: "Real-time Log Viewer"
     panel_id: "log_viewer"
     endpoint: "/plugins/log_viewer/panel"
-    type: "fetch"  # How to load content: "fetch" or "iframe"
+    type: "iframe"  # How to load content: "fetch" or "iframe"
     description: "View application logs with polling-based updates (avoids infinite logging loops)"
   
   endpoints:

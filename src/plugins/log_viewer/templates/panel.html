@@ -6,9 +6,38 @@
     <title>Log Viewer Panel</title>
     <link rel="stylesheet" href="/plugins/{{ plugin_name }}/static/log_viewer.css?v={{ timestamp }}">
     <style>
-        html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-        body { background: #1e1e1e; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; padding: 20px; box-sizing: border-box; }
-        .log-viewer-wrapper { border: 1px solid #3e3e42; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); height: 100%; }
+        /* iframe-specific overrides for full-height layout */
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            background: #1e1e1e;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        .log-viewer-wrapper {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .log-viewer-container {
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .log-container {
+            height: 100%;
+            max-height: none !important;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
     </style>
 </head>
 <body>
@@ -64,17 +93,6 @@
 
  <script src="/plugins/{{ plugin_name }}/static/log_viewer_module.js?v={{ timestamp }}"></script>
  <script>
-    // Prevent parent page scroll when scrolling in this panel
-    document.addEventListener('wheel', function(e) {
-        const scrollable = document.scrollingElement || document.documentElement;
-        const atTop = scrollable.scrollTop === 0;
-        const atBottom = scrollable.scrollHeight - scrollable.scrollTop === scrollable.clientHeight;
-        
-        if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-            e.preventDefault();
-        }
-    }, { passive: false });
-
     // Auto-initialize when loaded in plugin system (supports Shadow DOM)
     (function() {
         const currentRoot = document.currentScript ? document.currentScript.getRootNode() : document;
