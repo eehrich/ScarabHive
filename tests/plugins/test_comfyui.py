@@ -719,7 +719,8 @@ class TestComfyUIServer:
         assert result["error"] == "Test error"
         mock_status.error.assert_called_once()
     
-    def test_inject_value(
+    @pytest.mark.asyncio
+    async def test_inject_value(
         self,
         mock_system_config: MagicMock,
         mock_mcp_config: MagicMock,
@@ -742,7 +743,8 @@ class TestComfyUIServer:
         
         assert workflow["3"]["inputs"]["text"] == "modified"
     
-    def test_get_web_router(
+    @pytest.mark.asyncio
+    async def test_get_web_router(
         self,
         mock_system_config: MagicMock,
         mock_mcp_config: MagicMock,
@@ -755,9 +757,9 @@ class TestComfyUIServer:
         
         router = server.get_web_router()
         
-        # Check that routes are registered
+        # Check that routes are registered (with plugin prefix)
         routes = [r.path for r in router.routes]
-        assert "/" in routes
-        assert "/jobs" in routes
-        assert "/workflows" in routes
-        assert "/stats" in routes
+        assert "/plugins/comfyui/" in routes
+        assert "/plugins/comfyui/jobs" in routes
+        assert "/plugins/comfyui/workflows" in routes
+        assert "/plugins/comfyui/stats" in routes

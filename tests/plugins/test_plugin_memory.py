@@ -323,8 +323,20 @@ async def test_list_memories_sorted_by_importance(server: MemoryServer, mock_con
         sort_order="desc",
     )
     
-    assert result["memories"][0]["importance"] == 9
-    assert result["memories"][1]["importance"] == 3
+    # Find the memories we just created by title
+    memories = result["memories"]
+    high_importance = next((m for m in memories if m["title"] == "High Importance"), None)
+    low_importance = next((m for m in memories if m["title"] == "Low Importance"), None)
+    
+    assert high_importance is not None, "High Importance memory not found"
+    assert low_importance is not None, "Low Importance memory not found"
+    assert high_importance["importance"] == 9
+    assert low_importance["importance"] == 3
+    
+    # Verify sorting: high importance should come before low importance in desc order
+    high_idx = memories.index(high_importance)
+    low_idx = memories.index(low_importance)
+    assert high_idx < low_idx, "High importance should appear before low importance in descending sort"
 
 
 @pytest.mark.asyncio
