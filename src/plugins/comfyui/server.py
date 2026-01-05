@@ -384,10 +384,12 @@ class ComfyUIServer(SchemaBasedMCPServer):
             "images": [],
             "audio": [],
             "video": [],
+            "text": [],
             "other": []
         }
         
         for node_id, node_output in job_data.get("outputs", {}).items():
+            # Process media outputs (images, audio, video, gifs)
             for output_type in ["images", "audio", "video", "gifs"]:
                 if output_type in node_output:
                     for file_info in node_output[output_type]:
@@ -423,6 +425,55 @@ class ComfyUIServer(SchemaBasedMCPServer):
                             outputs["video"].append(file_record)
                         else:
                             outputs["other"].append(file_record)
+            
+            # Process text outputs (from ShowText, SaveText, etc.)
+            # Text can appear as 'text' list or direct string values in outputs
+            if "text" in node_output:
+                text_data = node_output["text"]
+                # Handle both list and single value formats
+                if isinstance(text_data, list):
+                    for idx, text_item in enumerate(text_data):
+                        text_content = text_item if isinstance(text_item, str) else str(text_item)
+                        text_record: dict[str, Any] = {
+                            "content": text_content,
+                            "node_id": node_id,
+                            "index": idx
+                        }
+                        
+                        if download:
+                            # Save text to file
+                            try:
+                                text_filename = f"{output_prefix}_text_{node_id}_{idx}.txt"
+                                local_path = self.output_dir / text_filename
+                                local_path.parent.mkdir(parents=True, exist_ok=True)
+                                local_path.write_text(text_content, encoding="utf-8")
+                                text_record["local_path"] = str(local_path)
+                                text_record["filename"] = text_filename
+                            except Exception as e:
+                                logger.error("Failed to save text output: %s", e)
+                                text_record["save_error"] = str(e)
+                        
+                        outputs["text"].append(text_record)
+                elif isinstance(text_data, str):
+                    text_record = {
+                        "content": text_data,
+                        "node_id": node_id,
+                        "index": 0
+                    }
+                    
+                    if download:
+                        try:
+                            text_filename = f"{output_prefix}_text_{node_id}.txt"
+                            local_path = self.output_dir / text_filename
+                            local_path.parent.mkdir(parents=True, exist_ok=True)
+                            local_path.write_text(text_data, encoding="utf-8")
+                            text_record["local_path"] = str(local_path)
+                            text_record["filename"] = text_filename
+                        except Exception as e:
+                            logger.error("Failed to save text output: %s", e)
+                            text_record["save_error"] = str(e)
+                    
+                    outputs["text"].append(text_record)
         
         # Update tracker
         self.job_tracker.update_status(prompt_id, "completed")
@@ -457,8 +508,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         """Build multimodal content list from outputs for LLM analysis.
         
         Args:
-            outputs: Dict with keys 'images', 'audio', 'video', 'other', each containing
-                    file records with 'local_path', 'filename', etc.
+            outputs: Dict with keys 'images', 'audio', 'video', 'text', 'other', each containing
+                    file records with 'local_path', 'filename', 'content' (for text), etc.
         
         Returns:
             List of multimodal content items: [{type, path, mime_type, description}, ...]
@@ -485,6 +536,23 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         "mime_type": mime_type,
                         "description": f"Generated {content_type}: {filename}"
                     })
+        
+        # Add text outputs - include content directly for LLM
+        for text_record in outputs.get("text", []):
+            local_path = text_record.get("local_path")
+            content = text_record.get("content", "")
+            filename = text_record.get("filename", f"text_{text_record.get('node_id', 'unknown')}.txt")
+            
+            text_item: dict[str, Any] = {
+                "type": "text",
+                "mime_type": "text/plain",
+                "description": f"Generated text: {filename}",
+                "content": content,  # Include text content directly
+            }
+            if local_path:
+                text_item["path"] = local_path
+            
+            multimodal.append(text_item)
         
         return multimodal
     
@@ -577,7 +645,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 content_type = {
                     "images": "image",
                     "audio": "audio",
-                    "video": "video"
+                    "video": "video",
+                    "text": "text"
                 }.get(output_type)
                 
                 if not content_type:
@@ -587,12 +656,35 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     path_obj = Path(path)
                     if path_obj.exists():
                         mime_type = self._guess_mime_type(path_obj.name, content_type)
-                        multimodal.append({
-                            "type": content_type,
-                            "path": str(path_obj),
-                            "mime_type": mime_type,
-                            "description": f"Generated {content_type} from job {prompt_id}: {path_obj.name}"
-                        })
+                        
+                        # For text files, also load content directly
+                        if content_type == "text":
+                            try:
+                                text_content = path_obj.read_text(encoding="utf-8")
+                                multimodal.append({
+                                    "type": content_type,
+                                    "path": str(path_obj),
+                                    "mime_type": "text/plain",
+                                    "content": text_content,
+                                    "description": f"Generated text from job {prompt_id}: {path_obj.name}"
+                                })
+                            except Exception as e:
+                                logger.warning("Failed to read text file %s: %s", path_obj, e)
+                                multimodal.append({
+                                    "type": content_type,
+                                    "path": str(path_obj),
+                                    "mime_type": "text/plain",
+                                    "description": f"Generated text from job {prompt_id}: {path_obj.name}",
+                                    "read_error": str(e)
+                                })
+                        else:
+                            multimodal.append({
+                                "type": content_type,
+                                "path": str(path_obj),
+                                "mime_type": mime_type,
+                                "description": f"Generated {content_type} from job {prompt_id}: {path_obj.name}"
+                            })
+                        
                         loaded_files.append({
                             "path": str(path_obj),
                             "filename": path_obj.name,
@@ -627,12 +719,34 @@ class ComfyUIServer(SchemaBasedMCPServer):
             content_type = self._get_content_type_from_path(path_obj)
             mime_type = self._guess_mime_type(path_obj.name, content_type)
             
-            multimodal.append({
-                "type": content_type,
-                "path": str(path_obj),
-                "mime_type": mime_type,
-                "description": f"Loaded {content_type}: {path_obj.name}"
-            })
+            # For text files, also load content directly
+            if content_type == "text":
+                try:
+                    text_content = path_obj.read_text(encoding="utf-8")
+                    multimodal.append({
+                        "type": content_type,
+                        "path": str(path_obj),
+                        "mime_type": "text/plain",
+                        "content": text_content,
+                        "description": f"Loaded text: {path_obj.name}"
+                    })
+                except Exception as e:
+                    logger.warning("Failed to read text file %s: %s", path_obj, e)
+                    multimodal.append({
+                        "type": content_type,
+                        "path": str(path_obj),
+                        "mime_type": "text/plain",
+                        "description": f"Loaded text: {path_obj.name}",
+                        "read_error": str(e)
+                    })
+            else:
+                multimodal.append({
+                    "type": content_type,
+                    "path": str(path_obj),
+                    "mime_type": mime_type,
+                    "description": f"Loaded {content_type}: {path_obj.name}"
+                })
+            
             loaded_files.append({
                 "path": str(path_obj),
                 "filename": path_obj.name,
@@ -644,7 +758,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
             return {"error": "No valid media files found to load"}
         
         if status:
-            await status.end(f"Loaded {len(multimodal)} media file(s) for analysis")
+            await status.end(f"Loaded {len(multimodal)} file(s) for analysis")
         
         return {
             "status": "success",
@@ -661,6 +775,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
         audio_exts = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
         video_exts = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+        text_exts = {".txt", ".md", ".json", ".yaml", ".yml", ".xml", ".csv", ".log", ".html", ".htm"}
         
         if suffix in image_exts:
             return "image"
@@ -668,6 +783,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
             return "audio"
         elif suffix in video_exts:
             return "video"
+        elif suffix in text_exts:
+            return "text"
         else:
             return "other"
     

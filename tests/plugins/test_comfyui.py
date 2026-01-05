@@ -763,3 +763,267 @@ class TestComfyUIServer:
         assert "/plugins/comfyui/jobs" in routes
         assert "/plugins/comfyui/workflows" in routes
         assert "/plugins/comfyui/stats" in routes
+    
+    @pytest.mark.asyncio
+    async def test_workflow_result_with_text_outputs(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path
+    ) -> None:
+        """Test retrieving results with text outputs from workflow."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Register a job
+        server.job_tracker.register_job(
+            "test-text-id",
+            "test_workflow",
+            "Test",
+            {},
+            "test"
+        )
+        
+        # Mock history with text output
+        server.client.get_history = AsyncMock(return_value={
+            "test-text-id": {
+                "outputs": {
+                    "node1": {
+                        "text": ["This is generated text content"]
+                    },
+                    "node2": {
+                        "images": [{"filename": "test.png", "subfolder": "", "type": "output"}]
+                    }
+                },
+                "status": {"status_str": "success"}
+            }
+        })
+        
+        # Mock file download for image
+        server.client.get_file = AsyncMock(return_value=b"fake image data")
+        
+        result = await server.workflow({
+            "operation": "result",
+            "prompt_id": "test-text-id",
+            "download": True,
+            "include_content": True,
+            "_status": None
+        })
+        
+        assert result["status"] == "completed"
+        assert "text" in result["outputs"]
+        assert len(result["outputs"]["text"]) == 1
+        assert result["outputs"]["text"][0]["content"] == "This is generated text content"
+        assert "local_path" in result["outputs"]["text"][0]
+        
+        # Check multimodal content includes text
+        assert "_multimodal_content" in result
+        text_items = [m for m in result["_multimodal_content"] if m["type"] == "text"]
+        assert len(text_items) == 1
+        assert text_items[0]["content"] == "This is generated text content"
+        assert text_items[0]["mime_type"] == "text/plain"
+    
+    @pytest.mark.asyncio
+    async def test_workflow_result_with_multiple_text_outputs(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path
+    ) -> None:
+        """Test retrieving results with multiple text outputs."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Register a job
+        server.job_tracker.register_job(
+            "test-multi-text",
+            "test_workflow",
+            "Test",
+            {},
+            "test"
+        )
+        
+        # Mock history with multiple text outputs
+        server.client.get_history = AsyncMock(return_value={
+            "test-multi-text": {
+                "outputs": {
+                    "node1": {
+                        "text": ["First text output", "Second text output"]
+                    }
+                },
+                "status": {"status_str": "success"}
+            }
+        })
+        
+        result = await server.workflow({
+            "operation": "result",
+            "prompt_id": "test-multi-text",
+            "download": True,
+            "include_content": False,
+            "_status": None
+        })
+        
+        assert result["status"] == "completed"
+        assert len(result["outputs"]["text"]) == 2
+        assert result["outputs"]["text"][0]["content"] == "First text output"
+        assert result["outputs"]["text"][1]["content"] == "Second text output"
+    
+    @pytest.mark.asyncio
+    async def test_load_text_file(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path,
+        tmp_path: Path
+    ) -> None:
+        """Test loading a text file for LLM analysis."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Create a test text file in output directory
+        text_file = Path(mock_mcp_config.output_dir) / "test_output.txt"
+        Path(mock_mcp_config.output_dir).mkdir(parents=True, exist_ok=True)
+        text_file.write_text("This is test text content for LLM analysis", encoding="utf-8")
+        
+        result = await server.workflow({
+            "operation": "load",
+            "filename": "test_output.txt",
+            "_status": None
+        })
+        
+        assert result["status"] == "success"
+        assert len(result["loaded_files"]) == 1
+        assert result["loaded_files"][0]["type"] == "text"
+        
+        # Check multimodal content includes text with content
+        assert "_multimodal_content" in result
+        assert len(result["_multimodal_content"]) == 1
+        assert result["_multimodal_content"][0]["type"] == "text"
+        assert result["_multimodal_content"][0]["content"] == "This is test text content for LLM analysis"
+    
+    @pytest.mark.asyncio
+    async def test_load_text_by_prompt_id(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path,
+        tmp_path: Path
+    ) -> None:
+        """Test loading text outputs by prompt_id."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Create text file
+        output_dir = Path(mock_mcp_config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        text_file = output_dir / "test_text_node1_0.txt"
+        text_file.write_text("Generated text from workflow", encoding="utf-8")
+        
+        # Register job with text outputs
+        server.job_tracker.register_job(
+            "test-load-text",
+            "test_workflow",
+            "Test",
+            {},
+            "test"
+        )
+        server.job_tracker.set_outputs("test-load-text", {
+            "text": [str(text_file)]
+        })
+        
+        result = await server.workflow({
+            "operation": "load",
+            "prompt_id": "test-load-text",
+            "_status": None
+        })
+        
+        assert result["status"] == "success"
+        assert len(result["loaded_files"]) == 1
+        assert result["loaded_files"][0]["type"] == "text"
+        
+        # Content should be loaded
+        text_content = [m for m in result["_multimodal_content"] if m["type"] == "text"]
+        assert len(text_content) == 1
+        assert text_content[0]["content"] == "Generated text from workflow"
+    
+    @pytest.mark.asyncio
+    async def test_get_content_type_from_path(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path
+    ) -> None:
+        """Test content type detection for various file extensions."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Test text extensions
+        assert server._get_content_type_from_path(Path("test.txt")) == "text"
+        assert server._get_content_type_from_path(Path("test.md")) == "text"
+        assert server._get_content_type_from_path(Path("test.json")) == "text"
+        assert server._get_content_type_from_path(Path("test.yaml")) == "text"
+        assert server._get_content_type_from_path(Path("test.yml")) == "text"
+        assert server._get_content_type_from_path(Path("test.xml")) == "text"
+        assert server._get_content_type_from_path(Path("test.csv")) == "text"
+        assert server._get_content_type_from_path(Path("test.log")) == "text"
+        assert server._get_content_type_from_path(Path("test.html")) == "text"
+        
+        # Test media extensions still work
+        assert server._get_content_type_from_path(Path("test.png")) == "image"
+        assert server._get_content_type_from_path(Path("test.mp3")) == "audio"
+        assert server._get_content_type_from_path(Path("test.mp4")) == "video"
+        assert server._get_content_type_from_path(Path("test.bin")) == "other"
+    
+    @pytest.mark.asyncio
+    async def test_build_multimodal_content_with_text(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path,
+        tmp_path: Path
+    ) -> None:
+        """Test _build_multimodal_content includes text properly."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Create test file
+        text_path = tmp_path / "test_text.txt"
+        text_path.write_text("Test content")
+        
+        outputs = {
+            "images": [{"filename": "test.png", "local_path": str(tmp_path / "test.png")}],
+            "audio": [],
+            "video": [],
+            "text": [
+                {
+                    "content": "Generated story text",
+                    "local_path": str(text_path),
+                    "filename": "test_text.txt",
+                    "node_id": "node1"
+                }
+            ],
+            "other": []
+        }
+        
+        # Create fake image file for the test
+        (tmp_path / "test.png").write_bytes(b"fake png")
+        
+        multimodal = server._build_multimodal_content(outputs)
+        
+        # Should have both image and text
+        types = [m["type"] for m in multimodal]
+        assert "image" in types
+        assert "text" in types
+        
+        # Text should have content directly
+        text_items = [m for m in multimodal if m["type"] == "text"]
+        assert len(text_items) == 1
+        assert text_items[0]["content"] == "Generated story text"
+        assert text_items[0]["mime_type"] == "text/plain"
+        assert text_items[0]["path"] == str(text_path)

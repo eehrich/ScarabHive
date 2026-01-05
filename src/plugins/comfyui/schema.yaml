@@ -6,7 +6,7 @@ tools:
     function:
       name: "{{ name }}_workflow"
       description: >
-        Execute and manage ComfyUI workflows for generating images, audio, video, and other media.
+        Execute and manage ComfyUI workflows for generating images, audio, video, text, and other media.
         Use operation='list' to see available workflows, then 'execute' to run them.
         Track progress with 'status' and retrieve outputs with 'result'.
       parameters:
@@ -75,7 +75,7 @@ tools:
             type: string
             description: >
               Filter workflows by category (for operation='list').
-              Common categories: image_generation, audio, video, tts
+              Common categories: image_generation, audio, video, tts, text
           
           download:
             type: boolean
@@ -89,8 +89,9 @@ tools:
             default: false
             description: >
               For operation='result' and 'wait_for_completion': whether to include the generated
-              media content in the response for LLM analysis. When true, images/audio/video
+              media/text content in the response for LLM analysis. When true, images/audio/video/text
               will be attached so the LLM can see and analyze the generated content.
+              Text outputs include content directly in the response for immediate use.
               Useful for workflows where you want the LLM to describe or evaluate the output.
           
           output_prefix:
