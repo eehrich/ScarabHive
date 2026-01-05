@@ -142,7 +142,11 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         self.vector_store = VectorStore(persist_path=str(self.vector_store_path))
 
         # In-memory cache for metadata (session_id -> MemoryCollection)
+        # Limited to prevent memory leaks
         self._collections_cache: Dict[str, MemoryCollection] = {}
+        self._cache_access_times: Dict[str, float] = {}  # session_id -> last_access_time
+        self._max_cache_size = 100  # Maximum cached collections
+        self._cache_ttl = 1800.0  # 30 minutes TTL
 
         # Memory ID counters per session (session_id -> int)
         self._memory_counters: Dict[str, int] = {}
@@ -294,7 +298,11 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
     async def _load_collection(self, session_id: str) -> MemoryCollection:
         """Load memory collection from JSON metadata file"""
+        import time as _time
+        
+        # Check cache first
         if session_id in self._collections_cache:
+            self._cache_access_times[session_id] = _time.time()
             return self._collections_cache[session_id]
 
         metadata_path = self._get_metadata_path(session_id)
@@ -302,18 +310,57 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         if not metadata_path.exists():
             # Create new collection
             collection = MemoryCollection(session_id=session_id)
-            self._collections_cache[session_id] = collection
+            self._add_to_cache(session_id, collection)
             return collection
 
         try:
             # Run sync file I/O in thread pool
             collection = await asyncio.to_thread(self._load_collection_sync, session_id)
-            self._collections_cache[session_id] = collection
+            self._add_to_cache(session_id, collection)
             return collection
 
         except Exception as e:
             logger.error(f"Failed to load collection {session_id}: {e}")
             raise StorageError(f"Failed to load memories: {e}")
+    
+    def _add_to_cache(self, session_id: str, collection: MemoryCollection) -> None:
+        """Add collection to cache with LRU eviction."""
+        import time as _time
+        
+        # Evict old entries if at capacity
+        self._cleanup_cache()
+        
+        self._collections_cache[session_id] = collection
+        self._cache_access_times[session_id] = _time.time()
+    
+    def _cleanup_cache(self) -> None:
+        """Clean up old cache entries using TTL and LRU."""
+        import time as _time
+        now = _time.time()
+        
+        # Remove expired entries (older than TTL)
+        expired = [
+            sid for sid, ts in self._cache_access_times.items()
+            if now - ts > self._cache_ttl
+        ]
+        for sid in expired:
+            self._collections_cache.pop(sid, None)
+            self._cache_access_times.pop(sid, None)
+            self._memory_counters.pop(sid, None)
+        
+        if expired:
+            logger.debug(f"MemoryServer: Cleaned up {len(expired)} expired cache entries")
+        
+        # LRU eviction if still over limit
+        while len(self._collections_cache) >= self._max_cache_size:
+            if not self._cache_access_times:
+                break
+            # Find least recently used
+            oldest = min(self._cache_access_times, key=self._cache_access_times.get)  # type: ignore[arg-type]
+            self._collections_cache.pop(oldest, None)
+            self._cache_access_times.pop(oldest, None)
+            self._memory_counters.pop(oldest, None)
+            logger.debug(f"MemoryServer: Evicted cache entry {oldest} (LRU)")
 
     def _save_collection_sync(self, collection: MemoryCollection) -> None:
         """Save memory collection to JSON - sync version for thread pool."""
@@ -323,6 +370,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
     async def _save_collection(self, collection: MemoryCollection):
         """Save memory collection to JSON metadata file"""
+        import time as _time
+        
         try:
             # Update timestamp and count
             collection.updated_at = datetime.now(UTC)
@@ -331,8 +380,9 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             # Run sync file I/O in thread pool
             await asyncio.to_thread(self._save_collection_sync, collection)
 
-            # Update cache
+            # Update cache with access time
             self._collections_cache[collection.session_id] = collection
+            self._cache_access_times[collection.session_id] = _time.time()
 
             logger.debug(f"Saved collection {collection.session_id} with {collection.total_memories} memories")
 

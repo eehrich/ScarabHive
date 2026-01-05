@@ -421,12 +421,30 @@ class SessionTracker:
         Returns:
             True if session was deleted, False if it didn't exist
         """
+        deleted = False
         if session_id in self._sessions:
             del self._sessions[session_id]
-            # Also clear any pending compacted messages
-            self._compacted_messages.pop(session_id, None)
-            return True
-        return False
+            deleted = True
+        
+        # Also clear any pending compacted messages
+        self._compacted_messages.pop(session_id, None)
+        
+        # Clear metadata to prevent memory leak
+        self._session_metadata.pop(session_id, None)
+        
+        # Clear session locks to prevent memory leak
+        if session_id in self._session_lock_owners:
+            del self._session_lock_owners[session_id]
+        if session_id in self._session_locks:
+            lock = self._session_locks.pop(session_id)
+            # Release lock if still held (defensive)
+            if lock.locked():
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass  # Already released
+        
+        return deleted
 
     def clear(self) -> None:
         """
@@ -437,3 +455,6 @@ class SessionTracker:
         self._request_to_session.clear()
         self._appended_messages.clear()
         self._compacted_messages.clear()
+        self._session_metadata.clear()
+        self._session_locks.clear()
+        self._session_lock_owners.clear()

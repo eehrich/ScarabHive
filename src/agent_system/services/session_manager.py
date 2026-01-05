@@ -61,6 +61,7 @@ class SessionManager:
         # In-memory cache: {session_id: (session_data, timestamp)}
         self._cache: Dict[str, tuple[Dict[str, Any], float]] = {}
         self._cache_ttl = 300  # 5 minutes
+        self._max_cache_size = 200  # Maximum cached sessions to prevent memory leak
         self._lock = asyncio.Lock()
         
         logger.info("SessionManager initialized with storage_path=%s", self.storage_path)
@@ -374,11 +375,34 @@ class SessionManager:
             
             await self._atomic_write_async(path, session_data)
             
-            # Cache the new session
+            # Cache the new session (with cleanup if needed)
+            self._cleanup_cache()
             self._cache[sid] = (session_data, time.time())
             
             logger.info("Created session %s for user %s", sid, safe_user_id)
             return session_data
+    
+    def _cleanup_cache(self) -> None:
+        """Clean up cache: remove expired entries and apply LRU eviction."""
+        now = time.time()
+        
+        # Remove expired entries
+        expired = [
+            sid for sid, (_, ts) in self._cache.items()
+            if now - ts > self._cache_ttl
+        ]
+        for sid in expired:
+            del self._cache[sid]
+        
+        if expired:
+            logger.debug(f"SessionManager: Cleaned up {len(expired)} expired cache entries")
+        
+        # LRU eviction if still over limit
+        while len(self._cache) >= self._max_cache_size:
+            # Find oldest entry
+            oldest = min(self._cache.keys(), key=lambda k: self._cache[k][1])
+            del self._cache[oldest]
+            logger.debug(f"SessionManager: Evicted cache entry {oldest} (LRU)")
 
     async def load_session(self, user_id: str, session_id: str, bypass_cache: bool = False) -> Dict[str, Any]:
         """Load a session.
@@ -433,7 +457,8 @@ class SessionManager:
                 )
                 raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
             
-            # Update cache
+            # Update cache (with cleanup if needed)
+            self._cleanup_cache()
             self._cache[session_id] = (session_data, time.time())
             
             logger.debug("Session %s loaded from disk", session_id)
@@ -633,6 +658,7 @@ class SessionManager:
         """
         return {
             "size": len(self._cache),
+            "max_size": self._max_cache_size,
             "ttl_seconds": self._cache_ttl,
             "entries": list(self._cache.keys())
         }

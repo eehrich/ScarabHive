@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 import re
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -95,15 +96,32 @@ class TreeNode:
 
 
 class StatusTreeBuilder:
-    """Builds hierarchical trees from status events with request_id patterns."""
+    """Builds hierarchical trees from status events with request_id patterns.
+    
+    Memory management:
+    - Trees are automatically cleaned up after max_age_seconds (default: 1 hour)
+    - Maximum number of trees is limited by max_trees (default: 500)
+    - Cleanup runs automatically on add_status_event() calls
+    """
     
     # Regex to parse request_id suffixes: base_id_nnn_nnn_...
     REQUEST_ID_PATTERN = re.compile(r'^([^_]+)(?:_(\d{3}))*$')
     SUFFIX_PATTERN = re.compile(r'_(\d{3})')
     
-    def __init__(self):
+    def __init__(self, max_trees: int = 500, max_age_seconds: float = 3600.0):
+        """Initialize the tree builder with memory limits.
+        
+        Args:
+            max_trees: Maximum number of trees to keep (LRU eviction when exceeded)
+            max_age_seconds: Maximum age of trees in seconds (default: 1 hour)
+        """
         self.trees: Dict[str, TreeNode] = {}  # base_id -> root_node
         self.node_index: Dict[str, TreeNode] = {}  # request_id -> node (for fast lookup)
+        self._timestamps: Dict[str, float] = {}  # base_id -> creation_time
+        self._max_trees = max_trees
+        self._max_age = max_age_seconds
+        self._last_cleanup = time.time()
+        self._cleanup_interval = 60.0  # Run cleanup at most every 60 seconds
     
     def parse_request_id(self, request_id: str) -> tuple[str, List[str]]:
         """
@@ -162,7 +180,11 @@ class StatusTreeBuilder:
         Add a status event to the tree structure.
         
         Creates nodes as needed and maintains parent-child relationships.
+        Automatically cleans up old trees to prevent memory leaks.
         """
+        # Periodic cleanup to prevent memory leaks
+        self._maybe_cleanup()
+        
         if not request_id:
             logger.warning("Empty request_id provided to tree builder")
             return TreeNode(request_id="unknown", server=server, message=message)
@@ -181,6 +203,12 @@ class StatusTreeBuilder:
                 node.sequence = sequence
             if meta:
                 node.meta = meta
+            
+            # Update tree timestamp on any activity (keeps tree alive)
+            base_id, _ = self.parse_request_id(request_id)
+            if base_id in self._timestamps:
+                self._timestamps[base_id] = time.time()
+            
             return node
         
         # Create new node
@@ -204,6 +232,7 @@ class StatusTreeBuilder:
         # Handle root node
         if depth == 0:
             self.trees[base_id] = node
+            self._timestamps[base_id] = time.time()  # Track creation time
             return node
         
         # Find or create parent node
@@ -215,8 +244,98 @@ class StatusTreeBuilder:
             # Orphaned node - create as separate tree
             logger.warning(f"Orphaned node {request_id} - creating separate tree")
             self.trees[request_id] = node
+            self._timestamps[request_id] = time.time()  # Track creation time
         
         return node
+    
+    def _maybe_cleanup(self) -> None:
+        """Run cleanup if enough time has passed since last cleanup."""
+        now = time.time()
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+        
+        self._last_cleanup = now
+        self._cleanup_old_trees()
+    
+    def _cleanup_old_trees(self) -> None:
+        """Remove old trees to prevent memory leak.
+        
+        Only removes trees that are:
+        1. Completed (root node has phase 'end' or 'error') AND older than 5 minutes
+        2. OR older than max_age (regardless of completion status - fallback for orphaned trees)
+        """
+        now = time.time()
+        completed_min_age = 300.0  # 5 minutes - keep completed trees briefly for late events
+        
+        to_remove = []
+        for base_id, ts in self._timestamps.items():
+            age = now - ts
+            tree = self.trees.get(base_id)
+            
+            if tree is None:
+                # Orphaned timestamp entry
+                to_remove.append(base_id)
+                continue
+            
+            # Check if tree is completed (root node has end/error phase)
+            is_completed = tree.phase in ("end", "error")
+            
+            if is_completed and age > completed_min_age:
+                # Completed tree older than 5 minutes - safe to remove
+                to_remove.append(base_id)
+            elif age > self._max_age:
+                # Very old tree (>1h) - remove regardless of status (orphaned/stuck)
+                to_remove.append(base_id)
+        
+        for base_id in to_remove:
+            self._remove_tree(base_id)
+        
+        if to_remove:
+            logger.debug(f"StatusTreeBuilder: Cleaned up {len(to_remove)} trees")
+        
+        # LRU eviction if still over limit (only remove completed trees first)
+        evicted = 0
+        while len(self.trees) > self._max_trees:
+            if not self._timestamps:
+                break
+            
+            # Prefer removing completed trees first
+            completed_trees = [
+                bid for bid in self._timestamps
+                if self.trees.get(bid) and self.trees[bid].phase in ("end", "error")
+            ]
+            
+            if completed_trees:
+                # Remove oldest completed tree
+                oldest = min(completed_trees, key=lambda k: self._timestamps.get(k, 0))
+            else:
+                # No completed trees - remove oldest overall (shouldn't happen often)
+                oldest = min(self._timestamps, key=self._timestamps.get)  # type: ignore[arg-type]
+            
+            self._remove_tree(oldest)
+            evicted += 1
+        
+        if evicted:
+            logger.debug(f"StatusTreeBuilder: Evicted {evicted} trees (LRU, max={self._max_trees})")
+    
+    def _remove_tree(self, base_id: str) -> None:
+        """Remove a tree and all its nodes from the index."""
+        if base_id not in self.trees:
+            return
+        
+        tree = self.trees[base_id]
+        
+        # Remove all nodes in this tree from index
+        nodes_to_remove = [tree.request_id]
+        for node in tree.get_all_descendants():
+            nodes_to_remove.append(node.request_id)
+        
+        for rid in nodes_to_remove:
+            self.node_index.pop(rid, None)
+        
+        # Remove tree and timestamp
+        del self.trees[base_id]
+        self._timestamps.pop(base_id, None)
 
     def _ensure_node_exists(self, request_id: str) -> TreeNode:
         """Ensure a node exists, creating it and its ancestors if needed."""
@@ -243,13 +362,43 @@ class StatusTreeBuilder:
         return {
             "trees": {base_id: tree.to_dict() for base_id, tree in self.trees.items()},
             "node_count": len(self.node_index),
-            "tree_count": len(self.trees)
+            "tree_count": len(self.trees),
+            "max_trees": self._max_trees,
+            "max_age_seconds": self._max_age
         }
 
     def clear(self) -> None:
         """Clear all trees and reset the builder."""
         self.trees.clear()
         self.node_index.clear()
+        self._timestamps.clear()
+    
+    def remove_tree(self, base_id: str) -> bool:
+        """Manually remove a specific tree.
+        
+        Args:
+            base_id: The base request ID of the tree to remove
+            
+        Returns:
+            True if tree was removed, False if it didn't exist
+        """
+        if base_id not in self.trees:
+            return False
+        self._remove_tree(base_id)
+        return True
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get memory statistics for monitoring."""
+        return {
+            "tree_count": len(self.trees),
+            "node_count": len(self.node_index),
+            "max_trees": self._max_trees,
+            "max_age_seconds": self._max_age,
+            "oldest_tree_age": (
+                time.time() - min(self._timestamps.values()) 
+                if self._timestamps else 0
+            )
+        }
 
 
 # Global instance for the application
