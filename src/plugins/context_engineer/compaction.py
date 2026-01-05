@@ -233,11 +233,67 @@ class LayeredCompactionStrategy:
         
         return self._finalize(result)
     
+    async def _compact_multimodal_content(
+        self,
+        content: list,
+        result: CompactionResult
+    ) -> list:
+        """Compact multimodal content by replacing large text_file items with variables.
+        
+        Args:
+            content: Multimodal content list (text, image, text_file, etc.)
+            result: CompactionResult to update tokens_saved/variables_created
+            
+        Returns:
+            Compacted content list with text_file content replaced by $VAR_N references
+        """
+        compacted = []
+        
+        for item in content:
+            if not isinstance(item, dict):
+                compacted.append(item)
+                continue
+                
+            item_type = item.get("type", "")
+            
+            # Only compact text_file items - leave images/audio/video alone
+            if item_type == "text_file":
+                file_content = item.get("content", "")
+                file_name = item.get("name") or "file"
+                token_count = estimate_content_tokens(file_content)
+                
+                if token_count >= self.config.variable_min_size:
+                    # Create variable for file content
+                    var_name, summary = await self.variable_manager.create_variable(
+                        content=file_content,
+                        content_type="file",
+                        source=file_name
+                    )
+                    
+                    if var_name:  # Variable was created
+                        # Replace text_file with text containing variable reference
+                        compacted.append({
+                            "type": "text",
+                            "text": f"[File: {file_name}] → {var_name} [{summary}]"
+                        })
+                        result.variables_created += 1
+                        result.tokens_saved += token_count - estimate_content_tokens(f"{var_name} [{summary}]")
+                        logger.debug(
+                            f"Compacted text_file '{file_name}' ({token_count} tokens) → {var_name}"
+                        )
+                        continue
+                
+            # Keep item as-is (including small text_files)
+            compacted.append(item)
+        
+        return compacted
+    
     async def _apply_layer1(self, result: CompactionResult) -> None:
         """Layer 1: Reversible compaction.
         
         - Store tool outputs with references (auto-archives large results > max_size)
         - Create variables for large content blocks
+        - Compact text_file items in multimodal content
         """
         logger.debug("Applying Layer 1: Reversible compaction")
         
@@ -254,11 +310,11 @@ class LayeredCompactionStrategy:
                 tool_results_seen += 1
                 
                 content = msg.get("content", "")
-                # Handle multimodal content - extract text for token estimation
+                # Handle multimodal content - compact text_file items
                 if isinstance(content, list):
-                    # Multimodal content - skip archival, preserve as-is
-                    # TODO: Support compaction of text_file content within multimodal lists
-                    # For now, we keep multimodal messages intact to avoid breaking references
+                    compacted_content = await self._compact_multimodal_content(content, result)
+                    if compacted_content != content:
+                        messages[i] = {**msg, "content": compacted_content}
                     continue
                 token_count = estimate_content_tokens(content)
                 
@@ -305,6 +361,14 @@ class LayeredCompactionStrategy:
                             result.tokens_saved += (
                                 token_count - estimate_content_tokens(var_ref)
                             )
+            
+            # Process user messages with multimodal content
+            elif msg.get("role") == "user":
+                content = msg.get("content")
+                if content and isinstance(content, list):
+                    compacted_content = await self._compact_multimodal_content(content, result)
+                    if compacted_content != content:
+                        messages[i] = {**msg, "content": compacted_content}
         
         result.final_tokens = self._estimate_messages_tokens(messages)
         logger.debug(

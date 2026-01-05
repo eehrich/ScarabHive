@@ -590,6 +590,113 @@ class TestLayeredCompactionStrategy:
         assert "Context Engineer" in context
         assert "Tool Results" in context or "Core Memory" in context
 
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_text_file(self, strategy_components):
+        """Test that text_file items in multimodal content are compacted."""
+        strategy = strategy_components["strategy"]
+        strategy.config.variable_min_size = 20  # Lower threshold for test
+        
+        # Create large text file content (100 words = ~130 tokens)
+        large_file_content = "line of code " * 100
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Review this code:"},
+                {"type": "text_file", "name": "main.py", "content": large_file_content}
+            ]},
+            {"role": "assistant", "content": "I'll analyze the code."}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=600)
+        
+        # Variable should be created for the text_file
+        assert result.variables_created >= 1
+        assert result.tokens_saved > 0
+        
+        # Check that content was replaced
+        compacted_user = result.modified_messages[0]
+        assert isinstance(compacted_user["content"], list)
+        
+        # The text_file should be replaced with text containing $VAR reference
+        content_items = compacted_user["content"]
+        text_items = [i for i in content_items if i.get("type") == "text"]
+        
+        var_ref_found = any("$VAR" in str(i.get("text", "")) for i in text_items)
+        assert var_ref_found, f"No $VAR reference found in: {content_items}"
+
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_preserves_images(self, strategy_components):
+        """Test that image content is preserved during multimodal compaction."""
+        strategy = strategy_components["strategy"]
+        strategy.config.variable_min_size = 20  # Lower threshold for test
+        
+        # Create multimodal message with image
+        large_file_content = "some code " * 100  # ~130 tokens
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Look at this image and code:"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                {"type": "text_file", "name": "script.py", "content": large_file_content}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=600)
+        
+        # Image should be preserved
+        compacted_content = result.modified_messages[0]["content"]
+        image_items = [i for i in compacted_content if i.get("type") == "image_url"]
+        assert len(image_items) == 1
+        assert image_items[0]["image_url"]["url"] == "data:image/png;base64,abc123"
+
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_small_text_file_preserved(self, strategy_components):
+        """Test that small text_file items are not compacted."""
+        strategy = strategy_components["strategy"]
+        strategy.config.variable_min_size = 500  # High threshold
+        
+        # Small text file content
+        small_file_content = "hello world"
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Check this:"},
+                {"type": "text_file", "name": "small.txt", "content": small_file_content}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=600)
+        
+        # No variables should be created (content too small)
+        assert result.variables_created == 0
+        
+        # Content should be unchanged
+        compacted_content = result.modified_messages[0]["content"]
+        text_file_items = [i for i in compacted_content if i.get("type") == "text_file"]
+        assert len(text_file_items) == 1
+        assert text_file_items[0]["content"] == small_file_content
+
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_tool_response(self, strategy_components):
+        """Test that multimodal tool responses are compacted."""
+        strategy = strategy_components["strategy"]
+        strategy.config.variable_min_size = 20  # Lower threshold for test
+        
+        large_file_content = "data line " * 100
+        
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_abc", "function": {"name": "read"}}]},
+            {"role": "tool", "name": "read_file", "tool_call_id": "call_abc", "content": [
+                {"type": "text", "text": "File contents:"},
+                {"type": "text_file", "name": "output.log", "content": large_file_content}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=600)
+        
+        # Variable should be created for the text_file in tool response
+        assert result.variables_created >= 1
+
 
 # =============================================================================
 # Integration Tests
