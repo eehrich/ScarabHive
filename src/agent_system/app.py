@@ -279,6 +279,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             await start_profiling()
             logger.info("Performance profiling started")
         
+        # Start memory profiling if enabled
+        from .utils.memory_profiling import (
+            start_memory_profiling, stop_memory_profiling, MEMORY_PROFILING_ENABLED
+        )
+        if MEMORY_PROFILING_ENABLED:
+            await start_memory_profiling()
+            logger.info("Memory profiling started")
+        
         yield
         # Shutdown
         try:
@@ -286,6 +294,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if PROFILING_ENABLED:
                 await stop_profiling()
                 logger.info("Performance profiling stopped")
+            
+            # Stop memory profiling
+            if MEMORY_PROFILING_ENABLED:
+                await stop_memory_profiling()
+                logger.info("Memory profiling stopped")
             
             # Shutdown batch queue manager first
             await _shutdown_batch_queue_manager(logger)
