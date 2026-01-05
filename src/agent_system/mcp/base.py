@@ -21,6 +21,8 @@ class MCPServer(ABC):
         self.name = name
         self.system_config = system_config
         self.mcp_config = mcp_config
+        # Cache for list_tools() to avoid creating new MCPTool objects on every call
+        self._list_tools_cache: List[MCPTool] | None = None
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Generic tool dispatcher that routes to tool methods by name.
@@ -100,7 +102,12 @@ class MCPServer(ABC):
         to return a list of tool schemas in OpenAI function calling format.
         
         This method applies custom self_tool_descriptions from mcp_config if configured.
+        Results are cached to avoid creating new MCPTool objects on every call.
         """
+        # Return cached tools if available
+        if self._list_tools_cache is not None:
+            return self._list_tools_cache
+
         from .core import MCPTool
 
         # Try get_tools() method
@@ -121,6 +128,9 @@ class MCPServer(ABC):
                             input_schema=func_def.get('parameters', {})
                         )
                         tools.append(tool)
+                
+                # Cache the result
+                self._list_tools_cache = tools
                 return tools
             except NotImplementedError:
                 pass

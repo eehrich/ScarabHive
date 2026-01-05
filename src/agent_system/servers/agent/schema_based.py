@@ -95,6 +95,10 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
         Returns:
             List[MCPTool] - Tools defined in this agent's schema.yaml
         """
+        # Return cached tools to avoid creating new objects on every call
+        if self._list_tools_cache is not None:
+            return self._list_tools_cache
+
         from agent_system.mcp.core import MCPTool
 
         # Get tools from schema.yaml
@@ -111,5 +115,6 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
             )
             mcp_tools.append(tool)
 
-        return mcp_tools
+        self._list_tools_cache = mcp_tools
+        return self._list_tools_cache
 

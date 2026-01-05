@@ -206,6 +206,9 @@ class Agent(MCPServer):
         self._internal_tool_counter = 0
         self._internal_tool_counter_lock = asyncio.Lock()
 
+        # Cache for list_tools() to avoid creating new MCPTool objects on every call
+        self._list_tools_cache: list | None = None
+
         # Track current conversation messages for debugging
         self._current_messages: List[ChatMessage] = []
 
@@ -2094,6 +2097,10 @@ class Agent(MCPServer):
         Returns:
             List[MCPTool] - Single MCPTool representing this agent
         """
+        # Return cached tools to avoid creating new objects on every call
+        if self._list_tools_cache is not None:
+            return self._list_tools_cache
+
         from agent_system.mcp.core import MCPTool
 
         # Get the agent's schema (what it offers as a callable tool)
@@ -2107,4 +2114,5 @@ class Agent(MCPServer):
             input_schema=func.get("parameters", {})
         )
 
-        return [tool]
+        self._list_tools_cache = [tool]
+        return self._list_tools_cache
