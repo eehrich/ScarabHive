@@ -1,5 +1,7 @@
 """Context usage tracking for the context_usage_tracker plugin."""
 
+import asyncio
+import concurrent.futures
 import logging
 import time
 import json
@@ -10,6 +12,20 @@ from collections import deque
 import threading
 
 logger = logging.getLogger(__name__)
+
+# Thread pool for async disk I/O - single thread to avoid file contention
+_io_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+
+def _get_io_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Get or create the I/O thread pool."""
+    global _io_executor
+    if _io_executor is None:
+        _io_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="context_tracker_io"
+        )
+    return _io_executor
 
 
 @dataclass
@@ -51,6 +67,8 @@ class UsageTracker:
         self._agent_stats: Dict[str, AgentStats] = {}
         self._lock = threading.Lock()
         self._latest_snapshot: Optional[ContextUsageSnapshot] = None
+        self._pending_save: bool = False  # Debounce flag for saves
+        self._save_interval: float = 5.0  # Save at most every 5 seconds
 
         self.storage_path = storage_path or Path("data/context_usage_tracker.json")
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +121,8 @@ class UsageTracker:
             stats.last_activity = time.time()
             stats.total_cached_tokens += cached_tokens
 
-        self._save_to_disk()
+        # Schedule async save (debounced to avoid too frequent writes)
+        self._schedule_save()
 
         logger.debug(
             f"📊 Context usage recorded: agent={agent_name}, "
@@ -232,11 +251,45 @@ class UsageTracker:
             self._history.clear()
             self._agent_stats.clear()
             self._latest_snapshot = None
-        self._save_to_disk()
+        self._save_to_disk_sync()  # Immediate sync save for clear operation
         logger.info("🗑️  Context usage history cleared")
 
-    def _save_to_disk(self) -> None:
-        """Save agent stats and history to disk."""
+    def _schedule_save(self) -> None:
+        """Schedule an async save operation (debounced)."""
+        if self._pending_save:
+            return  # Already scheduled
+        
+        self._pending_save = True
+        
+        try:
+            loop = asyncio.get_running_loop()
+            # Schedule the save in the background
+            loop.call_later(self._save_interval, self._execute_async_save)
+        except RuntimeError:
+            # No running event loop, fall back to sync save in thread pool
+            executor = _get_io_executor()
+            executor.submit(self._delayed_sync_save)
+    
+    def _delayed_sync_save(self) -> None:
+        """Delayed sync save for when no event loop is available."""
+        time.sleep(self._save_interval)
+        self._pending_save = False
+        self._save_to_disk_sync()
+    
+    def _execute_async_save(self) -> None:
+        """Execute the async save operation."""
+        self._pending_save = False
+        try:
+            loop = asyncio.get_running_loop()
+            # Run the blocking save in thread pool
+            loop.run_in_executor(_get_io_executor(), self._save_to_disk_sync)
+        except RuntimeError:
+            # No event loop, run synchronously in thread pool
+            executor = _get_io_executor()
+            executor.submit(self._save_to_disk_sync)
+
+    def _save_to_disk_sync(self) -> None:
+        """Save agent stats and history to disk (synchronous, runs in thread pool)."""
         try:
             # Capture data while holding lock briefly
             with self._lock:
@@ -274,6 +327,11 @@ class UsageTracker:
             logger.debug(f"💾 Saved usage data to {self.storage_path} ({len(history_data)} snapshots)")
         except Exception as e:
             logger.error(f"Failed to save usage data: {e}")
+
+    def force_save(self) -> None:
+        """Force immediate synchronous save to disk (for testing/shutdown)."""
+        self._pending_save = False
+        self._save_to_disk_sync()
 
     def _load_from_disk(self) -> None:
         """Load agent stats and history from disk."""
