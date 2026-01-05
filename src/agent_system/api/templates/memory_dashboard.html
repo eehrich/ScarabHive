@@ -165,6 +165,21 @@
             opacity: 0.6;
         }
 
+        button.icon-only {
+            padding: 8px;
+            font-size: 18px;
+            min-width: 36px;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -264,6 +279,14 @@
             font-weight: 500;
         }
 
+        .object-count.positive {
+            color: #f48771;
+        }
+
+        .object-count.negative {
+            color: #73c991;
+        }
+
         .leak-item {
             background: #1e1e1e;
             border: 1px solid #3e3e42;
@@ -331,22 +354,27 @@
                 <div class="empty-state">Loading...</div>
             </div>
             
-            <div class="section" id="likelyLeaks">
-                <h2>🔍 Potential Memory Leaks</h2>
-                <div class="empty-state">Loading...</div>
+            <div class="section" id="baselineChanges">
+                <h2>📊 Changes from Baseline</h2>
+                <div class="empty-state">No baseline set. Click 🎯 to set baseline.</div>
             </div>
         </div>
         
         <div class="two-columns">
+            <div class="section" id="likelyLeaks">
+                <h2>🔍 Potential Memory Leaks</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+            
             <div class="section" id="trendAnalysis">
                 <h2>📈 Memory Trend</h2>
                 <div class="empty-state">Loading...</div>
             </div>
-            
-            <div class="section" id="gcStats">
-                <h2>♻️ Garbage Collector</h2>
-                <div class="empty-state">Loading...</div>
-            </div>
+        </div>
+        
+        <div class="section" id="gcStats">
+            <h2>♻️ Garbage Collector</h2>
+            <div class="empty-state">Loading...</div>
         </div>
     </div>
 
@@ -520,6 +548,27 @@
                         </div>
                     `).join('')}
                 </div>
+            `;
+            
+            // Baseline Changes
+            const baselineChanges = data.baseline_changes || [];
+            const hasBaseline = data.has_baseline || false;
+            document.getElementById('baselineChanges').innerHTML = `
+                <h2>📊 Changes from Baseline ${hasBaseline ? '<span class="badge badge-active">SET</span>' : '<span class="badge badge-inactive">NOT SET</span>'}</h2>
+                ${!hasBaseline ? '<div class="empty-state">No baseline set. Click 🎯 to set baseline.</div>' :
+                baselineChanges.length === 0 ? '<div class="empty-state">No changes from baseline</div>' :
+                `<div class="object-list">
+                    ${baselineChanges.map(c => {
+                        const changeClass = c.change > 0 ? 'positive' : 'negative';
+                        const changeSign = c.change > 0 ? '+' : '';
+                        return `
+                        <div class="object-item">
+                            <span class="object-type" title="${c.type}">${c.type}</span>
+                            <span class="object-count ${changeClass}">${changeSign}${formatNumber(c.change)}</span>
+                        </div>
+                        `;
+                    }).join('')}
+                </div>`}
             `;
             
             // Likely Leaks

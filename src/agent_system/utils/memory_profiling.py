@@ -623,6 +623,14 @@ def _get_memory_report_sync() -> dict[str, Any]:
     # Check for reference cycles
     cycles = find_reference_cycles()
     
+    # Get changes from baseline (if baseline was set)
+    baseline_changes = detector._object_tracker.get_changes_from_baseline()
+    top_changes = sorted(
+        [(t, c) for t, c in baseline_changes.items() if c != 0],
+        key=lambda x: abs(x[1]),
+        reverse=True
+    )[:30]
+    
     return {
         "enabled": MEMORY_PROFILING_ENABLED,
         "timestamp": datetime.now().isoformat(),
@@ -635,6 +643,8 @@ def _get_memory_report_sync() -> dict[str, Any]:
             "garbage_count": len(gc.garbage)
         },
         "top_objects": [{"type": t, "count": c} for t, c in top_objects],
+        "baseline_changes": [{"type": t, "change": c} for t, c in top_changes],
+        "has_baseline": bool(detector._object_tracker._baseline),
         "tracemalloc_top": tracemalloc_top,
         "trend_analysis": trend,
         "reference_cycles": cycles[:10],
