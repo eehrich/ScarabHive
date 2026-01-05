@@ -294,8 +294,13 @@ class AsyncTaskMonitor:
         with self._lock:
             return list(self._tracked_tasks.values())
     
-    def get_all_tasks_info(self) -> list[dict[str, Any]]:
-        """Get info about ALL asyncio tasks (not just tracked ones)."""
+    def get_all_tasks_info(self, include_stack: bool = False) -> list[dict[str, Any]]:
+        """Get info about ALL asyncio tasks (not just tracked ones).
+        
+        Args:
+            include_stack: If True, capture stack traces (expensive, creates FrameSummary objects).
+                          Default False to avoid memory accumulation.
+        """
         try:
             all_tasks = asyncio.all_tasks()
         except RuntimeError:
@@ -306,23 +311,28 @@ class AsyncTaskMonitor:
             coro = task.get_coro()
             coro_name = getattr(coro, '__qualname__', str(coro))
             
-            # Try to get stack
-            try:
-                stack = task.get_stack(limit=3)
-                if stack:
-                    stack_info = '\n'.join(traceback.format_list(traceback.extract_stack(stack[0], limit=3)))
-                else:
-                    stack_info = "No stack available"
-            except Exception:
-                stack_info = "Unable to capture stack"
-            
-            result.append({
+            task_info: dict[str, Any] = {
                 "name": task.get_name(),
                 "coro": coro_name,
                 "done": task.done(),
                 "cancelled": task.cancelled(),
-                "stack": stack_info
-            })
+            }
+            
+            # Only capture stack if explicitly requested (expensive operation)
+            if include_stack:
+                try:
+                    stack = task.get_stack(limit=3)
+                    if stack:
+                        # Format directly to string without keeping FrameSummary objects
+                        task_info["stack"] = '\n'.join(
+                            traceback.format_list(traceback.extract_stack(stack[0], limit=3))
+                        )
+                    else:
+                        task_info["stack"] = "No stack available"
+                except Exception:
+                    task_info["stack"] = "Unable to capture stack"
+            
+            result.append(task_info)
         
         return result
     

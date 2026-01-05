@@ -84,17 +84,20 @@ async def get_request_stats() -> dict[str, Any]:
 
 
 @router.get("/profile/tasks")
-async def get_async_tasks() -> dict[str, Any]:
+async def get_async_tasks(include_stack: bool = False) -> dict[str, Any]:
     """Get information about all async tasks.
     
     Useful for identifying:
     - Tasks that are stuck
     - Task names and coroutine info
     - Potential deadlocks
+    
+    Args:
+        include_stack: Include stack traces (expensive, use sparingly)
     """
     _check_profiling_enabled()
     task_monitor = get_task_monitor()
-    all_tasks = task_monitor.get_all_tasks_info()
+    all_tasks = task_monitor.get_all_tasks_info(include_stack=include_stack)
     
     return {
         "total_count": len(all_tasks),

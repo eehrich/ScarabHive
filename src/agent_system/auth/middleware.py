@@ -46,6 +46,8 @@ class RateLimitMiddleware:
         self.requests_per_minute = requests_per_minute
         self.enabled = enabled
         self.request_counts: Dict[str, list] = defaultdict(list)
+        self._last_cleanup = time.time()
+        self._cleanup_interval = 300  # Clean up stale IPs every 5 minutes
     
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Process request with rate limiting."""
@@ -63,6 +65,13 @@ class RateLimitMiddleware:
             req_time for req_time in self.request_counts[client_ip]
             if current_time - req_time < 60
         ]
+        
+        # Periodically remove stale IPs entirely (no requests in last minute)
+        if current_time - self._last_cleanup > self._cleanup_interval:
+            self._last_cleanup = current_time
+            stale_ips = [ip for ip, times in self.request_counts.items() if not times]
+            for ip in stale_ips:
+                del self.request_counts[ip]
         
         # Check rate limit
         if len(self.request_counts[client_ip]) >= self.requests_per_minute:
