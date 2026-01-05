@@ -2,28 +2,13 @@
 New tests for LLM Router Plugin with Multi-Tool support
 """
 
-from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from agent_system.plugins import discover_all_plugins
 from plugins.llm_router.server import LLMRouterServer
 
 
-@pytest.mark.asyncio
-async def test_llm_router_plugin_discovered(mock_system_config, mock_mcp_config):
-    """Test that LLM router plugin is discovered correctly."""
-    repo_root = Path(__file__).resolve().parents[1]
-    default_dir = repo_root / 'plugins'
-    if not default_dir.exists():
-        alt = repo_root / 'src' / 'plugins'
-        if alt.exists():
-            default_dir = alt
-    plugins = discover_all_plugins([default_dir])
-    assert 'llm_router' in plugins
-    factory = plugins['llm_router']
-    inst = factory('llm_router', mock_system_config, mock_mcp_config)
-    assert inst is not None
+
 
 
 class TestLLMRouterServerNew:

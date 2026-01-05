@@ -303,17 +303,6 @@ async def test_update_todo_completion_auto_progress(server: TodoServer, mock_con
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_circular_dependency_detection(server: TodoServer, mock_context: Dict[str, Any]):
-    """Test circular dependency prevention"""
-    # Skipping this test - circular dependency detection requires
-    # ability to update dependencies after task creation, which
-    # current implementation doesn't support via create_todo
-    # The logic is implemented in _detect_circular_deps but only
-    # checked at creation time
-    pytest.skip("Circular dependency requires dependency updates")
-
-
-@pytest.mark.asyncio
 async def test_blocked_status_auto_update(server: TodoServer, mock_context: Dict[str, Any]):
     """Test auto-blocking when dependency incomplete"""
     # Create parent

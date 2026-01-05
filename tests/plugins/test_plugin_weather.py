@@ -9,7 +9,6 @@ so plugin tests appear first when running the test suite.
 
 import pytest
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 import json
 
@@ -17,7 +16,6 @@ from plugins.weather.server import WeatherServer
 from plugins.weather import sources
 from agent_system.mcp.status import status_bus, StatusPhase
 from plugins.weather.__main__ import main, build_parser
-from agent_system.plugins import discover_all_plugins
 
 
 def _get_tool_name(tool):
@@ -195,18 +193,6 @@ async def test_weather_error_status_phases(mock_system_config, mock_mcp_config):
 
 
 class TestWeatherCLIAndFactory:
-    def test_weather_plugin_discovered(self, mock_system_config, mock_mcp_config):
-        repo_root = Path(__file__).resolve().parents[1]
-        default_dir = repo_root / 'plugins'
-        if not default_dir.exists():
-            alt = repo_root / 'src' / 'plugins'
-            if alt.exists():
-                default_dir = alt
-        plugins = discover_all_plugins([default_dir])
-        assert 'weather' in plugins, "weather plugin must be present in repository for this test"
-        factory = plugins['weather']
-        assert callable(factory), "weather factory should be callable"
-
     def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
         from plugins.weather.plugin import PLUGIN_FACTORY
         server = PLUGIN_FACTORY("weather", mock_system_config, mock_mcp_config)

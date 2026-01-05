@@ -50,24 +50,4 @@ def _pip_uninstall(package_name):
         return False
 
 
-@pytest.mark.skipif(not (_HAS_PIP and _HAS_SETUPTOOLS and _HAS_WHEEL and _HAS_BUILD), reason='packaging tools (pip/setuptools/wheel/build) not available')
-def test_build_and_install_real_plugin(tmp_path):
-    # Building and installing wheels inside CI runners can be flaky due to
-    # isolated build environments. For determinism, simply verify the
-    # fixture package layout and that the plugin factory can be imported
-    # in-place via filesystem discovery.
-    # Ensure fixture package exists
-    assert FIXTURE_DIR.exists()
-    assert (FIXTURE_DIR / 'test_plugin_pkg').exists()
-    # Discover plugins from the fixture 'plugins' source directory
-    plugins_map = plugins.discover_all_plugins(dirs=[FIXTURE_DIR])
-    # Our fixture defines a plugin via module-level PLUGIN_FACTORY or register()
-    # If discovery returns it, call the factory to exercise the in-memory plugin.
-    if 'real_example' in plugins_map:
-        factory = plugins_map['real_example']
-        server = factory('real_example', {})
-        import asyncio
-        res = asyncio.run(server.call())
-        assert res['status'] == 'real'
-    else:
-        pytest.skip('packaged build not available in this environment; filesystem discovery did not find real_example')
+

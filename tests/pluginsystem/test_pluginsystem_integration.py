@@ -277,65 +277,6 @@ class TestAgentCliPlugins:
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
         assert "NAME: llm_router" in result.stdout, "Plugin info not displayed"
 
-    @pytest.mark.skip(reason="Plugin enable/disable CLI commands not yet implemented - see plugins.py:124-138")
-    def test_cli_plugins_enable_disable(self, temp_workspace):
-        """Test enabling and disabling plugins via CLI."""
-        config_path = temp_workspace / "config" / "config.yaml"
-        mcp_config_path = temp_workspace / "config" / "mcp.yaml"
-
-        # First check initial state
-        with open(mcp_config_path) as f:
-            _ = yaml.safe_load(f)
-
-        # First disable a plugin that's currently enabled
-        result = run_cli_command(
-            temp_workspace,
-            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "disable", "web_scraper", "--yes"]
-        )
-
-        assert result.returncode == 0, f"Disable command failed: {result.stderr}"
-
-        # Verify it's disabled by checking the managed config file
-        managed_config_path = temp_workspace / "config" / (config_path.stem + ".managed" + config_path.suffix)
-        if managed_config_path.exists():
-            with open(managed_config_path) as f:
-                config = yaml.safe_load(f)
-        else:
-            # Fall back to mcp.yaml if no managed file
-            with open(mcp_config_path) as f:
-                config = yaml.safe_load(f)
-
-        # Check the new config structure: plugins.servers.web_scraper.enabled should be false
-        if isinstance(config, dict):
-            plugins_config = config.get("plugins", {})
-            servers_config = plugins_config.get("servers", {})
-            web_scraper_config = servers_config.get("web_scraper", {})
-            # After disabling, enabled should be false or server should not be in enabled_servers list
-            if "enabled" in web_scraper_config:
-                assert web_scraper_config["enabled"] is False, "web_scraper should have enabled: false"
-            elif "enabled_servers" in plugins_config:
-                # Old format support
-                assert "web_scraper" not in plugins_config["enabled_servers"], "web_scraper should not be in enabled_servers"
-
-        # Re-enable the plugin
-        result = run_cli_command(
-            temp_workspace,
-            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "enable", "web_scraper", "--yes"]
-        )
-
-        assert result.returncode == 0, f"Enable command failed: {result.stderr}"
-
-        # Verify it's enabled in the managed config (support both shapes)
-        if managed_config_path.exists():
-            with open(managed_config_path) as f:
-                config = yaml.safe_load(f)
-        else:
-            with open(mcp_config_path) as f:
-                config = yaml.safe_load(f)
-
-        enabled_servers = config.get("mcp", {}).get("enabled_servers") or config.get("enabled_servers") or []
-        assert "web_scraper" in enabled_servers, "web_scraper should be enabled in config"
-
 
 class TestIndividualPluginClis:
     """Test individual plugin CLI entry points."""
