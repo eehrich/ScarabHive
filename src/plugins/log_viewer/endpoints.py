@@ -113,6 +113,146 @@ class LogViewerWebEndpoints(PluginWebInterface):
             log_viewer_logger.error(f"Error reading file {file_path}: {e}")
             return []
 
+    async def _read_filtered_lines_async(self, file_path: Path, target_count: int,
+                                          level_filter: Optional[set] = None,
+                                          search_term: Optional[str] = None) -> List[str]:
+        """Read lines from file end backwards until target_count filtered lines are found.
+        
+        This is the key fix: instead of reading N lines and then filtering,
+        we keep reading backwards until we have N lines that MATCH the filter.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, self._read_filtered_lines_sync, file_path, target_count, level_filter, search_term
+            )
+        except Exception as e:
+            log_viewer_logger.error(f"Error reading filtered lines from {file_path}: {e}")
+            return []
+
+    def _read_filtered_lines_sync(self, file_path: Path, target_count: int,
+                                   level_filter: Optional[set] = None,
+                                   search_term: Optional[str] = None) -> List[str]:
+        """Read lines from file end backwards until target_count filtered lines are found.
+        
+        Returns raw lines (not parsed) that match the filters.
+        """
+        CHUNK_SIZE = 32768  # 32KB chunks for better performance
+        MAX_LINES_TO_SCAN = 50000  # Safety limit to prevent reading entire huge files
+        
+        # Pattern to detect start of log entry
+        timestamp_pattern = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)')
+        # Pattern to extract log level
+        level_pattern = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?\s+(\w+)')
+        
+        def line_matches_filter(line: str) -> bool:
+            """Check if a line matches level and search filters"""
+            # Skip log viewer requests to avoid recursion
+            if '/plugins/log_viewer' in line:
+                return False
+            
+            # Level filter check
+            if level_filter:
+                match = level_pattern.match(line)
+                if match:
+                    line_level = match.group(1).lower()
+                    if line_level not in level_filter:
+                        return False
+                else:
+                    # Can't determine level, skip if filtering by level
+                    return False
+            
+            # Search filter check
+            if search_term:
+                if search_term not in line.lower():
+                    return False
+            
+            return True
+        
+        with open(file_path, 'rb') as f:
+            # Get file size
+            f.seek(0, 2)
+            file_size = f.tell()
+            
+            if file_size == 0:
+                return []
+            
+            # Collect all lines first, then filter
+            all_lines: List[str] = []
+            remaining = file_size
+            lines_scanned = 0
+            
+            while remaining > 0 and lines_scanned < MAX_LINES_TO_SCAN:
+                chunk_size = min(CHUNK_SIZE, remaining)
+                remaining -= chunk_size
+                
+                f.seek(remaining)
+                chunk = f.read(chunk_size)
+                
+                try:
+                    text = chunk.decode('utf-8')
+                except UnicodeDecodeError:
+                    text = chunk.decode('utf-8', errors='replace')
+                
+                chunk_lines = text.split('\n')
+                
+                # Merge with previous partial line
+                if all_lines:
+                    chunk_lines[-1] += all_lines[0]
+                    all_lines = chunk_lines + all_lines[1:]
+                else:
+                    all_lines = chunk_lines
+                
+                lines_scanned = len(all_lines)
+                
+                # Quick check: count matching lines so far from the END
+                # If we have enough, stop reading
+                matching_count = 0
+                for line in reversed(all_lines):
+                    if timestamp_pattern.match(line) and line_matches_filter(line):
+                        matching_count += 1
+                        if matching_count >= target_count:
+                            break
+                
+                if matching_count >= target_count:
+                    break
+            
+            # Remove empty trailing line
+            if all_lines and not all_lines[-1]:
+                all_lines = all_lines[:-1]
+            
+            # Now filter and return last N matching lines
+            # Process from end to preserve order
+            filtered_lines: List[str] = []
+            current_entry_lines: List[str] = []
+            
+            for line in reversed(all_lines):
+                if timestamp_pattern.match(line):
+                    # This is a new log entry start
+                    if current_entry_lines:
+                        # We were building an entry, check if it matches
+                        full_entry = '\n'.join(reversed(current_entry_lines))
+                        # The first line (now last in current_entry_lines) is the main line
+                        main_line = current_entry_lines[-1]
+                        if line_matches_filter(main_line):
+                            # Insert at beginning to maintain order
+                            filtered_lines.insert(0, full_entry)
+                            if len(filtered_lines) >= target_count:
+                                break
+                    current_entry_lines = [line]
+                else:
+                    # Continuation line
+                    current_entry_lines.append(line)
+            
+            # Don't forget the last entry (first in file)
+            if current_entry_lines and len(filtered_lines) < target_count:
+                full_entry = '\n'.join(reversed(current_entry_lines))
+                main_line = current_entry_lines[-1]
+                if line_matches_filter(main_line):
+                    filtered_lines.insert(0, full_entry)
+            
+            return filtered_lines[-target_count:] if len(filtered_lines) > target_count else filtered_lines
+
     def _read_last_lines_sync(self, file_path: Path, max_lines: int) -> List[str]:
         """Read last N lines from file efficiently using tail-like approach"""
         CHUNK_SIZE = 8192  # Read in 8KB chunks
@@ -295,33 +435,46 @@ class LogViewerWebEndpoints(PluginWebInterface):
             parsed_lines = []
 
             if since_timestamp is None:
-                # Initial load - read last N*buffer_multiplier lines from file efficiently
-                buffer_multiplier = 10 if (level_filter or search_term) else 3
-                max_lines_to_read = lines * buffer_multiplier
-                
-                # Read from end of file asynchronously
-                recent_lines = await self._read_last_lines_async(log_path, max_lines_to_read)
-                
-                # Group multiline entries
-                grouped_entries = self._group_multiline_entries(recent_lines)
-
-                # Apply filters and collect matching entries
-                for entry in grouped_entries:
-                    # Filter out log viewer requests to avoid recursion
-                    if '/plugins/log_viewer' in entry['main_line']:
-                        continue
-
-                    parsed_line = self._parse_log_line(entry['main_line'].rstrip())
-                    parsed_line['line_number'] = entry['line_number']
-                    parsed_line['full_content'] = entry['full_content']
-                    parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
+                # Initial load - use filtered reading if filters are active
+                if level_filter or search_term:
+                    # NEW: Read backwards until we have N matching lines
+                    # This ensures we always get the requested number of filtered results
+                    filtered_entries = await self._read_filtered_lines_async(
+                        log_path, lines, level_filter, search_term
+                    )
                     
-                    # Apply filters
-                    if matches_filters(parsed_line):
+                    # Parse the filtered entries
+                    for idx, entry in enumerate(filtered_entries):
+                        # Split multiline entry back into main line and continuation
+                        entry_lines = entry.split('\n')
+                        main_line = entry_lines[0]
+                        
+                        parsed_line = self._parse_log_line(main_line.rstrip())
+                        parsed_line['line_number'] = idx + 1  # Approximate
+                        parsed_line['full_content'] = entry
+                        parsed_line['has_multiline'] = len(entry_lines) > 1
                         parsed_lines.append(parsed_line)
-                
-                # Take only the last N filtered entries
-                parsed_lines = parsed_lines[-lines:]
+                else:
+                    # No filters - use simple tail read (faster)
+                    buffer_multiplier = 3
+                    max_lines_to_read = lines * buffer_multiplier
+                    
+                    recent_lines = await self._read_last_lines_async(log_path, max_lines_to_read)
+                    grouped_entries = self._group_multiline_entries(recent_lines)
+
+                    for entry in grouped_entries:
+                        # Filter out log viewer requests to avoid recursion
+                        if '/plugins/log_viewer' in entry['main_line']:
+                            continue
+
+                        parsed_line = self._parse_log_line(entry['main_line'].rstrip())
+                        parsed_line['line_number'] = entry['line_number']
+                        parsed_line['full_content'] = entry['full_content']
+                        parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
+                        parsed_lines.append(parsed_line)
+                    
+                    # Take only the last N entries
+                    parsed_lines = parsed_lines[-lines:]
             else:
                 # Streaming mode - read last N*3 lines efficiently
                 buffer_multiplier = 3
