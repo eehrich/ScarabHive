@@ -657,23 +657,25 @@ def _get_thread_details() -> dict[str, Any]:
     """Get detailed thread information including idle/active state.
     
     Returns thread list with idle detection based on stack frames.
-    A thread is considered idle if its top frame is in a blocking call like:
+    A thread is considered idle if any frame in its stack is in a blocking call like:
     - queue.get() (ThreadPoolExecutor workers waiting for work)
     - threading.Event.wait() (condition variable waits)
     - select.select() (I/O waits)
+    - ThreadPoolExecutor._worker (worker threads waiting for tasks)
     """
     import sys
     
     # Get current frames for all threads
     frames = sys._current_frames()
     
-    # Known idle patterns in stack frames
+    # Known idle patterns in stack frames (module/filename pattern, function name pattern)
     idle_patterns = [
         ('queue', 'get'),           # Queue.get() - workers waiting for tasks
         ('threading', 'wait'),      # Event.wait(), Condition.wait()
         ('selectors', 'select'),    # select/poll - I/O waiting
         ('socket', 'recv'),         # Socket receive
         ('time', 'sleep'),          # Explicit sleep
+        ('thread.py', '_worker'),   # ThreadPoolExecutor worker waiting for work
     ]
     
     threads_info = []
@@ -683,15 +685,28 @@ def _get_thread_details() -> dict[str, Any]:
         idle_reason = None
         
         if frame:
-            # Check if top frame matches idle pattern
-            filename = frame.f_code.co_filename
-            funcname = frame.f_code.co_name
-            
-            for module, func in idle_patterns:
-                if module in filename and func in funcname:
-                    is_idle = True
-                    idle_reason = f"{module}.{func}"
-                    break
+            # Walk up the stack to find idle patterns (not just top frame)
+            current_frame = frame
+            depth = 0
+            while current_frame and not is_idle and depth < 20:
+                filename = current_frame.f_code.co_filename
+                funcname = current_frame.f_code.co_name
+                
+                # Extract just the filename for matching
+                basename = filename.split('/')[-1].split('\\')[-1]
+                
+                for module, func in idle_patterns:
+                    # Check if pattern matches (module can be in path or equal to basename)
+                    module_match = module in filename or module == basename
+                    func_match = func in funcname
+                    
+                    if module_match and func_match:
+                        is_idle = True
+                        idle_reason = f"{basename}:{func}"
+                        break
+                
+                current_frame = current_frame.f_back
+                depth += 1
         
         threads_info.append({
             "name": thread.name,
