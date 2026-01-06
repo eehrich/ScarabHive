@@ -13,8 +13,8 @@
 
         body {
             font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            background: #0c0c0c;
-            color: #cccccc;
+            background: #1e1e1e;
+            color: #d4d4d4;
             height: 100vh;
             overflow: hidden;
             font-size: 13px;
@@ -23,8 +23,8 @@
         /* Tab Bar */
         .tab-bar {
             display: flex;
-            background: #1e1e1e;
-            border-bottom: 1px solid #007acc;
+            background: #252526;
+            border-bottom: 1px solid #3e3e42;
             padding: 0;
             overflow-x: auto;
             flex-shrink: 0;
@@ -34,8 +34,8 @@
             display: flex;
             align-items: center;
             padding: 8px 16px;
-            background: #2d2d2d;
-            border-right: 1px solid #3c3c3c;
+            background: #2a2d2e;
+            border-right: 1px solid #3e3e42;
             cursor: pointer;
             user-select: none;
             white-space: nowrap;
@@ -43,13 +43,13 @@
         }
 
         .tab:hover {
-            background: #3e3e3e;
+            background: #2d3033;
         }
 
         .tab.active {
-            background: #0c0c0c;
-            color: #4fc3f7;
-            border-bottom: 2px solid #007acc;
+            background: #1e1e1e;
+            color: #569cd6;
+            border-bottom: 2px solid #569cd6;
         }
 
         .tab-label {
@@ -60,18 +60,18 @@
         .tab-status {
             margin-left: 6px;
             font-size: 11px;
-            color: #9ad4f5;
+            color: #569cd6;
             opacity: 0.9;
             min-width: 28px;
             text-align: right;
         }
         .tab-status.connected {
             /* green when connected */
-            color: #6ee56e;
+            color: #4ec9b0;
         }
         .tab-status.disconnected {
             /* red when disconnected/unavailable */
-            color: #f07171;
+            color: #f48771;
         }
         .tab-status.not-yet-connected {
             /* gray when not yet connected (lazy connection) */
@@ -112,7 +112,7 @@
             display: flex;
             flex-direction: column;
             height: calc(100vh - 40px);
-            background: #0c0c0c;
+            background: #1e1e1e;
         }
 
         .terminal-pane {
@@ -133,8 +133,8 @@
             font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
             font-size: 13px;
             line-height: 1.5;
-            background: #0c0c0c;
-            color: #cccccc;
+            background: #1e1e1e;
+            color: #d4d4d4;
         }
 
         .terminal-output::-webkit-scrollbar {
@@ -142,38 +142,38 @@
         }
 
         .terminal-output::-webkit-scrollbar-track {
-            background: #1e1e1e;
+            background: #252526;
         }
 
         .terminal-output::-webkit-scrollbar-thumb {
-            background: #3c3c3c;
+            background: #3e3e42;
             border-radius: 6px;
         }
 
         .terminal-output::-webkit-scrollbar-thumb:hover {
-            background: #4e4e4e;
+            background: #4e4e52;
         }
 
         /* Command Entry */
         .command-entry {
             display: flex;
             padding: 12px 16px;
-            border-top: 1px solid #3c3c3c;
-            background: #1e1e1e;
+            border-top: 1px solid #3e3e42;
+            background: #252526;
             align-items: center;
         }
 
         .command-prompt {
-            color: #4fc3f7;
+            color: #569cd6;
             margin-right: 8px;
             font-weight: bold;
         }
 
         .command-input {
             flex: 1;
-            background: #2d2d2d;
-            border: 1px solid #3c3c3c;
-            color: #cccccc;
+            background: #2a2d2e;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
             padding: 8px 12px;
             font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
             font-size: 13px;
@@ -182,14 +182,14 @@
         }
 
         .command-input:focus {
-            border-color: #007acc;
-            box-shadow: 0 0 4px rgba(0, 122, 204, 0.3);
+            border-color: #569cd6;
+            box-shadow: 0 0 4px rgba(86, 156, 214, 0.3);
         }
 
         .command-button {
             margin-left: 12px;
             padding: 8px 20px;
-            background: #007acc;
+            background: #0e639c;
             color: #ffffff;
             border: none;
             border-radius: 4px;
@@ -201,15 +201,15 @@
         }
 
         .command-button:hover {
-            background: #005a9e;
+            background: #1177bb;
         }
 
         .command-button:active {
-            background: #004578;
+            background: #0e639c;
         }
 
         .command-button:disabled {
-            background: #3c3c3c;
+            background: #3e3e42;
             color: #858585;
             cursor: not-allowed;
         }
@@ -220,7 +220,7 @@
         }
 
         .terminal-prompt {
-            color: #4fc3f7;
+            color: #569cd6;
             font-weight: bold;
         }
 
@@ -229,7 +229,7 @@
         }
 
         .terminal-stdout {
-            color: #cccccc;
+            color: #d4d4d4;
             white-space: pre-wrap;
             word-break: break-all;
         }
@@ -241,7 +241,7 @@
         }
 
         .terminal-success {
-            color: #a9d18e;
+            color: #4ec9b0;
         }
 
         .terminal-error {
@@ -250,7 +250,7 @@
         }
 
         .terminal-info {
-            color: #ffd966;
+            color: #dcdcaa;
         }
 
         /* Modal Dialog */
@@ -277,7 +277,7 @@
             padding: 24px;
             max-width: 500px;
             width: 90%;
-            border: 1px solid #3c3c3c;
+            border: 1px solid #3e3e42;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
         }
 
@@ -285,7 +285,7 @@
             font-size: 18px;
             font-weight: 600;
             margin-bottom: 20px;
-            color: #ffffff;
+            color: #569cd6;
         }
 
         .form-group {
@@ -295,7 +295,7 @@
         .form-label {
             display: block;
             margin-bottom: 6px;
-            color: #cccccc;
+            color: #d4d4d4;
             font-size: 13px;
         }
 
@@ -303,9 +303,9 @@
         .form-select {
             width: 100%;
             padding: 8px 12px;
-            background: #2d2d2d;
-            border: 1px solid #3c3c3c;
-            color: #cccccc;
+            background: #2a2d2e;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
             font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
             font-size: 13px;
             border-radius: 4px;
@@ -314,8 +314,8 @@
 
         .form-input:focus,
         .form-select:focus {
-            border-color: #007acc;
-            box-shadow: 0 0 4px rgba(0, 122, 204, 0.3);
+            border-color: #569cd6;
+            box-shadow: 0 0 4px rgba(86, 156, 214, 0.3);
         }
 
         .form-checkbox {
@@ -341,21 +341,21 @@
         }
 
         .btn-primary {
-            background: #007acc;
+            background: #0e639c;
             color: #ffffff;
         }
 
         .btn-primary:hover {
-            background: #005a9e;
+            background: #1177bb;
         }
 
         .btn-secondary {
-            background: #3c3c3c;
-            color: #cccccc;
+            background: #3e3e42;
+            color: #d4d4d4;
         }
 
         .btn-secondary:hover {
-            background: #4e4e4e;
+            background: #4e4e52;
         }
 
         /* Loading Indicator */
@@ -363,8 +363,8 @@
             display: inline-block;
             width: 12px;
             height: 12px;
-            border: 2px solid #3c3c3c;
-            border-top-color: #007acc;
+            border: 2px solid #3e3e42;
+            border-top-color: #569cd6;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
             margin-left: 8px;
@@ -402,23 +402,23 @@
         }
 
         .icon-btn {
-            background: none;
-            border: 1px solid #3c3c3c;
-            color: #d4d4d4;
-            width: 32px;
-            height: 32px;
+            background: #0e639c;
+            border: none;
+            color: white;
+            width: 36px;
+            height: 36px;
             border-radius: 4px;
             cursor: pointer;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             transition: all 0.2s;
-            padding: 4px;
+            padding: 6px;
         }
 
         .icon-btn:hover {
-            background: #3c3c3c;
-            border-color: #007acc;
+            background: #1177bb;
+            transform: translateY(-1px);
         }
 
         .icon-btn svg {
@@ -427,8 +427,11 @@
         }
 
         .icon-btn.active {
-            background: #0e639c;
-            border-color: #007acc;
+            background: #16825d;
+        }
+
+        .icon-btn.active:hover {
+            background: #1a9970;
         }
 
         /* Error Message Box */
@@ -454,18 +457,10 @@
         <!-- Tabs will be dynamically inserted here -->
         <div class="icon-button-group">
             <button id="refreshHistoryBtn" class="icon-btn" title="Refresh History" onclick="refreshCurrentMachine()">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                    <path d="M21 3v5h-5"/>
-                    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                    <path d="M3 21v-5h5"/>
-                </svg>
+                🔄
             </button>
             <button id="autoRefreshHistoryBtn" class="icon-btn" title="Auto-refresh: OFF" onclick="toggleAutoRefresh()">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="3"/>
-                    <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3"/>
-                </svg>
+                ⏱️
             </button>
         </div>
         <div class="tab-add" id="addTabBtn" title="Add Machine">+</div>
