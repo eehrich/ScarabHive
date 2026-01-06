@@ -657,7 +657,11 @@
   
   // Session and request tracking (shared across init and event listeners)
   let currentRequestId = null;
-  let currentSessionId = null;
+  // Initialize from sessionStorage to handle page refresh before session:loaded event fires
+  let currentSessionId = sessionStorage.getItem('lastSessionId') || null;
+  if (currentSessionId) {
+    console.log('[chat_module] Initialized currentSessionId from sessionStorage:', currentSessionId);
+  }
 
   // Public init function that wires the chat form behavior
   chatModule.init = function (opts) {
@@ -1173,8 +1177,11 @@
         }
         
         // Add current session ID if exists (to continue existing session)
-        if (currentSessionId) {
-          formData.append('session_id', currentSessionId);
+        // Fallback to sessionStorage if currentSessionId not yet set (race condition on page load)
+        const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
+        if (effectiveSessionId) {
+          formData.append('session_id', effectiveSessionId);
+          console.log('[chat_module] Using session_id:', effectiveSessionId, currentSessionId ? '(from memory)' : '(from sessionStorage fallback)');
         }
 
         try {
@@ -1299,10 +1306,14 @@
       const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
       const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
       
+      // Fallback to sessionStorage if currentSessionId not yet set (race condition on page load)
+      const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
+      
       // Build event URL with agent and profile parameters
       let eventUrl = `/events?task=${encodeURIComponent(task)}`;
-      if (currentSessionId) {
-        eventUrl += `&session_id=${encodeURIComponent(currentSessionId)}`;
+      if (effectiveSessionId) {
+        eventUrl += `&session_id=${encodeURIComponent(effectiveSessionId)}`;
+        console.log('[chat_module] SSE using session_id:', effectiveSessionId, currentSessionId ? '(from memory)' : '(from sessionStorage fallback)');
       }
       if (selectedAgent) {
         eventUrl += `&agent_name=${encodeURIComponent(selectedAgent)}`;
