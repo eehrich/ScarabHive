@@ -344,7 +344,7 @@ class LLMFactory:
                 if batch_system_config:
                     provider_config = getattr(batch_system_config.providers, batch_provider, None)
                     if provider_config and provider_config.enabled:
-                        from .batch.client_wrapper import BatchLLMClient
+                        from .batch.batch_client import BatchLLMClient
                         logger.info("Wrapping LLM client with batch support: model=%s, provider=%s",
                                    model_ref, batch_provider)
                         return BatchLLMClient(
