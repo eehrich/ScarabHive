@@ -269,6 +269,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         _app_start_time = time.time()
 
         logger = logging.getLogger(__name__)
+        
+        # Configure named thread pool for asyncio default executor
+        # This gives better thread names in profiler/debugger
+        import asyncio
+        import concurrent.futures
+        loop = asyncio.get_running_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=None,  # Use default (min(32, cpu_count + 4))
+            thread_name_prefix="app_asyncio"
+        )
+        loop.set_default_executor(executor)
+        logger.info("Configured asyncio default executor with thread_name_prefix='asyncio_worker'")
+        
         logger.info("Lifespan startup: Initializing MCP integration...")
         await _init_mcp_for_app(app)
         logger.info("MCP integration initialized during lifespan startup")

@@ -375,10 +375,15 @@
             `;
             
             // Threads
+            const activeCount = data.threads.active_count || 0;
+            const idleCount = data.threads.idle_count || 0;
             document.getElementById('threads').innerHTML = `
-                <h2>🧵 Threads (${data.threads.count})</h2>
+                <h2>🧵 Threads (${data.threads.count}) - ${activeCount} active, ${idleCount} idle</h2>
                 <div class="threads-list">
-                    ${data.threads.names.map(n => `<div>${n}</div>`).join('')}
+                    ${data.threads.threads ? data.threads.threads.map(t => {
+                        const state = t.idle ? `<span style="color: #666">💤 ${t.idle_reason || 'idle'}</span>` : `<span style="color: #4CAF50">⚡ active</span>`;
+                        return `<div>${t.name} - ${state}</div>`;
+                    }).join('') : data.threads.names.map(n => `<div>${n}</div>`).join('')}
                 </div>
             `;
             

@@ -132,6 +132,8 @@ class RequestProfiler:
         self._request_counts: dict[str, int] = defaultdict(int)  # path -> count
         self._total_duration_by_path: dict[str, float] = defaultdict(float)  # path -> total_ms
         self._slow_count_by_path: dict[str, int] = defaultdict(int)  # path -> slow_count
+        self._min_duration_by_path: dict[str, float] = {}  # path -> min_ms
+        self._max_duration_by_path: dict[str, float] = {}  # path -> max_ms
     
     def start_request(self, request_id: str, path: str, method: str) -> None:
         """Record start of a request."""
@@ -159,6 +161,21 @@ class RequestProfiler:
                 self._total_duration_by_path[metrics.path] += metrics.duration_ms
                 if metrics.duration_ms > self.slow_threshold * 1000:
                     self._slow_count_by_path[metrics.path] += 1
+                
+                # Track min/max
+                if metrics.path not in self._min_duration_by_path:
+                    self._min_duration_by_path[metrics.path] = metrics.duration_ms
+                else:
+                    self._min_duration_by_path[metrics.path] = min(
+                        self._min_duration_by_path[metrics.path], metrics.duration_ms
+                    )
+                
+                if metrics.path not in self._max_duration_by_path:
+                    self._max_duration_by_path[metrics.path] = metrics.duration_ms
+                else:
+                    self._max_duration_by_path[metrics.path] = max(
+                        self._max_duration_by_path[metrics.path], metrics.duration_ms
+                    )
                 
                 # Keep history
                 self._completed_requests.append(metrics)
@@ -202,6 +219,8 @@ class RequestProfiler:
                 stats[path] = {
                     "count": count,
                     "avg_ms": total_ms / count if count > 0 else 0,
+                    "min_ms": self._min_duration_by_path.get(path, 0),
+                    "max_ms": self._max_duration_by_path.get(path, 0),
                     "slow_count": slow_count,
                     "slow_pct": (slow_count / count * 100) if count > 0 else 0
                 }
@@ -213,6 +232,8 @@ class RequestProfiler:
             self._request_counts.clear()
             self._total_duration_by_path.clear()
             self._slow_count_by_path.clear()
+            self._min_duration_by_path.clear()
+            self._max_duration_by_path.clear()
             self._completed_requests.clear()
 
 
@@ -628,10 +649,67 @@ def get_profiling_report() -> dict[str, Any]:
         },
         "event_loop": loop_monitor.get_lag_stats(),
         "memory": MemoryMonitor.get_memory_details(),
-        "threads": {
-            "count": threading.active_count(),
-            "names": [t.name for t in threading.enumerate()]
-        }
+        "threads": _get_thread_details()
+    }
+
+
+def _get_thread_details() -> dict[str, Any]:
+    """Get detailed thread information including idle/active state.
+    
+    Returns thread list with idle detection based on stack frames.
+    A thread is considered idle if its top frame is in a blocking call like:
+    - queue.get() (ThreadPoolExecutor workers waiting for work)
+    - threading.Event.wait() (condition variable waits)
+    - select.select() (I/O waits)
+    """
+    import sys
+    
+    # Get current frames for all threads
+    frames = sys._current_frames()
+    
+    # Known idle patterns in stack frames
+    idle_patterns = [
+        ('queue', 'get'),           # Queue.get() - workers waiting for tasks
+        ('threading', 'wait'),      # Event.wait(), Condition.wait()
+        ('selectors', 'select'),    # select/poll - I/O waiting
+        ('socket', 'recv'),         # Socket receive
+        ('time', 'sleep'),          # Explicit sleep
+    ]
+    
+    threads_info = []
+    for thread in threading.enumerate():
+        frame = frames.get(thread.ident)
+        is_idle = False
+        idle_reason = None
+        
+        if frame:
+            # Check if top frame matches idle pattern
+            filename = frame.f_code.co_filename
+            funcname = frame.f_code.co_name
+            
+            for module, func in idle_patterns:
+                if module in filename and func in funcname:
+                    is_idle = True
+                    idle_reason = f"{module}.{func}"
+                    break
+        
+        threads_info.append({
+            "name": thread.name,
+            "ident": thread.ident,
+            "daemon": thread.daemon,
+            "alive": thread.is_alive(),
+            "idle": is_idle,
+            "idle_reason": idle_reason
+        })
+    
+    # Sort: active first, then by name
+    threads_info.sort(key=lambda t: (t["idle"], t["name"]))
+    
+    return {
+        "count": len(threads_info),
+        "active_count": sum(1 for t in threads_info if not t["idle"]),
+        "idle_count": sum(1 for t in threads_info if t["idle"]),
+        "threads": threads_info
     }
 
 
