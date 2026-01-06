@@ -8,6 +8,7 @@ OpenAI client which has known hanging/timeout issues.
 import asyncio
 import json
 import logging
+import socket
 from typing import Any, Optional
 from dataclasses import dataclass
 
@@ -121,6 +122,24 @@ class HTTPXOpenAIClient(LLMClient):
             "Content-Type": "application/json",
             "User-Agent": "AgentSystem-HTTPX/1.0"
         }
+
+    def _get_keepalive_socket_options(self) -> list:
+        """Get TCP keep-alive socket options for the current platform.
+        
+        This prevents connection drops during long "thinking" pauses (e.g., DeepSeek reasoning).
+        Especially important on Linux servers where firewalls/proxies may close idle connections.
+        """
+        options = [
+            (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),  # Enable keep-alive
+        ]
+        # Linux-specific: set keep-alive timing (not available on all platforms)
+        if hasattr(socket, 'TCP_KEEPIDLE'):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 15))  # Start after 15s idle
+        if hasattr(socket, 'TCP_KEEPINTVL'):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15))  # Probe every 15s
+        if hasattr(socket, 'TCP_KEEPCNT'):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5))  # 5 probes before giving up
+        return options
 
     def _create_multimodal_injection(self, tool_msg) -> Optional[dict]:
         """Create injected user message for multimodal tool content.
@@ -437,7 +456,18 @@ class HTTPXOpenAIClient(LLMClient):
 
             try:
                 # Create fresh client for each request to avoid connection issues
-                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
+                # Enable TCP keep-alive to prevent connection drops during long "thinking" pauses
+                # This is especially important on Linux servers where firewalls/proxies may
+                # close idle connections after ~30s
+                socket_options = self._get_keepalive_socket_options()
+                
+                client_kwargs: dict[str, Any] = {
+                    "timeout": self._timeout,
+                    "transport": httpx.AsyncHTTPTransport(
+                        retries=0,  # We handle retries ourselves
+                        socket_options=socket_options
+                    )
+                }
                 # Only include verify if explicitly configured (None means use httpx default)
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
@@ -506,7 +536,6 @@ class HTTPXOpenAIClient(LLMClient):
                                 line_buffer += chunk_bytes.decode('utf-8', errors='replace')
                             except StopAsyncIteration:
                                 # Stream completed - process any remaining data in buffer
-                                logger.debug(f"Stream ended, processing remaining buffer ({len(line_buffer)} chars)")
                                 break
                             except asyncio.TimeoutError:
                                 logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
@@ -562,7 +591,8 @@ class HTTPXOpenAIClient(LLMClient):
                                 if not choices:
                                     continue
 
-                                delta = choices[0].get("delta", {})
+                                choice = choices[0]
+                                delta = choice.get("delta", {})
 
                                 # Handle reasoning_content delta (DeepSeek, OpenAI o-series thinking)
                                 # This comes BEFORE the actual content in thinking models
