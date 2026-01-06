@@ -127,8 +127,35 @@ async def lifespan(app: FastAPI):
 
 
 # Module level templates and static path setup
-templates = Jinja2Templates(directory=str(Path(__file__).parents[2] / "templates"))
-static_path = Path(__file__).parents[2] / "static"
+# For installed packages, templates/static must be in package root
+# Check multiple locations: package data > development paths
+def _find_resource_dir(name: str) -> Path:
+    """Find templates or static directory in various install scenarios."""
+    # Try 1: Installed package data in site-packages
+    try:
+        import agent_system
+        pkg_dir = Path(agent_system.__file__).parent
+        resource_path = pkg_dir / name
+        if resource_path.exists():
+            return resource_path
+    except Exception:
+        pass
+    
+    # Try 2: Development - relative to this file
+    dev_path = Path(__file__).parents[2] / name
+    if dev_path.exists():
+        return dev_path
+    
+    # Try 3: Current working directory (last resort)
+    cwd_path = Path.cwd() / name
+    if cwd_path.exists():
+        return cwd_path
+    
+    # Fallback to dev path (will fail later with clear error)
+    return dev_path
+
+templates = Jinja2Templates(directory=str(_find_resource_dir("templates")))
+static_path = _find_resource_dir("static")
 
 # Global application state
 _app_start_time = None

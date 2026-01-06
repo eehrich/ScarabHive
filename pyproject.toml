@@ -84,8 +84,10 @@ comfyui = "scripts.comfyui:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Note: templates/ and static/ are outside src/ so they're included via MANIFEST.in
+# The app.py _find_resource_dir() function handles multiple install scenarios
 [tool.setuptools.package-data]
-agent_system = ["static/*", "templates/*"]
+"*" = ["*.yaml", "*.json"]
 
 [project.optional-dependencies]
 dev = [
