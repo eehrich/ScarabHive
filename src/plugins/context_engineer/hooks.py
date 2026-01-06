@@ -13,7 +13,7 @@ from typing import Any
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
-from agent_system.llm.token_utils import estimate_content_tokens
+from agent_system.llm.token_utils import estimate_token_count
 from agent_system.mcp.status import StatusScope, status_bus
 
 from .archival_memory import ArchivalMemory
@@ -364,28 +364,20 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             )
     
     def _estimate_total_tokens(self, messages: list[dict[str, Any]]) -> int:
-        """Estimate total tokens in messages."""
-        total = 0
+        """Estimate total tokens in messages using shared token counting."""
+        # Convert dicts back to ChatMessage for accurate counting
+        # This ensures tool results (role=tool with tool_call_id) are counted
+        chat_messages = []
         for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                total += estimate_content_tokens(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and "text" in part:
-                        total += estimate_content_tokens(part["text"])
-            
-            # Overhead for message structure
-            total += 4
-            
-            # Tool calls
-            if "tool_calls" in msg:
-                for tc in msg.get("tool_calls", []):
-                    func = tc.get("function", {})
-                    total += estimate_content_tokens(func.get("name", ""))
-                    total += estimate_content_tokens(func.get("arguments", ""))
+            try:
+                chat_messages.append(ChatMessage(**msg))
+            except Exception:
+                # Fallback: estimate from content string
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    chat_messages.append(ChatMessage(role="user", content=content))
         
-        return total
+        return estimate_token_count(chat_messages)
     
     def _get_actual_or_estimated_tokens(self, context: HookContext, messages: list[dict[str, Any]]) -> int:
         """Get actual token count from last LLM response or estimate from messages.

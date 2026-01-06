@@ -8,7 +8,7 @@ hooks:
     description: "Intelligently summarizes older messages using LLM to reduce context size while preserving key information"
     category: "context_summarization"
     order:
-      after: ["begin"]
+      after: ["context_engineering"]
       before: ["context_optimization"]
 
 # MCP Tools - Manual summarization controls

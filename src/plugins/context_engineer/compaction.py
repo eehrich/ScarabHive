@@ -319,9 +319,14 @@ class LayeredCompactionStrategy:
                 token_count = estimate_content_tokens(content)
                 
                 # Always archive if exceeds max size (even if in last N)
+                # CRITICAL: Archive very large results (>2x max_inline_size) even if it's the very last one
+                # This prevents huge tool results from breaking LLM calls
+                is_extremely_large = token_count >= (self.config.tool_result_max_inline_size * 2)
                 is_too_large = token_count >= self.config.tool_result_max_inline_size
                 is_old_enough = tool_results_seen > self.config.tool_result_keep_last
-                should_archive = token_count >= self.config.tool_result_min_size and (is_too_large or is_old_enough)
+                should_archive = token_count >= self.config.tool_result_min_size and (
+                    is_extremely_large or is_too_large or is_old_enough
+                )
                 
                 if should_archive:
                     # Store and replace with reference

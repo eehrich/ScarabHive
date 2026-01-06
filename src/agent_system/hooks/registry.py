@@ -410,10 +410,10 @@ class HookRegistry:
                 resolved_preds = resolve_reference(pred_key)
 
                 if not resolved_preds:
-                    # Warn about non-existent hook/category reference
-                    logger.warning(
-                        f"Hook '{hook_name}' references non-existent hook/category '{pred_key}' in 'after' clause. "
-                        f"This dependency will be ignored."
+                    # Debug level - it's normal for referenced hooks/categories to be disabled
+                    logger.debug(
+                        f"Hook '{hook_name}' references inactive hook/category '{pred_key}' in 'after' clause. "
+                        f"Dependency ignored (hook may be disabled)."
                     )
                     continue
 
@@ -441,10 +441,10 @@ class HookRegistry:
                 resolved_succs = resolve_reference(succ_key)
 
                 if not resolved_succs:
-                    # Warn about non-existent hook/category reference
-                    logger.warning(
-                        f"Hook '{hook_name}' references non-existent hook/category '{succ_key}' in 'before' clause. "
-                        f"This dependency will be ignored."
+                    # Debug level - it's normal for referenced hooks/categories to be disabled
+                    logger.debug(
+                        f"Hook '{hook_name}' references inactive hook/category '{succ_key}' in 'before' clause. "
+                        f"Dependency ignored (hook may be disabled)."
                     )
                     continue
 

@@ -164,8 +164,19 @@ def estimate_content_tokens(content: str) -> int:
     if not content:
         return 0
 
-    # Word-based estimation (more accurate than character-based)
+    # Word-based estimation (more accurate than character-based for formatted text)
     words = len(content.split())
+    content_len = len(content)
+    
+    # Sanity check: if content is large but word count is suspiciously low,
+    # it's likely minified JSON/code without whitespace. Fall back to char-based.
+    # Typical text has ~5 chars/word, so if ratio > 50, content lacks whitespace.
+    if content_len > 1000 and words > 0:
+        chars_per_word = content_len / words
+        if chars_per_word > 50:
+            # Minified content: use character-based estimate
+            # ~4 characters per token for cl100k_base tokenizer
+            return content_len // 4
 
     # Detect content type for better estimation
     # Ratios calibrated for OpenAI cl100k_base tokenizer (GPT-4/5)

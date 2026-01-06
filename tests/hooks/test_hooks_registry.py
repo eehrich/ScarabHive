@@ -452,8 +452,11 @@ async def test_hook_category_before(registry, base_context):
 
 
 @pytest.mark.asyncio
-async def test_hook_category_nonexistent_warning(registry, base_context, caplog):
-    """Test that referencing non-existent category logs a warning."""
+async def test_hook_category_nonexistent_debug_log(registry, base_context, caplog):
+    """Test that referencing non-existent category logs a debug message (not warning)."""
+    import logging
+    caplog.set_level(logging.DEBUG)
+    
     hook = SimpleHook("test_hook")
     
     await registry.register_hook(
@@ -463,11 +466,11 @@ async def test_hook_category_nonexistent_warning(registry, base_context, caplog)
         order_spec={"after": ["nonexistent_category"], "before": ["end"]}
     )
     
-    # Execute hooks - should work but log warning
+    # Execute hooks - should work and log debug message (not warning)
     await registry.execute_hooks(HookType.PRE_LLM_CALL, base_context)
     
-    # Check for warning in logs
+    # Check for debug message in logs (it's normal for hooks to be disabled)
     assert any(
-        "non-existent hook/category 'nonexistent_category'" in record.message
+        "inactive hook/category 'nonexistent_category'" in record.message
         for record in caplog.records
     )

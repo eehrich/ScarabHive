@@ -93,6 +93,8 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             config = self.get_config()
             max_context_pct = float(config.get('max_context_percentage', 0.80))
             max_message_length = int(config.get('max_message_length_chars', 50000))
+            # Hard limit - force-truncate even tool responses if they exceed this
+            hard_max_message_length = int(config.get('hard_max_message_length_chars', 100000))
             preserve_system = bool(config.get('preserve_system_messages', True))
             preserve_last_n = int(config.get('preserve_last_n_messages', 5))
             remove_dupes = bool(config.get('remove_duplicates', True))
@@ -127,7 +129,8 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                 optimized_messages,
                 max_message_length,
                 max_json_string_length,
-                keep_string_end
+                keep_string_end,
+                hard_max_message_length
             )
             
             optimized_messages = self._enforce_token_limits(
@@ -139,13 +142,29 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             
             context.messages = optimized_messages
             
-            modified = len(optimized_messages) != len(messages)
+            # Check if modified: either count changed OR content changed
+            # IMPORTANT: Truncation modifies content without changing count!
+            count_changed = len(optimized_messages) != len(messages)
+            content_changed = False
+            if not count_changed:
+                # Check if any message content was actually modified
+                for orig, opt in zip(messages, optimized_messages):
+                    if orig.content != opt.content:
+                        content_changed = True
+                        break
+            
+            modified = count_changed or content_changed
             
             if modified:
-                logger.info(
-                    f"[ContextOptimizer] Context optimized: {len(messages)} -> {len(optimized_messages)} messages "
-                    f"(max {max_total_tokens} tokens = {max_context_pct:.0%} of {context_window})"
-                )
+                if count_changed:
+                    logger.info(
+                        f"[ContextOptimizer] Context optimized: {len(messages)} -> {len(optimized_messages)} messages "
+                        f"(max {max_total_tokens} tokens = {max_context_pct:.0%} of {context_window})"
+                    )
+                elif content_changed:
+                    logger.info(
+                        f"[ContextOptimizer] Messages truncated (count unchanged: {len(messages)} messages)"
+                    )
             
             return HookResult(
                 success=True,
@@ -301,7 +320,8 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         messages: list,
         max_length: int,
         max_json_string_length: int = 5000,
-        keep_string_end: bool = True
+        keep_string_end: bool = True,
+        hard_max_length: int = 100000
     ) -> list:
         """Truncate overly long messages.
         
@@ -311,11 +331,16 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         Handles multimodal content by extracting text for length checks while
         preserving original structure for images/audio.
         
+        IMPORTANT: Messages exceeding hard_max_length are force-truncated even if
+        JSON truncation fails. This prevents extremely large tool responses from
+        breaking LLM calls.
+        
         Args:
             messages: List of messages to truncate
             max_length: Max length for entire message (chars)
             max_json_string_length: Max length for strings within JSON (chars)
             keep_string_end: If True, keep end of strings; if False, keep beginning
+            hard_max_length: Absolute max - force-truncate if exceeded (default 100KB)
         """
         import json
         from agent_system.llm.token_utils import extract_text_from_content
@@ -352,24 +377,46 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                             f"[ContextOptimizer] Smart-truncated tool response JSON: "
                             f"{len(content)} -> {len(truncated_content)} chars"
                         )
+                        # Check if still exceeds hard limit
+                        if len(truncated_content) > hard_max_length:
+                            truncated_content = truncated_content[:hard_max_length] + '... [FORCE TRUNCATED - exceeded hard limit]'
+                            logger.warning(
+                                f"[ContextOptimizer] Force-truncated tool response to {hard_max_length} chars (exceeded hard limit)"
+                            )
                         truncated_msg = msg.model_copy(update={'content': truncated_content})
                         result.append(truncated_msg)
                     else:
-                        # Truncation didn't help (structure overhead is large), keep original
-                        result.append(msg)
-                        logger.warning(
-                            f"[ContextOptimizer] Tool response is {len(content)} chars (>{max_length}) "
-                            f"and couldn't be reduced. Consider increasing max_message_length_chars."
-                        )
+                        # Truncation didn't help - check hard limit
+                        if len(content) > hard_max_length:
+                            truncated_content = content[:hard_max_length] + '... [FORCE TRUNCATED - exceeded hard limit]'
+                            truncated_msg = msg.model_copy(update={'content': truncated_content})
+                            result.append(truncated_msg)
+                            logger.warning(
+                                f"[ContextOptimizer] Force-truncated tool response from {len(content)} to {hard_max_length} chars (hard limit)"
+                            )
+                        else:
+                            result.append(msg)
+                            logger.warning(
+                                f"[ContextOptimizer] Tool response is {len(content)} chars (>{max_length}) "
+                                f"and couldn't be reduced. Consider increasing max_message_length_chars."
+                            )
                     continue
                     
                 except (json.JSONDecodeError, Exception) as e:
-                    # Not JSON or error - log and keep original
-                    logger.warning(
-                        f"[ContextOptimizer] Tool response is {len(content)} chars (>{max_length}) "
-                        f"but NOT JSON (parse error: {e}). Keeping original to preserve validity."
-                    )
-                    result.append(msg)
+                    # Not JSON or error - check hard limit
+                    if len(content) > hard_max_length:
+                        truncated_content = content[:hard_max_length] + '... [FORCE TRUNCATED - exceeded hard limit]'
+                        truncated_msg = msg.model_copy(update={'content': truncated_content})
+                        result.append(truncated_msg)
+                        logger.warning(
+                            f"[ContextOptimizer] Force-truncated non-JSON tool response from {len(content)} to {hard_max_length} chars"
+                        )
+                    else:
+                        logger.warning(
+                            f"[ContextOptimizer] Tool response is {len(content)} chars (>{max_length}) "
+                            f"but NOT JSON (parse error: {e}). Keeping original to preserve validity."
+                        )
+                        result.append(msg)
                     continue
             
             # Tool response within limit - keep as-is

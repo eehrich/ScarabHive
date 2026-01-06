@@ -58,7 +58,14 @@ class FileOpsServer(SchemaBasedMCPServer):
 
         # Initialize components
         self.validator = PathValidator(allowed_dirs)
-        self.operations = FileOperations()
+        
+        # Get file reading limits from config
+        max_unpaginated_kb = getattr(mcp_config, "max_unpaginated_file_size_kb", 100)
+        default_line_limit = getattr(mcp_config, "default_line_limit", 500)
+        self.operations = FileOperations(
+            max_unpaginated_kb=max_unpaginated_kb,
+            default_line_limit=default_line_limit
+        )
 
         # Initialize search engine with configuration
         search_config = getattr(mcp_config, "search", {})

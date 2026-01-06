@@ -179,6 +179,22 @@ config:
     - data/workspace
   max_file_size_for_indexing_kb: 1024
   max_file_size_mb: 10
+  
+  # File reading limits to prevent memory issues with large files
+  max_unpaginated_file_size_kb:
+    type: integer
+    default: 100
+    description: "Maximum file size in KB to read without pagination (default: 100KB)"
+    minimum: 10
+    maximum: 10240
+  
+  default_line_limit:
+    type: integer
+    default: 500
+    description: "Default number of lines to read when file exceeds max_unpaginated_file_size"
+    minimum: 50
+    maximum: 10000
+  
   search:
     enable_indexing: true
     index_on_startup: true

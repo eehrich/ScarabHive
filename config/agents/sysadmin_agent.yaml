@@ -59,15 +59,23 @@ plugins:
             - "basic_operations/*"
             - "datetime/*"
             - "sequential_thinking/*"
-            - "cognitive_stack/*"
             - "todo/*"
             - "memory/*"
             - "sysadmin_agent_manager/*"
+            - "context_engineer/*"      
             - "file_ops/*"
+            - "terminal/*"            
 
         hooks:
           enabled: true
           overrides:
+            # Context management hooks - CRITICAL for large tool responses
+            context_engineer.engineer_context:
+              enabled: true
+            context_optimizer.optimize_context:
+              enabled: true
+            
+            # Formatting and injection hooks
             markdown_formatter.format_markdown_output:
               enabled: true
             sequential_thinking.inject_active_sessions:

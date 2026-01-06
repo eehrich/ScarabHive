@@ -15,6 +15,16 @@ logger = logging.getLogger(__name__)
 class FileOperations:
     """Safe file operation implementations."""
 
+    def __init__(self, max_unpaginated_kb: int = 100, default_line_limit: int = 500):
+        """Initialize file operations.
+        
+        Args:
+            max_unpaginated_kb: Max file size in KB to read without pagination
+            default_line_limit: Default number of lines for paginated reads
+        """
+        self.max_unpaginated_size = max_unpaginated_kb * 1024  # Convert to bytes
+        self.default_line_limit = default_line_limit
+
     async def read_file_safe(
         self,
         path: Path,
@@ -24,19 +34,26 @@ class FileOperations:
     ) -> Dict[str, Any]:
         """
         Read file contents with pagination support.
+        
+        Large files (>100KB) are automatically paginated to prevent memory issues.
+        Use offset and limit parameters for explicit pagination control.
 
         Args:
             path: File path to read
             offset: Starting line number (0-indexed)
-            limit: Maximum number of lines to read
+            limit: Maximum number of lines to read (default: 500 for large files)
             encoding: Text encoding
 
         Returns:
             Dict with status, content, total_lines, lines_read, offset, encoding, file_path
         """
         try:
+            # Check file size first
+            file_size = path.stat().st_size
+            
             # If no pagination (offset=0 and no limit), read entire file preserving original line endings
-            if offset == 0 and limit is None:
+            # BUT only if file is small enough
+            if offset == 0 and limit is None and file_size <= self.max_unpaginated_size:
                 async with aiofiles.open(path, 'r', encoding=encoding, errors='replace', newline='') as f:
                     content = await f.read()
 
@@ -52,6 +69,14 @@ class FileOperations:
                     "encoding": encoding,
                     "file_path": str(path)
                 }
+
+            # Large file without explicit limit - apply default pagination
+            if limit is None and file_size > self.max_unpaginated_size:
+                limit = self.default_line_limit
+                logger.info(
+                    f"Large file ({file_size} bytes), applying default pagination: "
+                    f"limit={limit} lines. Use offset/limit for more control."
+                )
 
             # Pagination mode: need to process line by line
             lines = []

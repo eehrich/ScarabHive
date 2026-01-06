@@ -286,6 +286,8 @@ plugins:
       allowed_directories:
         - data/workspace
       max_file_size_mb: 10
+      max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
+      default_line_limit: 500  # Default lines when paginating large files
       search:
         enable_indexing: true
         index_on_startup: true
@@ -306,6 +308,8 @@ plugins:
       allowed_directories:
         - .
       max_file_size_mb: 200
+      max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
+      default_line_limit: 500  # Default lines when paginating large files
       search:
         enable_indexing: true
         index_on_startup: false  # Don't auto-index on startup (too slow for large workspace)
@@ -374,6 +378,9 @@ plugins:
         
         # Message truncation: Max length for individual messages (in chars)
         max_message_length_chars: 50000
+        
+        # Hard limit - force-truncate even if smart truncation fails
+        hard_max_message_length_chars: 100000  # 100KB absolute max
         
         # Smart JSON truncation for tool responses
         # When tool response JSON exceeds max_message_length_chars,
