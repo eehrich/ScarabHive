@@ -95,6 +95,18 @@ class SessionManager:
             raise ValueError(f"Invalid session ID format: {session_id!r}")
         return session_id
 
+    def _get_index_path(self, user_id: str) -> Path:
+        """Get the path to the index file for a user.
+        
+        Args:
+            user_id: User identifier
+        
+        Returns:
+            Path to index.json file
+        """
+        safe_user_id = self._sanitize_user_id(user_id)
+        return self.storage_path / safe_user_id / "index.json"
+
     def _get_session_path(self, user_id: str, session_id: str) -> Path:
         """Get the file path for a session.
         
@@ -304,6 +316,138 @@ class SessionManager:
         """Async wrapper for reading session file to avoid blocking event loop."""
         return await asyncio.to_thread(self._read_session_file, path)
 
+    async def _read_index_async(self, user_id: str) -> Dict[str, Dict[str, Any]]:
+        """Read session index file.
+        
+        Args:
+            user_id: User identifier
+        
+        Returns:
+            Dict mapping session_id -> metadata
+        
+        Raises:
+            FileNotFoundError: If index doesn't exist
+        """
+        index_path = self._get_index_path(user_id)
+        if not index_path.exists():
+            raise FileNotFoundError(f"Index file not found: {index_path}")
+        
+        def read_index():
+            with open(index_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        
+        return await asyncio.to_thread(read_index)
+
+    async def _write_index_async(self, user_id: str, index_data: Dict[str, Dict[str, Any]]) -> None:
+        """Write session index file atomically.
+        
+        Args:
+            user_id: User identifier
+            index_data: Dict mapping session_id -> metadata
+        """
+        index_path = self._get_index_path(user_id)
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        def write_index():
+            # Atomic write: write to temp file, then rename
+            temp_path = index_path.with_suffix('.tmp')
+            try:
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(index_data, f, indent=2, ensure_ascii=False)
+                temp_path.replace(index_path)
+            except Exception as e:
+                if temp_path.exists():
+                    temp_path.unlink()
+                raise e
+        
+        await asyncio.to_thread(write_index)
+
+    async def _rebuild_index(self, user_id: str) -> Dict[str, Dict[str, Any]]:
+        """Rebuild index from session files.
+        
+        Args:
+            user_id: User identifier
+        
+        Returns:
+            Dict mapping session_id -> metadata
+        """
+        safe_user_id = self._sanitize_user_id(user_id)
+        user_dir = self.storage_path / safe_user_id
+        
+        if not user_dir.exists():
+            return {}
+        
+        index_data = {}
+        
+        for session_file in user_dir.glob("*.json"):
+            # Skip index, backups, and temp files
+            if session_file.name in ('index.json', 'index.tmp') or session_file.name.startswith('.'):
+                continue
+            
+            try:
+                session_data = await self._read_session_file_async(session_file)
+                
+                # Extract metadata
+                index_data[session_data["session_id"]] = {
+                    "session_id": session_data["session_id"],
+                    "user_id": session_data["user_id"],
+                    "title": session_data["title"],
+                    "created_at": session_data["created_at"],
+                    "updated_at": session_data["updated_at"],
+                    "agent_name": session_data["agent_name"],
+                    "llm_profile": session_data["llm_profile"],
+                    "message_count": session_data["metadata"].get("message_count", 0),
+                    "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
+                    "tags": session_data["metadata"].get("tags", []),
+                    "parent_session": session_data.get("parent_session"),
+                    "depth": session_data.get("depth", 0)
+                }
+            except Exception as e:
+                logger.warning("Failed to read session %s for index rebuild: %s", session_file, e)
+                continue
+        
+        # Write rebuilt index
+        if index_data:
+            await self._write_index_async(user_id, index_data)
+            logger.info("Rebuilt index for user %s with %d sessions", user_id, len(index_data))
+        
+        return index_data
+
+    async def _update_index_entry(self, user_id: str, session_id: str, metadata: Dict[str, Any]) -> None:
+        """Update a single entry in the index.
+        
+        Args:
+            user_id: User identifier
+            session_id: Session identifier
+            metadata: Session metadata to store
+        """
+        try:
+            index_data = await self._read_index_async(user_id)
+        except FileNotFoundError:
+            # Index doesn't exist, rebuild it
+            index_data = await self._rebuild_index(user_id)
+        
+        # Update entry
+        index_data[session_id] = metadata
+        
+        # Write back
+        await self._write_index_async(user_id, index_data)
+
+    async def _remove_index_entry(self, user_id: str, session_id: str) -> None:
+        """Remove an entry from the index.
+        
+        Args:
+            user_id: User identifier
+            session_id: Session identifier
+        """
+        try:
+            index_data = await self._read_index_async(user_id)
+            index_data.pop(session_id, None)
+            await self._write_index_async(user_id, index_data)
+        except FileNotFoundError:
+            # Index doesn't exist, nothing to remove
+            pass
+
     async def create_session(
         self,
         user_id: str,
@@ -378,6 +522,23 @@ class SessionManager:
             # Cache the new session (with cleanup if needed)
             self._cleanup_cache()
             self._cache[sid] = (session_data, time.time())
+            
+            # Update index
+            metadata = {
+                "session_id": session_data["session_id"],
+                "user_id": session_data["user_id"],
+                "title": session_data["title"],
+                "created_at": session_data["created_at"],
+                "updated_at": session_data["updated_at"],
+                "agent_name": session_data["agent_name"],
+                "llm_profile": session_data["llm_profile"],
+                "message_count": 0,
+                "last_agent_response": "",
+                "tags": session_data["metadata"].get("tags", []),
+                "parent_session": session_data.get("parent_session"),
+                "depth": session_data.get("depth", 0)
+            }
+            await self._update_index_entry(safe_user_id, sid, metadata)
             
             logger.info("Created session %s for user %s", sid, safe_user_id)
             return session_data
@@ -498,6 +659,23 @@ class SessionManager:
             # Update cache
             self._cache[session_id] = (session_data, time.time())
             
+            # Update index
+            metadata = {
+                "session_id": session_data["session_id"],
+                "user_id": session_data["user_id"],
+                "title": session_data["title"],
+                "created_at": session_data["created_at"],
+                "updated_at": session_data["updated_at"],
+                "agent_name": session_data["agent_name"],
+                "llm_profile": session_data["llm_profile"],
+                "message_count": session_data["metadata"].get("message_count", 0),
+                "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
+                "tags": session_data["metadata"].get("tags", []),
+                "parent_session": session_data.get("parent_session"),
+                "depth": session_data.get("depth", 0)
+            }
+            await self._update_index_entry(user_id, session_id, metadata)
+            
             logger.debug("Saved session %s", session_id)
 
     async def delete_session(self, user_id: str, session_id: str, create_backup: bool = True) -> None:
@@ -551,10 +729,13 @@ class SessionManager:
             # Remove from cache
             self._cache.pop(session_id, None)
             
+            # Remove from index
+            await self._remove_index_entry(user_id, session_id)
+            
             logger.info("Deleted session %s for user %s", session_id, user_id)
 
     async def list_sessions(self, user_id: str) -> List[Dict[str, Any]]:
-        """List all sessions for a user.
+        """List all sessions for a user using fast index lookup.
         
         Args:
             user_id: User identifier
@@ -562,47 +743,47 @@ class SessionManager:
         Returns:
             List of session metadata dictionaries (without full message history)
         """
-        safe_user_id = user_id.replace('/', '_').replace('\\', '_').replace('..', '_')
+        safe_user_id = self._sanitize_user_id(user_id)
         user_dir = self.storage_path / safe_user_id
         
         if not user_dir.exists():
             logger.debug("No sessions directory for user %s", user_id)
             return []
         
-        sessions = []
-        
-        for session_file in user_dir.glob("*.json"):
-            # Skip backups and temp files
-            if session_file.name.startswith('.'):
-                continue
+        # Try to read from index file
+        try:
+            index_data = await self._read_index_async(user_id)
+            sessions = list(index_data.values())
             
-            try:
-                session_data = await self._read_session_file_async(session_file)
-                
-                # Return metadata only (not full message history)
-                sessions.append({
-                    "session_id": session_data["session_id"],
-                    "user_id": session_data["user_id"],  # Added for API compatibility
-                    "title": session_data["title"],
-                    "created_at": session_data["created_at"],
-                    "updated_at": session_data["updated_at"],
-                    "agent_name": session_data["agent_name"],
-                    "llm_profile": session_data["llm_profile"],
-                    "message_count": session_data["metadata"].get("message_count", 0),
-                    "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
-                    "tags": session_data["metadata"].get("tags", []),  # Added for API compatibility
-                    "parent_session": session_data.get("parent_session"),  # For hierarchical display
-                    "depth": session_data.get("depth", 0)  # Sub-agent depth level
-                })
-            except Exception as e:
-                logger.warning("Failed to load session %s: %s", session_file, e)
-                continue
+            # Sort by updated_at (most recent first)
+            sessions.sort(key=lambda s: s["updated_at"], reverse=True)
+            
+            logger.debug("Listed %d sessions for user %s from index", len(sessions), user_id)
+            return sessions
+            
+        except FileNotFoundError:
+            # Index doesn't exist, rebuild it
+            logger.info("Index not found for user %s, rebuilding...", user_id)
+            index_data = await self._rebuild_index(user_id)
+            sessions = list(index_data.values())
+            
+            # Sort by updated_at (most recent first)
+            sessions.sort(key=lambda s: s["updated_at"], reverse=True)
+            
+            logger.debug("Listed %d sessions for user %s after rebuild", len(sessions), user_id)
+            return sessions
         
-        # Sort by updated_at (most recent first)
-        sessions.sort(key=lambda s: s["updated_at"], reverse=True)
-        
-        logger.debug("Listed %d sessions for user %s", len(sessions), user_id)
-        return sessions
+        except Exception as e:
+            # Index is corrupt, rebuild it
+            logger.warning("Corrupt index for user %s, rebuilding: %s", user_id, e)
+            index_data = await self._rebuild_index(user_id)
+            sessions = list(index_data.values())
+            
+            # Sort by updated_at (most recent first)
+            sessions.sort(key=lambda s: s["updated_at"], reverse=True)
+            
+            logger.debug("Listed %d sessions for user %s after rebuild", len(sessions), user_id)
+            return sessions
 
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
         """Rename a session.
