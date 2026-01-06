@@ -1,26 +1,90 @@
-// Status Module
+// Status Module - Modern Design (VSCode Theme)
 window.AgentSystem = window.AgentSystem || {};
 
 window.AgentSystem.Status = {
+  autoRefreshInterval: null,
+  lastRefreshTime: null,
   
   showPanel: function() {
     console.log('Status panel requested');
     
+    // Create header with controls (like profiling panel)
+    const headerContent = `
+      <span id="statusLastRefresh" style="font-size: 11px; color: #858585; margin-right: 8px;"></span>
+      <button id="statusRefreshBtn" class="icon-btn" title="Refresh">🔄</button>
+      <button id="statusAutoRefreshBtn" class="icon-btn active" title="Auto-Refresh (5s) - Active">⏱️</button>
+    `;
+    
     // Create panel with loading state
     const panel = window.AgentSystem.PanelManager.createPanel(
       'floatingStatusPanel', 
-      'Status & Metrics', 
-      '<div class="status-metrics" id="floatingStatusMetrics"><div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div></div>'
+      '📊 System Status', 
+      '<div class="status-loading">Loading...</div>',
+      '',
+      headerContent
     );
     
-    // Load status data
+    // Add event listeners
+    const refreshBtn = panel.querySelector('#statusRefreshBtn');
+    const autoRefreshBtn = panel.querySelector('#statusAutoRefreshBtn');
+    
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => this.loadStatusData(panel));
+    }
+    
+    if (autoRefreshBtn) {
+      autoRefreshBtn.addEventListener('click', () => this.toggleAutoRefresh(panel));
+    }
+    
+    // Load initial data
     this.loadStatusData(panel);
+    
+    // Start auto-refresh
+    this.startAutoRefresh(panel);
+  },
+  
+  toggleAutoRefresh: function(panel) {
+    const btn = panel.querySelector('#statusAutoRefreshBtn');
+    if (this.autoRefreshInterval) {
+      this.stopAutoRefresh();
+      if (btn) {
+        btn.classList.remove('active');
+        btn.title = 'Auto-Refresh (5s) - Paused';
+      }
+    } else {
+      this.startAutoRefresh(panel);
+      if (btn) {
+        btn.classList.add('active');
+        btn.title = 'Auto-Refresh (5s) - Active';
+      }
+    }
+  },
+  
+  startAutoRefresh: function(panel) {
+    if (this.autoRefreshInterval) return;
+    this.autoRefreshInterval = setInterval(() => this.loadStatusData(panel), 5000);
+  },
+  
+  stopAutoRefresh: function() {
+    if (this.autoRefreshInterval) {
+      clearInterval(this.autoRefreshInterval);
+      this.autoRefreshInterval = null;
+    }
+  },
+  
+  updateTimestamp: function(panel) {
+    const el = panel.querySelector('#statusLastRefresh');
+    if (el && this.lastRefreshTime) {
+      el.textContent = 'Updated: ' + this.lastRefreshTime.toLocaleTimeString();
+    }
   },
   
   loadStatusData: async function(panel) {
     try {
-      console.log('Loading status data...');
-      // Try multiple endpoints to get status information
+      const refreshBtn = panel.querySelector('#statusRefreshBtn');
+      if (refreshBtn) refreshBtn.disabled = true;
+      
+      // Only fetch health and event bus meta (no profiling data)
       const [healthResponse, metaResponse] = await Promise.allSettled([
         fetch('/health'),
         fetch('/status/meta')
@@ -32,27 +96,14 @@ window.AgentSystem.Status = {
       if (healthResponse.status === 'fulfilled' && healthResponse.value.ok) {
         healthData = await healthResponse.value.json();
       }
-      
       if (metaResponse.status === 'fulfilled' && metaResponse.value.ok) {
         metaData = await metaResponse.value.json();
       }
       
-      console.log('Status data loaded:', { health: healthData, meta: metaData });
+      this.lastRefreshTime = new Date();
+      this.updateTimestamp(panel);
       
-      // Combine data from available endpoints and system info
-      const combinedData = {
-        status: healthData.status || 'Unknown',
-        uptime: healthData.uptime_seconds ? this.formatUptime(healthData.uptime_seconds * 1000) : 'Unknown',
-        version: healthData.version ? `${healthData.name || 'AgentSystem'} v${healthData.version}` : 'Unknown',
-        memory_usage: this.formatMemoryUsage(),
-        subscribers: metaData.subscribers || 0,
-        events_published: metaData.publish_attempted || 0,
-        events_delivered: metaData.delivered || 0,
-        handlers_count: metaData.handlers_count || 0
-      };
-      
-      // Update panel content directly (PanelManager already creates .panel-content wrapper)
-      const content = this.renderStatusContent(combinedData);
+      const content = this.renderStatusContent(healthData, metaData);
       const body = panel.querySelector('.floating-panel-body');
       const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
       contentDiv.innerHTML = content;
@@ -61,67 +112,105 @@ window.AgentSystem.Status = {
       console.error('Failed to load status data:', error);
       const body = panel.querySelector('.floating-panel-body');
       const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
-      contentDiv.innerHTML = '<div class="status-metrics"><div class="metric-item"><span class="metric-label">Error</span><span class="metric-value">Failed to load</span></div></div>';
+      contentDiv.innerHTML = '<div class="status-error">❌ Failed to load status data</div>';
+    } finally {
+      const refreshBtn = panel.querySelector('#statusRefreshBtn');
+      if (refreshBtn) refreshBtn.disabled = false;
     }
   },
   
-  formatUptime: function(milliseconds) {
-    const seconds = Math.floor(milliseconds / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
+  formatUptime: function(seconds) {
+    const secs = Math.floor(seconds);
+    const mins = Math.floor(secs / 60);
+    const hours = Math.floor(mins / 60);
     const days = Math.floor(hours / 24);
     
-    if (days > 0) return `${days}d ${hours % 24}h ${minutes % 60}m`;
-    if (hours > 0) return `${hours}h ${minutes % 60}m`;
-    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-    return `${seconds}s`;
+    if (days > 0) return `${days}d ${hours % 24}h ${mins % 60}m`;
+    if (hours > 0) return `${hours}h ${mins % 60}m`;
+    if (mins > 0) return `${mins}m ${secs % 60}s`;
+    return `${secs}s`;
   },
   
-  formatMemoryUsage: function() {
-    if (performance.memory) {
-      const used = Math.round(performance.memory.usedJSHeapSize / 1024 / 1024);
-      const total = Math.round(performance.memory.totalJSHeapSize / 1024 / 1024);
-      return `${used}MB / ${total}MB`;
+  getStatusClass: function(status) {
+    if (status === 'healthy' || status === 'ok') return 'status-healthy';
+    if (status === 'warning' || status === 'degraded') return 'status-warning';
+    return 'status-error';
+  },
+  
+  renderStatusContent: function(health, meta) {
+    const status = health.status || 'Unknown';
+    const uptime = health.uptime_seconds ? this.formatUptime(health.uptime_seconds) : 'N/A';
+    const version = health.version ? `v${health.version}` : 'N/A';
+    const pythonVersion = health.python_version || 'N/A';
+    
+    // Build packages section if available
+    let packagesHtml = '';
+    if (health.packages && Object.keys(health.packages).length > 0) {
+      const packages = Object.entries(health.packages)
+        .map(([name, ver]) => `<tr><td>${name}</td><td class="value">${ver}</td></tr>`)
+        .join('');
+      packagesHtml = `
+        <div class="status-section">
+          <div class="status-section-title">📦 Key Packages</div>
+          <table class="status-table">
+            <tr><th>Package</th><th>Version</th></tr>
+            ${packages}
+          </table>
+        </div>
+      `;
     }
-    return 'Unknown';
-  },
-  
-  renderStatusContent: function(data) {
+    
     return `
-      <div class="status-metrics" id="floatingStatusMetrics">
-        <div class="metric-item">
-          <span class="metric-label">Status</span>
-          <span class="metric-value status-${data.status.toLowerCase()}">${data.status}</span>
+      <style>
+        .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .status-card { background: #252526; border: 1px solid #3e3e42; border-radius: 6px; padding: 12px; }
+        .status-card-label { font-size: 11px; color: #858585; margin-bottom: 4px; text-transform: uppercase; }
+        .status-card-value { font-size: 18px; font-weight: 600; color: #4ec9b0; }
+        .status-card-value.status-healthy { color: #4ec9b0; }
+        .status-card-value.status-warning { color: #dcdcaa; }
+        .status-card-value.status-error { color: #f48771; }
+        .status-section { background: #252526; border: 1px solid #3e3e42; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+        .status-section-title { font-size: 14px; color: #ce9178; margin-bottom: 12px; font-weight: 600; }
+        .status-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .status-table th { text-align: left; color: #569cd6; font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid #3e3e42; }
+        .status-table td { padding: 8px; border-bottom: 1px solid #3e3e42; color: #d4d4d4; }
+        .status-table td.value { color: #4ec9b0; font-weight: 500; }
+        .status-loading { color: #858585; padding: 20px; text-align: center; }
+        .status-error { color: #f48771; padding: 20px; text-align: center; }
+        .status-empty { color: #858585; font-style: italic; padding: 10px 0; }
+      </style>
+      
+      <div class="status-grid">
+        <div class="status-card">
+          <div class="status-card-label">Status</div>
+          <div class="status-card-value ${this.getStatusClass(status)}">${status}</div>
         </div>
-        <div class="metric-item">
-          <span class="metric-label">Uptime</span>
-          <span class="metric-value">${data.uptime}</span>
+        <div class="status-card">
+          <div class="status-card-label">Uptime</div>
+          <div class="status-card-value">${uptime}</div>
         </div>
-        <div class="metric-item">
-          <span class="metric-label">Version</span>
-          <span class="metric-value">${data.version}</span>
+        <div class="status-card">
+          <div class="status-card-label">Version</div>
+          <div class="status-card-value">${version}</div>
         </div>
-        <div class="metric-item">
-          <span class="metric-label">Memory Usage</span>
-          <span class="metric-value">${data.memory_usage}</span>
-        </div>
-        <div class="metric-item">
-          <span class="metric-label">Subscribers</span>
-          <span class="metric-value">${data.subscribers}</span>
-        </div>
-        <div class="metric-item">
-          <span class="metric-label">Events Published</span>
-          <span class="metric-value">${data.events_published}</span>
-        </div>
-        <div class="metric-item">
-          <span class="metric-label">Events Delivered</span>
-          <span class="metric-value">${data.events_delivered}</span>
-        </div>
-        <div class="metric-item">
-          <span class="metric-label">Handlers Count</span>
-          <span class="metric-value">${data.handlers_count}</span>
+        <div class="status-card">
+          <div class="status-card-label">Python</div>
+          <div class="status-card-value">${pythonVersion}</div>
         </div>
       </div>
+      
+      <div class="status-section">
+        <div class="status-section-title">📡 Event Bus</div>
+        <table class="status-table">
+          <tr><th>Metric</th><th>Value</th></tr>
+          <tr><td>Subscribers</td><td class="value">${meta.subscribers || 0}</td></tr>
+          <tr><td>Events Published</td><td class="value">${meta.publish_attempted || 0}</td></tr>
+          <tr><td>Events Delivered</td><td class="value">${meta.delivered || 0}</td></tr>
+          <tr><td>Handlers</td><td class="value">${meta.handlers_count || 0}</td></tr>
+        </table>
+      </div>
+      
+      ${packagesHtml}
     `;
   }
 };

@@ -763,12 +763,57 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to load config for health check: {e}")
 
+        # Get Python version
+        import sys
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        
+        # Get key package versions
+        packages = {}
+        try:
+            import fastapi
+            import anthropic
+            import openai
+            import uvicorn
+            import pydantic
+            
+            packages["fastapi"] = getattr(fastapi, "__version__", "unknown")
+            packages["anthropic"] = getattr(anthropic, "__version__", "unknown")
+            packages["openai"] = getattr(openai, "__version__", "unknown")
+            packages["uvicorn"] = getattr(uvicorn, "__version__", "unknown")
+            packages["pydantic"] = getattr(pydantic, "__version__", "unknown")
+            
+            # Try to get Google Gemini version
+            try:
+                from google import genai
+                packages["google-genai"] = getattr(genai, "__version__", "unknown")
+            except ImportError:
+                pass
+                
+            # Try to get httpx version
+            try:
+                import httpx
+                packages["httpx"] = getattr(httpx, "__version__", "unknown")
+            except ImportError:
+                pass
+            
+            # Try to get chromadb version
+            try:
+                import chromadb
+                packages["chromadb"] = getattr(chromadb, "__version__", "unknown")
+            except ImportError:
+                pass
+                
+        except Exception as e:
+            logger.debug(f"Failed to get package versions: {e}")
+
         return {
             "status": "ok",
             "version": agent_config.get("version", "unknown"),
             "name": agent_config.get("name", "AgentSystem"),
             "uptime_seconds": round(uptime_seconds, 2),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "python_version": python_version,
+            "packages": packages
         }
 
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):

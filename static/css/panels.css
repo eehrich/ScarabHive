@@ -14,9 +14,9 @@
   /* Allow panels to be resized up to viewport limits with buffer */
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 100px);
-  background: linear-gradient(180deg, var(--bg-darkest), var(--bg-dark));
-  border: 1px solid var(--border-normal);
-  border-radius: 10px;
+  background: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 6px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.6);
   z-index: 1000;
   display: flex;
@@ -82,8 +82,8 @@
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: linear-gradient(180deg, var(--bg-darkest), var(--bg-dark));
-  border-bottom: 1px solid var(--border-subtle);
+  background: #252526;
+  border-bottom: 1px solid #3e3e42;
   cursor: grab;
   flex-shrink: 0;
 }
@@ -99,19 +99,28 @@
   justify-content: center;
   width: 36px;
   height: 36px;
-  background: var(--bg-darkest);
-  border: 1px solid var(--border-normal);
-  color: #9ab;
+  background: #0e639c;
+  border: none;
+  color: white;
   padding: 6px;
-  border-radius: 10px;
+  border-radius: 4px;
   cursor: pointer;
   margin-right: 8px;
   transition: background 150ms ease, transform 120ms ease;
 }
 
 .floating-panel-header .icon-btn:hover {
-  background: var(--bg-dark);
+  background: #1177bb;
   transform: translateY(-1px);
+}
+
+/* Active state for icon buttons (auto-refresh toggle) */
+.floating-panel-header .icon-btn.active {
+  background: #16825d;
+}
+
+.floating-panel-header .icon-btn.active:hover {
+  background: #1a9970;
 }
 
 .floating-panel-header .icon-btn:active {
