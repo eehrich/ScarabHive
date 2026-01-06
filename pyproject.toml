@@ -10,15 +10,15 @@ authors = [{ name = "Enrico Ehrich" }]
 readme = "README.md"
 requires-python = ">=3.11,<3.13"  # Python 3.13 not supported due to chromadb compatibility issues
 dependencies = [
-    "pydantic>=2.7,<2.11",  # <2.11 needed for chromadb 0.6.3 compatibility
+    "pydantic>=2.11,<3.0",  # chromadb 0.6.3 is compatible with pydantic 2.11+
     "pyyaml>=6.0",
-    "fastapi>=0.115.0",
+    "fastapi==0.115.6",  # Pin exact version
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "aiohttp>=3.12",
     "requests>=2.28",
-    "ddgs>=2.8.4; python_version>='3.10'",
-    "duckduckgo-search>=6.1.6; python_version<'3.10'",
+    "urllib3>=1.24.2,<2.4.0",  # <2.4.0 needed for kubernetes compatibility
+    "duckduckgo-search>=6.1.6,<9.0",  # Note: ddgs package was hijacked by another project at v9.x
     "yfinance>=0.2.52",
     "curl-cffi>=0.5.0",
     "snscrape>=0.7.0",
@@ -26,7 +26,7 @@ dependencies = [
     "openai>=1.37.0",
     "anthropic>=0.40.0",  # Anthropic Claude SDK
     "ollama>=0.3.0",
-    "google-genai>=1.0.0",  # Official Google Gen AI SDK for Gemini
+    "google-genai==1.12.1",  # Pin exact version to avoid backtracking
     "jinja2>=3.1",
     "pytz>=2024.1",
     "pytest>=8.4",
@@ -48,7 +48,8 @@ dependencies = [
     "markdownify>=0.11.0",
     "pygments>=2.15.0",
     "websockets>=15.0.0",
-    "chromadb>=0.6.0,<1.0.0",
+    "chromadb==0.6.3",  # Pin exact version for stability
+    "posthog>=3.0.0,<3.2.0",  # Pin compatible version - 7.x has breaking changes
     "chroma-hnswlib>=0.7.6",  # ChromaDB's compatible fork (NOT hnswlib!)
     "sqlite-vec>=0.1.0",
     "onnxruntime>=1.20.0",
@@ -94,7 +95,7 @@ dev = [
     "ruff>=0.12",
     "mypy>=1.7",
     "smithery>=0.1.0",
-    "mcp>=1.14.0",
+    "mcp==1.14.1",  # Pin exact version - requires pydantic>=2.11
     "uv>=0.8.0",
     "types-PyYAML>=6.0",
     "types-pytz>=2024.1",
