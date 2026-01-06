@@ -284,42 +284,79 @@
             justify-content: space-between;
         }
 
-        /* Variables */
-        .var-list {
-            list-style: none;
+        /* Variables Table */
+        .var-table {
+            width: 100%;
+            border-collapse: collapse;
         }
 
-        .var-item {
+        .var-table th,
+        .var-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .var-table th {
             background: #1e1e1e;
-            border: 1px solid #3e3e42;
-            border-radius: 4px;
-            padding: 12px;
-            margin-bottom: 8px;
-        }
-
-        .var-item .name {
-            color: #ce9178;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 14px;
-        }
-
-        .var-item .type {
-            color: #858585;
+            font-weight: 600;
             font-size: 11px;
-            margin-left: 8px;
+            text-transform: uppercase;
+            color: #858585;
         }
 
-        .var-item .preview {
-            color: #6a9955;
-            font-family: 'Consolas', 'Monaco', monospace;
+        .var-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .var-table tr:hover td {
+            background: #2a2d2e;
+        }
+
+        .var-name {
+            font-family: 'Consolas', monospace;
             font-size: 12px;
-            margin-top: 8px;
-            padding: 8px;
-            background: #1e1e1e;
-            border-radius: 4px;
+            color: #a371f7;
+            font-weight: 500;
+        }
+
+        .var-preview {
+            color: #858585;
+            font-size: 12px;
+            max-width: 400px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .badge-text {
+            background: rgba(206, 145, 120, 0.2);
+            color: #ce9178;
+        }
+
+        .badge-json {
+            background: rgba(86, 156, 214, 0.2);
+            color: #569cd6;
+        }
+
+        .badge-other {
+            background: rgba(133, 133, 133, 0.2);
+            color: #858585;
+        }
+
+        .token-count {
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            color: #dcdcaa;
+            font-weight: 600;
         }
 
         /* Empty State */
@@ -436,9 +473,19 @@
 
             <!-- Variables Tab -->
             <div class="tab-content" id="tab-variables">
-                <ul class="var-list" id="var-list">
-                    <li class="loading"><div class="spinner"></div>Loading...</li>
-                </ul>
+                <table class="var-table">
+                    <thead>
+                        <tr>
+                            <th>Variable Name</th>
+                            <th>Type</th>
+                            <th>Preview</th>
+                            <th style="text-align: right;">Tokens</th>
+                        </tr>
+                    </thead>
+                    <tbody id="var-list">
+                        <tr><td colspan="4" class="loading"><div class="spinner"></div>Loading...</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -670,7 +717,7 @@
                 const container = document.getElementById('var-list');
                 
                 if (!data.success || !data.variables || !data.variables.total_variables) {
-                    container.innerHTML = `<li class="empty-state">No variables stored${sessionId ? ' for this session' : ''}.</li>`;
+                    container.innerHTML = `<tr><td colspan="4" class="empty-state" style="text-align: center; padding: 40px 20px; color: #858585;">No variables stored${sessionId ? ' for this session' : ''}.</td></tr>`;
                     return;
                 }
                 
@@ -678,23 +725,24 @@
                 const varDetails = vars.variables || [];
                 
                 if (varDetails.length === 0) {
-                    container.innerHTML = `<li class="empty-state">No variable details available.</li>`;
+                    container.innerHTML = `<tr><td colspan="4" class="empty-state" style="text-align: center; padding: 40px 20px; color: #858585;">No variable details available.</td></tr>`;
                     return;
                 }
                 
+                function getBadgeClass(contentType) {
+                    const type = contentType.toLowerCase();
+                    if (type.includes('json')) return 'badge-json';
+                    if (type.includes('text')) return 'badge-text';
+                    return 'badge-other';
+                }
+                
                 container.innerHTML = varDetails.map(v => `
-                    <li>
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <strong>${v.name}</strong>
-                                <span class="badge" style="margin-left: 8px; background: #007acc;">${v.content_type}</span>
-                            </div>
-                            <div style="color: #ff9800; font-weight: 600;">${formatNumber(v.tokens)} tokens</div>
-                        </div>
-                        <div style="margin-top: 4px; font-size: 12px; color: #858585;">
-                            ${v.preview || 'No preview available'}
-                        </div>
-                    </li>
+                    <tr>
+                        <td><span class="var-name">${v.name}</span></td>
+                        <td><span class="badge ${getBadgeClass(v.content_type)}">${v.content_type}</span></td>
+                        <td><div class="var-preview">${v.preview || 'No preview available'}</div></td>
+                        <td style="text-align: right;"><span class="token-count">${formatNumber(v.tokens)}</span></td>
+                    </tr>
                 `).join('');
             } catch (e) {
                 console.error('Error loading variables:', e);
