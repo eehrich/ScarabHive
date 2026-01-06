@@ -142,6 +142,22 @@ class GeminiBatchClient(BatchProviderClient):
         try:
             # Use full model path for SDK
             model_name = job.model
+            
+            # DEBUG: Print traceback if model is not a string
+            if not isinstance(model_name, str):
+                import traceback
+                logger.error(
+                    "DEBUG: job.model is not a string!\n"
+                    "  type(job.model)=%s\n"
+                    "  job.model=%r\n"
+                    "  job.job_id=%s\n"
+                    "  job.requests[0].model=%r (if exists)\n"
+                    "  Traceback:\n%s",
+                    type(model_name).__name__, model_name, job.job_id,
+                    job.requests[0].model if job.requests else "NO REQUESTS",
+                    ''.join(traceback.format_stack())
+                )
+            
             if not model_name.startswith("models/"):
                 model_name = f"models/{model_name}"
             
@@ -366,6 +382,20 @@ class GeminiBatchClient(BatchProviderClient):
                             url = image_url.get("url", "")
                         else:
                             url = image_url
+                        
+                        # DEBUG: Print full traceback if url is not a string
+                        if not isinstance(url, str):
+                            import traceback
+                            logger.error(
+                                "DEBUG: url is not a string!\n"
+                                "  type(url)=%s\n"
+                                "  url=%r\n"
+                                "  item=%r\n"
+                                "  image_url=%r\n"
+                                "  Traceback:\n%s",
+                                type(url).__name__, url, item, image_url,
+                                ''.join(traceback.format_stack())
+                            )
                         
                         if url.startswith("data:"):
                             # Parse data URL
