@@ -157,6 +157,8 @@ class ChatMessage(BaseModel):
     timestamp: Optional[datetime] = None  # Timestamp when message was created
     # Multimodal content from tool responses - processed by LLM clients
     multimodal_content: Optional[List[MultimodalToolContent]] = None
+    # Reasoning/thinking content from models like DeepSeek, OpenAI o-series
+    reasoning_content: Optional[str] = None
 
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""

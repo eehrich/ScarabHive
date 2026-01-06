@@ -424,6 +424,7 @@ class HTTPXOpenAIClient(LLMClient):
 
         # Accumulators for building complete response
         accumulated_content: list[str] = []
+        accumulated_reasoning: list[str] = []  # For reasoning_content (DeepSeek, OpenAI o-series)
         accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
         accumulated_usage = None  # usage information from final chunk
 
@@ -504,7 +505,9 @@ class HTTPXOpenAIClient(LLMClient):
                                 chunk_bytes = await asyncio.wait_for(byte_stream.__anext__(), timeout=chunk_timeout)
                                 line_buffer += chunk_bytes.decode('utf-8', errors='replace')
                             except StopAsyncIteration:
-                                break  # Stream completed
+                                # Stream completed - process any remaining data in buffer
+                                logger.debug(f"Stream ended, processing remaining buffer ({len(line_buffer)} chars)")
+                                break
                             except asyncio.TimeoutError:
                                 logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
                                 raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
@@ -525,6 +528,10 @@ class HTTPXOpenAIClient(LLMClient):
                                         "role": "assistant",
                                         "content": "".join(accumulated_content) if accumulated_content else ""
                                     }
+
+                                    # Add reasoning_content if any (DeepSeek, OpenAI o-series)
+                                    if accumulated_reasoning:
+                                        assistant["reasoning_content"] = "".join(accumulated_reasoning)
 
                                     # Add tool calls if any
                                     if accumulated_tool_calls:
@@ -556,6 +563,16 @@ class HTTPXOpenAIClient(LLMClient):
                                     continue
 
                                 delta = choices[0].get("delta", {})
+
+                                # Handle reasoning_content delta (DeepSeek, OpenAI o-series thinking)
+                                # This comes BEFORE the actual content in thinking models
+                                if "reasoning_content" in delta and delta["reasoning_content"]:
+                                    accumulated_reasoning.append(delta["reasoning_content"])
+                                    yield {
+                                        "type": "thinking_delta",
+                                        "delta": delta["reasoning_content"],
+                                        "accumulated": "".join(accumulated_reasoning)
+                                    }
 
                                 # Handle content delta
                                 if "content" in delta and delta["content"]:
@@ -597,6 +614,64 @@ class HTTPXOpenAIClient(LLMClient):
                                             "delta": tc_delta,
                                             "accumulated": accumulated_tool_calls[index]
                                         }
+                        
+                        # After stream ends, process any remaining data in buffer
+                        # This handles the case where the last chunk doesn't end with \n
+                        # or where [DONE] is in the buffer but wasn't processed yet
+                        if line_buffer.strip():
+                            for line in line_buffer.split('\n'):
+                                line = line.strip()
+                                if not line or not line.startswith("data: "):
+                                    continue
+                                data = line[6:]
+                                if data == "[DONE]":
+                                    # Found [DONE] in remaining buffer
+                                    assistant = {
+                                        "role": "assistant",
+                                        "content": "".join(accumulated_content) if accumulated_content else ""
+                                    }
+                                    if accumulated_reasoning:
+                                        assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                                    if accumulated_tool_calls:
+                                        tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                        assistant["tool_calls"] = tool_calls_list
+                                    final_result = {"assistant": assistant}
+                                    if accumulated_usage:
+                                        final_result["usage"] = accumulated_usage
+                                    yield {"type": "final", **final_result}
+                                    return
+                                # Try to parse remaining JSON chunks
+                                try:
+                                    chunk_data = json.loads(data)
+                                    if "usage" in chunk_data:
+                                        accumulated_usage = chunk_data["usage"]
+                                    choices = chunk_data.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        if "reasoning_content" in delta and delta["reasoning_content"]:
+                                            accumulated_reasoning.append(delta["reasoning_content"])
+                                        if "content" in delta and delta["content"]:
+                                            accumulated_content.append(delta["content"])
+                                except Exception:
+                                    pass
+                        
+                        # Stream ended without [DONE] - yield final result anyway
+                        # This can happen with some API implementations
+                        logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
+                        assistant = {
+                            "role": "assistant",
+                            "content": "".join(accumulated_content) if accumulated_content else ""
+                        }
+                        if accumulated_reasoning:
+                            assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                        if accumulated_tool_calls:
+                            tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                            assistant["tool_calls"] = tool_calls_list
+                        final_result = {"assistant": assistant}
+                        if accumulated_usage:
+                            final_result["usage"] = accumulated_usage
+                        yield {"type": "final", **final_result}
+                        return  # Success - exit retry loop
 
             except asyncio.CancelledError:
                 # Re-raise cancellation without wrapping
@@ -814,6 +889,11 @@ class HTTPXOpenAIClient(LLMClient):
                 "role": "assistant",
                 "content": message.get("content", "") or ""
             }
+
+            # Add reasoning_content if present (DeepSeek, OpenAI o-series)
+            reasoning_content = message.get("reasoning_content")
+            if reasoning_content:
+                assistant["reasoning_content"] = reasoning_content
 
             # Add tool calls if present
             tool_calls = message.get("tool_calls")
