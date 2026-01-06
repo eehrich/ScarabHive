@@ -632,15 +632,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     from .api.debug_endpoints import router as debug_router
     app.include_router(debug_router)
 
-    # Add profiling middleware if enabled
-    from .utils.profiling import PROFILING_ENABLED, create_profiling_middleware
+    # Add profiling middleware if enabled (must be done synchronously before app starts)
+    from .utils.profiling import PROFILING_ENABLED, add_profiling_middleware
     if PROFILING_ENABLED:
-        import asyncio
-        # Schedule middleware installation (needs event loop)
-        @app.on_event("startup")
-        async def _install_profiling_middleware():
-            await create_profiling_middleware(app)
-            logger.info("Profiling middleware installed")
+        add_profiling_middleware(app)
+        logger.info("Profiling middleware installed")
 
     # Initialize authentication system if enabled
     if config.auth and config.auth.enabled:

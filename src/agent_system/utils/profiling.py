@@ -508,10 +508,11 @@ def get_loop_monitor() -> EventLoopMonitor:
     return _loop_monitor
 
 
-async def create_profiling_middleware(app: "FastAPI") -> None:
+def add_profiling_middleware(app: "FastAPI") -> None:
     """Add profiling middleware to FastAPI app.
     
     Uses Pure ASGI to avoid BaseHTTPMiddleware overhead.
+    Must be called synchronously during app setup, before startup.
     """
     import uuid
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -557,8 +558,19 @@ async def create_profiling_middleware(app: "FastAPI") -> None:
                         f"(threshold: {SLOW_REQUEST_THRESHOLD*1000:.0f}ms)"
                     )
     
-    # Wrap the ASGI app
+    # Wrap the ASGI app - this must be done synchronously before app starts
     app.add_middleware(ProfilingMiddleware)
+    logger.info("Profiling middleware added to app")
+
+
+# Keep async version for backwards compatibility
+async def create_profiling_middleware(app: "FastAPI") -> None:
+    """Deprecated: Use add_profiling_middleware() instead.
+    
+    This async version doesn't work properly because middleware must be
+    added before the app starts, not during startup event.
+    """
+    add_profiling_middleware(app)
     profiling_logger.info("Profiling middleware installed")
 
 
