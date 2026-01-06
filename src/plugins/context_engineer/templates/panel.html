@@ -12,9 +12,9 @@
         }
 
         body {
-            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
-            background: #0c0c0c;
-            color: #cccccc;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
             height: 100vh;
             overflow: hidden;
             font-size: 14px;
@@ -34,11 +34,11 @@
             align-items: center;
             margin-bottom: 20px;
             padding-bottom: 15px;
-            border-bottom: 2px solid #007acc;
+            border-bottom: 1px solid #3e3e42;
         }
 
         .header h1 {
-            color: #4fc3f7;
+            color: #569cd6;
             font-size: 24px;
             font-weight: 600;
         }
@@ -63,14 +63,60 @@
         }
 
         .stat-value {
-            color: #6ee56e;
+            color: #4ec9b0;
             font-size: 18px;
             font-weight: 600;
             margin-top: 2px;
         }
 
         .stat-value.tokens {
-            color: #ff9800;
+            color: #dcdcaa;
+        }
+
+        /* Controls */
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+
+        #lastUpdate {
+            color: #858585;
+            font-size: 12px;
+            margin-left: 10px;
         }
 
         /* Tab Controls */
@@ -78,7 +124,7 @@
             display: flex;
             gap: 10px;
             margin-bottom: 20px;
-            border-bottom: 1px solid #3c3c3c;
+            border-bottom: 1px solid #3e3e42;
             padding-bottom: 10px;
         }
 
@@ -94,22 +140,23 @@
         }
 
         .tab:hover {
-            color: #cccccc;
-            background: #2d2d2d;
+            color: #d4d4d4;
+            background: #2d2d30;
         }
 
         .tab.active {
-            color: #4fc3f7;
-            background: #2d2d2d;
-            border-bottom: 2px solid #007acc;
+            color: #569cd6;
+            background: #252526;
+            border: 1px solid #3e3e42;
         }
 
         /* Content Area */
         .content {
             flex: 1;
             overflow-y: auto;
-            background: #1e1e1e;
-            border-radius: 4px;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
             padding: 15px;
         }
 
@@ -135,16 +182,16 @@
         }
 
         .history-table th {
-            color: #858585;
+            color: #569cd6;
             font-weight: 500;
             font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            background: #252525;
+            background: #1e1e1e;
         }
 
         .history-table tr:hover {
-            background: #252525;
+            background: #2d2d30;
         }
 
         .badge {
@@ -179,10 +226,10 @@
         }
 
         .stat-card {
-            background: #252525;
-            border-radius: 8px;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
             padding: 15px;
-            border-left: 3px solid #007acc;
         }
 
         .stat-card h3 {
@@ -194,13 +241,13 @@
         }
 
         .stat-card .value {
-            color: #cccccc;
+            color: #4ec9b0;
             font-size: 24px;
             font-weight: 600;
         }
 
         .stat-card .subvalue {
-            color: #6ee56e;
+            color: #dcdcaa;
             font-size: 12px;
             margin-top: 4px;
         }
@@ -211,22 +258,22 @@
         }
 
         .fact-item {
-            background: #252525;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
             border-radius: 4px;
             padding: 12px;
             margin-bottom: 8px;
-            border-left: 3px solid #007acc;
         }
 
         .fact-item .category {
-            color: #4fc3f7;
+            color: #569cd6;
             font-size: 11px;
             text-transform: uppercase;
             margin-bottom: 4px;
         }
 
         .fact-item .content {
-            color: #cccccc;
+            color: #d4d4d4;
         }
 
         .fact-item .meta {
@@ -243,7 +290,8 @@
         }
 
         .var-item {
-            background: #252525;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
             border-radius: 4px;
             padding: 12px;
             margin-bottom: 8px;
@@ -310,23 +358,6 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
-
-        /* Refresh Button */
-        .refresh-btn {
-            padding: 6px 12px;
-            background: #2d2d2d;
-            border: 1px solid #3c3c3c;
-            color: #cccccc;
-            cursor: pointer;
-            border-radius: 4px;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-
-        .refresh-btn:hover {
-            background: #3e3e3e;
-            border-color: #007acc;
-        }
     </style>
 </head>
 <body>
@@ -349,12 +380,22 @@
             </div>
         </div>
 
+        <!-- Controls -->
+        <div class="controls">
+            <button class="icon-only" onclick="refreshAll()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only active" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (30s) - Active">
+                ⏱️
+            </button>
+            <span id="lastUpdate"></span>
+        </div>
+
         <div class="tabs">
             <button class="tab active" data-tab="history">Compaction History</button>
             <button class="tab" data-tab="storage">Storage Stats</button>
             <button class="tab" data-tab="memory">Core Memory</button>
             <button class="tab" data-tab="variables">Variables</button>
-            <button class="refresh-btn" onclick="refreshAll()">↻ Refresh</button>
         </div>
 
         <div class="content">
@@ -669,13 +710,44 @@
             loadSessionDetails();
             loadMemory();
             loadVariables();
+            document.getElementById('lastUpdate').textContent = 
+                'Updated: ' + new Date().toLocaleTimeString();
+        }
+
+        // Auto-refresh management
+        let autoRefreshInterval = null;
+        let autoRefreshEnabled = true;
+
+        function toggleAutoRefresh() {
+            autoRefreshEnabled = !autoRefreshEnabled;
+            const btn = document.getElementById('autoRefreshBtn');
+            
+            if (autoRefreshEnabled) {
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (30s) - Active';
+                startAutoRefresh();
+            } else {
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (30s) - Paused';
+                stopAutoRefresh();
+            }
+        }
+
+        function startAutoRefresh() {
+            if (autoRefreshInterval) return;
+            autoRefreshInterval = setInterval(refreshAll, 30000);
+        }
+
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
         }
 
         // Initial load
         refreshAll();
-
-        // Auto-refresh every 30 seconds
-        setInterval(refreshAll, 30000);
+        startAutoRefresh();
     </script>
 </body>
 </html>
