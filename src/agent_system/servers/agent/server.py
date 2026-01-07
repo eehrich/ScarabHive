@@ -133,6 +133,11 @@ class Agent(MCPServer):
         
         # Store timeout configuration from agent_config
         self.timeouts = self.agent_config.timeouts if self.agent_config else None
+        
+        # Track active fallback LLM (persistent across requests)
+        # When quota is exhausted, we switch to fallback and stay there
+        self._active_fallback_llm: Optional[Any] = None
+        self._active_fallback_profile: Optional[str] = None
 
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
@@ -451,6 +456,23 @@ class Agent(MCPServer):
             True if the request has been cancelled, False otherwise
         """
         return self._request_manager.is_cancelled(request_id)
+    
+    def reset_fallback(self) -> None:
+        """Reset persistent fallback LLM to use original LLM again.
+        
+        Call this when you want to try the original (e.g., batch) LLM again
+        after quota was exhausted and fallback was activated.
+        """
+        if self._active_fallback_llm is not None:
+            logger.info(
+                f"[{self.name}] Resetting persistent fallback {self._active_fallback_profile} "
+                f"back to original LLM"
+            )
+            self._active_fallback_llm = None
+            self._active_fallback_profile = None
+            # Restore original profile info
+            if self.llm_profile_info and ":fallback" in self.llm_profile_info:
+                self.llm_profile_info = self.llm_profile_info.replace(":fallback", "")
 
     async def append_user_message(self, request_id: str, content: str) -> bool:
         """
@@ -1333,9 +1355,16 @@ class Agent(MCPServer):
 
             # LLM call with streaming support and fallback handling
             llm_out = None
-            current_llm = active_llm
-            fallback_index = 0
-            fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
+            # Check if we have an active persistent fallback (from previous quota exhaustion)
+            if self._active_fallback_llm is not None:
+                logger.info(f"[{self.name}] Using persistent fallback LLM: {self._active_fallback_profile}")
+                current_llm = self._active_fallback_llm
+                fallback_index = 0  # Already at fallback, no further fallbacks available
+                fallback_profiles = []  # No more fallbacks to try
+            else:
+                current_llm = active_llm
+                fallback_index = 0
+                fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
             
             while True:  # Retry loop for fallbacks
                 try:
@@ -1373,6 +1402,8 @@ class Agent(MCPServer):
                     break
                     
                 except (LLMRateLimitError, LLMQuotaExhaustedError) as e:
+                    is_quota_exhausted = isinstance(e, LLMQuotaExhaustedError)
+                    
                     # Try fallback profiles
                     if fallback_index < len(fallback_profiles):
                         fallback_profile = fallback_profiles[fallback_index]
@@ -1383,7 +1414,7 @@ class Agent(MCPServer):
                             f"Switching to fallback profile: {fallback_profile}"
                         )
                         await status_worker.progress(
-                            f"Rate limit hit, switching to {fallback_profile}",
+                            f"{'Quota exhausted' if is_quota_exhausted else 'Rate limit hit'}, switching to {fallback_profile}",
                             meta={"step": step + 1, "fallback": fallback_profile}
                         )
                         
@@ -1392,6 +1423,20 @@ class Agent(MCPServer):
                             current_llm = fallback_llm
                             # Update profile info for status display
                             self.llm_profile_info = f"{fallback_profile}:fallback"
+                            
+                            # If quota exhausted, make fallback PERSISTENT
+                            if is_quota_exhausted:
+                                self._active_fallback_llm = fallback_llm
+                                self._active_fallback_profile = fallback_profile
+                                logger.info(
+                                    f"[{self.name}] Quota exhausted - fallback to {fallback_profile} "
+                                    f"is now PERSISTENT for all future requests"
+                                )
+                                await status_worker.progress(
+                                    f"Switched to {fallback_profile} permanently (quota exhausted)",
+                                    meta={"step": step + 1, "fallback": fallback_profile, "persistent": True}
+                                )
+                            
                             continue  # Retry with fallback
                         else:
                             logger.error(f"[{self.name}] Failed to create fallback LLM, giving up")
