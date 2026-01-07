@@ -655,14 +655,18 @@ class Agent(MCPServer):
         # CRITICAL: Set session metadata for newly generated sessions
         # This ensures user_id is available for tool execution even in sub-agents
         if was_new_session and self._session_tracker:
+            # Extract user_id from request_user_map (populated by API/tool execution)
+            # Import at use-site to avoid circular dependency
+            from agent_system.app import _request_user_map
+            user_id = _request_user_map.get(request_id, "anonymous")
+            
             # Use agent's default llm_profile for metadata
             effective_llm_profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
             self._session_tracker.set_session_metadata(session_id, {
-                "user_id": "anonymous",  # Sub-agents don't have direct user context
+                "user_id": user_id,
                 "agent_name": self.name,
                 "llm_profile": effective_llm_profile
             })
-            logger.debug(f"[SESSION] Set default metadata for new session {session_id} in agent {self.name}")
 
         # Handle Union[str, ChatMessage] input
         initial_message: Optional[ChatMessage] = None

@@ -552,25 +552,27 @@ class ToolExecutionManager:
 
                 if self._current_session_id:
                     params["_session_id"] = self._current_session_id
-                    logger.debug(f"✓ Injected session_id '{self._current_session_id}' into tool params")
 
                 if self._current_user_id:
                     params["_user_id"] = self._current_user_id
-                    logger.debug(f"✓ Injected user_id '{self._current_user_id}' into tool params")
+                    
+                    # CRITICAL: Register user_id for this request_id so sub-agents can find it
+                    # When a tool spawns a sub-agent (e.g., meta_web_research_agent), the sub-agent
+                    # generates a new session and needs to know the user_id
+                    if request_id:
+                        from agent_system.app import _request_user_map
+                        _request_user_map[request_id] = self._current_user_id
 
                 if request_id:
                     params["_request_id"] = request_id
-                    logger.debug(f"✓ Injected request_id '{request_id}' into tool params")
 
                 if self._agent and hasattr(self._agent, 'name'):
                     params["_agent_name"] = self._agent.name
-                    logger.debug(f"✓ Injected agent_name '{self._agent.name}' into tool params")
 
                 # Inject the agent instance itself for tools that need it
                 # Tools can access agent._session_service, agent.registry, etc.
                 if self._agent:
                     params["_agent"] = self._agent
-                    logger.debug("✓ Injected agent instance into tool params")
 
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)
