@@ -93,6 +93,10 @@ async def list_sessions(
     try:
         sessions = await session_manager.list_sessions(user_id)
 
+        # Filter out sub-agent sessions (they have parent_session field)
+        # Sub-agent sessions should only be visible under their parent, not in the main list
+        top_level_sessions = [s for s in sessions if "parent_session" not in s]
+
         # Transform to response models
         return [
             SessionResponse(
@@ -107,7 +111,7 @@ async def list_sessions(
                 last_agent_response=s.get("last_agent_response"),
                 tags=s.get("tags", [])
             )
-            for s in sessions
+            for s in top_level_sessions
         ]
 
     except Exception as e:
