@@ -31,7 +31,7 @@ Environment="ORT_DISABLE_THREAD_AFFINITY=1"
 #Environment="AGENT_ENABLE_MEMORY_PROFILING=1"
 #Environment="AGENT_MEMORY_SNAPSHOT_INTERVAL=3600"
 
-ExecStart=/root/agentsystem/.venv/bin/python -m uvicorn agent_system.app:build_app --factory --host 192.0.2.114 --port 80 --log-level info
+ExecStart=/root/agentsystem/.venv/bin/python -m uvicorn agent_system.app:build_app --factory --host 192.0.2.114 --port 80 --log-level info --timeout-graceful-shutdown 5
 
 # Auto-restart on failure
 Restart=on-failure

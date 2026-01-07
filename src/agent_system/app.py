@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio  # noqa: F401 - used in nested closures in event_stream()
+import asyncio  # noqa: F401 - used in nested closures in event_stream() and lifespan
 import json
 import logging
 import os
@@ -49,6 +49,9 @@ _session_service: Optional[Any] = None  # SessionService, imported at runtime to
 
 # Security: Track request_id -> user_id mapping for status stream authorization
 _request_user_map: dict[str, str] = {}  # request_id -> user_id
+
+# Shutdown event for graceful stream termination
+_shutdown_event: Optional[asyncio.Event] = None
 
 
 @asynccontextmanager
@@ -292,21 +295,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @asynccontextmanager
     async def custom_lifespan(app: FastAPI):
         # Startup
-        global _app_start_time
+        global _app_start_time, _shutdown_event
         _app_start_time = time.time()
 
         logger = logging.getLogger(__name__)
         
         # Configure named thread pool for asyncio default executor
         # This gives better thread names in profiler/debugger
-        import asyncio
+        import asyncio as _asyncio
         import concurrent.futures
-        loop = asyncio.get_running_loop()
+        loop = _asyncio.get_running_loop()
         executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=None,  # Use default (min(32, cpu_count + 4))
             thread_name_prefix="app_asyncio"
         )
         loop.set_default_executor(executor)
+        logger.info("Configured asyncio default executor with thread_name_prefix='asyncio_worker'")
+        
+        # Create shutdown event for graceful SSE stream termination
+        _shutdown_event = _asyncio.Event()
         logger.info("Configured asyncio default executor with thread_name_prefix='asyncio_worker'")
         
         logger.info("Lifespan startup: Initializing MCP integration...")
@@ -334,6 +341,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         yield
         # Shutdown
         try:
+            # Signal all SSE streams to terminate gracefully
+            if _shutdown_event:
+                logger.info("Signaling SSE streams to terminate...")
+                _shutdown_event.set()
+                # Give streams a brief moment to notice and exit
+                await asyncio.sleep(0.1)
+            
             # Stop profiling
             if PROFILING_ENABLED:
                 await stop_profiling()
@@ -1490,6 +1504,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             })
 
         async def event_stream():
+            # Check if server is already shutting down
+            if _shutdown_event and _shutdown_event.is_set():
+                yield ":server_shutdown\n\n"
+                return
+            
             yield ":ok\n\n"
 
             was_new_session = (session_id is None) or (not session_exists)
@@ -2152,6 +2171,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     heartbeat_interval = config.server_mode.sse_heartbeat_interval
                 
                 while True:
+                    # Check if server is shutting down
+                    if _shutdown_event and _shutdown_event.is_set():
+                        logger.debug("MCP SSE stream terminating due to server shutdown")
+                        break
+                    
                     # Check if client disconnected
                     if await request.is_disconnected():
                         logger.debug("MCP SSE client disconnected")
