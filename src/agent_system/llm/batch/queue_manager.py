@@ -148,15 +148,33 @@ class BatchQueueManager:
         logger.info(f"Registered batch client for provider: {provider}")
     
     def _ensure_polling_started(self) -> None:
-        """Ensure polling task is started in the current event loop.
+        """Ensure polling task is started and running in the current event loop.
         
         This is called lazily on first request to ensure the polling task
         runs in the same event loop as the agent. This is necessary because
         the CLI uses multiple asyncio.run() calls which create separate
         event loops.
+        
+        Also handles task restart if the previous task died unexpectedly.
         """
-        if self._polling_started:
-            return
+        # Check if task exists and is still running
+        if self._polling_task is not None and not self._polling_task.done():
+            return  # Task is running, nothing to do
+        
+        # Task doesn't exist or has finished - check if it died unexpectedly
+        if self._polling_task is not None and self._polling_task.done():
+            # Task finished - check if it was an error
+            try:
+                # This will raise if the task had an exception
+                exc = self._polling_task.exception()
+                if exc is not None:
+                    logger.error(
+                        f"Polling task died with exception: {exc}. Restarting..."
+                    )
+            except asyncio.CancelledError:
+                logger.debug("Previous polling task was cancelled, restarting...")
+            except asyncio.InvalidStateError:
+                pass  # Task not done yet (shouldn't happen given the check above)
         
         self._polling_started = True
         self._polling_task = asyncio.create_task(
@@ -414,26 +432,18 @@ class BatchQueueManager:
                 )
                 asyncio.create_task(self._submit_batch(queue_key, provider, model))
             
-            # Always start a new submission task for THIS request's collection window.
-            # This ensures that if requests come in while a previous task is sleeping,
-            # they get their own timer. The _submit_batch() handles the case where 
-            # the queue is empty (another task already submitted).
-            # 
-            # We cancel any existing task and start fresh - this way the timer
-            # always reflects the most recent request, giving maximum batching opportunity.
-            existing_task = self._submission_tasks.get(queue_key)
-            if existing_task and not existing_task.done():
-                # Cancel the old task - we'll start a new one with fresh timer
-                existing_task.cancel()
-                logger.debug(
-                    f"Cancelled existing collection task for {queue_key}, "
-                    f"starting new timer for request {request.request_id}"
+            # Ensure submission task is running for this queue.
+            # Only start a new task if none exists or the previous one completed.
+            # DO NOT cancel existing tasks - that causes requests to get stuck!
+            if queue_key not in self._submission_tasks or self._submission_tasks[queue_key].done():
+                self._submission_tasks[queue_key] = asyncio.create_task(
+                    self._collection_window_task(queue_key, provider, model),
+                    name=f"batch_collection_{queue_key}"
                 )
-            
-            self._submission_tasks[queue_key] = asyncio.create_task(
-                self._collection_window_task(queue_key, provider, model),
-                name=f"batch_collection_{queue_key}"
-            )
+                logger.debug(
+                    f"Started collection task for {queue_key}, "
+                    f"request {request.request_id}"
+                )
         
         # Wait for result with cancellation support
         timeout = timeout or (self._max_wait_hours * 3600)
