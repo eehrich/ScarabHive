@@ -414,12 +414,26 @@ class BatchQueueManager:
                 )
                 asyncio.create_task(self._submit_batch(queue_key, provider, model))
             
-            # Ensure submission task is running for this queue
-            if queue_key not in self._submission_tasks or self._submission_tasks[queue_key].done():
-                self._submission_tasks[queue_key] = asyncio.create_task(
-                    self._collection_window_task(queue_key, provider, model),
-                    name=f"batch_collection_{queue_key}"
+            # Always start a new submission task for THIS request's collection window.
+            # This ensures that if requests come in while a previous task is sleeping,
+            # they get their own timer. The _submit_batch() handles the case where 
+            # the queue is empty (another task already submitted).
+            # 
+            # We cancel any existing task and start fresh - this way the timer
+            # always reflects the most recent request, giving maximum batching opportunity.
+            existing_task = self._submission_tasks.get(queue_key)
+            if existing_task and not existing_task.done():
+                # Cancel the old task - we'll start a new one with fresh timer
+                existing_task.cancel()
+                logger.debug(
+                    f"Cancelled existing collection task for {queue_key}, "
+                    f"starting new timer for request {request.request_id}"
                 )
+            
+            self._submission_tasks[queue_key] = asyncio.create_task(
+                self._collection_window_task(queue_key, provider, model),
+                name=f"batch_collection_{queue_key}"
+            )
         
         # Wait for result with cancellation support
         timeout = timeout or (self._max_wait_hours * 3600)
@@ -467,12 +481,26 @@ class BatchQueueManager:
         """Background task that waits for collection window then submits batch."""
         # During collection, we don't have a request_id yet (requests haven't been queued)
         # So we just wait silently - the status messages will start once we submit
-        await asyncio.sleep(self._collection_window)
-        
-        if not self._running:
-            return
+        try:
+            await asyncio.sleep(self._collection_window)
             
-        await self._submit_batch(queue_key, provider, model)
+            if not self._running:
+                logger.warning(
+                    f"Collection window task for {queue_key} skipped: manager not running. "
+                    f"Queue has {len(self._queues.get(queue_key, []))} pending requests."
+                )
+                return
+                
+            await self._submit_batch(queue_key, provider, model)
+        except asyncio.CancelledError:
+            logger.debug(f"Collection window task for {queue_key} cancelled")
+            raise
+        except Exception as e:
+            logger.error(
+                f"Collection window task for {queue_key} failed: {e}. "
+                f"Queue has {len(self._queues.get(queue_key, []))} pending requests that were NOT submitted.",
+                exc_info=True
+            )
     
     async def _submit_batch(
         self,
@@ -570,6 +598,9 @@ class BatchQueueManager:
                     logger.debug("Batch polling task stopping (not running)")
                     break
                 
+                # Check for stale pending requests (stuck in queue without submission task)
+                await self._check_stale_queues()
+                
                 # Get list of active jobs
                 async with self._jobs_lock:
                     jobs_to_poll = [
@@ -588,6 +619,59 @@ class BatchQueueManager:
             except Exception as e:
                 logger.error(f"Error in batch polling loop: {e}")
     
+    async def _check_stale_queues(self) -> None:
+        """Check for queues with pending requests but no active submission task.
+        
+        This is a recovery mechanism for cases where the collection_window_task
+        failed or was never started properly.
+        """
+        now = _utc_now()
+        stale_threshold = self._collection_window * 2  # 2x collection window = stale
+        
+        for queue_key, requests in list(self._queues.items()):
+            if not requests:
+                continue
+            
+            # Check if oldest request is stale
+            oldest_request = min(requests, key=lambda r: r.created_at)
+            age_seconds = (now - oldest_request.created_at).total_seconds()
+            
+            if age_seconds < stale_threshold:
+                continue  # Not stale yet
+            
+            # Check if submission task exists and is still running
+            task = self._submission_tasks.get(queue_key)
+            task_running = task is not None and not task.done()
+            
+            if task_running:
+                # Task is running but requests are old - could be a very slow submission
+                logger.debug(
+                    f"Queue {queue_key} has {len(requests)} requests (oldest: {age_seconds:.0f}s) "
+                    f"but submission task is still running"
+                )
+                continue
+            
+            # Stale queue detected! Submit immediately.
+            logger.warning(
+                f"STALE QUEUE DETECTED: {queue_key} has {len(requests)} pending requests "
+                f"(oldest: {age_seconds:.0f}s old) with no active submission task. "
+                f"Triggering immediate submission."
+            )
+            
+            # Parse provider:model from queue_key
+            parts = queue_key.split(":", 1)
+            if len(parts) != 2:
+                logger.error(f"Invalid queue_key format: {queue_key}")
+                continue
+            
+            provider, model = parts
+            
+            # Create new submission task
+            self._submission_tasks[queue_key] = asyncio.create_task(
+                self._submit_batch(queue_key, provider, model),
+                name=f"batch_stale_recovery_{queue_key}"
+            )
+
     async def _poll_job(self, job: BatchJob) -> None:
         """Poll a single batch job for status updates."""
         logger.debug("Polling batch job %s (provider: %s)", job.job_id[:8], job.provider)
