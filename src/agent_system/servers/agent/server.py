@@ -1888,6 +1888,12 @@ class Agent(MCPServer):
             error_msg = f"Session {session_id} is currently locked by another request ({owner}). Please wait for that request to complete."
             logger.warning("Request %s failed to acquire lock for session %s (owner: %s)", 
                          request_id, session_id, owner)
+            
+            # CRITICAL: Clean up the request registration since we're aborting
+            # Without this, the request stays registered as "active" forever
+            self._request_manager.unregister_active_request(request_id)
+            self._session_tracker.unregister_request(request_id)
+            
             yield {"type": "error", "message": error_msg, "request_id": request_id}
             yield {"type": "end"}
             return
