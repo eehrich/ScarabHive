@@ -765,16 +765,17 @@ class TestPerformanceComparison(TestHTTPXOpenAIClient):
             mock_stream_response.__aexit__.return_value = None
             
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
+            # Note: We no longer use context manager for client, we use try/finally with aclose()
+            mock_client.aclose = AsyncMock()
             mock_client.stream = Mock(return_value=mock_stream_response)
             mock_async_client.return_value = mock_client
             
             with pytest.raises(asyncio.CancelledError):
                 await client.chat(sample_messages, cancellation_token=token)
             
-            # Verify client context manager was properly exited
-            mock_client.__aexit__.assert_called_once()
+            # Verify client was properly closed via aclose() (new approach)
+            # The implementation now uses try/finally with client.aclose() instead of context manager
+            mock_client.aclose.assert_called_once()
 
 
 if __name__ == "__main__":

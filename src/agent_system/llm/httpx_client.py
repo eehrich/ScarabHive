@@ -461,18 +461,27 @@ class HTTPXOpenAIClient(LLMClient):
                 # close idle connections after ~30s
                 socket_options = self._get_keepalive_socket_options()
                 
+                # Configure HTTP transport with socket options
+                # Note: http2=True can help avoid some SSL shutdown issues on certain platforms
+                # but may cause compatibility issues with some APIs, so we stick with HTTP/1.1
+                transport = httpx.AsyncHTTPTransport(
+                    retries=0,  # We handle retries ourselves
+                    socket_options=socket_options,
+                    # Disable HTTP/2 to avoid potential compatibility issues
+                    http2=False
+                )
+                
                 client_kwargs: dict[str, Any] = {
                     "timeout": self._timeout,
-                    "transport": httpx.AsyncHTTPTransport(
-                        retries=0,  # We handle retries ourselves
-                        socket_options=socket_options
-                    )
+                    "transport": transport
                 }
                 # Only include verify if explicitly configured (None means use httpx default)
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
 
-                async with httpx.AsyncClient(**client_kwargs) as client:
+                # Create client - we'll handle cleanup carefully to avoid SSL shutdown segfaults
+                client = httpx.AsyncClient(**client_kwargs)
+                try:
                     logger.debug(f"HTTPX streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
 
                     # Make streaming request
@@ -702,6 +711,20 @@ class HTTPXOpenAIClient(LLMClient):
                             final_result["usage"] = accumulated_usage
                         yield {"type": "final", **final_result}
                         return  # Success - exit retry loop
+                finally:
+                    # Safely close client with timeout to avoid SSL shutdown segfaults
+                    # This is critical on Linux with OpenSSL 3.x where SSL_shutdown can hang
+                    try:
+                        await asyncio.wait_for(client.aclose(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Client close timed out, forcing close")
+                        # Force close without waiting for SSL shutdown
+                        try:
+                            await asyncio.shield(asyncio.sleep(0))  # Give event loop a tick
+                        except Exception:
+                            pass
+                    except Exception as close_err:
+                        logger.debug(f"Error during client close (ignored): {close_err}")
 
             except asyncio.CancelledError:
                 # Re-raise cancellation without wrapping
