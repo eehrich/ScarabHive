@@ -181,7 +181,8 @@ class GeminiBatchClient(BatchProviderClient):
             if is_rate_limit_error(e):
                 error_str = str(e).lower()
                 retry_delay = parse_retry_delay(str(e))
-                if "quota" in error_str or "insufficient" in error_str:
+                # Check for quota exhaustion - includes RESOURCE_EXHAUSTED from Gemini API
+                if "quota" in error_str or "insufficient" in error_str or "resource_exhausted" in error_str:
                     raise LLMQuotaExhaustedError(
                         provider="gemini_batch",
                         model=job.model,
@@ -727,7 +728,8 @@ class GeminiBatchClient(BatchProviderClient):
             if is_rate_limit_error(e):
                 error_str = str(e).lower()
                 retry_delay = parse_retry_delay(str(e))
-                if "quota" in error_str or "insufficient" in error_str:
+                # Check for quota exhaustion - includes RESOURCE_EXHAUSTED from Gemini API
+                if "quota" in error_str or "insufficient" in error_str or "resource_exhausted" in error_str:
                     raise LLMQuotaExhaustedError(
                         provider="gemini_batch",
                         model="unknown",

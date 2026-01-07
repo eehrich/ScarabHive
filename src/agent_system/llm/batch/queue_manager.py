@@ -18,6 +18,7 @@ import uuid
 from agent_system.utils.id import short_id
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
 from .job_tracker import get_job_tracker
+from ..models import LLMQuotaExhaustedError, LLMRateLimitError
 
 if TYPE_CHECKING:
     from agent_system.config.models import BatchSystemConfig, BatchProviderConfig
@@ -586,6 +587,14 @@ class BatchQueueManager:
                 f"Batch job {job.job_id} submitted to {provider} as {provider_job_id}"
             )
             
+        except (LLMQuotaExhaustedError, LLMRateLimitError) as e:
+            # Propagate quota/rate limit errors for fallback handling
+            # These should trigger fallback to sync client, not fail silently
+            logger.warning(f"Batch job {job.job_id} hit rate limit: {e}")
+            job.status = BatchStatus.FAILED
+            job.error_message = str(e)
+            await self._complete_job(job, propagate_error=e)
+            raise  # Re-raise for fallback handling
         except Exception as e:
             logger.error(f"Failed to submit batch job {job.job_id}: {e}")
             job.status = BatchStatus.FAILED
@@ -842,8 +851,15 @@ class BatchQueueManager:
                 else:
                     future.set_result(request.response)
     
-    async def _complete_job(self, job: BatchJob) -> None:
-        """Mark a job as complete and update metrics."""
+    async def _complete_job(self, job: BatchJob, propagate_error: Optional[Exception] = None) -> None:
+        """Mark a job as complete and update metrics.
+        
+        Args:
+            job: The batch job to complete
+            propagate_error: If provided, set this exception on all waiting futures
+                            instead of a generic RuntimeError. Used for quota/rate limit
+                            errors that should trigger fallback.
+        """
         job.completed_at = _utc_now()
         
         # Calculate and record processing time
@@ -878,6 +894,11 @@ class BatchQueueManager:
         
         # Notify any remaining waiting callers of failure
         if job.status != BatchStatus.COMPLETED:
+            # Determine which exception to use
+            # If propagate_error is set, use it (for quota/rate limit errors)
+            # Otherwise use generic RuntimeError
+            error_to_set = propagate_error or RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
+            
             for request in (job.requests or []):
                 future = self._request_futures.pop(request.request_id, None)
                 if future and not future.done():
@@ -885,9 +906,7 @@ class BatchQueueManager:
                     # (cancelled futures should not have exceptions set on them)
                     if not future.cancelled():
                         try:
-                            future.set_exception(
-                                RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
-                            )
+                            future.set_exception(error_to_set)
                         except Exception as e:
                             # Future might be in invalid state, log and continue
                             logger.debug(f"Could not set exception on future for {request.request_id}: {e}")
