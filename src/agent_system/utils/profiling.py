@@ -261,21 +261,22 @@ class AsyncTaskMonitor:
         # Enable slow callback warnings
         loop.slow_callback_duration = self.slow_threshold
         
-        # Set debug mode to catch slow callbacks
-        if hasattr(loop, 'set_debug'):
-            loop.set_debug(True)
+        # WARNING: loop.set_debug(True) can cause segfaults on Linux with OpenSSL 3.x
+        # when combined with SSL streaming (httpx, aiohttp, etc.).
+        # The debug mode adds extra callback tracking that can race with SSL shutdown.
+        # We explicitly DO NOT enable debug mode to avoid these crashes.
+        # See: https://github.com/python/cpython/issues/91227
+        # 
+        # If you need slow callback detection, use loop.slow_callback_duration instead
+        # which works without the full debug mode overhead and SSL instability.
         
         profiling_logger.info(f"Async task monitoring started (slow_threshold={self.slow_threshold*1000:.0f}ms)")
+        profiling_logger.info("Note: asyncio debug mode disabled to prevent SSL segfaults")
     
     def stop_monitoring(self) -> None:
         """Stop monitoring."""
         self._monitoring = False
-        try:
-            loop = asyncio.get_event_loop()
-            if hasattr(loop, 'set_debug'):
-                loop.set_debug(False)
-        except RuntimeError:
-            pass
+        # Note: We no longer enable/disable debug mode due to SSL segfault issues
         profiling_logger.info("Async task monitoring stopped")
     
     def track_task(self, task: asyncio.Task) -> None:
