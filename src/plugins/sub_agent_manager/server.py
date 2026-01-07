@@ -331,7 +331,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Handle max sub-agents limit gracefully
                 if "Maximum number of active sub-agents" in str(e):
                     msg = str(e).split("Active sub-agents:")[0].strip()
-                    logger.warning(f"Sub-agent limit reached: {msg}")
+                    logger.info(f"Sub-agent limit reached: {msg}")
                     if status:
                         await status.error(msg)
                     return {
