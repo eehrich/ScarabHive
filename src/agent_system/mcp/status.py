@@ -245,11 +245,15 @@ class StatusBus:
     
     def get_status_metrics(self) -> dict:
         """Get status bus metrics"""
+        # Count all handlers that forward events (exclude LogStatusHandler which only logs)
+        # This includes: QueueStatusHandler, FilteredQueueStatusHandler, DirectStatusHandler, SSEStatusHandler
+        subscribers_count = len([h for h in self.handlers if not isinstance(h, LogStatusHandler)])
+        
         return {
             "handlers_count": len(self.handlers),
             "sequence_counter": self.sequence_counter,
             "handler_types": [h.__class__.__name__ for h in self.handlers],
-            "subscribers": len([h for h in self.handlers if isinstance(h, (QueueStatusHandler, FilteredQueueStatusHandler))]),
+            "subscribers": subscribers_count,
             "publish_attempted": self.publish_attempted,
             "delivered": self.delivered,
         }
