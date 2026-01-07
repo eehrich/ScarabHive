@@ -6,7 +6,7 @@ Provides administrative endpoints for user management.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -433,3 +433,160 @@ async def demote_from_admin(
         updated_at=updated_user.updated_at,
         last_login=updated_user.last_login,
     )
+
+
+class ActiveSessionInfo(BaseModel):
+    """Information about an active session/request."""
+    request_id: str
+    user_id: str
+    agent_name: str
+    session_id: Optional[str] = None
+    duration_seconds: float
+    status: str  # running, cancelling
+    llm_profile: Optional[str] = None
+
+
+class ActiveSessionsResponse(BaseModel):
+    """Response containing active sessions."""
+    sessions: List[ActiveSessionInfo]
+    total: int
+
+
+@router.get("/active-sessions", response_model=ActiveSessionsResponse)
+async def list_active_sessions(
+    admin_user: User = Depends(require_admin),
+) -> ActiveSessionsResponse:
+    """
+    List all currently active agent sessions (admin only).
+    
+    Returns active requests across all agents with:
+    - Request ID (for cancellation)
+    - User running the request
+    - Agent name
+    - Session ID
+    - Duration (how long it's been running)
+    - Status (running/cancelling)
+    - LLM profile
+    
+    Args:
+        admin_user: Current admin user (verified by require_admin)
+    
+    Returns:
+        List of active sessions with details
+    """
+    # Import here to avoid circular imports
+    from agent_system.app import _request_user_map, _app_registry
+    from agent_system.servers.agent.server import Agent
+    
+    sessions = []
+    
+    try:
+        # Iterate through all agents in registry
+        for agent_name in _app_registry.list():
+            try:
+                srv = _app_registry.get(agent_name)
+                if not isinstance(srv, Agent):
+                    continue
+                
+                # Get active requests from this agent
+                active_requests_info = srv._request_manager.get_active_requests_info()
+                
+                for req_info in active_requests_info:
+                    request_id = req_info['request_id']
+                    
+                    # Get user_id from the global map
+                    user_id = _request_user_map.get(request_id, "unknown")
+                    
+                    # Get session_id and metadata from session tracker
+                    session_id = srv._session_tracker.get_session_for_request(request_id)
+                    session_metadata = {}
+                    if session_id:
+                        session_metadata = srv._session_tracker.get_session_metadata(session_id) or {}
+                    
+                    # Determine status
+                    status_str = "cancelling" if req_info.get('is_cancelled', False) else "running"
+                    
+                    sessions.append(ActiveSessionInfo(
+                        request_id=request_id,
+                        user_id=user_id,
+                        agent_name=agent_name,
+                        session_id=session_id,
+                        duration_seconds=req_info.get('duration_seconds', 0),
+                        status=status_str,
+                        llm_profile=session_metadata.get('llm_profile')
+                    ))
+                    
+            except Exception as e:
+                logger.debug(f"Failed to get active requests from agent {agent_name}: {e}")
+                continue
+                
+    except Exception as e:
+        logger.exception(f"Failed to list active sessions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list active sessions: {str(e)}"
+        )
+    
+    # Sort by duration (longest first)
+    sessions.sort(key=lambda s: s.duration_seconds, reverse=True)
+    
+    logger.info(f"Admin {admin_user.username} listed {len(sessions)} active sessions")
+    
+    return ActiveSessionsResponse(
+        sessions=sessions,
+        total=len(sessions)
+    )
+
+
+@router.post("/active-sessions/{request_id}/cancel")
+async def cancel_active_session(
+    request_id: str,
+    admin_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """
+    Cancel an active session by request ID (admin only).
+    
+    Args:
+        request_id: The request ID to cancel
+        admin_user: Current admin user (verified by require_admin)
+    
+    Returns:
+        Status of the cancellation
+    """
+    from agent_system.app import _app_registry
+    from agent_system.servers.agent.server import Agent
+    
+    # Try to cancel across all agents
+    cancelled = False
+    
+    try:
+        for agent_name in _app_registry.list():
+            try:
+                srv = _app_registry.get(agent_name)
+                if not isinstance(srv, Agent):
+                    continue
+                
+                # Check if this agent has this request
+                active_requests = srv._request_manager.get_active_requests()
+                if request_id in active_requests:
+                    success = await srv.cancel_request(request_id)
+                    if success:
+                        cancelled = True
+                        logger.info(f"Admin {admin_user.username} cancelled request {request_id} on agent {agent_name}")
+                        break
+                        
+            except Exception as e:
+                logger.debug(f"Failed to cancel on agent {agent_name}: {e}")
+                continue
+                
+    except Exception as e:
+        logger.exception(f"Failed to cancel request {request_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel request: {str(e)}"
+        )
+    
+    if cancelled:
+        return {"status": "cancelled", "request_id": request_id}
+    else:
+        return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}

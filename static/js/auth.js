@@ -157,7 +157,8 @@ class AuthManager {
 
     // Check if user has admin role
     isAdmin() {
-        return this.user && this.user.role === 'ADMIN';
+        // role is returned as lowercase "admin" from the API (see UserRole enum)
+        return this.user && (this.user.role === 'admin' || this.user.role === 'ADMIN');
     }
 }
 

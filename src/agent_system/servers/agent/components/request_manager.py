@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Dict, List, Optional, Any
 
 from ....core.cancellation import get_cancellation_manager
@@ -134,6 +135,8 @@ class AgentRequestManager:
             request_entry: The request entry dict with 'cancel', 'message_event', 'appended' keys
         """
         # Note: Called synchronously during initialization, no lock needed
+        # Add start_time for tracking request duration
+        request_entry['start_time'] = time.time()
         self._active_requests[request_id] = request_entry
 
     def unregister_active_request(self, request_id: str) -> None:
@@ -154,6 +157,29 @@ class AgentRequestManager:
             List of request IDs
         """
         return list(self._active_requests.keys())
+
+    def get_active_requests_info(self) -> List[Dict[str, Any]]:
+        """
+        Get detailed information about all active requests.
+        
+        Returns:
+            List of dicts with request_id, start_time, duration_seconds, is_cancelled
+        """
+        now = time.time()
+        result = []
+        for request_id, entry in self._active_requests.items():
+            start_time = entry.get('start_time', now)
+            duration_seconds = now - start_time
+            is_cancelled = False
+            if isinstance(entry, dict) and 'cancel' in entry:
+                is_cancelled = entry['cancel'].is_set()
+            result.append({
+                'request_id': request_id,
+                'start_time': start_time,
+                'duration_seconds': round(duration_seconds, 1),
+                'is_cancelled': is_cancelled
+            })
+        return result
 
     def get_request_entry(self, request_id: str) -> Optional[Dict[str, Any]]:
         """
