@@ -2034,11 +2034,20 @@ class Agent(MCPServer):
                 "error": "Missing required parameter: 'task', 'query', or 'prompt'"
             }
 
+        # Extract session context from injected params (populated by ToolExecutionManager)
+        request_id = params.get("request_id") or params.get("_request_id")
+        session_id = params.get("session_id") or params.get("_session_id")
+
         try:
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])
             from .result_utils import collect_final_result, extract_summary
-            result = await collect_final_result(self, str(task))
+            result = await collect_final_result(
+                self, 
+                str(task),
+                request_id=request_id,
+                session_id=session_id
+            )
 
             # Wrap result with agent metadata
             return {

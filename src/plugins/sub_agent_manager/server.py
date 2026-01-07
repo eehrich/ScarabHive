@@ -472,6 +472,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         result_text = event.get("summary", "")
                         # Clear activity on completion
                         await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
+                        # DON'T break here - continue iterating to get "end" event
+                        # This ensures _finalize_request runs and messages are persisted
+                    elif event_type == "end":
+                        # Generator fully completed, messages are now in SessionTracker
+                        break
                     elif event_type == "error":
                         result_text = f"Error: {event.get('message', 'Unknown error')}"
                         logger.warning(f"Sub-agent {sub_session_id} returned error: {result_text}")
@@ -657,6 +662,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         result_text = event.get("summary", "")
                         # Clear activity on completion
                         await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
+                        # DON'T break here - continue iterating to get "end" event
+                        # This ensures _finalize_request runs and messages are persisted
+                    elif event_type == "end":
+                        # Generator fully completed, messages are now in SessionTracker
+                        break
                     elif event_type == "error":
                         result_text = f"Error: {event.get('message', 'Unknown error')}"
                         logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
@@ -1142,6 +1152,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     if event_type == "final":
                         result_text = event.get("summary", "")
                         await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
+                        # DON'T break here - continue iterating to get "end" event
+                        # This ensures _finalize_request runs and messages are persisted
+                    elif event_type == "end":
+                        # Generator fully completed, messages are now in SessionTracker
+                        break
                     elif event_type in ["error", "cancelled"]:
                         result_text = f"{event_type.capitalize()}: {event.get('message', event.get('reason', 'Unknown'))}"
                         await manager.update_sub_agent_activity(parent_session_id, instance_id, None)

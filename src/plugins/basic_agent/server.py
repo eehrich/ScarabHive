@@ -40,7 +40,8 @@ class BasicAgent(SchemaBasedAgent):
         if not task:
             return {"status": "error", "error": "Missing required parameter 'task'"}
 
-        request_id = params.get("request_id") or params.get("requestId")
+        request_id = params.get("request_id") or params.get("requestId") or params.get("_request_id")
+        session_id = params.get("session_id") or params.get("_session_id")
         status = params.get("_status")
         llm_profile_name = params.get("llm_profile")
         use_advanced_model = params.get("use_advanced_model", False)
@@ -127,6 +128,7 @@ class BasicAgent(SchemaBasedAgent):
             async for event in self.run_events(
                 task,
                 request_id=request_id,
+                session_id=session_id,
                 llm_override=llm_override,
                 llm_profile_info_override=llm_profile_info
             ):
