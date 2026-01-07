@@ -236,7 +236,6 @@ window.AgentSystem.Status = {
     const sessionRows = sessions.map(session => {
       const statusClass = this.getSessionStatusClass(session.status);
       const duration = this.formatDuration(session.duration_seconds);
-      const shortRequestId = session.request_id.substring(0, 8) + '...';
       const shortSessionId = session.session_id ? session.session_id.substring(0, 8) + '...' : '-';
       
       return `
@@ -245,7 +244,7 @@ window.AgentSystem.Status = {
           <td title="${session.agent_name}">${session.agent_name}</td>
           <td class="value">${duration}</td>
           <td><span class="session-status ${statusClass}">${session.status}</span></td>
-          <td title="${session.request_id}">${shortRequestId}</td>
+          <td class="request-id-cell" title="Click to copy">${session.request_id}</td>
           <td>
             <button class="session-cancel-btn" data-request-id="${session.request_id}" 
                     title="Cancel this request" ${session.status === 'cancelling' ? 'disabled' : ''}>
@@ -330,6 +329,14 @@ window.AgentSystem.Status = {
         .session-status.session-running { background: #2d5016; color: #89d185; }
         .session-status.session-cancelling { background: #5c4016; color: #dcdcaa; }
         .session-status.session-unknown { background: #3e3e42; color: #858585; }
+        .request-id-cell { 
+          font-family: 'Courier New', monospace; 
+          font-size: 11px; 
+          color: #4ec9b0; 
+          cursor: pointer;
+          user-select: all;
+        }
+        .request-id-cell:hover { background: #2a2d2e; }
         .session-cancel-btn { 
           background: #5a1d1d; 
           border: 1px solid #8b3232; 
