@@ -209,7 +209,9 @@ class ToolExecutionManager:
         # Execute all valid tools in parallel with real-time status streaming
         if valid_tool_executions:
             # Create tasks for parallel execution with unique request_id suffixes
+            # Store task -> tool_info mapping for error handling
             tasks = []
+            task_tool_info: Dict[asyncio.Task, tuple] = {}  # task -> (tc, tool_name, openai_tool_name)
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
                 # Create tool-specific request_id (same logic as execute_tools)
                 original_request_id = params.get("request_id") or params.get("requestId") or request_id
@@ -233,6 +235,7 @@ class ToolExecutionManager:
                     self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id)
                 )
                 tasks.append(task)
+                task_tool_info[task] = (tc, tool_name, openai_tool_name)
 
             # Poll for completion while streaming status events
             # NOTE: No hard iteration limit - tools can run as long as needed
@@ -267,8 +270,37 @@ class ToolExecutionManager:
                     except asyncio.CancelledError:
                         logger.debug("Tool task was cancelled")
                         # Task was cancelled, this is expected during request cancellation
+                        # Create a cancelled response to avoid orphaned tool_calls
+                        if task in task_tool_info:
+                            tc, tool_name, openai_tool_name = task_tool_info[task]
+                            tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
+                            tool_messages.append(ChatMessage(
+                                role="tool",
+                                tool_call_id=tool_call_id,
+                                name=sanitize_for_llm(openai_tool_name),
+                                content=json.dumps({"error": f"Tool '{tool_name}' was cancelled."}),
+                                timestamp=datetime.now(timezone.utc)
+                            ))
+                            events_to_yield.append({"type": "tool_cancelled", "tool": tool_name})
                     except Exception as e:
+                        # CRITICAL: Create error response to avoid orphaned tool_calls
+                        # Without this, the LLM will crash because it expects a tool response for every tool_call
                         logger.exception("Error processing tool result: %s", e)
+                        if task in task_tool_info:
+                            tc, tool_name, openai_tool_name = task_tool_info[task]
+                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            error_content = json.dumps({
+                                "error": f"Tool '{tool_name}' execution failed: {str(e)}",
+                                "type": type(e).__name__
+                            })
+                            tool_messages.append(ChatMessage(
+                                role="tool",
+                                tool_call_id=tool_call_id,
+                                name=sanitize_for_llm(openai_tool_name),
+                                content=sanitize_json_content(error_content),
+                                timestamp=datetime.now(timezone.utc)
+                            ))
+                            events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": str(e)})
 
             # Drain any remaining status events after all tools complete
             # This ensures .end() events are not lost due to timing issues
