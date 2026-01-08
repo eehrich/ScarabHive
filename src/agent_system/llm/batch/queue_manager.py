@@ -123,7 +123,6 @@ class BatchQueueManager:
         self._submission_tasks: Dict[str, asyncio.Task] = {}
         self._polling_task: Optional[asyncio.Task] = None
         self._running = False
-        self._polling_started = False  # Track if polling task was started
         
         # Batch client callbacks (set by register_batch_client)
         self._batch_clients: Dict[str, Any] = {}  # provider -> client
@@ -177,7 +176,6 @@ class BatchQueueManager:
             except asyncio.InvalidStateError:
                 pass  # Task not done yet (shouldn't happen given the check above)
         
-        self._polling_started = True
         self._polling_task = asyncio.create_task(
             self._poll_active_jobs(),
             name="batch_polling"
@@ -336,7 +334,6 @@ class BatchQueueManager:
     async def stop(self) -> None:
         """Stop the batch queue manager and cleanup."""
         self._running = False
-        self._polling_started = False  # Reset for potential restart
         
         # Cancel submission tasks
         for task in self._submission_tasks.values():
@@ -397,6 +394,13 @@ class BatchQueueManager:
         # Ensure polling task is started in this event loop
         # This is critical for CLI which uses multiple asyncio.run() calls
         self._ensure_polling_started()
+        
+        # Validate provider early (fail fast before queuing)
+        if provider not in self._batch_clients:
+            raise ValueError(
+                f"No batch client registered for provider: {provider}. "
+                f"Available providers: {list(self._batch_clients.keys())}"
+            )
         
         # Create request
         request = BatchRequest(
@@ -697,7 +701,8 @@ class BatchQueueManager:
                 continue
             
             # Check if oldest request is stale
-            oldest_request = min(requests, key=lambda r: r.created_at)
+            # Queue is FIFO (append-only), so first element is always oldest - O(1)
+            oldest_request = requests[0]
             age_seconds = (now - oldest_request.created_at).total_seconds()
             
             if age_seconds < stale_threshold:
@@ -742,7 +747,10 @@ class BatchQueueManager:
             
             provider, model = parts
             
-            # Create new submission task
+            # Submit immediately - stale requests have already waited too long
+            # Any new requests that arrive during/after will either:
+            # 1. Start their own collection task (if this one is done)
+            # 2. Be caught by next _check_stale_queues cycle (self-healing)
             self._submission_tasks[queue_key] = asyncio.create_task(
                 self._submit_batch(queue_key, provider, model),
                 name=f"batch_stale_recovery_{queue_key}"
@@ -858,6 +866,11 @@ class BatchQueueManager:
             # Resubmit to provider
             provider_job_id = await client.submit_batch(job, self.storage_path)
             job.provider_job_id = provider_job_id
+            
+            # Track the new job ID for selective cancellation on restart
+            tracker = get_job_tracker()
+            if tracker:
+                await tracker.add_job(job.provider, provider_job_id)
             
             logger.info(
                 f"Batch job {job.job_id} resubmitted as {provider_job_id} "
