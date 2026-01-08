@@ -323,9 +323,8 @@ class BatchLLMClient(LLMClient):
                 })
         
         try:
-            await self._report_status(status_scope, f"Batch submitted: {self.model_name}")
-            
             # Submit to queue and get future with cancellation support
+            # Status updates are reported by the queue_manager
             result = await self.queue_manager.submit_request(
                 model=self.model_name,
                 provider=self.batch_provider,
