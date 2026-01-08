@@ -1054,22 +1054,31 @@ class BatchQueueManager:
         
         # Notify any remaining waiting callers of failure
         if job.status != BatchStatus.COMPLETED:
-            # Determine which exception to use
-            # If propagate_error is set, use it (for quota/rate limit errors)
-            # Otherwise use generic RuntimeError
-            error_to_set = propagate_error or RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
-            
-            for request in (job.requests or []):
-                future = self._request_futures.pop(request.request_id, None)
-                if future and not future.done():
-                    # Only set exception if not already cancelled
-                    # (cancelled futures should not have exceptions set on them)
-                    if not future.cancelled():
-                        try:
-                            future.set_exception(error_to_set)
-                        except Exception as e:
-                            # Future might be in invalid state, log and continue
-                            logger.debug(f"Could not set exception on future for {request.request_id}: {e}")
+            # For cancelled jobs, cancel the futures (don't set exception)
+            # This prevents "Future exception was never retrieved" warnings
+            # when the caller has already stopped waiting due to CancellationToken
+            if job.status == BatchStatus.CANCELLED:
+                for request in (job.requests or []):
+                    future = self._request_futures.pop(request.request_id, None)
+                    if future and not future.done():
+                        future.cancel()
+            else:
+                # For other failures, set exception so callers get proper error
+                # If propagate_error is set, use it (for quota/rate limit errors)
+                # Otherwise use generic RuntimeError
+                error_to_set = propagate_error or RuntimeError(f"Batch job {job.status.value}: {job.error_message}")
+                
+                for request in (job.requests or []):
+                    future = self._request_futures.pop(request.request_id, None)
+                    if future and not future.done():
+                        # Only set exception if not already cancelled
+                        # (cancelled futures should not have exceptions set on them)
+                        if not future.cancelled():
+                            try:
+                                future.set_exception(error_to_set)
+                            except Exception as e:
+                                # Future might be in invalid state, log and continue
+                                logger.debug(f"Could not set exception on future for {request.request_id}: {e}")
         
         logger.debug(
             f"Batch job {job.job_id} completed with status {job.status.value}, "
