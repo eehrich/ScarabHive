@@ -273,9 +273,13 @@ class BatchLLMClient(LLMClient):
             yield {"type": "final", "assistant": result.get("assistant", {})}
     
     def supports_streaming(self) -> bool:
-        """Batch mode does not support true streaming."""
-        # If fallback is enabled, we can stream through underlying client
-        return self.batch_provider_config.fallback_to_sync and self.underlying_client.supports_streaming()
+        """Batch mode does not support streaming.
+        
+        Always returns False to ensure agent uses chat_tools() instead of
+        chat_tools_streaming(). The fallback_to_sync option is only used
+        when batch submission fails, not for enabling streaming.
+        """
+        return False
     
     async def _submit_batch_request(
         self,
