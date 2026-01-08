@@ -310,3 +310,145 @@ class TestRealWorldScenarios:
         assert "中文" in result
         assert "日本語" in result
         assert "한국어" in result
+
+
+class TestEuropeanDiacritics:
+    """Test preservation of European diacritical characters (Slovak, Czech, Polish, etc.)."""
+
+    def test_preserve_slovak_diacritics(self):
+        """Test that Slovak diacritical characters are preserved."""
+        text = "Ščťžňáäôíúé ďľĺŕô - bežného dňa, večera, možností"
+        result = sanitize_for_llm(text)
+        assert result == text
+        # Individual character checks
+        assert "Š" in result
+        assert "č" in result
+        assert "ť" in result
+        assert "ž" in result
+        assert "ň" in result
+        assert "ď" in result
+        assert "ľ" in result
+
+    def test_preserve_czech_diacritics(self):
+        """Test that Czech diacritical characters are preserved."""
+        text = "Čřžšťďňěůú - příliš žluťoučký kůň"
+        result = sanitize_for_llm(text)
+        assert result == text
+        assert "ř" in result
+        assert "ě" in result
+        assert "ů" in result
+
+    def test_preserve_polish_diacritics(self):
+        """Test that Polish diacritical characters are preserved."""
+        text = "ąęćłńóśźż ĄĘĆŁŃÓŚŹŻ - żółć"
+        result = sanitize_for_llm(text)
+        assert result == text
+        assert "ą" in result
+        assert "ę" in result
+        assert "ł" in result
+        assert "ź" in result
+        assert "ż" in result
+
+    def test_preserve_hungarian_diacritics(self):
+        """Test that Hungarian diacritical characters are preserved."""
+        text = "áéíóúöüőű ÁÉÍÓÚÖÜŐŰ"
+        result = sanitize_for_llm(text)
+        assert result == text
+        assert "ő" in result
+        assert "ű" in result
+
+    def test_preserve_german_characters(self):
+        """Test that German special characters are preserved."""
+        text = "äöüß ÄÖÜ - größere Bücher"
+        result = sanitize_for_llm(text)
+        assert result == text
+        assert "ä" in result
+        assert "ö" in result
+        assert "ü" in result
+        assert "ß" in result
+
+    def test_preserve_french_accents(self):
+        """Test that French accented characters are preserved."""
+        text = "àâçéèêëïîôùûü - café, français"
+        result = sanitize_for_llm(text)
+        assert result == text
+        assert "ç" in result
+        assert "é" in result
+        assert "è" in result
+
+    def test_preserve_greek_alphabet(self):
+        """Test that Greek characters are preserved."""
+        text = "αβγδεζηθικλμνξοπρστυφχψω"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_cyrillic(self):
+        """Test that Cyrillic characters are preserved."""
+        text = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+        result = sanitize_for_llm(text)
+        assert result == text
+        assert "ё" in result
+
+    def test_complex_multilingual_text(self):
+        """Test complex text mixing multiple European languages."""
+        text = "Slovak: Ščťžňďľ | Czech: Čřžšťďňěůú | Polish: ąęćłńóśźż | German: äöüß"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+
+class TestAsianAndMiddleEasternLanguages:
+    """Test preservation of Asian and Middle Eastern language characters."""
+
+    def test_preserve_hindi_devanagari(self):
+        """Test that Hindi (Devanagari) characters are preserved."""
+        text = "हिंदी में लिखा गया टेक्स्ट"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_arabic(self):
+        """Test that Arabic characters are preserved."""
+        text = "النص المكتوب بالعربية"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_hebrew(self):
+        """Test that Hebrew characters are preserved."""
+        text = "טקסט בעברית"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_thai(self):
+        """Test that Thai characters are preserved."""
+        text = "ข้อความภาษาไทย"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_bengali(self):
+        """Test that Bengali characters are preserved."""
+        text = "বাংলা টেক্সট"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_tamil(self):
+        """Test that Tamil characters are preserved."""
+        text = "தமிழ் உரை"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_telugu(self):
+        """Test that Telugu characters are preserved."""
+        text = "తెలుగు టెక్స్ట్"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_gujarati(self):
+        """Test that Gujarati characters are preserved."""
+        text = "ગુજરાતી લખાણ"
+        result = sanitize_for_llm(text)
+        assert result == text
+
+    def test_preserve_punjabi_gurmukhi(self):
+        """Test that Punjabi (Gurmukhi) characters are preserved."""
+        text = "ਪੰਜਾਬੀ ਟੈਕਸਟ"
+        result = sanitize_for_llm(text)
+        assert result == text
