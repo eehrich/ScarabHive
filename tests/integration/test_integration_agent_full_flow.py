@@ -66,7 +66,7 @@ class MockLLMClient:
         # Return a simple response
         return "I have processed your request successfully."
     
-    async def chat_tools(self, messages, tools, cancellation_token=None):
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         """Simulate LLM response with tool awareness"""
         self.call_count += 1
         self.messages_received.append(messages)

@@ -1046,7 +1046,8 @@ class Agent(MCPServer):
         tools_schema: List[Dict[str, Any]],
         cancellation_token: CancellationToken,
         step: int,
-        yield_pending_status_fn
+        yield_pending_status_fn,
+        status_scope: Optional[StatusScope] = None
     ):
         """Call LLM with streaming support and interleaved status events.
 
@@ -1061,6 +1062,7 @@ class Agent(MCPServer):
             cancellation_token: Cancellation token for interruption
             step: Current step number
             yield_pending_status_fn: Function that yields pending status events
+            status_scope: Optional status scope for LLM to report progress (batch status, etc.)
 
         Yields:
             - {"type": "thinking_delta", "step": int, "delta": str, "accumulated": str}
@@ -1073,7 +1075,11 @@ class Agent(MCPServer):
             final_assistant = None
             final_usage = None  # Store usage data from final chunk
 
-            async for chunk in llm.chat_tools_streaming(messages, tools_schema, cancellation_token=cancellation_token):
+            async for chunk in llm.chat_tools_streaming(
+                messages, tools_schema, 
+                cancellation_token=cancellation_token,
+                status_scope=status_scope
+            ):
                 chunk_type = chunk.get("type")
 
                 if chunk_type == "thinking_delta":
@@ -1122,7 +1128,11 @@ class Agent(MCPServer):
         else:
             # Non-streaming LLM: Use polling with 100ms intervals
             # Create task for LLM call
-            llm_task = asyncio.create_task(llm.chat_tools(messages, tools_schema, cancellation_token=cancellation_token))
+            llm_task = asyncio.create_task(llm.chat_tools(
+                messages, tools_schema, 
+                cancellation_token=cancellation_token,
+                status_scope=status_scope
+            ))
 
             # Poll for status events while waiting
             # For batch mode: The batch queue manager has its own timeout (max_wait_hours in llm.yaml)
@@ -1374,7 +1384,8 @@ class Agent(MCPServer):
                         tools_schema=tools_schema,
                         cancellation_token=main_token,
                         step=step,
-                        yield_pending_status_fn=yield_pending_status_events
+                        yield_pending_status_fn=yield_pending_status_events,
+                        status_scope=status_worker
                     ):
                         event_type = event.get("type")
 

@@ -179,16 +179,18 @@ class HTTPXOpenAIClient(LLMClient):
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ) -> dict:
         """Send chat completion request with tools."""
-        return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token)
+        return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token, status_scope=status_scope)
 
     async def chat_tools_streaming(
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ):
         """Stream chat completion request with tools.
 
@@ -198,7 +200,7 @@ class HTTPXOpenAIClient(LLMClient):
                 {"type": "tool_call_delta", "index": int, "delta": dict}
                 {"type": "final", "assistant": dict}
         """
-        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token):
+        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token, status_scope=status_scope):
             yield chunk
 
     def supports_streaming(self) -> bool:
@@ -211,11 +213,21 @@ class HTTPXOpenAIClient(LLMClient):
                 return self.capabilities.streaming
         return True  # Default to True if capabilities not set
 
+    async def _report_status(self, status_scope, message: str) -> None:
+        """Report status update if scope is available."""
+        if status_scope is None:
+            return
+        try:
+            await status_scope.progress(message)
+        except Exception as e:
+            logger.debug(f"Failed to report LLM status: {e}")
+
     async def _make_request(
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ) -> dict:
         """Make the actual HTTP request with proper cancellation and error handling."""
 
@@ -232,12 +244,12 @@ class HTTPXOpenAIClient(LLMClient):
         if not streaming_enabled:
             # Use non-streaming request
             logger.debug("Using non-streaming request path")
-            return await self._make_request_non_streaming(messages, tools, cancellation_token)
+            return await self._make_request_non_streaming(messages, tools, cancellation_token, status_scope)
 
         # Use streaming request (default behavior)
         logger.debug("Using streaming request path")
         final_result = None
-        async for chunk in self._make_request_streaming(messages, tools, cancellation_token):
+        async for chunk in self._make_request_streaming(messages, tools, cancellation_token, status_scope):
             if chunk.get("type") == "final":
                 # Extract all fields from final chunk (assistant, usage, etc.)
                 final_result = {k: v for k, v in chunk.items() if k != "type"}
@@ -249,7 +261,8 @@ class HTTPXOpenAIClient(LLMClient):
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ) -> dict:
         """Make non-streaming HTTP POST request for models that don't support streaming.
 
@@ -328,10 +341,12 @@ class HTTPXOpenAIClient(LLMClient):
                         if attempt < self.max_retries:
                             backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
                             logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                            await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
                             await asyncio.sleep(backoff_time)
                             continue
                         # Retries exhausted - raise for fallback
                         error_text = response.text[:200] if response.text else ""
+                        await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
                         if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                             raise LLMQuotaExhaustedError(
                                 f"Quota exhausted: {error_text}",
@@ -346,6 +361,7 @@ class HTTPXOpenAIClient(LLMClient):
                     if response.status_code >= 500 and attempt < self.max_retries:
                         backoff_time = self.retry_backoff * (2 ** attempt)
                         logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
+                        await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                         await asyncio.sleep(backoff_time)
                         continue
 
@@ -371,9 +387,11 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying in {backoff_time}s")
+                    await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model}")
                     await asyncio.sleep(backoff_time)
                 else:
                     logger.error(f"Request failed after {self.max_retries + 1} attempts")
+                    await self._report_status(status_scope, f"Request failed after retries: {self.model}")
                     raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception}") from last_exception
 
         # Should never reach here
@@ -383,7 +401,8 @@ class HTTPXOpenAIClient(LLMClient):
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ):
         """Make streaming HTTP request that yields chunks.
 
@@ -492,11 +511,13 @@ class HTTPXOpenAIClient(LLMClient):
                             if attempt < self.max_retries:
                                 backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
                                 logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                                await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
                                 await asyncio.sleep(backoff_time)
                                 continue
                             # Retries exhausted - raise for fallback
                             error_body = await response.aread()
                             error_text = error_body.decode()[:200] if error_body else ""
+                            await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
                             if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                                 raise LLMQuotaExhaustedError(
                                     f"Quota exhausted: {error_text}",
@@ -511,6 +532,7 @@ class HTTPXOpenAIClient(LLMClient):
                         if response.status_code >= 500 and attempt < self.max_retries:
                             backoff_time = self.retry_backoff * (2 ** attempt)
                             logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
+                            await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                             await asyncio.sleep(backoff_time)
                             continue
 
@@ -736,10 +758,12 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
+                    await self._report_status(status_scope, f"Timeout, retry {attempt + 1}/{self.max_retries}: {self.model}")
                     await asyncio.sleep(backoff_time)
                     continue
                 else:
                     logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
+                    await self._report_status(status_scope, f"Timeout after retries: {self.model}")
                     raise Exception(f"Request timed out: {e}") from e
 
             except httpx.HTTPStatusError as e:
@@ -748,6 +772,7 @@ class HTTPXOpenAIClient(LLMClient):
                     # Server error - retry
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
+                    await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                     await asyncio.sleep(backoff_time)
                     continue
                 else:
@@ -755,6 +780,7 @@ class HTTPXOpenAIClient(LLMClient):
                     # Error message already in exception (we read it before raising in streaming mode)
                     error_msg = str(e)
                     logger.error(f"HTTP error (streaming): {error_msg}")
+                    await self._report_status(status_scope, f"HTTP error: {self.model}")
                     raise Exception(error_msg) from e
 
             except (httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
@@ -762,10 +788,12 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")
+                    await self._report_status(status_scope, f"Network error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                     await asyncio.sleep(backoff_time)
                     continue
                 else:
                     logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
+                    await self._report_status(status_scope, f"Network error after retries: {self.model}")
                     raise Exception(f"Network/protocol error: {e}") from e
 
         # Should never reach here, but just in case

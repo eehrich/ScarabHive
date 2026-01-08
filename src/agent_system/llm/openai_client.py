@@ -280,7 +280,7 @@ class OpenAIAsyncClient(LLMClient):
                 logger.exception("OpenAI chat failed (secondary error building payload): %s", e)
                 return ""
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
         """Dispatch to appropriate API based on model capabilities.
 
         Routes to either Chat Completions API or Realtime API based on
@@ -291,11 +291,20 @@ class OpenAIAsyncClient(LLMClient):
         if api_type == 'realtime':
             return await self._chat_tools_realtime(messages, tools, cancellation_token)
         else:
-            return await self._chat_tools_chat_completions(messages, tools, cancellation_token)
+            return await self._chat_tools_chat_completions(messages, tools, cancellation_token, status_scope)
 
-    async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+    async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
         """Original Chat Completions API implementation."""
         logger = logging.getLogger(__name__)
+        
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
         
         # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
         def _serialize_messages() -> list[dict]:
@@ -421,12 +430,14 @@ class OpenAIAsyncClient(LLMClient):
                         else:
                             wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
                         if attempt < max_attempts:
+                            await report_status(f"Rate limit, waiting {wait:.0f}s, retry {attempt}/{max_attempts}: {self.model}")
                             logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise Exception("Request cancelled by user during rate limit backoff")
                             await asyncio.sleep(wait)
                             continue
                         # Retries exhausted - raise for fallback
+                        await report_status(f"Rate limit exceeded after {max_attempts} attempts: {self.model}")
                         error_text = str(e)
                         if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                             raise LLMQuotaExhaustedError(
@@ -440,6 +451,7 @@ class OpenAIAsyncClient(LLMClient):
                     # Handle server errors (5xx) - retry with exponential backoff
                     if status is not None and status >= 500 and attempt < max_attempts:
                         wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
+                        await report_status(f"Server error ({status}), retry {attempt}/{max_attempts} in {wait:.0f}s: {self.model}")
                         logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during server error backoff")
@@ -641,7 +653,7 @@ class OpenAIAsyncClient(LLMClient):
                 }
             }
 
-    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
         """Dispatch streaming to appropriate API based on model capabilities."""
         api_type = self.get_api_type()
 
@@ -649,12 +661,21 @@ class OpenAIAsyncClient(LLMClient):
             async for event in self._chat_tools_streaming_realtime(messages, tools, cancellation_token):
                 yield event
         else:
-            async for event in self._chat_tools_streaming_chat_completions(messages, tools, cancellation_token):
+            async for event in self._chat_tools_streaming_chat_completions(messages, tools, cancellation_token, status_scope):
                 yield event
 
-    async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+    async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
         """Original Chat Completions API streaming implementation."""
         logger = logging.getLogger(__name__)
+        
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
         
         # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
         def _serialize_messages() -> list[dict]:
@@ -844,6 +865,7 @@ class OpenAIAsyncClient(LLMClient):
             except (httpx.RemoteProtocolError, httpx.NetworkError, httpx.ConnectError) as e:
                 if attempt < max_retries:
                     backoff_time = retry_backoff * (2 ** attempt)
+                    await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                     logger.warning(f"OpenAI stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
                     await asyncio.sleep(backoff_time)
                     # Reset accumulated state for retry
@@ -852,6 +874,7 @@ class OpenAIAsyncClient(LLMClient):
                     accumulated_usage = None
                     continue
                 else:
+                    await report_status(f"Stream failed after {max_retries + 1} attempts: {self.model}")
                     logger.error(f"OpenAI streaming failed after {max_retries + 1} attempts: {e}")
                     yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
                     return

@@ -35,7 +35,7 @@ class MockLLMClient:
         """Mock LLM doesn't support streaming."""
         return False
     
-    async def chat_tools(self, messages, tools, cancellation_token=None):
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         self.call_count += 1
         
         if self.response_type == "empty":
@@ -145,7 +145,7 @@ async def test_agent_normal_execution_not_affected():
             """Mock LLM doesn't support streaming."""
             return False
         
-        async def chat_tools(self, messages, tools, cancellation_token=None):
+        async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
             self.call_count += 1
             # Provide a normal final answer immediately
             return {

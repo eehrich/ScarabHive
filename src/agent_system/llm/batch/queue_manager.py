@@ -120,6 +120,9 @@ class BatchQueueManager:
         # Request to job mapping (for cancellation)
         self._request_to_job: Dict[str, str] = {}  # request_id -> job_id
         
+        # Status scopes for requests (for progress reporting)
+        self._request_status_scopes: Dict[str, Any] = {}  # request_id -> status_scope
+        
         # Background tasks
         self._submission_tasks: Dict[str, asyncio.Task] = {}
         self._polling_task: Optional[asyncio.Task] = None
@@ -131,12 +134,39 @@ class BatchQueueManager:
         # Metrics
         self._metrics = BatchMetrics()
         
+        # Track last status per job to avoid duplicate messages
+        self._last_job_status: Dict[str, str] = {}  # job_id -> last_status_message
+        
         logger.info(
             f"BatchQueueManager initialized: "
             f"window={self._collection_window}s, "
             f"max_requests={self._max_requests}, "
             f"poll_interval={self._poll_interval}s"
         )
+    
+    async def _report_job_status(self, job: "BatchJob", message: str) -> None:
+        """Report status update for all requests in a job.
+        
+        Only sends if message changed since last update for this job.
+        
+        Args:
+            job: The batch job
+            message: Status message
+        """
+        # Skip duplicate messages
+        last_status = self._last_job_status.get(job.job_id)
+        if last_status == message:
+            return
+        self._last_job_status[job.job_id] = message
+        
+        # Send to all requests' status scopes
+        for request in (job.requests or []):
+            status_scope = self._request_status_scopes.get(request.request_id)
+            if status_scope:
+                try:
+                    await status_scope.progress(message)
+                except Exception:
+                    pass  # Never let status reporting break batch processing
     
     def register_batch_client(self, provider: str, client: Any) -> None:
         """Register a batch client for a provider.
@@ -367,6 +397,7 @@ class BatchQueueManager:
         custom_id: Optional[str] = None,
         timeout: Optional[float] = None,
         cancellation_token: Optional[Any] = None,
+        status_scope: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Submit a request for batch processing.
         
@@ -383,6 +414,7 @@ class BatchQueueManager:
             custom_id: Optional custom ID for correlation
             timeout: Optional timeout in seconds (default: max_wait_hours * 3600)
             cancellation_token: Optional cancellation token
+            status_scope: Optional status scope for progress reporting
             
         Returns:
             Response dict when batch completes
@@ -418,6 +450,10 @@ class BatchQueueManager:
         # Create future for this request
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._request_futures[request.request_id] = future
+        
+        # Store status scope for progress reporting
+        if status_scope:
+            self._request_status_scopes[request.request_id] = status_scope
         
         # Add to queue
         queue_key = f"{provider}:{model}"
@@ -632,9 +668,17 @@ class BatchQueueManager:
             job.status = BatchStatus.SUBMITTED
             job.submitted_at = _utc_now()
             
+            # Report that batch is being submitted to all waiting callers
+            for req in batch_requests:
+                await self._report_job_status(job, f"Batch submitting: {job.model}")
+            
             # Create input file and submit batch
             provider_job_id = await client.submit_batch(job, self.storage_path)
             job.provider_job_id = provider_job_id
+            
+            # Report successful submission
+            for req in batch_requests:
+                await self._report_job_status(job, f"Batch submitted: {job.model}")
             
             # Track the job for selective cancellation on restart
             tracker = get_job_tracker()
@@ -787,10 +831,15 @@ class BatchQueueManager:
                         f"Batch job {job.job_id} status changed: "
                         f"{old_status.value} -> {job.status.value}"
                     )
+                    # Report status change to waiting callers
+                    await self._report_job_status(
+                        job, f"Batch {job.status.value}: {job.model}"
+                    )
             
             # Check if completed
             if job.status == BatchStatus.COMPLETED:
                 # Download and process results
+                await self._report_job_status(job, f"Batch downloading: {job.model}")
                 results = await client.get_batch_results(job)
                 await self._process_results(job, results)
                 await self._complete_job(job)
@@ -803,6 +852,9 @@ class BatchQueueManager:
                         f"Batch job {job.job_id} cancelled server-side, "
                         f"retrying ({job.retry_count}/{self._max_retries})"
                     )
+                    await self._report_job_status(
+                        job, f"Batch retry {job.retry_count}/{self._max_retries}: {job.model}"
+                    )
                     await self._retry_job(job)
                 else:
                     logger.error(
@@ -813,6 +865,7 @@ class BatchQueueManager:
                     
             elif job.status == BatchStatus.FAILED:
                 job.error_message = status_info.get("error", "Unknown error")
+                await self._report_job_status(job, f"Batch failed: {job.model}")
                 await self._complete_job(job)
                 
             elif job.status == BatchStatus.EXPIRED:
@@ -823,8 +876,12 @@ class BatchQueueManager:
                         f"Batch job {job.job_id} expired on provider, "
                         f"retrying ({job.retry_count}/{self._max_retries})"
                     )
+                    await self._report_job_status(
+                        job, f"Batch retry {job.retry_count}/{self._max_retries}: {job.model}"
+                    )
                     await self._retry_job(job)
                 else:
+                    await self._report_job_status(job, f"Batch expired: {job.model}")
                     job.error_message = status_info.get("error", "Batch expired on provider")
                     await self._complete_job(job)
                 
@@ -838,6 +895,9 @@ class BatchQueueManager:
                         logger.warning(
                             f"Batch job {job.job_id} expired locally after {elapsed:.0f}s, "
                             f"retrying ({job.retry_count}/{self._max_retries})"
+                        )
+                        await self._report_job_status(
+                            job, f"Batch retry {job.retry_count}/{self._max_retries}: {job.model}"
                         )
                         await self._retry_job(job)
                     else:
@@ -855,6 +915,7 @@ class BatchQueueManager:
                         
                         job.status = BatchStatus.EXPIRED
                         job.error_message = f"Exceeded max wait time of {self._max_wait_hours} hours after {job.retry_count} retries"
+                        await self._report_job_status(job, f"Batch expired: {job.model}")
                         await self._complete_job(job)
                     
         except Exception as e:
@@ -986,9 +1047,10 @@ class BatchQueueManager:
                     del self._completed_jobs[key]
                 logger.debug(f"Evicted {len(keys_to_remove)} old completed jobs from cache")
             
-            # Clean up request-to-job mapping for this job's requests
+            # Clean up request-to-job mapping and status scopes for this job's requests
             for request in (job.requests or []):
                 self._request_to_job.pop(request.request_id, None)
+                self._request_status_scopes.pop(request.request_id, None)
         
         # Notify any remaining waiting callers of failure
         if job.status != BatchStatus.COMPLETED:

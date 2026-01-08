@@ -235,13 +235,13 @@ class ChatMessage(BaseModel):
 class LLMClient:
     """Base class for LLM clients with streaming support."""
 
-    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         raise NotImplementedError
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
         raise NotImplementedError
 
-    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
         """Stream LLM responses with tool calls.
 
         Yields chunks in the format:
@@ -250,8 +250,14 @@ class LLMClient:
         - {"type": "final", "assistant": {...}}
 
         Default implementation falls back to non-streaming.
+        
+        Args:
+            messages: Chat messages
+            tools: Tool definitions
+            cancellation_token: Optional cancellation token
+            status_scope: Optional status scope for progress reporting (batch status, etc.)
         """
-        result = await self.chat_tools(messages, tools, cancellation_token)
+        result = await self.chat_tools(messages, tools, cancellation_token, status_scope)
         yield {"type": "final", "assistant": result["assistant"]}
 
     def supports_streaming(self) -> bool:

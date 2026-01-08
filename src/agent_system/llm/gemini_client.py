@@ -93,9 +93,19 @@ class GeminiClient(LLMClient):
         self,
         messages: List[ChatMessage],
         tools: List[Dict],
-        cancellation_token=None
+        cancellation_token=None,
+        status_scope=None
     ):
         """Stream chat with tools using Gemini native API."""
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
+        
         system_instruction, contents = convert_openai_messages_to_gemini(messages)
         function_declarations = convert_openai_tools_to_gemini(tools)
 
@@ -166,6 +176,7 @@ class GeminiClient(LLMClient):
                         # Handle server errors (5xx) - retry with exponential backoff
                         if response.status_code >= 500 and attempt < self.max_retries:
                             wait_time = 2 ** attempt
+                            await report_status(f"Server error ({response.status_code}), retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                             logger.warning(f"Gemini server error {response.status_code}, retrying in {wait_time}s")
                             await asyncio.sleep(wait_time)
                             continue
@@ -180,6 +191,7 @@ class GeminiClient(LLMClient):
                             # Retry with exponential backoff similar to rate limits
                             if response.status_code == 400 and "too many states" in error_text and attempt < self.max_retries:
                                 wait_time = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                                await report_status(f"Schema error, retry {attempt + 1}/{self.max_retries} in {wait_time:.0f}s: {self.model}")
                                 logger.warning(
                                     f"[Gemini] Schema 'too many states' error (sporadic). "
                                     f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
@@ -407,10 +419,12 @@ class GeminiClient(LLMClient):
                 last_exception = e
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
+                    await report_status(f"Request timeout, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Gemini request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
+                    await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
                     logger.error(f"Gemini request failed after {self.max_retries + 1} attempts")
                     raise Exception(f"Request timeout after {self.max_retries + 1} attempts") from e
 
@@ -431,6 +445,7 @@ class GeminiClient(LLMClient):
                     
                     # Check if we have retries left
                     if attempt < self.max_retries:
+                        await report_status(f"Rate limit, waiting {wait_time:.0f}s, retry {attempt + 1}/{self.max_retries}: {self.model}")
                         logger.warning(
                             f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
@@ -439,6 +454,7 @@ class GeminiClient(LLMClient):
                         continue
                     
                     # Retries exhausted - raise for fallback
+                    await report_status(f"Rate limit exceeded after {self.max_retries + 1} attempts: {self.model}")
                     if "quota" in error_str.lower() or "exhausted" in error_str.lower():
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {error_str}",
@@ -465,6 +481,7 @@ class GeminiClient(LLMClient):
                 logger.error(f"Gemini streaming error: {e}", exc_info=True)
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
+                    await report_status(f"Error, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
                     await asyncio.sleep(wait_time)
                     # Reset accumulators for retry
@@ -476,6 +493,7 @@ class GeminiClient(LLMClient):
                     consecutive_thought_only_chunks = 0
                     continue
                 else:
+                    await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
                     raise Exception(f"Gemini streaming failed: {str(e)}") from e
 
         # If we get here, all retries failed
@@ -487,9 +505,19 @@ class GeminiClient(LLMClient):
         self,
         messages: List[ChatMessage],
         tools: List[Dict],
-        cancellation_token=None
+        cancellation_token=None,
+        status_scope=None
     ) -> Dict:
         """Non-streaming chat with tools using Gemini native API."""
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
+        
         system_instruction, contents = self._convert_messages_to_gemini(messages)
         function_declarations = self._convert_tools_to_gemini(tools)
 
@@ -552,6 +580,7 @@ class GeminiClient(LLMClient):
                         # Retry with exponential backoff similar to rate limits
                         if response.status_code == 400 and "too many states" in error_text and attempt < self.max_retries:
                             wait_time = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                            await report_status(f"Schema error, retry {attempt + 1}/{self.max_retries} in {wait_time:.0f}s: {self.model}")
                             logger.warning(
                                 f"[Gemini] Schema 'too many states' error (sporadic). "
                                 f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
@@ -679,10 +708,12 @@ class GeminiClient(LLMClient):
                 last_exception = e
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
+                    await report_status(f"Request timeout, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Gemini request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
+                    await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
                     logger.error(f"Gemini request failed after {self.max_retries + 1} attempts")
                     raise Exception(f"Request timeout after {self.max_retries + 1} attempts") from e
 
@@ -703,6 +734,7 @@ class GeminiClient(LLMClient):
                     
                     # Check if we have retries left
                     if attempt < self.max_retries:
+                        await report_status(f"Rate limit, waiting {wait_time:.0f}s, retry {attempt + 1}/{self.max_retries}: {self.model}")
                         logger.warning(
                             f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
@@ -711,6 +743,7 @@ class GeminiClient(LLMClient):
                         continue
                     
                     # Retries exhausted - raise for fallback
+                    await report_status(f"Rate limit exceeded after {self.max_retries + 1} attempts: {self.model}")
                     if "quota" in error_str.lower() or "exhausted" in error_str.lower():
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {error_str}",
@@ -737,10 +770,12 @@ class GeminiClient(LLMClient):
                 logger.error(f"Gemini request error: {e}", exc_info=True)
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
+                    await report_status(f"Error, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
+                    await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
                     raise Exception(f"Gemini request failed: {str(e)}") from e
 
         # If we get here, all retries failed

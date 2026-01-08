@@ -117,12 +117,12 @@ try:
                 return resp
             return "ok"
 
-        async def chat_tools(self, messages, tools, cancellation_token=None):
+        async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
             # Provide the minimal shape expected by callers: a dict with assistant content
             txt = await self.chat(messages, cancellation_token=cancellation_token)
             return {"assistant": {"content": txt}}
 
-        async def chat_tools_streaming(self, messages, tools, cancellation_token=None):
+        async def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
             # Streaming version: yield chunks that mimic real LLM streaming responses
             txt = await self.chat(messages, cancellation_token=cancellation_token)
             # Yield a single chunk with the full response

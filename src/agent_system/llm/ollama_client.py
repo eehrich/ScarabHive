@@ -166,7 +166,7 @@ class OllamaNativeAsyncClient(LLMClient):
         msg = (data or {}).get("message") or {}
         return msg.get("content") or ""
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
         url = f"{self._base}/api/chat"
         mapped_messages = await self._map_messages_async(messages)
         body: dict[str, Any] = {
@@ -225,12 +225,24 @@ class OllamaNativeAsyncClient(LLMClient):
 
         return result
 
-    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
         """Stream LLM responses from Ollama using native streaming API.
 
         Ollama's /api/chat endpoint supports streaming with `stream: true`.
         Each line is a JSON object with message deltas.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
+        
         url = f"{self._base}/api/chat"
         mapped_messages = await self._map_messages_async(messages)
         body: dict[str, Any] = {
@@ -265,8 +277,7 @@ class OllamaNativeAsyncClient(LLMClient):
                         # Handle server errors (5xx) - retry with exponential backoff
                         if response.status_code >= 500 and attempt < max_retries:
                             backoff_time = retry_backoff * (2 ** attempt)
-                            import logging
-                            logger = logging.getLogger(__name__)
+                            await report_status(f"Server error ({response.status_code}), retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                             logger.warning(f"Ollama server error {response.status_code}, retrying in {backoff_time}s")
                             await asyncio.sleep(backoff_time)
                             continue
@@ -286,8 +297,7 @@ class OllamaNativeAsyncClient(LLMClient):
                             except StopAsyncIteration:
                                 break  # Stream completed
                             except asyncio.TimeoutError:
-                                import logging
-                                logger = logging.getLogger(__name__)
+                                await report_status(f"Stream timeout after {chunk_timeout}s: {self.model}")
                                 logger.warning(f"Ollama stream chunk timeout after {chunk_timeout}s")
                                 raise Exception(f"Stream stalled - no data for {chunk_timeout}s")
 
@@ -373,23 +383,20 @@ class OllamaNativeAsyncClient(LLMClient):
                 return  # Success - exit retry loop
 
             except (self._httpx.RemoteProtocolError, self._httpx.NetworkError, self._httpx.ConnectError) as e:
-                import logging
-                logger = logging.getLogger(__name__)
                 if attempt < max_retries:
                     backoff_time = retry_backoff * (2 ** attempt)
+                    await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                     logger.warning(f"Ollama stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
                     await asyncio.sleep(backoff_time)
                     continue
                 else:
-                    import logging
-                    logger = logging.getLogger(__name__)
+                    await report_status(f"Stream failed after {max_retries + 1} attempts: {self.model}")
                     logger.error(f"Ollama streaming failed after {max_retries + 1} attempts: {e}")
                     yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
                     return
 
             except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
+                await report_status(f"Request failed: {self.model}")
                 logger.exception("Ollama streaming failed: %s", e)
                 yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": str(e)}}}
                 return

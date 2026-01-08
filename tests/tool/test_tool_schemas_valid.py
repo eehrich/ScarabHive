@@ -6,7 +6,7 @@ from agent_system.config.settings import load_settings as load_config
 class DummyLLMNoop:
     async def chat(self, messages):
         return {"assistant": {"content": ""}}
-    async def chat_tools(self, messages, tools, cancellation_token=None):
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         return {"assistant": {"content": ""}}
 
 @pytest.mark.asyncio

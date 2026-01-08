@@ -42,7 +42,7 @@ class MockLLMClient:
     def supports_streaming(self) -> bool:
         return False
         
-    async def chat_tools(self, messages, tools, cancellation_token=None):
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         return {"assistant": {"content": "Logging test response"}}
 
 
@@ -321,7 +321,7 @@ async def test_exception_logging_includes_traceback(
         def __init__(self, **kwargs):
             pass
             
-        async def chat_tools(self, messages, tools, cancellation_token=None):
+        async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
             raise ValueError("Simulated LLM error")
     
     failing_llm = FailingLLMClient()

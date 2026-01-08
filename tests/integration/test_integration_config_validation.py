@@ -44,7 +44,7 @@ class MockLLMClient:
     def supports_streaming(self) -> bool:
         return False
         
-    async def chat_tools(self, messages, tools, cancellation_token=None):
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         return {"assistant": {"content": "Config test response"}}
 
 

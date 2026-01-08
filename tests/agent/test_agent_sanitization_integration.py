@@ -56,7 +56,7 @@ class TestAgentSanitizationIntegration:
         # Mock the LLM to capture what messages it receives
         captured_messages = []
         
-        async def mock_chat_tools_streaming(messages, tools, cancellation_token=None):
+        async def mock_chat_tools_streaming(messages, tools, cancellation_token=None, status_scope=None):
             captured_messages.extend(messages)
             # Yield streaming chunks
             yield {"type": "content_delta", "delta": "Test", "accumulated": "Test"}

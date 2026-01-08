@@ -328,11 +328,12 @@ class AnthropicAsyncClient(LLMClient):
         self,
         messages: List[ChatMessage],
         tools: List[Dict],
-        cancellation_token=None
+        cancellation_token=None,
+        status_scope=None
     ) -> Dict[str, Any]:
         """Chat with tools - non-streaming."""
         result = {}
-        async for chunk in self.chat_tools_streaming(messages, tools, cancellation_token):
+        async for chunk in self.chat_tools_streaming(messages, tools, cancellation_token, status_scope):
             if chunk.get("type") == "final":
                 result = chunk
         
@@ -342,7 +343,8 @@ class AnthropicAsyncClient(LLMClient):
         self,
         messages: List[ChatMessage],
         tools: List[Dict],
-        cancellation_token=None
+        cancellation_token=None,
+        status_scope=None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat with tools.
         
@@ -352,6 +354,15 @@ class AnthropicAsyncClient(LLMClient):
         - thinking_delta: Extended thinking output (if enabled)
         - final: Final accumulated result
         """
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
+        
         system_prompt, converted_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools) if tools else []
         
@@ -533,6 +544,7 @@ class AnthropicAsyncClient(LLMClient):
                     wait_time = parsed_delay if parsed_delay else 60.0
                     
                     if attempt < self.max_retries:
+                        await report_status(f"Rate limit, waiting {wait_time:.0f}s, retry {attempt + 1}/{self.max_retries}: {self.model}")
                         logger.warning(
                             f"[Anthropic] Rate limit hit. Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
@@ -546,6 +558,7 @@ class AnthropicAsyncClient(LLMClient):
                         continue
                     
                     # Exhausted retries
+                    await report_status(f"Rate limit exceeded after {self.max_retries + 1} attempts: {self.model}")
                     if "quota" in error_str.lower() or "exhausted" in error_str.lower():
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {error_str}",
@@ -559,6 +572,7 @@ class AnthropicAsyncClient(LLMClient):
                 # Check for overloaded errors
                 if "overloaded" in error_str.lower() and attempt < self.max_retries:
                     wait_time = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                    await report_status(f"Service overloaded, retry {attempt + 1}/{self.max_retries} in {wait_time:.0f}s: {self.model}")
                     logger.warning(
                         f"[Anthropic] Service overloaded. Waiting {wait_time:.1f}s "
                         f"(attempt {attempt + 1}/{self.max_retries + 1})"
@@ -572,6 +586,7 @@ class AnthropicAsyncClient(LLMClient):
                     continue
                 
                 # Non-recoverable error
+                await report_status(f"Request failed: {self.model}")
                 logger.error(f"[Anthropic] Error: {error_str}")
                 raise
         

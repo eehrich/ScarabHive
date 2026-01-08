@@ -226,7 +226,7 @@ class TestBaseLLMClientFallback:
             async def chat(self, messages, cancellation_token=None):
                 return "Test response"
             
-            async def chat_tools(self, messages, tools, cancellation_token=None):
+            async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
                 return {"assistant": {"role": "assistant", "content": "Test response"}}
         
         client = MockLLMClient()

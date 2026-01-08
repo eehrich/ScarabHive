@@ -20,7 +20,7 @@ def create_mock_llm(responses: list[dict]) -> AsyncMock:
     mock_llm = AsyncMock()
     response_iter = iter(responses)
     
-    async def mock_chat_tools(messages, tools, cancellation_token=None):
+    async def mock_chat_tools(messages, tools, cancellation_token=None, status_scope=None):
         try:
             return next(response_iter)
         except StopIteration:
