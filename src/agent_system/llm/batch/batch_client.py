@@ -141,8 +141,8 @@ class BatchLLMClient(LLMClient):
                 return await self.underlying_client.chat(messages, cancellation_token)
             raise RuntimeError("Batch request failed and fallback is disabled")
         
-        await self._report_status(status_scope, f"Batch complete: {self.model_name}")
         # Extract text from result - support both OpenAI batch format and native format
+        # Note: Status "Batch completed" already reported by queue_manager
         return self._extract_content(result)
     
     def _extract_content(self, result: Any) -> str:
@@ -244,8 +244,8 @@ class BatchLLMClient(LLMClient):
                 )
             raise RuntimeError("Batch request failed and fallback is disabled")
         
-        await self._report_status(status_scope, f"Batch complete: {self.model_name}")
         # Convert from OpenAI batch format to native format
+        # Note: Status "Batch completed" already reported by queue_manager
         return self._convert_to_native_format(result)
     
     async def chat_tools_streaming(
