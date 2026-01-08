@@ -76,6 +76,20 @@ class SessionTracker:
         # Lock for thread-safe access to internal data structures
         self._lock = asyncio.Lock()
 
+    async def is_request_active(self, request_id: str) -> bool:
+        """Check if a request is currently active (still running).
+        
+        Used by the status endpoint to determine if a request is still processing.
+        
+        Args:
+            request_id: The request ID to check
+            
+        Returns:
+            True if the request is active, False otherwise
+        """
+        async with self._lock:
+            return request_id in self._active_requests
+
     async def append_user_message(self, request_id: str, content: str) -> bool:
         """
         Append a user message to an active request's conversation.

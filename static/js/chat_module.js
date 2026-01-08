@@ -651,6 +651,13 @@
   let currentStatusEventSource = null;
   let closeEventSourceTimer = null; // Timer to delay closing EventSource after final/end
   
+  // SSE Reconnection state for long-running requests
+  let sseReconnectAttempts = 0;
+  const SSE_MAX_RECONNECT_ATTEMPTS = 5;
+  const SSE_BASE_RECONNECT_DELAY_MS = 1000; // Start with 1s, doubles each retry
+  let sseReconnectTimer = null;
+  let sseReceivedFinalOrEnd = false; // Track if we've completed normally
+  
   // Streaming state tracking
   let currentStreamingContent = '';
   let currentStreamingStep = null;
@@ -1057,6 +1064,10 @@
             }
             break;
           case 'final':
+            // Mark completion for reconnect logic
+            sseReceivedFinalOrEnd = true;
+            sseReconnectAttempts = 0;
+            
             // Only show final if content box is still empty (no streaming happened)
             // or if it's a different format
             const content = data.summary || data.content || '';
@@ -1075,6 +1086,10 @@
             // If streaming already filled the content, skip this (content already there)
             break;
           case 'end':
+            // Mark completion for reconnect logic
+            sseReceivedFinalOrEnd = true;
+            sseReconnectAttempts = 0;
+            
             // Close EventSource immediately to prevent auto-reconnect attempts
             // EventSource will try to reconnect if the server closes the connection,
             // which causes spurious "Connection failed" errors in the onerror handler
@@ -1085,6 +1100,12 @@
             if (closeEventSourceTimer) {
               clearTimeout(closeEventSourceTimer);
               closeEventSourceTimer = null;
+            }
+            
+            // Clear any pending reconnect timer
+            if (sseReconnectTimer) {
+              clearTimeout(sseReconnectTimer);
+              sseReconnectTimer = null;
             }
             
             runBtn.style.display = 'block'; // Show run button
@@ -1302,6 +1323,14 @@
       // Text-only SSE-based request
       let sseOk = false;
       
+      // Reset reconnect state for new request
+      sseReceivedFinalOrEnd = false;
+      sseReconnectAttempts = 0;
+      if (sseReconnectTimer) {
+        clearTimeout(sseReconnectTimer);
+        sseReconnectTimer = null;
+      }
+      
       // Get current agent and LLM profile selections
       const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
       const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
@@ -1393,30 +1422,13 @@
         // Log connection error with available state information
         const readyStateNames = ['CONNECTING', 'OPEN', 'CLOSED'];
         const readyState = readyStateNames[es.readyState] || es.readyState;
-        console.warn('[SSE] Connection error, readyState:', readyState, 'event:', event);
+        console.warn('[SSE] Connection error, readyState:', readyState, 'event:', event, 'attempts:', sseReconnectAttempts);
         
-        // Determine error message based on connection state
-        let errorMessage = 'Connection lost';
-        if (es.readyState === EventSource.CONNECTING) {
-          errorMessage = 'Connection failed - server may be unreachable';
-          console.warn('[SSE] Connection attempt failed - server may be unreachable');
-        } else if (es.readyState === EventSource.CLOSED) {
-          errorMessage = 'Connection closed unexpectedly - possible timeout or network issue';
-          console.warn('[SSE] Connection closed unexpectedly - possible timeout or network issue');
-        }
-        
-        // Show error message in response field
-        showSection(blk.t);
-        // Only show error if response is empty or still showing "Thinking..."
-        const currentContent = blk.t.textContent || '';
-        if (!currentContent.trim() || currentContent.includes('Thinking')) {
-          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMessage)}</div>`;
-        } else {
-          // Append error notice if there was partial content
-          const errorNotice = document.createElement('div');
-          errorNotice.className = 'response-text error';
-          errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMessage);
-          blk.t.appendChild(errorNotice);
+        // Close current connection
+        es.close();
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
+          currentStatusEventSource = null;
         }
         
         // Clear any pending close timer
@@ -1424,20 +1436,137 @@
           clearTimeout(closeEventSourceTimer);
           closeEventSourceTimer = null;
         }
-        es.close();
-        if (currentStatusEventSource) {
-          currentStatusEventSource.close();
-          currentStatusEventSource = null;
+        
+        // If we've already received final/end, this is just cleanup - don't show error
+        if (sseReceivedFinalOrEnd) {
+          console.log('[SSE] Connection closed after completion, ignoring error');
+          currentEventSource = null;
+          return;
         }
-        runBtn.style.display = 'block'; // Show run button
-        stopBtn.style.display = 'none'; // Hide stop button
-        // Reset stop button state
+        
+        // Check if we should attempt reconnection (for long-running batch jobs)
+        // Only reconnect if:
+        // 1. We haven't exceeded max attempts
+        // 2. We have an active request ID (something is still running)
+        // 3. Connection was lost mid-stream (not initial connection failure)
+        const shouldReconnect = sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS 
+            && currentRequestId 
+            && sseOk; // sseOk means we received at least one event
+        
+        if (shouldReconnect) {
+          sseReconnectAttempts++;
+          const delay = SSE_BASE_RECONNECT_DELAY_MS * Math.pow(2, sseReconnectAttempts - 1);
+          console.log(`[SSE] Will attempt reconnect #${sseReconnectAttempts} in ${delay}ms`);
+          
+          // Show reconnecting status
+          if (blk && blk.status) {
+            addStatusEvent(blk.status, {
+              type: 'status',
+              message: `Connection lost, reconnecting (attempt ${sseReconnectAttempts}/${SSE_MAX_RECONNECT_ATTEMPTS})...`,
+              request_id: currentRequestId,
+              timestamp: new Date().toISOString()
+            });
+          }
+          
+          // Schedule reconnect
+          sseReconnectTimer = setTimeout(() => {
+            if (!currentRequestId || sseReceivedFinalOrEnd) {
+              console.log('[SSE] Reconnect cancelled - request completed or cancelled');
+              return;
+            }
+            
+            console.log(`[SSE] Attempting reconnect #${sseReconnectAttempts}`);
+            
+            // Create new EventSource to status endpoint for this request
+            // Note: We can't resume the original stream, but we can poll for completion
+            const statusUrl = `/request/${currentRequestId}/status`;
+            fetch(statusUrl)
+              .then(r => r.json())
+              .then(status => {
+                if (status.completed) {
+                  // Request completed while we were disconnected
+                  console.log('[SSE] Request completed during reconnect');
+                  sseReceivedFinalOrEnd = true;
+                  if (status.result) {
+                    showSection(blk.t);
+                    const content = status.result.summary || status.result.content || JSON.stringify(status.result);
+                    const contentFormat = status.result.content_format || 'text';
+                    blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+                  }
+                  runBtn.style.display = 'block';
+                  stopBtn.style.display = 'none';
+                  sseReconnectAttempts = 0;
+                } else if (status.error) {
+                  // Request failed
+                  console.warn('[SSE] Request failed:', status.error);
+                  showSection(blk.t);
+                  blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(status.error)}</div>`;
+                  runBtn.style.display = 'block';
+                  stopBtn.style.display = 'none';
+                  sseReconnectAttempts = 0;
+                } else {
+                  // Request still running - schedule another check
+                  console.log('[SSE] Request still running, scheduling next poll');
+                  if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
+                    sseReconnectTimer = setTimeout(() => {
+                      // Trigger another onerror to continue polling
+                      es.onerror(event);
+                    }, SSE_BASE_RECONNECT_DELAY_MS * 2); // Poll every 2s while waiting
+                  }
+                }
+              })
+              .catch(err => {
+                console.warn('[SSE] Status poll failed:', err);
+                // Try again if we have attempts left
+                if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
+                  es.onerror(event);
+                } else {
+                  // Give up - show final error
+                  showSection(blk.t);
+                  const currentContent = blk.t.textContent || '';
+                  if (!currentContent.trim() || currentContent.includes('Thinking')) {
+                    blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Connection lost after ' + SSE_MAX_RECONNECT_ATTEMPTS + ' reconnect attempts')}</div>`;
+                  } else {
+                    const errorNotice = document.createElement('div');
+                    errorNotice.className = 'response-text error';
+                    errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ Connection lost - please check batch status');
+                    blk.t.appendChild(errorNotice);
+                  }
+                  runBtn.style.display = 'block';
+                  stopBtn.style.display = 'none';
+                  sseReconnectAttempts = 0;
+                }
+              });
+          }, delay);
+          
+          currentEventSource = null;
+          return; // Don't show error yet, we're reconnecting
+        }
+        
+        // No reconnect possible - show error and reset UI
+        const errorMessage = sseOk 
+          ? 'Connection lost - possible timeout or network issue'
+          : 'Connection failed - server may be unreachable';
+        
+        showSection(blk.t);
+        const currentContent = blk.t.textContent || '';
+        if (!currentContent.trim() || currentContent.includes('Thinking')) {
+          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMessage)}</div>`;
+        } else {
+          const errorNotice = document.createElement('div');
+          errorNotice.className = 'response-text error';
+          errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMessage);
+          blk.t.appendChild(errorNotice);
+        }
+        
+        runBtn.style.display = 'block';
+        stopBtn.style.display = 'none';
         stopBtn.setAttribute('title', 'Stop');
         stopBtn.setAttribute('aria-label', 'Stop');
         stopBtn.disabled = false;
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-        // Keep currentRequestId and Request ID display visible
         currentEventSource = null;
+        sseReconnectAttempts = 0;
       };
     });
   };

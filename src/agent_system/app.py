@@ -1732,6 +1732,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/request/{request_id}/status")
+    async def get_request_status(request_id: str):
+        """Get the status of a request for reconnection purposes.
+        
+        Used by the WebUI to poll for request completion when SSE connection is lost.
+        Returns whether the request is still running or completed.
+        """
+        # Check if request is still active
+        is_active = await agent._session_tracker.is_request_active(request_id)
+        
+        if is_active:
+            return {
+                "request_id": request_id,
+                "status": "running",
+                "completed": False
+            }
+        
+        # Request not active - it either completed or was never started
+        # We can't retrieve the result after completion (not stored)
+        return {
+            "request_id": request_id,
+            "status": "completed",
+            "completed": True,
+            "message": "Request finished - check session for results"
+        }
+
     @app.post("/cancel/{request_id}")
     async def cancel_request(request_id: str):
         """Cancel an active request by its ID."""
