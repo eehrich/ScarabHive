@@ -26,7 +26,7 @@ context:
 status: # type StatusConfig
   queue_maxsize: 5000  # Max events per status queue (prevents memory exhaustion with parallel sessions)
   drop_oldest_when_full: true  # Drop oldest events when queue is full (protects against slow consumers)
-  sse_keepalive_interval: 15.0  # Interval for SSE keep-alive comments (seconds)
+  sse_keepalive_interval: 10.0  # Interval for SSE keep-alive comments (seconds) - must be < browser timeout (~30s)
   llm_heartbeat_interval: 5.0  # Interval for heartbeat events during LLM calls (seconds)
 
 # Vision/image processing configuration

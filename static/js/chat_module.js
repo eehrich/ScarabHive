@@ -1075,17 +1075,17 @@
             // If streaming already filled the content, skip this (content already there)
             break;
           case 'end':
-            // Delay closing EventSource by 1 second to capture remaining status messages
+            // Close EventSource immediately to prevent auto-reconnect attempts
+            // EventSource will try to reconnect if the server closes the connection,
+            // which causes spurious "Connection failed" errors in the onerror handler
+            if (currentEventSource) {
+              currentEventSource.close();
+              currentEventSource = null;
+            }
             if (closeEventSourceTimer) {
               clearTimeout(closeEventSourceTimer);
-            }
-            closeEventSourceTimer = setTimeout(() => {
-              if (currentEventSource) {
-                currentEventSource.close();
-                currentEventSource = null;
-              }
               closeEventSourceTimer = null;
-            }, 1000); // Wait 1 second for any pending status batches
+            }
             
             runBtn.style.display = 'block'; // Show run button
             stopBtn.style.display = 'none'; // Hide stop button

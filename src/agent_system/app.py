@@ -1521,9 +1521,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Capture asyncio functions at closure level to avoid scoping issues
             import asyncio as _asyncio
             get_time = _asyncio.get_event_loop().time
-            wait_for = _asyncio.wait_for
             CancelledError = _asyncio.CancelledError
-            TimeoutError_Asyncio = _asyncio.TimeoutError
+            create_task = _asyncio.create_task
+            Queue = _asyncio.Queue
             
             last_event_time = get_time()
             
@@ -1542,29 +1542,51 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     last_batch_time = get_time()
                     last_event_time = last_batch_time
             
-            # Create event generator and wrap it to interleave keepalives
-            # This is CRITICAL: During long LLM calls (e.g., thinking models), no events
-            # are generated for 60+ seconds. Without keepalives, the browser will timeout.
-            event_gen = selected_agent.run_events(
-                task, request_id, actual_session_id, 
-                llm_override=llm_override, llm_profile_info_override=llm_profile_info
-            )
-            event_iter = event_gen.__aiter__()
+            # Create event generator and use a queue to decouple event production from SSE sending
+            # This allows us to send keepalives while waiting for events without cancelling the generator
+            event_queue: Queue = Queue()
+            generator_done = False
+            generator_error: Exception | None = None
+            
+            async def event_producer():
+                """Background task that reads events from generator and puts them in queue"""
+                nonlocal generator_done, generator_error
+                try:
+                    async for ev in selected_agent.run_events(
+                        task, request_id, actual_session_id, 
+                        llm_override=llm_override, llm_profile_info_override=llm_profile_info
+                    ):
+                        await event_queue.put(ev)
+                    generator_done = True
+                    await event_queue.put(None)  # Signal end
+                except CancelledError:
+                    generator_done = True
+                    await event_queue.put(None)
+                    raise
+                except Exception as e:
+                    generator_error = e
+                    generator_done = True
+                    await event_queue.put(None)
+            
+            producer_task = create_task(event_producer(), name=f"sse_producer_{request_id}")
 
             try:
                 while True:
-                    # Try to get next event with timeout
+                    # Try to get next event from queue with timeout
                     # If timeout fires, send keepalive and try again
                     try:
-                        ev = await wait_for(event_iter.__anext__(), timeout=keepalive_interval)
-                    except TimeoutError_Asyncio:
+                        ev = await _asyncio.wait_for(event_queue.get(), timeout=keepalive_interval)
+                    except _asyncio.TimeoutError:
                         # No event received within keepalive interval - send keepalive
                         logger.debug("[KEEPALIVE] Sending keepalive (no events for %.1fs)", keepalive_interval)
                         last_event_time = get_time()
                         yield ":keepalive\n\n"
                         continue
-                    except StopAsyncIteration:
-                        # Generator exhausted
+                    
+                    if ev is None:
+                        # Generator finished
+                        if generator_error:
+                            raise generator_error
                         break
                     
                     # Update last event time since we're sending real data
@@ -1654,6 +1676,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield f"data: {json.dumps(cancelled_payload, ensure_ascii=False)}\n\n"
                 except Exception as e:
                     logger.warning(f"Failed to send cancellation event: {e}")
+                # Cancel producer task and re-raise
+                if not producer_task.done():
+                    producer_task.cancel()
+                    try:
+                        await producer_task
+                    except CancelledError:
+                        pass
                 raise  # Re-raise to ensure proper cleanup
             except Exception as e:
                 # Other errors - send error event
@@ -1663,8 +1692,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
                 except Exception:
                     pass  # Best effort
+                # Cancel producer task
+                if not producer_task.done():
+                    producer_task.cancel()
+                    try:
+                        await producer_task
+                    except CancelledError:
+                        pass
                 raise
             finally:
+                # Ensure producer task is cancelled (if not already)
+                if not producer_task.done():
+                    producer_task.cancel()
+                    try:
+                        await producer_task
+                    except CancelledError:
+                        pass
+                
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
                 if actual_session_id and _session_service:
