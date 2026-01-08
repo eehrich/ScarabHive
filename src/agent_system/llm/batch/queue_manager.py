@@ -477,7 +477,14 @@ class BatchQueueManager:
                 )
         
         # Wait for result with cancellation support
-        timeout = timeout or (self._max_wait_hours * 3600)
+        # NOTE: We don't enforce a hard timeout here because the queue manager handles
+        # timeouts via _poll_batch_status (local timeout + retries). The agent should
+        # wait for the Future to be resolved by the queue manager, which will either:
+        # 1. Set the result when batch completes
+        # 2. Set an exception when all retries are exhausted
+        # The caller can pass a timeout, but the default is very long to allow for retries.
+        # Total worst-case time = max_wait_hours * (max_retries + 1)
+        timeout = timeout or (self._max_wait_hours * (self._max_retries + 1) * 3600)
         # Use short interval (50ms) to allow status events to flow through the agent's polling loop
         # The agent polls every 100ms, so 50ms ensures we yield control frequently enough
         check_interval = 0.05
@@ -503,14 +510,15 @@ class BatchQueueManager:
                     elapsed += check_interval
                     continue
                     
-            # Total timeout exceeded
+            # Total timeout exceeded - cancel the request and its batch job
             logger.error(f"Request {request.request_id} timed out after {timeout}s")
-            self._request_futures.pop(request.request_id, None)
+            await self.cancel_request(request.request_id)
             raise asyncio.TimeoutError(f"Batch request timed out after {timeout}s")
             
         except asyncio.CancelledError:
-            logger.warning(f"Request {request.request_id} was cancelled")
-            self._request_futures.pop(request.request_id, None)
+            # Agent was cancelled - cancel the batch request at provider
+            logger.warning(f"Request {request.request_id} was cancelled, cancelling batch job")
+            await self.cancel_request(request.request_id)
             raise
     
     async def _collection_window_task(
