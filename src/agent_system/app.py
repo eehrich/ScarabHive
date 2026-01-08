@@ -1701,13 +1701,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         pass
                 raise
             finally:
+                # Track if stream was interrupted (not completed normally)
+                stream_interrupted = not generator_done
+                
                 # Ensure producer task is cancelled (if not already)
                 if not producer_task.done():
+                    stream_interrupted = True
                     producer_task.cancel()
                     try:
                         await producer_task
                     except CancelledError:
                         pass
+                
+                # Only cancel request if stream was interrupted (SSE disconnect, error, etc.)
+                # If generator completed normally, the request cleanup is already done
+                if stream_interrupted:
+                    # CRITICAL: Cancel the request to propagate cancellation to all tools/sub-agents
+                    # This handles SSE disconnect (network timeout, browser closed, etc.)
+                    # The cancel_request uses prefix-matching so sub-agents with request IDs like
+                    # "parent_req_123_sub_456" will also receive the cancellation token
+                    try:
+                        await selected_agent.cancel_request(request_id)
+                        logger.info(f"[SSE_CLEANUP] Sent cancellation for interrupted request {request_id}")
+                    except Exception as e:
+                        logger.warning(f"[SSE_CLEANUP] Failed to cancel request {request_id}: {e}")
                 
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")

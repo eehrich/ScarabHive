@@ -674,21 +674,27 @@ class Agent(MCPServer):
         if not session_id:
             session_id = short_id()
 
-        # CRITICAL: Set session metadata for newly generated sessions
+        # CRITICAL: Set session metadata for newly generated sessions AND ensure it exists for existing ones
         # This ensures user_id is available for tool execution even in sub-agents
-        if was_new_session and self._session_tracker:
-            # Extract user_id from request_user_map (populated by API/tool execution)
-            # Import at use-site to avoid circular dependency
-            from agent_system.app import _request_user_map
-            user_id = _request_user_map.get(request_id, "anonymous")
-            
-            # Use agent's default llm_profile for metadata
-            effective_llm_profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
-            self._session_tracker.set_session_metadata(session_id, {
-                "user_id": user_id,
-                "agent_name": self.name,
-                "llm_profile": effective_llm_profile
-            })
+        if self._session_tracker:
+            existing_metadata = self._session_tracker.get_session_metadata(session_id)
+            if not existing_metadata:
+                # Extract user_id from request_user_map (populated by API/tool execution)
+                # Import at use-site to avoid circular dependency
+                from agent_system.app import _request_user_map
+                user_id = _request_user_map.get(request_id, "anonymous")
+                
+                # Use agent's default llm_profile for metadata
+                effective_llm_profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
+                self._session_tracker.set_session_metadata(session_id, {
+                    "user_id": user_id,
+                    "agent_name": self.name,
+                    "llm_profile": effective_llm_profile
+                })
+                if was_new_session:
+                    logger.debug(f"Set session metadata for new session {session_id}: user_id={user_id}")
+                else:
+                    logger.debug(f"Set session metadata for existing session {session_id} (was missing): user_id={user_id}")
 
         # Handle Union[str, ChatMessage] input
         initial_message: Optional[ChatMessage] = None
