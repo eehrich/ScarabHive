@@ -1389,7 +1389,36 @@
         }
       }, 1500);
 
-      es.onerror = () => {
+      es.onerror = (event) => {
+        // Log connection error with available state information
+        const readyStateNames = ['CONNECTING', 'OPEN', 'CLOSED'];
+        const readyState = readyStateNames[es.readyState] || es.readyState;
+        console.warn('[SSE] Connection error, readyState:', readyState, 'event:', event);
+        
+        // Determine error message based on connection state
+        let errorMessage = 'Connection lost';
+        if (es.readyState === EventSource.CONNECTING) {
+          errorMessage = 'Connection failed - server may be unreachable';
+          console.warn('[SSE] Connection attempt failed - server may be unreachable');
+        } else if (es.readyState === EventSource.CLOSED) {
+          errorMessage = 'Connection closed unexpectedly - possible timeout or network issue';
+          console.warn('[SSE] Connection closed unexpectedly - possible timeout or network issue');
+        }
+        
+        // Show error message in response field
+        showSection(blk.t);
+        // Only show error if response is empty or still showing "Thinking..."
+        const currentContent = blk.t.textContent || '';
+        if (!currentContent.trim() || currentContent.includes('Thinking')) {
+          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMessage)}</div>`;
+        } else {
+          // Append error notice if there was partial content
+          const errorNotice = document.createElement('div');
+          errorNotice.className = 'response-text error';
+          errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMessage);
+          blk.t.appendChild(errorNotice);
+        }
+        
         // Clear any pending close timer
         if (closeEventSourceTimer) {
           clearTimeout(closeEventSourceTimer);

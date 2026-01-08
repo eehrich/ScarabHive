@@ -1521,28 +1521,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Capture asyncio functions at closure level to avoid scoping issues
             import asyncio as _asyncio
             get_time = _asyncio.get_event_loop().time
-            create_task = _asyncio.create_task
-            sleep = _asyncio.sleep
+            wait_for = _asyncio.wait_for
             CancelledError = _asyncio.CancelledError
-            Queue = _asyncio.Queue
-            QueueEmpty = _asyncio.QueueEmpty
+            TimeoutError_Asyncio = _asyncio.TimeoutError
             
             last_event_time = get_time()
             
             # Event batching for status events (optimization to reduce overhead)
-            status_batch = []
+            status_batch: list = []
             last_batch_time = get_time()
-            batch_interval = 0.3  # Send batches every 0.3 seconds max (increased from 50ms for better UX)
-            batch_flush_queue = Queue()  # Queue for timer-triggered flushes
-            
-            async def send_keepalive_if_needed():
-                """Send SSE comment to keep connection alive if no recent data"""
-                nonlocal last_event_time
-                now = get_time()
-                if now - last_event_time > keepalive_interval:
-                    last_event_time = now
-                    return ":keepalive\n\n"
-                return None
             
             async def flush_status_batch():
                 """Send accumulated status events as batch"""
@@ -1555,40 +1542,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     last_batch_time = get_time()
                     last_event_time = last_batch_time
             
-            async def batch_timer():
-                """Background timer to flush status batch after timeout"""
-                nonlocal status_batch, last_batch_time
-                try:
-                    while True:
-                        await sleep(batch_interval)
-                        now = get_time()
-                        # Check if batch has pending events and timeout elapsed
-                        if status_batch and (now - last_batch_time) >= batch_interval:
-                            # Flush directly - we're in a separate task
-                            logger.debug(f"[BATCH] Timer triggered flush: {len(status_batch)} events")
-                            await batch_flush_queue.put(True)
-                except CancelledError:
-                    pass
-            
-            # Start background timer
-            timer_task = create_task(batch_timer())
+            # Create event generator and wrap it to interleave keepalives
+            # This is CRITICAL: During long LLM calls (e.g., thinking models), no events
+            # are generated for 60+ seconds. Without keepalives, the browser will timeout.
+            event_gen = selected_agent.run_events(
+                task, request_id, actual_session_id, 
+                llm_override=llm_override, llm_profile_info_override=llm_profile_info
+            )
+            event_iter = event_gen.__aiter__()
 
             try:
-                async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
-                    # Check if background timer triggered flush FIRST (before processing event)
+                while True:
+                    # Try to get next event with timeout
+                    # If timeout fires, send keepalive and try again
                     try:
-                        while not batch_flush_queue.empty():
-                            await batch_flush_queue.get()
-                            if status_batch:
-                                async for batch_msg in flush_status_batch():
-                                    yield batch_msg
-                    except QueueEmpty:
-                        pass
-                    
-                    # Send keepalive before processing event (in case event processing is slow)
-                    keepalive_msg = await send_keepalive_if_needed()
-                    if keepalive_msg:
-                        yield keepalive_msg
+                        ev = await wait_for(event_iter.__anext__(), timeout=keepalive_interval)
+                    except TimeoutError_Asyncio:
+                        # No event received within keepalive interval - send keepalive
+                        logger.debug("[KEEPALIVE] Sending keepalive (no events for %.1fs)", keepalive_interval)
+                        last_event_time = get_time()
+                        yield ":keepalive\n\n"
+                        continue
+                    except StopAsyncIteration:
+                        # Generator exhausted
+                        break
                     
                     # Update last event time since we're sending real data
                     last_event_time = get_time()
@@ -1662,13 +1639,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
             except CancelledError:
-                # Cancel background timer
-                timer_task.cancel()
-                try:
-                    await timer_task
-                except CancelledError:
-                    pass
-                
                 # Flush any remaining status events before cancellation
                 if status_batch:
                     try:
@@ -1695,14 +1665,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     pass  # Best effort
                 raise
             finally:
-                # Cancel background timer if still running
-                if not timer_task.done():
-                    timer_task.cancel()
-                    try:
-                        await timer_task
-                    except CancelledError:
-                        pass
-                
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
                 if actual_session_id and _session_service:
