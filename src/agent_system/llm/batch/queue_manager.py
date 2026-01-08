@@ -431,12 +431,37 @@ class BatchQueueManager:
                     f"Queue {queue_key} reached max_requests ({self._max_requests}), "
                     f"triggering immediate submission"
                 )
-                asyncio.create_task(self._submit_batch(queue_key, provider, model))
+                # Submit immediately but also ensure a collection task exists for any
+                # new requests that come in during/after this submission
+                asyncio.create_task(
+                    self._submit_batch(queue_key, provider, model),
+                    name=f"batch_immediate_{queue_key}"
+                )
             
             # Ensure submission task is running for this queue.
-            # Only start a new task if none exists or the previous one completed.
-            # DO NOT cancel existing tasks - that causes requests to get stuck!
-            if queue_key not in self._submission_tasks or self._submission_tasks[queue_key].done():
+            # ALWAYS start a new task if:
+            # 1. No task exists, OR
+            # 2. The existing task has completed (done() = True), OR  
+            # 3. The existing task has been running for too long (> 2x collection_window)
+            #    which suggests something went wrong
+            existing_task = self._submission_tasks.get(queue_key)
+            should_start_new_task = False
+            
+            if existing_task is None:
+                should_start_new_task = True
+                logger.debug(f"Starting collection task for {queue_key}: no existing task")
+            elif existing_task.done():
+                should_start_new_task = True
+                # Check if the task had an exception
+                try:
+                    exc = existing_task.exception()
+                    if exc:
+                        logger.warning(f"Previous collection task for {queue_key} failed with: {exc}")
+                except (asyncio.CancelledError, asyncio.InvalidStateError):
+                    pass
+                logger.debug(f"Starting collection task for {queue_key}: previous task done")
+            
+            if should_start_new_task:
                 self._submission_tasks[queue_key] = asyncio.create_task(
                     self._collection_window_task(queue_key, provider, model),
                     name=f"batch_collection_{queue_key}"
@@ -489,29 +514,49 @@ class BatchQueueManager:
         provider: str,
         model: str,
     ) -> None:
-        """Background task that waits for collection window then submits batch."""
-        # During collection, we don't have a request_id yet (requests haven't been queued)
-        # So we just wait silently - the status messages will start once we submit
+        """Background task that waits for collection window then submits batch.
+        
+        This task will keep running as long as there are requests in the queue,
+        ensuring no requests get stuck.
+        """
         try:
-            await asyncio.sleep(self._collection_window)
-            
-            if not self._running:
-                logger.warning(
-                    f"Collection window task for {queue_key} skipped: manager not running. "
-                    f"Queue has {len(self._queues.get(queue_key, []))} pending requests."
-                )
-                return
+            while self._running:
+                await asyncio.sleep(self._collection_window)
                 
-            await self._submit_batch(queue_key, provider, model)
+                if not self._running:
+                    logger.warning(
+                        f"Collection window task for {queue_key} stopping: manager not running. "
+                        f"Queue has {len(self._queues.get(queue_key, []))} pending requests."
+                    )
+                    return
+                
+                # Submit the batch
+                await self._submit_batch(queue_key, provider, model)
+                
+                # Check if more requests came in during submission
+                # If queue is empty, we can exit this task
+                async with self._queue_locks[queue_key]:
+                    queue_size = len(self._queues.get(queue_key, []))
+                    if queue_size == 0:
+                        logger.debug(f"Collection task for {queue_key} exiting: queue empty")
+                        return
+                    else:
+                        logger.debug(
+                            f"Collection task for {queue_key} continuing: "
+                            f"{queue_size} requests still in queue"
+                        )
+                        # Continue the loop to collect more requests
+                        
         except asyncio.CancelledError:
             logger.debug(f"Collection window task for {queue_key} cancelled")
             raise
         except Exception as e:
             logger.error(
                 f"Collection window task for {queue_key} failed: {e}. "
-                f"Queue has {len(self._queues.get(queue_key, []))} pending requests that were NOT submitted.",
+                f"Queue has {len(self._queues.get(queue_key, []))} pending requests that may need recovery.",
                 exc_info=True
             )
+            # Don't re-raise - let the stale queue detection handle recovery
     
     async def _submit_batch(
         self,
@@ -671,10 +716,22 @@ class BatchQueueManager:
                 continue
             
             # Stale queue detected! Submit immediately.
+            # Log detailed info to help debug why this happened
+            task_info = "None"
+            if task is not None:
+                task_info = f"done={task.done()}, cancelled={task.cancelled()}"
+                if task.done():
+                    try:
+                        exc = task.exception()
+                        if exc:
+                            task_info += f", exception={type(exc).__name__}: {exc}"
+                    except (asyncio.CancelledError, asyncio.InvalidStateError):
+                        pass
+            
             logger.warning(
                 f"STALE QUEUE DETECTED: {queue_key} has {len(requests)} pending requests "
                 f"(oldest: {age_seconds:.0f}s old) with no active submission task. "
-                f"Triggering immediate submission."
+                f"Task state: {task_info}. Triggering immediate submission."
             )
             
             # Parse provider:model from queue_key
