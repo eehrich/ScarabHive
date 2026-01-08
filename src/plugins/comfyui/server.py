@@ -87,9 +87,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if self.templates_dir.exists():
             self.templates = Jinja2Templates(directory=str(self.templates_dir))
         
-        # Sync job tracker with ComfyUI queue on startup (async via task)
-        import asyncio
-        asyncio.create_task(self._startup_sync())
+        # Flag for lazy startup sync (will run on first tool call)
+        self._startup_sync_done = False
         
         logger.info(
             "ComfyUI plugin initialized: %s:%s with %d workflows",
@@ -102,10 +101,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
         Marks stale jobs (queued/running in DB but not in ComfyUI) as failed.
         This handles the case where the API server was restarted.
         """
+        if self._startup_sync_done:
+            return
+        self._startup_sync_done = True
+        
         try:
-            # Give ComfyUI a moment to be ready
-            await asyncio.sleep(2)
-            
             server_status = await self.client.ping()
             if server_status.get("status") == "online":
                 queue_data = await self.client.get_queue()
@@ -113,9 +113,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 if updated > 0:
                     logger.info("Startup sync: marked %d stale jobs as failed", updated)
             else:
-                logger.warning("ComfyUI server not online, skipping startup sync")
+                logger.debug("ComfyUI server not online, skipping startup sync")
         except Exception as e:
-            logger.warning("Failed to sync jobs on startup: %s", e)
+            logger.debug("Failed to sync jobs on startup: %s", e)
     
     # =========================================================================
     # MCP Tool: workflow
@@ -140,6 +140,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
         Returns:
             Dict with operation result
         """
+        # Lazy startup sync on first tool call
+        await self._startup_sync()
+        
         status = params.get("_status")
         operation = params.get("operation")
         
