@@ -62,9 +62,18 @@ window.AgentSystem.log_viewer = {
     }
   },
 
+  _initialized: false,  // Guard against multiple init calls
+
   init(shadowRoot = null) {
+    // Guard against multiple initialization (can happen with retry logic)
+    if (this._initialized && this.rootElement === (shadowRoot || document)) {
+      console.log('Log viewer already initialized, skipping');
+      return;
+    }
+    
     // Set root element for queries (shadow root or document)
     this.rootElement = shadowRoot || document;
+    this._initialized = true;
 
     // Load persisted settings (if any)
     this.loadState();
@@ -270,16 +279,8 @@ window.AgentSystem.log_viewer = {
         });
       }
 
-      // If a desired file was saved earlier, attempt to select it (populateFileSelect will choose it once files are loaded)
-      if (this._desiredFileSelection && fileSelect) {
-        // Attempt to select now if present
-        const opt = Array.from(fileSelect.options).find(o => o.value === this._desiredFileSelection);
-        if (opt) {
-          fileSelect.value = opt.value;
-          // trigger selection
-          this.selectLogFile(opt.value);
-        }
-      }
+      // Note: File selection is handled in populateFileSelect() after file list loads
+      // Don't trigger selectLogFile here to avoid double-loading
     } catch (err) {
       console.warn('Failed to apply UI state:', err);
     }
@@ -295,10 +296,10 @@ window.AgentSystem.log_viewer = {
 
       const data = await response.json();
 
-      this.populateFileSelect(data.logs || []);
+      const fileSelected = this.populateFileSelect(data.logs || []);
 
-      // Auto-select first existing file ONLY if no saved selection was restored
-      if (!this._desiredFileSelection) {
+      // Auto-select first existing file ONLY if populateFileSelect didn't already select one
+      if (!fileSelected) {
         const existingFiles = (data.logs || []).filter(file => file.exists);
         if (existingFiles.length > 0) {
           this.selectLogFile(existingFiles[0].name);
@@ -315,7 +316,7 @@ window.AgentSystem.log_viewer = {
     const fileSelect = this.rootElement.querySelector('#logFileSelect');
     if (!fileSelect) {
       console.error('Log file select element not found');
-      return;
+      return false;
     }
 
     fileSelect.innerHTML = '<option value="">Select a log file...</option>';
@@ -337,11 +338,17 @@ window.AgentSystem.log_viewer = {
         fileSelect.value = opt.value;
         // select without saving again (already saved)
         this.selectLogFile(opt.value);
+        // Clear desired selection and signal that we selected a file
+        this._desiredFileSelection = null;
+        return true; // Signal: file was selected
       }
+      // Clear even if file not found
+      this._desiredFileSelection = null;
     }
 
     // Ensure other UI state is applied (checkboxes, toggles, search, limits)
     this.applyStateToUI();
+    return false; // Signal: no file was selected
   },
 
   formatFileSize(bytes) {
@@ -421,7 +428,7 @@ window.AgentSystem.log_viewer = {
     }
   },
 
-  startStreaming(filename) {
+  async startStreaming(filename) {
     // Use polling instead of EventSource to avoid infinite loops
     this.currentFile = filename;
     this.lastTimestamp = 0;
@@ -429,8 +436,9 @@ window.AgentSystem.log_viewer = {
 
     this.updateStatus(`Loading ${filename}...`);
 
-    // Initial load
-    this.loadInitialLogContent(filename, false);
+    // Initial load - wait for it to complete before starting polling
+    // This ensures lastTimestamp is set before polling begins
+    await this.loadInitialLogContent(filename, false);
 
     // Set up periodic polling if auto-refresh is enabled
     this.startPolling();
@@ -500,7 +508,7 @@ window.AgentSystem.log_viewer = {
     const logContainer = this.rootElement.querySelector('#logContainer');
     if (!logContainer) return;
 
-  const logLine = this.createLogLineElement(data);
+    const logLine = this.createLogLineElement(data);
 
     logContainer.appendChild(logLine);
 
