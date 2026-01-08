@@ -836,6 +836,14 @@ class BatchQueueManager:
                             f"Batch job {job.job_id} expired after {elapsed:.0f}s "
                             f"and {job.retry_count} retries, giving up"
                         )
+                        # Cancel at provider to prevent resource leak
+                        if job.provider_job_id:
+                            try:
+                                logger.info(f"Cancelling expired job {job.provider_job_id} at provider")
+                                await client.cancel_batch(job.provider_job_id)
+                            except Exception as cancel_error:
+                                logger.warning(f"Failed to cancel expired job at provider: {cancel_error}")
+                        
                         job.status = BatchStatus.EXPIRED
                         job.error_message = f"Exceeded max wait time of {self._max_wait_hours} hours after {job.retry_count} retries"
                         await self._complete_job(job)
