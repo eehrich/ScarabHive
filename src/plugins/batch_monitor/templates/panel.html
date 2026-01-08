@@ -560,7 +560,8 @@
                     rows += `
                         <tr>
                             <td><span class="queue-key">${escapeHtml(queue.queue_key)}</span></td>
-                            <td colspan="2"><span class="queue-status-badge ${statusClass}">${statusIcon} ${queue.status}</span></td>
+                            <td><span class="queue-info">—</span></td>
+                            <td><span class="queue-status-badge ${statusClass}">${statusIcon} ${queue.status}</span></td>
                             <td colspan="2">${info}</td>
                         </tr>
                     `;
