@@ -20,20 +20,20 @@ llm_system:
         collection_window_seconds: 10   # Time to collect requests before submitting
         max_requests_per_batch: 100     # Max requests per batch
         poll_interval_seconds: 10       # How often to check batch status
-        max_wait_hours: 1               # Max time to wait for completion
+        max_wait_hours: 4               # Max time to wait for completion
         max_retries: 3                  # Retries for server-side cancellations
         cancel_on_startup: true         # Cancel orphaned batches on startup
-        fallback_to_sync: false         # Don't fall back to sync API
+        fallback_to_sync: true          # Don't fall back to sync API
         
       openai:
         enabled: true
         collection_window_seconds: 10
         max_requests_per_batch: 100     # OpenAI supports up to 50k
         poll_interval_seconds: 10
-        max_wait_hours: 1
+        max_wait_hours: 4
         max_retries: 3
         cancel_on_startup: true
-        fallback_to_sync: false
+        fallback_to_sync: true
 
       anthropic:
         enabled: true
