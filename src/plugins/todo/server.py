@@ -188,7 +188,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         self._auto_save = bool(getattr(mcp_config, "auto_save", True))
 
         # In-memory cache: session_id → TaskCollection
+        # Limited to prevent memory leaks - sessions are persisted to disk
         self._sessions: Dict[str, TaskCollection] = {}
+        self._max_cache_size = int(getattr(mcp_config, 'max_cache_size', 50))
 
         # Task ID counter per session
         self._task_counters: Dict[str, int] = {}
@@ -254,6 +256,31 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         # Fallback: generate session ID
         return f"session_{uuid4().hex[:12]}"
 
+    def _evict_cache_if_needed(self) -> None:
+        """Evict oldest sessions from cache if over limit.
+        
+        Sessions are persisted to disk, so eviction only removes from memory.
+        They will be reloaded on next access.
+        """
+        if len(self._sessions) < self._max_cache_size:
+            return
+        
+        # Find sessions to evict (oldest by updated_at)
+        sessions_by_time = sorted(
+            self._sessions.items(),
+            key=lambda x: x[1].updated_at or datetime.min.replace(tzinfo=UTC)
+        )
+        
+        # Evict oldest half when over limit
+        evict_count = len(self._sessions) - (self._max_cache_size // 2)
+        for session_id, _ in sessions_by_time[:evict_count]:
+            del self._sessions[session_id]
+            self._task_counters.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
+            logger.debug(f"Evicted session {session_id} from cache (LRU)")
+        
+        logger.info(f"TodoServer: Evicted {evict_count} sessions from cache")
+
     def _load_session(self, session_id: str) -> TaskCollection:
         """
         Load task collection from storage (lazy loading).
@@ -270,6 +297,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         # Check cache first
         if session_id in self._sessions:
             return self._sessions[session_id]
+
+        # Evict old entries before adding new one
+        self._evict_cache_if_needed()
 
         # Load from disk
         file_path = self._get_storage_path(session_id)

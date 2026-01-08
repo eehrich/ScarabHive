@@ -66,6 +66,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self._running_lock = __import__('asyncio').Lock()
         
         # Track async jobs by instance_id: {instance_id: {task, status, started_at, result, error}}
+        # Only running jobs are kept in memory - completed jobs are removed and loaded from DB on demand
         self._async_jobs: dict[str, dict[str, Any]] = {}
         self._async_jobs_lock = __import__('asyncio').Lock()
 
@@ -1180,14 +1181,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     last_used=datetime.now(UTC).isoformat()
                 )
 
-                # Mark job as completed
+                # Mark job as completed (keep in memory until polled once)
                 async with self._async_jobs_lock:
                     if instance_id in self._async_jobs:
                         self._async_jobs[instance_id]["status"] = "completed"
                         self._async_jobs[instance_id]["result"] = result_text
                         self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+                        self._async_jobs[instance_id]["_awaiting_poll"] = True  # Will be removed after poll
 
-                logger.info(f"Async execution completed for {instance_id}")
+                logger.info(f"Async execution completed for {instance_id}, awaiting result poll")
 
             finally:
                 # Release lock
@@ -1196,10 +1198,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         except asyncio.CancelledError:
             # Job was cancelled (e.g., parent agent interrupted)
+            # Remove from memory tracking immediately
             async with self._async_jobs_lock:
-                if instance_id in self._async_jobs:
-                    self._async_jobs[instance_id]["status"] = "cancelled"
-                    self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+                self._async_jobs.pop(instance_id, None)
             
             # CRITICAL: Persist cancelled status to DB to prevent polling loops on restart
             try:
@@ -1223,13 +1224,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             raise
 
         except Exception as e:
-            # Job failed
+            # Job failed - remove from memory, status persisted to DB
             logger.exception(f"Async execution failed for {instance_id}: {e}")
             async with self._async_jobs_lock:
-                if instance_id in self._async_jobs:
-                    self._async_jobs[instance_id]["status"] = "failed"
-                    self._async_jobs[instance_id]["error"] = str(e)
-                    self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+                self._async_jobs.pop(instance_id, None)
 
     async def _handle_poll(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'poll' - check status of running sub-agent without blocking."""
@@ -1252,10 +1250,19 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             async with self._async_jobs_lock:
                 if instance_id in self._async_jobs:
                     job = self._async_jobs[instance_id].copy()
+                    job_status = job.get("status")
+                    
+                    # If job is completed/failed/cancelled, remove from memory after returning
+                    # Subsequent polls will load from DB (which is fine)
+                    if job_status in ("completed", "failed", "cancelled"):
+                        self._async_jobs.pop(instance_id, None)
+                        logger.debug(f"Removed completed job {instance_id} from memory after poll")
+                    
                     # Remove task_handle from response (not serializable)
                     job.pop("task_handle", None)
+                    job.pop("_awaiting_poll", None)
                     if status:
-                        await status.end(f"Poll: {instance_id} status={job.get('status', 'unknown')}")
+                        await status.end(f"Poll: {instance_id} status={job_status}")
                     return job
 
             # Not in async jobs - check if sub-agent exists in DB (may be completed or never ran async)

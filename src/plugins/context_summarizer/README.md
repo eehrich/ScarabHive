@@ -203,6 +203,9 @@ config:
   min_summary_reduction: 0.3
     # Minimum reduction ratio (30%) to accept summary
 
+  max_tracked_sessions: 200
+    # Max sessions tracked for summarization timestamps (LRU eviction)
+
   summary_prompt_template: |
     Summarize the following conversation messages concisely...
     # Customizable prompt template for summarization

@@ -57,12 +57,16 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.stats_history = stats_history
         self.history_callback = history_callback
         
-        # Session tracking
+        # Session tracking (with TTL to prevent memory leak)
         self._last_compaction_time: dict[str, float] = {}
         self._session_components: dict[str, dict[str, Any]] = {}
         
         # Load config
         config = self.get_config()
+        
+        # Memory management settings
+        self._session_ttl_seconds = int(config.get("session_ttl_seconds", 7200))
+        self._max_tracked_sessions = int(config.get("max_tracked_sessions", 100))
         
         # Token thresholds
         self.layer1_threshold = int(config.get("layer1_threshold", 80000))
@@ -99,6 +103,37 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             f"min_time_between={self.min_time_between}s"
         )
     
+    def _cleanup_expired_sessions(self) -> None:
+        """Remove expired session components based on TTL and max count."""
+        current_time = time.time()
+        
+        # First: TTL-based cleanup
+        expired = [
+            sid for sid, components in self._session_components.items()
+            if (current_time - components.get("last_accessed", 0)) > self._session_ttl_seconds
+        ]
+        for sid in expired:
+            self.cleanup_session(sid)
+        
+        # Second: LRU eviction if still over limit
+        if len(self._session_components) > self._max_tracked_sessions:
+            # Sort by last_accessed, evict oldest
+            sorted_sessions = sorted(
+                self._session_components.items(),
+                key=lambda x: x[1].get("last_accessed", 0)
+            )
+            evict_count = len(self._session_components) - self._max_tracked_sessions
+            for sid, _ in sorted_sessions[:evict_count]:
+                self.cleanup_session(sid)
+        
+        # Also cleanup _last_compaction_time
+        stale_compaction = [
+            sid for sid, ts in self._last_compaction_time.items()
+            if (current_time - ts) > self._session_ttl_seconds
+        ]
+        for sid in stale_compaction:
+            del self._last_compaction_time[sid]
+    
     def _get_session_components(self, session_id: str) -> dict[str, Any]:
         """Get or create session-scoped components.
         
@@ -108,6 +143,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         Returns:
             Dict with tool_store, variable_manager, core_memory, archival_memory
         """
+        if session_id in self._session_components:
+            # Update last accessed time
+            self._session_components[session_id]["last_accessed"] = time.time()
+            return self._session_components[session_id]
+        
         if session_id not in self._session_components:
             # Create session-specific storage paths
             session_path = self._storage_base / session_id
@@ -156,8 +196,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "variable_manager": variable_manager,
                 "core_memory": core_memory,
                 "archival_memory": archival_memory,
-                "strategy": strategy
+                "strategy": strategy,
+                "last_accessed": time.time()
             }
+            
+            # Cleanup expired sessions periodically
+            self._cleanup_expired_sessions()
             
             logger.debug(f"Created session components for {session_id}")
         

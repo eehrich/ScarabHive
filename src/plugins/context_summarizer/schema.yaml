@@ -104,6 +104,13 @@ config:
     description: "LLM profile to use for summarization (turbo, normal, chat, think)"
     enum: ["turbo", "normal", "chat", "think"]
 
+  max_tracked_sessions:
+    type: integer
+    default: 200
+    description: "Maximum number of sessions to track for summarization timestamps (LRU eviction)"
+    minimum: 50
+    maximum: 1000
+
   summary_prompt_template:
     type: string
     default: |

@@ -299,6 +299,21 @@ config:
     default: true
     description: "Enable automatic tool result clearing for old tool outputs"
 
+  # Memory Management
+  session_ttl_seconds:
+    type: integer
+    default: 7200
+    description: "Time in seconds before inactive sessions are cleaned up (default: 2 hours)"
+    minimum: 60
+    maximum: 86400
+
+  max_tracked_sessions:
+    type: integer
+    default: 100
+    description: "Maximum number of sessions to track before LRU eviction"
+    minimum: 10
+    maximum: 1000
+
   keep_recent_tools:
     type: integer
     default: 5

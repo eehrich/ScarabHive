@@ -74,14 +74,15 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         # Configuration
         self.max_depth = int(getattr(mcp_config, 'max_depth', 20))
         self.max_frames_in_prompt = int(getattr(mcp_config, 'max_frames_in_prompt', 3))
+        self.session_ttl_seconds = int(getattr(mcp_config, 'session_ttl_seconds', 3600))
 
-        # Session storage (in-memory)
+        # Session storage (in-memory) with TTL cleanup
         self._stacks: dict[str, CognitiveStack] = {}
 
         # Mapping: agent_session_id → cognitive_stack_id
         self._agent_session_mapping: dict[str, str] = {}
 
-        logger.info(f"Cognitive Stack server '{name}' initialized - max_depth={self.max_depth}")
+        logger.info(f"Cognitive Stack server '{name}' initialized - max_depth={self.max_depth}, ttl={self.session_ttl_seconds}s")
 
     def get_template_vars(self) -> dict[str, Any]:
         """Provide custom template variables for schema rendering."""
@@ -119,6 +120,21 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                 "error": f"Unknown operation: {operation}. Valid: push_batch, pop_batch, peek, list, clear"
             }
 
+    def _cleanup_expired_stacks(self) -> None:
+        """Remove expired stacks based on TTL."""
+        now = datetime.now()
+        expired = [
+            sid for sid, stack in self._stacks.items()
+            if (now - stack.last_accessed).total_seconds() > self.session_ttl_seconds
+        ]
+        for sid in expired:
+            del self._stacks[sid]
+            # Also remove from agent session mapping
+            keys_to_remove = [k for k, v in self._agent_session_mapping.items() if v == sid]
+            for k in keys_to_remove:
+                del self._agent_session_mapping[k]
+            logger.info(f"Cleaned up expired cognitive stack: {sid}")
+
     def _get_or_create_stack(self, stack_id: str | None, agent_session_id: str | None = None) -> CognitiveStack:
         """Get existing stack or create new one.
 
@@ -126,6 +142,9 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             stack_id: Cognitive stack ID (10-char hex)
             agent_session_id: Agent conversation session ID (for hook lookup)
         """
+        # Cleanup expired stacks periodically
+        self._cleanup_expired_stacks()
+
         if stack_id and stack_id in self._stacks:
             stack = self._stacks[stack_id]
             stack.last_accessed = datetime.now()

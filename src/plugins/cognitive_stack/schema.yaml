@@ -73,3 +73,10 @@ config:
     description: "Number of top frames to show in hook prompt injection"
     minimum: 1
     maximum: 10
+
+  session_ttl_seconds:
+    type: integer
+    default: 3600
+    description: "Time in seconds before inactive stacks are automatically cleaned up (default: 1 hour)"
+    minimum: 60
+    maximum: 86400

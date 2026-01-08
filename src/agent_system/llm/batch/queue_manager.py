@@ -110,8 +110,9 @@ class BatchQueueManager:
         self._active_jobs: Dict[str, BatchJob] = {}
         self._jobs_lock = asyncio.Lock()
         
-        # Completed job results cache
+        # Completed job results cache (LRU with max size to prevent memory leak)
         self._completed_jobs: Dict[str, BatchJob] = {}
+        self._max_completed_jobs = 100  # Keep last 100 completed jobs for debugging
         
         # Request futures (for callers waiting on results)
         self._request_futures: Dict[str, asyncio.Future] = {}
@@ -965,7 +966,18 @@ class BatchQueueManager:
         # Move to completed jobs and cleanup request-to-job mapping
         async with self._jobs_lock:
             self._active_jobs.pop(job.job_id, None)
+            
+            # Add to completed jobs with LRU eviction to prevent memory leak
             self._completed_jobs[job.job_id] = job
+            
+            # Evict oldest entries if over limit
+            if len(self._completed_jobs) > self._max_completed_jobs:
+                # Dict maintains insertion order in Python 3.7+, evict oldest
+                keys_to_remove = list(self._completed_jobs.keys())[:-self._max_completed_jobs]
+                for key in keys_to_remove:
+                    del self._completed_jobs[key]
+                logger.debug(f"Evicted {len(keys_to_remove)} old completed jobs from cache")
+            
             # Clean up request-to-job mapping for this job's requests
             for request in (job.requests or []):
                 self._request_to_job.pop(request.request_id, None)
@@ -993,6 +1005,12 @@ class BatchQueueManager:
             f"Batch job {job.job_id} completed with status {job.status.value}, "
             f"completed={job.completed_count}, failed={job.failed_count}"
         )
+        
+        # Clear request data to free memory (messages, tools can be large)
+        # Keep only metadata for debugging
+        for request in (job.requests or []):
+            request.messages = []  # Clear large message payloads
+            request.tools = None   # Clear tool definitions
     
     async def cancel_job(self, job_id: str) -> bool:
         """Cancel a batch job.

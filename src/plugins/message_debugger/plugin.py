@@ -26,8 +26,9 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         
         plugin_dir = Path(__file__).parent
         
-        # Shared message history for both hooks and web UI
+        # Shared message history for both hooks and web UI (limited to prevent memory leak)
         self._message_history: List[Dict[str, Any]] = []
+        self._max_history_size = 500  # Keep last 500 messages
         
         # Create hooks plugin with history tracking and config
         self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, message_history=self._message_history, mcp_config=mcp_config)

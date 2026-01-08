@@ -42,11 +42,14 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Web UI history tracking
         self.summarization_history = summarization_history
 
-        # Session tracking for rate limiting
+        # Session tracking for rate limiting (with LRU eviction)
         self._last_summarization_time: Dict[str, float] = {}  # session_id -> timestamp
 
         # Load config - for hooks, config is a raw dict from YAML
         config = self.get_config()
+        
+        # Memory management settings
+        self._max_tracked_sessions = int(config.get('max_tracked_sessions', 200))
         self.trigger_percentage = float(config.get('summarization_trigger_percentage', 0.60))
         self.chunk_size = int(config.get('summarization_chunk_size', 10))
         self.preserve_recent = int(config.get('preserve_recent_count', 10))
@@ -357,6 +360,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
                     # Update last summarization time for rate limiting
                     self._last_summarization_time[session_id] = current_time
+                    
+                    # Evict old entries if over limit (LRU by timestamp)
+                    if len(self._last_summarization_time) > self._max_tracked_sessions:
+                        oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
+                        del self._last_summarization_time[oldest]
 
                     # Store result instead of returning directly
                     result = HookResult(

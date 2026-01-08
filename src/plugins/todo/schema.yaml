@@ -86,6 +86,13 @@ config:
     type: string
     default: "markdown"
     description: "Format for task injection: 'markdown' or 'text'"
+  
+  max_cache_size:
+    type: integer
+    default: 50
+    description: "Maximum number of sessions to cache in memory before evicting oldest (disk fallback)"
+    minimum: 10
+    maximum: 500
 
 tools:
   - type: function

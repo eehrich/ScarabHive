@@ -245,6 +245,10 @@ context_engineer:
     # Archival
     archive_after_turns: 20
     semantic_search: true   # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
+    
+    # Memory Management
+    session_ttl_seconds: 7200          # Session cleanup TTL (default: 2 hours)
+    max_tracked_sessions: 100          # Max sessions before LRU eviction
 ```
 
 ## Web Panel
