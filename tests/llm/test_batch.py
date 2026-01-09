@@ -348,6 +348,104 @@ class TestOpenAIBatchClient:
         assert result["status"] == "cancelling"
         mock_http.post.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_upload_file_retry_on_network_error(self, sample_job, tmp_path):
+        """Test that file upload retries on transient network errors."""
+        import httpx
+        
+        client = OpenAIBatchClient(api_key="test_key")
+        mock_http = AsyncMock()
+        client._client = mock_http
+        
+        # Create input file
+        input_file = tmp_path / f"batch_{sample_job.job_id}_input.jsonl"
+        client._create_input_file(sample_job, input_file)
+        
+        # First two calls fail with network error, third succeeds
+        success_response = MagicMock()
+        success_response.status_code = 200
+        success_response.json.return_value = {"id": "file_123"}
+        
+        mock_http.post.side_effect = [
+            httpx.NetworkError("Connection reset"),
+            httpx.TimeoutException("Request timed out"),
+            success_response,
+        ]
+        
+        # Should succeed after retries
+        file_id = await client._upload_file(input_file)
+        
+        assert file_id == "file_123"
+        assert mock_http.post.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_upload_file_fails_after_max_retries(self, sample_job, tmp_path):
+        """Test that file upload fails after exhausting retries."""
+        import httpx
+        
+        client = OpenAIBatchClient(api_key="test_key")
+        mock_http = AsyncMock()
+        client._client = mock_http
+        
+        # Create input file
+        input_file = tmp_path / f"batch_{sample_job.job_id}_input.jsonl"
+        client._create_input_file(sample_job, input_file)
+        
+        # All calls fail with network error
+        mock_http.post.side_effect = httpx.NetworkError("Connection reset")
+        
+        # Should fail after max retries (default 3 retries = 4 total attempts)
+        with pytest.raises(httpx.NetworkError):
+            await client._upload_file(input_file)
+        
+        assert mock_http.post.call_count == 4  # 1 initial + 3 retries
+
+    @pytest.mark.asyncio
+    async def test_download_file_retry_on_network_error(self):
+        """Test that file download retries on network errors."""
+        import httpx
+        
+        client = OpenAIBatchClient(api_key="test_key")
+        mock_http = AsyncMock()
+        client._client = mock_http
+        
+        # First call fails with network error, second succeeds
+        success_response = MagicMock()
+        success_response.status_code = 200
+        success_response.text = '{"custom_id": "test", "response": {"body": {"content": "Hello"}}}'
+        
+        mock_http.get.side_effect = [
+            httpx.NetworkError("Connection reset by peer"),
+            success_response
+        ]
+        
+        # Should succeed after retry
+        content = await client._download_file("file_output_123")
+        
+        assert "custom_id" in content
+        assert mock_http.get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_download_file_no_retry_on_http_client_error(self):
+        """Test that file download does NOT retry on HTTP 4xx errors (RuntimeError)."""
+        client = OpenAIBatchClient(api_key="test_key")
+        mock_http = AsyncMock()
+        client._client = mock_http
+        
+        # 404 error - _raise_for_status raises RuntimeError, not retryable
+        error_response = MagicMock()
+        error_response.status_code = 404
+        error_response.text = "Not Found"
+        
+        mock_http.get.return_value = error_response
+        
+        # Should fail immediately - RuntimeError from _raise_for_status is not retryable
+        with pytest.raises(RuntimeError, match="File download failed: 404"):
+            await client._download_file("file_nonexistent")
+        
+        # Only 1 attempt, no retries for non-httpx exceptions
+        assert mock_http.get.call_count == 1
+
 
 # ==============================================================================
 # Gemini Batch Client Tests
@@ -752,6 +850,123 @@ class TestGeminiBatchClient:
 
 
 # ==============================================================================
+# Gemini Retry Tests
+# ==============================================================================
+
+class TestGeminiBatchClientRetry:
+    """Tests for Gemini batch client retry logic."""
+    
+    @pytest.fixture
+    def sample_job(self):
+        """Create sample batch job."""
+        requests = [
+            BatchRequest(
+                request_id="req_1",
+                custom_id="custom_1",
+                model="gemini-2.0-flash",
+                messages=[{"role": "user", "content": "Test 1"}],
+            ),
+        ]
+        return BatchJob(
+            job_id="job_123",
+            model="gemini-2.0-flash",
+            provider="gemini",
+            requests=requests,
+        )
+    
+    @pytest.mark.asyncio
+    async def test_submit_batch_retry_on_connection_error(self, sample_job, tmp_path):
+        """Test that submit_batch retries on transient connection errors."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        # Track call count
+        call_count = 0
+        
+        def mock_create(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise Exception("Connection reset by peer")
+            # Return mock batch job on third attempt
+            mock_batch = MagicMock()
+            mock_batch.name = "batches/12345"
+            return mock_batch
+        
+        client._sdk_client.batches.create = mock_create
+        
+        # Should succeed after retries
+        result = await client.submit_batch(sample_job, tmp_path)
+        
+        assert result == "batches/12345"
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_submit_batch_no_retry_on_rate_limit(self, sample_job, tmp_path):
+        """Test that submit_batch does NOT retry rate limit errors (handled separately)."""
+        client = GeminiBatchClient(api_key="test_key")
+        
+        def mock_create(*args, **kwargs):
+            raise Exception("429 Resource Exhausted: quota exceeded")
+        
+        client._sdk_client.batches.create = mock_create
+        
+        # Should raise LLMQuotaExhaustedError without retrying
+        from agent_system.llm.models import LLMQuotaExhaustedError
+        with pytest.raises(LLMQuotaExhaustedError):
+            await client.submit_batch(sample_job, tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_get_batch_results_retry_on_timeout(self, sample_job):
+        """Test that get_batch_results retries on timeout errors."""
+        client = GeminiBatchClient(api_key="test_key")
+        sample_job.provider_job_id = "batches/12345"
+        
+        # Track call count
+        call_count = 0
+        
+        def mock_get(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise Exception("Request timed out after 60s")
+            # Return mock batch job on second attempt
+            mock_batch = MagicMock()
+            mock_batch.dest = MagicMock()
+            mock_batch.dest.inlined_responses = []
+            return mock_batch
+        
+        client._sdk_client.batches.get = mock_get
+        
+        # Should succeed after retry - returns empty result when no responses
+        results = await client.get_batch_results(sample_job)
+        
+        # With no inlined_responses and one request, it returns a "no results" error
+        assert len(results) == 1
+        assert results[0]["custom_id"] == "custom_1"
+        assert results[0]["error"]["message"] == "No results found in batch job"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_batch_results_fails_after_max_retries(self, sample_job):
+        """Test that get_batch_results returns error result after exhausting retries."""
+        client = GeminiBatchClient(api_key="test_key")
+        sample_job.provider_job_id = "batches/12345"
+        
+        def mock_get(*args, **kwargs):
+            raise Exception("SSL: CERTIFICATE_VERIFY_FAILED")
+        
+        client._sdk_client.batches.get = mock_get
+        
+        # After max retries, get_batch_results catches exception and returns error result
+        results = await client.get_batch_results(sample_job)
+        
+        # Should return error result, not raise
+        assert len(results) == 1
+        assert results[0]["custom_id"] == "custom_1"
+        assert "SSL" in results[0]["error"]["message"]
+
+
+# ==============================================================================
 # Queue Manager Tests
 # ==============================================================================
 
@@ -1103,6 +1318,77 @@ class TestBatchQueueManager:
         # Verify the future got an exception
         assert future.done()
         with pytest.raises(RuntimeError, match="expired"):
+            future.result()
+
+    @pytest.mark.asyncio
+    async def test_completed_job_results_download_failure(self, mock_config, tmp_path):
+        """Test that a completed job is properly finalized even if results download fails.
+        
+        This tests the fix for the bug where a job could get stuck in _active_jobs
+        with status=COMPLETED forever if get_batch_results() raised an exception.
+        """
+        mock_config.providers = MagicMock()
+        mock_config.providers.gemini = None
+        mock_config.providers.openai = MagicMock()
+        mock_config.providers.openai.collection_window_seconds = 1.0
+        mock_config.providers.openai.max_requests_per_batch = 10
+        mock_config.providers.openai.poll_interval_seconds = 0.5
+        mock_config.providers.openai.max_wait_hours = 24
+        mock_config.providers.openai.max_retries = 3
+        mock_config.storage_path = str(tmp_path / "batch")
+        
+        manager = BatchQueueManager(mock_config)
+        
+        # Create a job
+        request = BatchRequest(
+            request_id="test-download-fail-1",
+            custom_id="custom-download",
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Test"}],
+        )
+        job = BatchJob(
+            job_id="job-download-fail",
+            provider="openai",
+            model="gpt-4",
+            requests=[request],
+        )
+        job.provider_job_id = "batch_download_123"
+        job.status = BatchStatus.IN_PROGRESS
+        
+        manager._active_jobs[job.job_id] = job
+        
+        # Create a future for the request
+        future = asyncio.get_event_loop().create_future()
+        manager._request_futures[request.request_id] = future
+        
+        # Register a mock client that reports completed but fails to get results
+        mock_client = AsyncMock()
+        mock_client.get_batch_status = AsyncMock(return_value={
+            "status": "completed",
+        })
+        # Simulate results download failure
+        mock_client.get_batch_results = AsyncMock(
+            side_effect=RuntimeError("Network error: failed to download results")
+        )
+        manager.register_batch_client("openai", mock_client)
+        
+        # Poll the job - should handle the error gracefully
+        await manager._poll_job(job)
+        
+        # Verify job was moved to completed_jobs (not stuck in active_jobs)
+        assert job.job_id not in manager._active_jobs, \
+            "Job should be removed from active_jobs even if results download fails"
+        assert job.job_id in manager._completed_jobs, \
+            "Job should be in completed_jobs after failure"
+        
+        # Verify job status was changed to FAILED
+        assert job.status == BatchStatus.FAILED
+        assert "failed to download results" in job.error_message.lower() or \
+               "failed to retrieve results" in job.error_message.lower()
+        
+        # Verify the future got an exception
+        assert future.done()
+        with pytest.raises(RuntimeError):
             future.result()
 
 

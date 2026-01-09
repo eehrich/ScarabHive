@@ -34,8 +34,108 @@ from .models import BatchJob, BatchStatus
 from .job_tracker import get_job_tracker
 from ..models import LLMRateLimitError, LLMQuotaExhaustedError
 from ..retry_utils import is_rate_limit_error, parse_retry_delay
+from typing import Callable, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# Type variable for retry function
+T = TypeVar("T")
+
+# Retry configuration for network operations
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BASE_DELAY = 1.0  # seconds
+DEFAULT_MAX_DELAY = 30.0  # seconds
+
+
+async def _retry_async_operation(
+    operation: Callable[[], T],
+    operation_name: str,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+) -> T:
+    """Execute an async operation (typically asyncio.to_thread) with exponential backoff retry.
+    
+    Retries on network-related exceptions that are typically transient.
+    
+    Args:
+        operation: Async callable to execute
+        operation_name: Name for logging
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+        
+    Returns:
+        Result of the operation
+        
+    Raises:
+        The last exception if all retries fail
+    """
+    import random
+    
+    # Exception types that indicate transient network issues
+    # These can come from the underlying SDK/HTTP client
+    transient_error_indicators = [
+        "connection",
+        "timeout",
+        "timed out",
+        "network",
+        "temporarily unavailable",
+        "service unavailable",
+        "503",
+        "502",
+        "504",
+        "reset by peer",
+        "broken pipe",
+        "ssl",
+    ]
+    
+    def is_transient_error(e: Exception) -> bool:
+        """Check if exception looks like a transient network error."""
+        error_str = str(e).lower()
+        error_type = type(e).__name__.lower()
+        return any(
+            indicator in error_str or indicator in error_type
+            for indicator in transient_error_indicators
+        )
+    
+    last_exception: Optional[Exception] = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return await operation()
+        except Exception as e:
+            # Check if this is a rate limit error - don't retry those here,
+            # let the caller handle them with proper rate limit logic
+            if is_rate_limit_error(e):
+                raise
+            
+            # Check if this looks like a transient error
+            if not is_transient_error(e):
+                raise
+            
+            last_exception = e
+            if attempt < max_retries:
+                # Exponential backoff with jitter
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                # Add small random jitter (±10%)
+                delay = delay * (0.9 + random.random() * 0.2)
+                
+                logger.warning(
+                    f"{operation_name} failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"{operation_name} failed after {max_retries + 1} attempts: {e}"
+                )
+                raise
+    
+    # Should not reach here, but satisfy type checker
+    if last_exception:
+        raise last_exception
+    raise RuntimeError(f"{operation_name} failed unexpectedly")
 
 
 class GeminiBatchClient(BatchProviderClient):
@@ -164,7 +264,7 @@ class GeminiBatchClient(BatchProviderClient):
             logger.debug("Submitting batch via SDK: model=%s, requests=%d", 
                         model_name, len(inline_requests))
             
-            # Run sync SDK call in thread pool to avoid blocking event loop
+            # Run sync SDK call in thread pool with retry on transient failures
             # Use functools.partial since to_thread doesn't pass kwargs
             create_fn = functools.partial(
                 self._sdk_client.batches.create,
@@ -172,7 +272,14 @@ class GeminiBatchClient(BatchProviderClient):
                 src=inline_requests,
                 config={'display_name': f"batch_{job.job_id}"},
             )
-            batch_job = await asyncio.to_thread(create_fn)
+            
+            async def do_create_batch():
+                return await asyncio.to_thread(create_fn)
+            
+            batch_job = await _retry_async_operation(
+                do_create_batch,
+                f"Gemini submit_batch ({job.job_id})",
+            )
             logger.info("Created Gemini batch job: %s", batch_job.name)
             return batch_job.name
         except Exception as e:
@@ -558,7 +665,7 @@ class GeminiBatchClient(BatchProviderClient):
                 return {"status": BatchStatus.FAILED.value, "error": error_msg}
     
     async def get_batch_results(self, job: BatchJob) -> List[Dict[str, Any]]:
-        """Get batch results.
+        """Get batch results with retry on transient failures.
         
         Returns individual results with per-request token usage in OpenAI-compatible format.
         
@@ -573,11 +680,18 @@ class GeminiBatchClient(BatchProviderClient):
             - total_tokens (Gemini: total_token_count)
         """
         try:
-            # Run sync SDK call in thread pool to avoid blocking event loop
+            # Run sync SDK call in thread pool with retry on transient failures
             get_fn = functools.partial(
                 self._sdk_client.batches.get, name=job.provider_job_id
             )
-            batch_job = await asyncio.to_thread(get_fn)
+            
+            async def do_get_results():
+                return await asyncio.to_thread(get_fn)
+            
+            batch_job = await _retry_async_operation(
+                do_get_results,
+                f"Gemini get_batch_results ({job.provider_job_id[:20]}...)",
+            )
             
             results = []
             

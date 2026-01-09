@@ -150,13 +150,16 @@ class BatchMonitorWebFactory:
                 if f"{job.provider}:{job.model}" == queue_key:
                     elapsed_seconds = None
                     if job.submitted_at:
-                        elapsed_seconds = int((now - job.submitted_at).total_seconds())
+                        # For terminal states, use completed_at if available (job being finalized)
+                        # Otherwise use current time (job still running)
+                        end_time = job.completed_at if job.completed_at else now
+                        elapsed_seconds = int((end_time - job.submitted_at).total_seconds())
                     
                     active_jobs.append({
                         "job_id": job.job_id,
                         "provider_job_id": job.provider_job_id,
                         "status": job.status.value,
-                        "total_requests": len(job.requests),
+                        "total_requests": len(job.requests) if job.requests else 0,
                         "completed_count": job.completed_count,
                         "failed_count": job.failed_count,
                         "submitted_at": job.submitted_at.isoformat() if job.submitted_at else None,
@@ -271,15 +274,18 @@ class BatchMonitorWebFactory:
         if active_job:
             queue_data["queue_status"] = active_job.status.value
             
+            now = datetime.now(timezone.utc)
             elapsed_seconds = None
             if active_job.submitted_at:
-                elapsed_seconds = int((datetime.now(timezone.utc) - active_job.submitted_at).total_seconds())
+                # For terminal states, use completed_at if available
+                end_time = active_job.completed_at if active_job.completed_at else now
+                elapsed_seconds = int((end_time - active_job.submitted_at).total_seconds())
             
             queue_data["active_job"] = {
                 "job_id": active_job.job_id,
                 "provider_job_id": active_job.provider_job_id,
                 "status": active_job.status.value,
-                "total_requests": len(active_job.requests),
+                "total_requests": len(active_job.requests) if active_job.requests else 0,
                 "completed_count": active_job.completed_count,
                 "failed_count": active_job.failed_count,
                 "submitted_at": active_job.submitted_at.isoformat() if active_job.submitted_at else None,
