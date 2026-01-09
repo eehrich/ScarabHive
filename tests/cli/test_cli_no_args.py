@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import sys
 from importlib import reload
 
-import pytest
 
 from agent_system import agent_cli as cli
 

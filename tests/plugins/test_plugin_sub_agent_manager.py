@@ -1,7 +1,7 @@
 """Tests for Sub-Agent Manager plugin hook duplicate injection prevention."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.hooks.plugin_hook import HookContext
 from agent_system.llm.models import ChatMessage
 from plugins.sub_agent_manager.hooks import SubAgentContextInjector
 from plugins.sub_agent_manager.manager import SubAgentManager

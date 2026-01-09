@@ -38,4 +38,4 @@ def test_reassign_duplicate_task_ids_ignores_long_ids():
         assert old != new
 
     # Also check that none of the new ids equal the long migration ids
-    assert not any(id_.isdigit() and len(id_) > 4 for id_ in all_ids if id_ in [c[1] for c in changes] == False)
+    assert not any(id_.isdigit() and len(id_) > 4 for id_ in all_ids if id_ not in [c[1] for c in changes])

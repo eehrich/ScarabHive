@@ -1,11 +1,12 @@
-import httpx, pytest, os
+import httpx
+import pytest
 from agent_system.mcp.status import StatusPhase, publish_status
 from agent_system.app import build_app
 
 pytestmark = pytest.mark.anyio
 
 async def test_status_redaction_message_and_meta(monkeypatch):
-    monkeypatch.setenv("AGENT_STATUS_REDACT_PATTERNS", "secret,token[0-9]+");
+    monkeypatch.setenv("AGENT_STATUS_REDACT_PATTERNS", "secret,token[0-9]+")
     monkeypatch.setenv("AGENT_STATUS_REDACT_REPLACEMENT", "[[REDACT]]")
     app = build_app()
     # Publish events containing sensitive tokens

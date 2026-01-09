@@ -1,5 +1,4 @@
 """Tests for robust Markdown parser improvements."""
-import pytest
 from scripts.backlog_tool import parser
 
 

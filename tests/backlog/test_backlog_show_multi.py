@@ -43,7 +43,8 @@ def run_cli(argv, env=None):
             except SystemExit as e:
                 rc = int(e.code or 0)
     finally:
-        os.environ.clear(); os.environ.update(old)
+        os.environ.clear()
+        os.environ.update(old)
     return rc, buf.getvalue()
 
 

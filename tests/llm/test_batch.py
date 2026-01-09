@@ -11,14 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import warnings
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-import warnings
 
 import pytest
-
-# Filter out deprecation warnings from test setup
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from agent_system.llm.batch.models import (
     BatchJob,
@@ -29,6 +26,9 @@ from agent_system.llm.batch.models import (
 from agent_system.llm.batch.queue_manager import BatchQueueManager
 from agent_system.llm.batch.openai_batch import OpenAIBatchClient
 from agent_system.llm.batch.gemini_batch import GeminiBatchClient
+
+# Filter out deprecation warnings from test setup
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 # ==============================================================================
@@ -218,7 +218,6 @@ class TestOpenAIBatchClient:
         client = OpenAIBatchClient(api_key="test_key")
         
         import tempfile
-        from pathlib import Path
         
         with tempfile.TemporaryDirectory() as tmp_dir:
             file_path = Path(tmp_dir) / "test.jsonl"
@@ -239,7 +238,6 @@ class TestOpenAIBatchClient:
     def test_jsonl_with_tools(self):
         """Test JSONL building with tools."""
         import tempfile
-        from pathlib import Path
         
         tools = [{
             "type": "function",
@@ -1866,7 +1864,6 @@ class TestSDKResultsExtraction:
     @pytest.mark.asyncio
     async def test_get_batch_results_with_function_calls(self, gemini_client_sdk):
         """Test extracting results with function calls from SDK batch job."""
-        from google.genai import types
         
         # Mock batch job
         job = BatchJob(
@@ -1940,7 +1937,6 @@ class TestSDKResultsExtraction:
     @pytest.mark.asyncio
     async def test_get_batch_results_with_text_and_function_call(self, gemini_client_sdk):
         """Test extracting results with both text and function calls."""
-        from google.genai import types
         
         job = BatchJob(
             job_id="test_job",

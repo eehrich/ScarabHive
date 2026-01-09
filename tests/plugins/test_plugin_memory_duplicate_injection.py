@@ -1,6 +1,6 @@
 """Tests for Memory plugin hook duplicate injection prevention."""
 import pytest
-from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.hooks.plugin_hook import HookContext
 from agent_system.llm.models import ChatMessage
 from plugins.memory.server import MemoryServer
 
@@ -134,7 +134,7 @@ async def test_hook_updates_memory_list_when_changed(server):
     assert result1.modified is False  # No memories to inject
 
     # Create a memory
-    mem1_result = await server.execute({
+    await server.execute({
         "operation": "store",
         "title": "New Memory",
         "content": "Newly stored information",
@@ -157,7 +157,7 @@ async def test_hook_updates_memory_list_when_changed(server):
     assert "New Memory" in memory_content, "Should contain the new memory"
 
     # Create another memory
-    mem2_result = await server.execute({
+    await server.execute({
         "operation": "store",
         "title": "Second Memory",
         "content": "Another piece of information",

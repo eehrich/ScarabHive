@@ -1,4 +1,3 @@
-from agent_system.mcp.base import MCPServer
 
 class RealExampleServer:
     def __init__(self, name, cfg=None, ssl_verify=True):

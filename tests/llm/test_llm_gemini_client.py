@@ -3,7 +3,6 @@ import asyncio
 import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
 from agent_system.llm.gemini_client import GeminiClient
 from agent_system.llm.models import ChatMessage

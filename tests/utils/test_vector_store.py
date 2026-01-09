@@ -7,7 +7,6 @@ from pathlib import Path
 
 from agent_system.utils.vector_store import (
     VectorStore,
-    VectorStoreError,
     get_vector_backend,
     get_available_onnx_providers,
 )

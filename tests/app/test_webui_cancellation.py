@@ -72,7 +72,6 @@ class TestWebUICancellation:
     async def test_tool_execution_with_cancellation(self):
         """Test tool execution cancellation integration."""
         from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-        from agent_system.core.cancellation import get_cancellation_manager
         
         # Create tool manager
         tool_manager = ToolExecutionManager(registry=None, agent=None)
@@ -177,7 +176,7 @@ class TestCancellationFlow:
         monitor_task = asyncio.create_task(manager._monitor_timeouts())
         
         # Cancel the tool
-        cancelled = manager.cancel_request(request_id)
+        manager.cancel_request(request_id)
         # Note: may be True or False depending on timing, both acceptable
         
         # Tool should be force-cancelled after timeout

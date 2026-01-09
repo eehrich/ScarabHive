@@ -3,7 +3,6 @@ import asyncio
 import json
 import pytest
 from pathlib import Path
-from datetime import datetime
 
 from agent_system.services.session_manager import (
     SessionManager,
@@ -275,11 +274,11 @@ async def test_list_sessions_user_isolation(session_manager):
 @pytest.mark.asyncio
 async def test_list_sessions_sorted_by_updated(session_manager):
     """Test that sessions are sorted by updated_at (most recent first)."""
-    s1 = await session_manager.create_session(user_id="user1", title="First")
+    await session_manager.create_session(user_id="user1", title="First")
     await asyncio.sleep(0.01)
-    s2 = await session_manager.create_session(user_id="user1", title="Second")
+    await session_manager.create_session(user_id="user1", title="Second")
     await asyncio.sleep(0.01)
-    s3 = await session_manager.create_session(user_id="user1", title="Third")
+    await session_manager.create_session(user_id="user1", title="Third")
     
     sessions = await session_manager.list_sessions("user1")
     

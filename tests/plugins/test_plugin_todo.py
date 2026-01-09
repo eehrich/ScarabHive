@@ -1220,7 +1220,7 @@ async def test_hook_format_markdown(server: TodoServer, mock_context: Dict[str, 
     
     # Create task with dependencies
     task1 = await server.create_todo(title="Parent task", priority="high", context=mock_context)
-    task2 = await server.create_todo(
+    await server.create_todo(
         title="Child task",
         priority="low",
         depends_on=[task1["task_id"]],

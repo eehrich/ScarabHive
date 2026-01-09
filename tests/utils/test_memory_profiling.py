@@ -1,6 +1,5 @@
 """Tests for memory profiling utilities."""
 import gc
-import pytest
 from agent_system.utils.memory_profiling import (
     ObjectTracker,
     MemoryLeakDetector,
@@ -167,7 +166,6 @@ class TestReferenceTracker:
             pass
         
         obj = Inner()
-        container = {"nested": obj}
         
         referrers = tracker.get_referrers(obj)
         

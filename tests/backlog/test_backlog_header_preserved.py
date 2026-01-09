@@ -35,7 +35,7 @@ def test_init_add_and_append_preserve_header(tmp_path):
     rc = mod.main(["add-epic", "--title", "Test Epic", "--write", "--file", str(p)])
     assert rc == 0
     # find newly created epic id by parsing file
-    content = p.read_text(encoding="utf-8")
+    p.read_text(encoding="utf-8")
     # add task under epic 0000 (first available) - use add-task write
     rc = mod.main(["add-task", "--title", "Test Task", "--epic", "0000", "--write", "--file", str(p)])
     assert rc == 0

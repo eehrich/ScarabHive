@@ -239,7 +239,7 @@ async def test_markdown_context_format(injector, mock_manager):
         step=1
     )
     
-    result = await injector.inject_sub_agent_context(context)
+    await injector.inject_sub_agent_context(context)
     
     injected_content = context.messages[0].content
     
@@ -284,7 +284,7 @@ async def test_text_context_format(mock_manager):
         step=1
     )
     
-    result = await injector.inject_sub_agent_context(context)
+    await injector.inject_sub_agent_context(context)
     
     injected_content = context.messages[0].content
     

@@ -2,8 +2,6 @@ import os
 import json
 import tempfile
 from pathlib import Path
-import builtins
-import pytest
 
 from agent_system import agent_cli as cli
 
@@ -18,7 +16,7 @@ def test_atomic_write_replace_failure(monkeypatch, tmp_path, capsys):
     cfg = _make_cfg_file(tmp_path)
 
     # monkeypatch load_settings so plugin discovery doesn't affect test
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg_model = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}
@@ -45,7 +43,7 @@ def test_atomic_write_tmp_write_failure(monkeypatch, tmp_path, capsys):
     cfg = _make_cfg_file(tmp_path)
 
     # monkeypatch load_settings
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg_model = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}

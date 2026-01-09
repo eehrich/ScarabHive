@@ -1,10 +1,4 @@
 import json
-import tempfile
-from pathlib import Path
-import json
-import tempfile
-from pathlib import Path
-import sys
 
 from agent_system import agent_cli as cli
 
@@ -26,7 +20,7 @@ def test_enable_atomic_write(tmp_path, monkeypatch, capsys):
     managed.write_text('{"mcp": {"enabled_servers": []}}')
     cfg.write_text('{"includes": ["mcp.yaml"]}')
     # monkeypatch load_settings to minimal config with no plugin_dirs (we won't discover plugins here)
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg_model = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}

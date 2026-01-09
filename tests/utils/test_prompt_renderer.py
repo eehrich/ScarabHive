@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
-from typing import Any
 
 from agent_system.utils.prompt_renderer import (
     render_prompts,

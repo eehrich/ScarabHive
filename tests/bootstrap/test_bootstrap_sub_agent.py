@@ -1,7 +1,7 @@
 """
 Integration test for Agent bootstrap functionality.
 """
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.servers.agent.server import Agent

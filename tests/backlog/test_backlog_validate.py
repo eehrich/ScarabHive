@@ -96,7 +96,6 @@ def test_cli_validate_success(tmp_path):
     """Test CLI validate command with valid backlog."""
     import subprocess
     import sys
-    from pathlib import Path
 
     # Create a simple valid backlog
     backlog_content = """# Backlog
@@ -131,7 +130,6 @@ def test_cli_validate_errors(tmp_path):
     """Test CLI validate command with invalid backlog."""
     import subprocess
     import sys
-    from pathlib import Path
 
     # Create a backlog with duplicate task IDs
     backlog_content = """# Backlog

@@ -1,7 +1,7 @@
 """Tests for OpenAI client multimodal injection."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from pathlib import Path
 
 from agent_system.llm.models import ChatMessage, MultimodalToolContent
@@ -310,7 +310,7 @@ class TestOpenAIAudioFiltering:
         import asyncio
         import logging
         
-        logger = logging.getLogger(__name__)
+        logging.getLogger(__name__)
         
         def _serialize_messages():
             result = []

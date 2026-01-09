@@ -64,7 +64,7 @@ class TestBasicAgentPluginFactory:
         
         # Should raise ValueError because agent_config is missing
         with pytest.raises(ValueError, match="requires agent_config in MCPConfig"):
-            agent = PLUGIN_FACTORY("test_basic_agent", system_config, mcp_config)
+            PLUGIN_FACTORY("test_basic_agent", system_config, mcp_config)
 
     def test_plugin_instantiation_with_debug_config(self):
         """Test factory with debug configuration."""

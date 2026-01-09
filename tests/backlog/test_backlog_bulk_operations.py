@@ -1,11 +1,8 @@
 import importlib
 import json
 import csv
-import tempfile
-from pathlib import Path
 import subprocess
 import sys
-import os
 
 # Import the backlog module
 mod = importlib.import_module("scripts.backlog")

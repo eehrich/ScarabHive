@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 from datetime import datetime
 
 from agent_system.hooks import HookContext, HookType
@@ -208,7 +208,7 @@ class TestParallelChunkSummarization:
         
         start_time = asyncio.get_event_loop().time()
         result = await summarizer_plugin.summarize_context(context)
-        total_time = asyncio.get_event_loop().time() - start_time
+        asyncio.get_event_loop().time() - start_time
         
         # Verify we got a result
         if result.modified:
@@ -355,7 +355,7 @@ class TestParallelChunkSummarization:
         mock_scope.progress = AsyncMock()
         
         # Single chunk test with cancellation
-        result = await summarizer_plugin._summarize_single_chunk(
+        await summarizer_plugin._summarize_single_chunk(
             chunk=chunks[0],
             chunk_idx=0,
             total_chunks=5,

@@ -13,7 +13,6 @@ from agent_system.config.settings import (
     _resolve_server_inheritance,
     _deep_merge_dict,
     _inheritance_cache,
-    _plugins_cache,
 )
 
 

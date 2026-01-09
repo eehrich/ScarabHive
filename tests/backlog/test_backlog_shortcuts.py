@@ -1,6 +1,5 @@
 """Tests for command shortcuts functionality."""
 
-import pytest
 from unittest.mock import patch
 from scripts.backlog import handle_command_shortcuts, main
 

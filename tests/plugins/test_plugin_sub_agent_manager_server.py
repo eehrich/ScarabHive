@@ -331,7 +331,6 @@ class TestConcurrentExecutionPrevention:
     @pytest.mark.asyncio
     async def test_lock_released_on_exception(self, server):
         """Test that running lock is released even when handler raises exception."""
-        import asyncio
         
         instance_id = "sub_exception_test"
         
@@ -430,7 +429,6 @@ class TestAsyncExecution:
     @pytest.mark.asyncio
     async def test_create_blocking_false_returns_immediately(self, server):
         """Test that create with blocking=false returns immediately."""
-        import asyncio
         
         # Mock dependencies
         server._extract_registry = Mock(return_value=Mock())
@@ -592,8 +590,6 @@ class TestAsyncExecution:
     @pytest.mark.asyncio
     async def test_wait_completed_instance_returns_immediately(self, server):
         """Test that wait returns immediately if instance already completed."""
-        from plugins.sub_agent_manager.schemas import SubAgentMetadata
-        from datetime import datetime, UTC
         
         instance_id = "sub_wait_completed_001"
         
@@ -730,7 +726,6 @@ class TestAsyncExecution:
     async def test_async_job_cancelled_by_exception_persists_status(self, server):
         """Test that CancelledError in async job persists 'cancelled' status to DB."""
         import asyncio
-        from datetime import datetime, UTC
         
         instance_id = "sub_cancel_exception_001"
         parent_session_id = "parent_session_456"

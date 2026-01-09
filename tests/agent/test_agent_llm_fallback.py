@@ -1,6 +1,6 @@
 """Test Agent LLM profile fallback behavior."""
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import (

@@ -1,9 +1,6 @@
 """Tests for Anthropic Claude client."""
-import asyncio
 import pytest
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
 from agent_system.llm.models import ChatMessage
 

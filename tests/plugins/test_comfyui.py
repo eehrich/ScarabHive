@@ -6,7 +6,6 @@ import json
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
 from plugins.comfyui.comfyui_client import ComfyUIClient
 from plugins.comfyui.job_tracker import ComfyUIJobTracker

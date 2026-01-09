@@ -1,5 +1,4 @@
 """Tests for ollama_utils content normalization."""
-import pytest
 from agent_system.llm import ollama_utils
 
 

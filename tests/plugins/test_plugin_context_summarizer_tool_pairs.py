@@ -111,7 +111,7 @@ async def test_tool_pairs_stay_together(summarizer_plugin, mock_agent, mock_llm)
     summarizer_plugin.preserve_recent = 5
     summarizer_plugin.trigger_percentage = 0.01  # Low threshold to trigger summarization
     
-    context = HookContext(
+    HookContext(
         hook_type=HookType.PRE_LLM_CALL,
         request_id='test-123',
         session_id='session-1',

@@ -1,7 +1,4 @@
-import tempfile
 from pathlib import Path
-import subprocess
-import sys
 import os
 
 BACKLOG_SYNONYMS = '''# Backlog
@@ -23,7 +20,7 @@ BACKLOG_SYNONYMS = '''# Backlog
 
 
 def run_script(backlog_path: Path) -> int:
-    import importlib, os
+    import importlib
     os.environ['BACKLOG_MD'] = str(backlog_path)
     mod = importlib.import_module('scripts.backlog')
     return mod.main(['update'])

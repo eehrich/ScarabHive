@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
-from unittest.mock import Mock
 
 from agent_system.hooks import HookContext
 from agent_system.llm.models import ChatMessage

@@ -150,7 +150,7 @@ class TestScriptInterpreterBasic:
 
     def test_server_list_tools(self, mock_system_config, mock_mcp_config):
         """Test server tool listing."""
-        config = ScriptInterpreterConfig()
+        ScriptInterpreterConfig()
         server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         tools = server.get_tools()
@@ -615,7 +615,7 @@ total = 0
 for i in range(1, 6):
     total += i
 """
-        result = executor.execute(loop_code)
+        executor.execute(loop_code)
         # For loops might not be supported in the sandbox, so we just check basic assignment
         simple_code = "total = 15"
         simple_result = executor.execute(simple_code)
@@ -632,7 +632,7 @@ def add_numbers(a, b):
 
 result = add_numbers(5, 3)
 """
-        result = executor.execute(function_code)
+        executor.execute(function_code)
         # Function definitions might not be supported, so we test simple assignment
         simple_code = "result = 8"
         simple_result = executor.execute(simple_code)

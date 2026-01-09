@@ -1,5 +1,4 @@
 import importlib
-import os
 import yaml
 
 from scripts.backlog_tool import values

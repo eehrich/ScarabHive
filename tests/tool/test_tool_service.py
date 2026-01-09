@@ -10,7 +10,7 @@ import yaml
 
 from agent_system.services.tool_service import ToolService
 from agent_system.utils.io import atomic_write_text
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, RemoteMCPConfig, ToolConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, RemoteMCPConfig, ToolConfig
 
 
 @pytest.fixture

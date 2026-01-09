@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock, patch
 from contextlib import asynccontextmanager
 
 from agent_system.app import lifespan

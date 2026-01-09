@@ -1,5 +1,4 @@
 import importlib
-from pathlib import Path
 
 SAMPLE = """
 # Backlog

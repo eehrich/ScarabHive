@@ -1,4 +1,6 @@
-import subprocess, sys, textwrap, os, tempfile, pathlib
+import subprocess
+import sys
+import pathlib
 
 PY = sys.executable
 MOD = 'scripts.backlog'

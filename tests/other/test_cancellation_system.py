@@ -5,7 +5,6 @@ Tests graceful and forced cancellation of tools.
 import asyncio
 import pytest
 import time
-from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.core.cancellation import (
     get_cancellation_manager, 
@@ -138,7 +137,7 @@ class TestCancellationManager:
     @pytest.mark.asyncio
     async def test_cleanup(self, manager):
         """Test manager cleanup."""
-        token = manager.create_token("test-request")
+        manager.create_token("test-request")
         manager.unregister_request("test-request")
         
         # Token should be removed
@@ -334,7 +333,7 @@ class TestIntegrationCancellation:
         manager.register_task("stubborn-request", task)
         
         # Start the monitor
-        monitor_task = asyncio.create_task(manager._monitor_timeouts())
+        asyncio.create_task(manager._monitor_timeouts())
         
         # Cancel the request
         manager.cancel_request("stubborn-request")

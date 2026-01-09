@@ -1,7 +1,5 @@
 """Tests for StatusEventForwarder cleanup and memory leak prevention."""
-import asyncio
 import pytest
-from unittest.mock import patch
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
 from agent_system.mcp.status import status_bus, StatusEvent, StatusPhase
 

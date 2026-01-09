@@ -26,7 +26,7 @@ def make_backups_for(path, count=5, base_time=None):
 def test_prune_keep(tmp_path):
     p = tmp_path / 'backlog.md'
     p.write_text('# test backlog')
-    files = make_backups_for(str(p), count=5)
+    make_backups_for(str(p), count=5)
     # keep 2 newest -> expect 3 removed
     removed = bl.prune_backups(str(p), keep=2)
     assert len(removed) == 3
@@ -46,5 +46,5 @@ def test_prune_older_than(tmp_path):
     removed = bl.prune_backups(str(p), older_than_days=30)
     # the two old files should be removed
     assert set(removed) >= set(old_files)
-    remaining = bl.list_backups(str(p))
+    bl.list_backups(str(p))
     assert all(f not in removed for f in recent_files)

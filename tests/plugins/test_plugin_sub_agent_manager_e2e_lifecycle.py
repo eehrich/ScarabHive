@@ -156,12 +156,12 @@ async def test_e2e_create_and_continue_sub_agent(
     assert sub_agents[0]["agent_type"] == "web_research_agent"
     assert sub_agents[0]["status"] == "active"
     
-    print(f"✅ E2E Test Passed:")
+    print("✅ E2E Test Passed:")
     print(f"   Coordinator: {coordinator_session_id}")
     print(f"   Sub-agent: {sub_session_id}")
     print(f"   Files: {len(list(temp_session_storage.rglob('*.json')))} JSON files")
-    print(f"   Parent-child link: ✓")
-    print(f"   Metadata sync: ✓")
+    print("   Parent-child link: ✓")
+    print("   Metadata sync: ✓")
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_e2e_multiple_sub_agents(
     
     assert len(active_subs) == 3
     
-    print(f"✅ Multiple Sub-Agents Test Passed:")
+    print("✅ Multiple Sub-Agents Test Passed:")
     print(f"   Created: {len(sub_agents)} sub-agents")
     print(f"   Active: {len(active_subs)} sub-agents")
 
@@ -275,7 +275,7 @@ async def test_e2e_nested_sub_agents(
     assert level2_id in root_data["metadata"]["sub_agents"]
     assert level3_id in level2_data["metadata"]["sub_agents"]
     
-    print(f"✅ Nested Sub-Agents Test Passed:")
+    print("✅ Nested Sub-Agents Test Passed:")
     print(f"   Level 1 (root): {root_id} (depth={root_data.get('depth', 1)})")
     print(f"   Level 2: {level2_id} (depth={level2_data['depth']})")
     print(f"   Level 3: {level3_id} (depth={level3_data['depth']})")
@@ -333,10 +333,10 @@ async def test_e2e_max_nesting_depth_enforcement(
             initial_message="Level 4 - should fail"
         )
     
-    print(f"✅ Max Nesting Depth Test Passed:")
-    print(f"   Max depth: 3")
-    print(f"   Level 2 & 3: ✓ Created")
-    print(f"   Level 4: ✗ Rejected (as expected)")
+    print("✅ Max Nesting Depth Test Passed:")
+    print("   Max depth: 3")
+    print("   Level 2 & 3: ✓ Created")
+    print("   Level 4: ✗ Rejected (as expected)")
 
 
 @pytest.mark.asyncio
@@ -400,10 +400,10 @@ async def test_e2e_session_file_structure(
     assert "last_used" in sub_meta
     assert "task_summary" in sub_meta
     
-    print(f"✅ Session File Structure Test Passed:")
+    print("✅ Session File Structure Test Passed:")
     print(f"   Parent file: {parent_file.name}")
     print(f"   Sub-agent file: {sub_file.name}")
-    print(f"   All required fields present: ✓")
+    print("   All required fields present: ✓")
 
 
 @pytest.mark.asyncio
@@ -475,7 +475,7 @@ async def test_e2e_list_filtering(
     assert sub2 in all_ids
     assert sub3 in all_ids
     
-    print(f"✅ List Filtering Test Passed:")
-    print(f"   Total created: 3")
+    print("✅ List Filtering Test Passed:")
+    print("   Total created: 3")
     print(f"   Active only: {len(active_only)}")
     print(f"   Including completed: {len(all_subs)}")

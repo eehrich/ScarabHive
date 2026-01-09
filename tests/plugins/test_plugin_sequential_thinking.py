@@ -247,7 +247,7 @@ async def test_create_branch(server, mock_status):
     
     session_id = result1["session_id"]
     
-    result2 = await server.execute({
+    await server.execute({
         "session_id": session_id,
         "thought": "Implement token generation service",
         "thought_number": 2,
@@ -373,7 +373,7 @@ async def test_revise_thought(server, mock_status):
     
     session_id = result1["session_id"]
     
-    result2 = await server.execute({
+    await server.execute({
         "session_id": session_id,
         "thought": "Continue with schema design",
         "thought_number": 2,
@@ -930,7 +930,7 @@ async def test_duplicate_branch_id(server, mock_status):
 @pytest.mark.asyncio
 async def test_status_messages_start_end(server, mock_status):
     """Test status messages are sent."""
-    result = await server.execute({
+    await server.execute({
         "thought": "Test thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -991,7 +991,7 @@ async def test_branch_parent_from_thought_branch(server, mock_status):
     })
     session_id = result1["session_id"]
     
-    result2 = await server.execute({
+    await server.execute({
         "session_id": session_id,
         "thought": "Main thought 2",
         "thought_number": 2,
@@ -1001,7 +1001,7 @@ async def test_branch_parent_from_thought_branch(server, mock_status):
     })
     
     # Create branch 'alternative' from thought 2
-    result3 = await server.execute({
+    await server.execute({
         "session_id": session_id,
         "thought": "Alternative approach",
         "thought_number": 3,
@@ -1048,7 +1048,7 @@ async def test_progress_auto_clamp(server, mock_status):
     
     # Add thoughts up to 12 (exceeding original estimate)
     for i in range(2, 13):
-        result = await server.execute({
+        await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,

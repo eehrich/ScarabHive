@@ -1,5 +1,4 @@
 """Tests for anthropic_utils content normalization."""
-import pytest
 from agent_system.llm import anthropic_utils
 
 

@@ -63,7 +63,7 @@ class TestOpenAIClientInitialization:
     def test_initialization_with_timeout(self, mock_openai):
         """Test client initialization with custom timeout."""
         mock_class, _ = mock_openai
-        client = OpenAIAsyncClient(
+        OpenAIAsyncClient(
             model="gpt-4",
             api_key="test-key",
             timeout=120.0
@@ -450,7 +450,6 @@ class TestOpenAIClientRetryExhaustion:
         client.max_attempts = 2
         
         from openai import RateLimitError
-        import asyncio
         
         # Mock asyncio.sleep to avoid delays
         with patch('asyncio.sleep', new_callable=AsyncMock):

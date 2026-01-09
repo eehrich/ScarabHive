@@ -8,7 +8,6 @@ import asyncio
 import json
 import aiohttp
 import sys
-import os
 
 async def test_sse_status_events():
     """Test that status events are forwarded through the SSE /events endpoint"""
@@ -55,7 +54,7 @@ async def test_sse_status_events():
                     elif line_str.startswith(':'):
                         print(f"Comment: {line_str}")
                 
-                print(f"\nSummary:")
+                print("\nSummary:")
                 print(f"Total events: {len(events)}")
                 print(f"Status events: {len(status_events)}")
                 

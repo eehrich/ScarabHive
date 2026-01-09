@@ -3,12 +3,10 @@
 NOTE: Status event batching was disabled to avoid delays during LLM calls.
 Status events are now sent immediately for better UX.
 """
-import asyncio
 import json
 import pytest
 import httpx
 from agent_system.app import build_app
-from agent_system.mcp.status import status_bus, StatusEvent, StatusPhase
 
 
 @pytest.mark.asyncio

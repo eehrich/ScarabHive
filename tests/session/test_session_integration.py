@@ -2,7 +2,6 @@
 import pytest
 import asyncio
 from pathlib import Path
-from unittest.mock import Mock, AsyncMock, patch
 
 from agent_system.services.session_manager import (
     SessionManager,
@@ -206,7 +205,7 @@ async def test_session_list_sorting(session_manager):
     # Create multiple sessions with delays
     s1 = await session_manager.create_session(user_id="test_user", title="First")
     await asyncio.sleep(0.01)
-    s2 = await session_manager.create_session(user_id="test_user", title="Second")
+    await session_manager.create_session(user_id="test_user", title="Second")
     await asyncio.sleep(0.01)
     
     # Update first session (should move to top)
@@ -276,7 +275,7 @@ async def test_error_handling(session_manager):
         await session_manager.load_session("test_user", "nonexistent123")
     
     # Create duplicate session
-    session = await session_manager.create_session(
+    await session_manager.create_session(
         user_id="test_user",
         session_id="custom123"
     )

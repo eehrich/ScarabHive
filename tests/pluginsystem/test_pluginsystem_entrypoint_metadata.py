@@ -1,7 +1,5 @@
-from pathlib import Path
 
 import yaml
-import pytest
 
 
 def test_entrypoint_plugin_metadata(monkeypatch, tmp_path):

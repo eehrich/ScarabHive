@@ -127,7 +127,6 @@ class TestMCPIntegrationExternalServers:
         """Test handling when no external servers are configured"""
         from agent_system.config.models import (
             AgentSystemConfig,
-            MCPSystemConfig,
             MCPServersConfig
         )
         

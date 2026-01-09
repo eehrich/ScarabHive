@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 
-import pytest
 
 from agent_system import agent_cli as cli
 
 
 def _make_cfg(pdir: Path):
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},

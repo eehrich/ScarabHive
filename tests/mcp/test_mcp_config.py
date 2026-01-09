@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 import yaml
 
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig, RemoteMCPConfig
+from agent_system.config.models import PluginsConfig, MCPConfig, RemoteMCPConfig
 
 
 class TestMCPConfigModern:

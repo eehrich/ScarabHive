@@ -1,5 +1,4 @@
 """Tests for hierarchical request ID generation in sub-agents."""
-import pytest
 
 
 def test_hierarchical_request_id_format():

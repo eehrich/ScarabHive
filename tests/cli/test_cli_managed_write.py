@@ -1,6 +1,4 @@
 import json
-from pathlib import Path
-import sys
 
 from agent_system import agent_cli as cli
 
@@ -20,7 +18,7 @@ def test_enable_writes_managed_file(monkeypatch, tmp_path, capsys):
     managed = tmp_path / "managed.yaml"
     assert not managed.exists()
 
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}

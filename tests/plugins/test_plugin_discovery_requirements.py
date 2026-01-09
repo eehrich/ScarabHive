@@ -15,7 +15,6 @@ import pytest
 from pathlib import Path
 import importlib.util
 import sys
-from types import ModuleType
 
 from agent_system.plugins import discover_plugins, discover_all_plugins
 from agent_system.config.models import AgentSystemConfig, PluginsConfig
@@ -59,14 +58,14 @@ class TestPluginFactoryRequirement:
                     if not hasattr(module, 'PLUGIN_FACTORY'):
                         missing.append(str(plugin_path))
                         
-                except Exception as e:
+                except Exception:
                     # If import fails, that's a different problem
                     # We're only checking for PLUGIN_FACTORY presence
                     pass
         
         if missing:
             pytest.fail(
-                f"Plugins missing PLUGIN_FACTORY in plugin.py:\n" +
+                "Plugins missing PLUGIN_FACTORY in plugin.py:\n" +
                 "\n".join(f"  - {p}" for p in missing) +
                 "\n\nFix: Add to end of plugin.py:\n" +
                 "  from .server import MyPluginServer\n" +
@@ -143,7 +142,6 @@ class TestMCPIntegrationPluginDirs:
     async def test_mcp_integration_uses_config_plugin_dirs(self):
         """CRITICAL: MCPIntegration must use config.plugins.plugin_dirs."""
         from agent_system.mcp.integration import MCPIntegration
-        from unittest.mock import MagicMock
         
         # Create config with custom plugin_dirs
         config = AgentSystemConfig(
@@ -155,7 +153,7 @@ class TestMCPIntegrationPluginDirs:
         
         # Create MCPIntegration with config (not mock_registry)
         # MCPIntegration requires AgentSystemConfig as parameter
-        integration = MCPIntegration(app=None, config=config)
+        MCPIntegration(app=None, config=config)
         
         # The _discover_and_register_plugins method should use config.plugins.plugin_dirs
         # We can't easily test the private method, but we can verify the config is accessible

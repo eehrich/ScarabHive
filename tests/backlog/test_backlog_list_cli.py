@@ -39,7 +39,8 @@ def run_cli(argv, env=None):
             except SystemExit as e:
                 rc = int(e.code or 0)
     finally:
-        os.environ.clear(); os.environ.update(old)
+        os.environ.clear()
+        os.environ.update(old)
     return rc, buf.getvalue()
 
 
@@ -62,7 +63,7 @@ def test_list_ids_only(tmp_path: Path):
     p.write_text(MINI, encoding='utf-8')
     rc, out = run_cli(['list', '--ids-only', '--state', 'all', '--file', str(p), '--no-color'])
     assert rc == 0
-    lines = [l.strip() for l in out.splitlines() if l.strip()]
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
     # Expect numeric ids like 0001, 0002, etc.
     assert '0001' in lines
     assert '0002' in lines

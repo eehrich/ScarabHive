@@ -1,6 +1,6 @@
 """Tests for Sequential Thinking plugin hook duplicate injection prevention."""
 import pytest
-from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.hooks.plugin_hook import HookContext
 from agent_system.llm.models import ChatMessage
 from plugins.sequential_thinking.server import SequentialThinkingServer
 
@@ -178,7 +178,7 @@ async def test_hook_handles_both_reminder_markers(server):
     assert len(thinking_messages) == 1, "Should replace old injection"
     
     # Now test with active session marker
-    session_result = await server.execute({
+    await server.execute({
         "thought": "Testing marker replacement",
         "thought_number": 1,
         "total_thoughts": 2,

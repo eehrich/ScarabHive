@@ -2,21 +2,16 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-import tempfile
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from plugins.context_engineer.core_memory import CoreMemory, Fact
-from plugins.context_engineer.tool_result_store import ToolResultStore, ToolResultEntry
-from plugins.context_engineer.variable_manager import VariableManager, VariableEntry
-from plugins.context_engineer.archival_memory import ArchivalMemory, ArchivedMessage
+from plugins.context_engineer.core_memory import CoreMemory
+from plugins.context_engineer.tool_result_store import ToolResultStore
+from plugins.context_engineer.variable_manager import VariableManager
+from plugins.context_engineer.archival_memory import ArchivalMemory
 from plugins.context_engineer.compaction import (
     CompactionConfig,
-    CompactionResult,
     LayeredCompactionStrategy,
 )
 
@@ -142,7 +137,6 @@ class TestToolResultStore:
         )
         
         # Reference should be valid JSON
-        import json
         ref_data = json.loads(reference)
         assert ref_data["type"] == "tool_result_ref"
         assert ref_data["tool_name"] == "read_file"
@@ -161,7 +155,6 @@ class TestToolResultStore:
         )
         
         # Extract ID from JSON reference
-        import json
         ref_data = json.loads(reference)
         ref_id = ref_data["ref_id"]
         
@@ -183,7 +176,6 @@ class TestToolResultStore:
         )
         
         # Extract hash from JSON reference
-        import json
         ref_data = json.loads(reference)
         content_hash = ref_data["content_hash"]
         
@@ -971,7 +963,7 @@ class TestToolResultPagination:
         
         # Store tool result using store_and_reference
         tool_call_id = "test_call_12345678"
-        reference = tool_store.store_and_reference(
+        tool_store.store_and_reference(
             tool_call_id=tool_call_id,
             tool_name="test_tool",
             content=large_result,

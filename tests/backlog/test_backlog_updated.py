@@ -1,7 +1,5 @@
 import os
 from pathlib import Path
-import subprocess
-import sys
 
 BACKLOG_WITHOUT_UPDATED = '''# Backlog
 
@@ -20,7 +18,7 @@ BACKLOG_WITHOUT_UPDATED = '''# Backlog
 
 
 def run_script(backlog_path: Path) -> int:
-    import importlib, os
+    import importlib
     os.environ['BACKLOG_MD'] = str(backlog_path)
     mod = importlib.import_module('scripts.backlog')
     return mod.main(['update'])

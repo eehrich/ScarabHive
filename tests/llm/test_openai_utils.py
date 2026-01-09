@@ -1,5 +1,4 @@
 """Tests for openai_utils content normalization."""
-import pytest
 from agent_system.llm import openai_utils
 
 

@@ -171,8 +171,8 @@ async def test_circular_dependency_detection(registry, base_context):
     await registry.register_hook(HookType.PRE_LLM_CALL, "hook2", hook2)
     
     # Should still execute hooks despite circular dependency (fallback to registration order)
-    result_context = await registry.execute_hooks(HookType.PRE_LLM_CALL, base_context)
-    
+    await registry.execute_hooks(HookType.PRE_LLM_CALL, base_context)
+
     # Both hooks should execute (order may be arbitrary)
     assert hook1.call_count == 1
     assert hook2.call_count == 1
@@ -209,7 +209,7 @@ async def test_hook_timeout(registry, base_context):
     await registry.register_hook(HookType.PRE_LLM_CALL, "fast", fast_hook)
     
     # Execute with short timeout
-    result_context = await registry.execute_hooks(
+    await registry.execute_hooks(
         HookType.PRE_LLM_CALL, base_context, timeout=0.5
     )
     

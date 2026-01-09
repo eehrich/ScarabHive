@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 
-import pytest
 
 from agent_system import agent_cli as cli
 
@@ -28,7 +26,7 @@ def test_cli_plugins_enable_disable(monkeypatch, tmp_path, capsys):
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "pm_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
 
     # Monkeypatch load_settings to return a config with plugin_dirs pointing to our pdir
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
@@ -64,7 +62,7 @@ def test_cli_plugins_search(monkeypatch, tmp_path, capsys):
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "search_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
     (plugin_dir / "plugin.yaml").write_text('description: "Searchable plugin"\nversion: "0.0"\n')
 
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},

@@ -1,8 +1,7 @@
 """Unit tests for OllamaNativeAsyncClient."""
 
 import pytest
-import httpx
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from agent_system.llm.ollama_client import OllamaNativeAsyncClient
 from agent_system.llm.models import ChatMessage
 

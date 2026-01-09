@@ -1,6 +1,6 @@
 """Tests for TODO plugin hook duplicate injection prevention."""
 import pytest
-from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.hooks.plugin_hook import HookContext
 from agent_system.llm.models import ChatMessage
 from plugins.todo.server import TodoServer
 

@@ -5,9 +5,7 @@ import time
 import logging
 from pathlib import Path
 import importlib.util
-import pytest
 
-from agent_system.plugins import discovery as plugins
 
 logger = logging.getLogger(__name__)
 

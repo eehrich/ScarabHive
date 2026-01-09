@@ -1,9 +1,5 @@
-import tempfile
 from pathlib import Path
-import subprocess
-import sys
 import os
-from pathlib import Path
 
 BACKLOG_CONTENT = '''# Backlog
 

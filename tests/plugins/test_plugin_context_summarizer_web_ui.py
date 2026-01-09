@@ -1,8 +1,6 @@
 """Tests for Context Summarizer plugin web UI."""
-import inspect
 import pytest
 from plugins.context_summarizer.plugin import PLUGIN_FACTORY
-from plugins.context_summarizer.web_endpoints import ContextSummarizerWebFactory
 
 
 def test_factory_is_callable():

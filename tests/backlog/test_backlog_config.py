@@ -1,5 +1,3 @@
-import pytest
-import tempfile
 from pathlib import Path
 from scripts.backlog import load_config
 
@@ -25,12 +23,13 @@ max_backups = 10
 """)
 
         # Mock Path.cwd to return our tmp_path
-        mock_cwd = lambda: tmp_path
+        def mock_cwd():
+            return tmp_path
         monkeypatch.setattr(Path, 'cwd', mock_cwd)
 
         config = load_config()
         assert config['file'] == 'custom_backlog.md'
-        assert config['color'] == True
+        assert config['color']
         assert config['backup_dir'] == '/tmp/backups'
         assert config['max_backups'] == 10
 
@@ -43,11 +42,12 @@ default_color = false
 """)
 
         # Mock Path.cwd to return our tmp_path
-        mock_cwd = lambda: tmp_path
+        def mock_cwd():
+            return tmp_path
         monkeypatch.setattr(Path, 'cwd', mock_cwd)
 
         config = load_config()
-        assert config['color'] == False
+        assert not config['color']
 
     def test_load_config_color_auto(self, tmp_path, monkeypatch):
         """Test loading color configuration set to auto."""
@@ -58,7 +58,8 @@ default_color = auto
 """)
 
         # Mock Path.cwd to return our tmp_path
-        mock_cwd = lambda: tmp_path
+        def mock_cwd():
+            return tmp_path
         monkeypatch.setattr(Path, 'cwd', mock_cwd)
 
         config = load_config()
@@ -73,7 +74,8 @@ max_backups = invalid
 """)
 
         # Mock Path.cwd to return our tmp_path
-        mock_cwd = lambda: tmp_path
+        def mock_cwd():
+            return tmp_path
         monkeypatch.setattr(Path, 'cwd', mock_cwd)
 
         config = load_config()

@@ -164,7 +164,7 @@ class TestMultimodalFormatSupport:
     
     def test_format_support_check(self):
         """Test checking if model supports a format."""
-        from agent_system.llm.capabilities import get_model_capabilities, ImageFormat
+        from agent_system.llm.capabilities import get_model_capabilities
         
         caps = get_model_capabilities("gpt-4.1")  # Use model from config
         
@@ -191,7 +191,7 @@ class TestLLMOverrideModelSelection:
     
     def test_llm_override_model_used_for_image_validation(self):
         """Test that when llm_override is provided, its model is used for image capability checks."""
-        from unittest.mock import MagicMock, AsyncMock
+        from unittest.mock import MagicMock
         
         # Create mock LLM override with vision-capable model
         llm_override = MagicMock()

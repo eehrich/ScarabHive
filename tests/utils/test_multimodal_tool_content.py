@@ -1,9 +1,7 @@
 """Tests for multimodal tool content utilities."""
 
 import base64
-import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from agent_system.utils.multimodal_tool_content import (
     encode_multimodal_item,

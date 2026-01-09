@@ -2,7 +2,7 @@
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from agent_system.llm.models import ChatMessage
 from agent_system.hooks import HookContext
