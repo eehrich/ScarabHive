@@ -1105,6 +1105,77 @@ class TestBatchQueueManager:
         with pytest.raises(RuntimeError, match="expired"):
             future.result()
 
+    @pytest.mark.asyncio
+    async def test_completed_job_results_download_failure(self, mock_config, tmp_path):
+        """Test that a completed job is properly finalized even if results download fails.
+        
+        This tests the fix for the bug where a job could get stuck in _active_jobs
+        with status=COMPLETED forever if get_batch_results() raised an exception.
+        """
+        mock_config.providers = MagicMock()
+        mock_config.providers.gemini = None
+        mock_config.providers.openai = MagicMock()
+        mock_config.providers.openai.collection_window_seconds = 1.0
+        mock_config.providers.openai.max_requests_per_batch = 10
+        mock_config.providers.openai.poll_interval_seconds = 0.5
+        mock_config.providers.openai.max_wait_hours = 24
+        mock_config.providers.openai.max_retries = 3
+        mock_config.storage_path = str(tmp_path / "batch")
+        
+        manager = BatchQueueManager(mock_config)
+        
+        # Create a job
+        request = BatchRequest(
+            request_id="test-download-fail-1",
+            custom_id="custom-download",
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Test"}],
+        )
+        job = BatchJob(
+            job_id="job-download-fail",
+            provider="openai",
+            model="gpt-4",
+            requests=[request],
+        )
+        job.provider_job_id = "batch_download_123"
+        job.status = BatchStatus.IN_PROGRESS
+        
+        manager._active_jobs[job.job_id] = job
+        
+        # Create a future for the request
+        future = asyncio.get_event_loop().create_future()
+        manager._request_futures[request.request_id] = future
+        
+        # Register a mock client that reports completed but fails to get results
+        mock_client = AsyncMock()
+        mock_client.get_batch_status = AsyncMock(return_value={
+            "status": "completed",
+        })
+        # Simulate results download failure
+        mock_client.get_batch_results = AsyncMock(
+            side_effect=RuntimeError("Network error: failed to download results")
+        )
+        manager.register_batch_client("openai", mock_client)
+        
+        # Poll the job - should handle the error gracefully
+        await manager._poll_job(job)
+        
+        # Verify job was moved to completed_jobs (not stuck in active_jobs)
+        assert job.job_id not in manager._active_jobs, \
+            "Job should be removed from active_jobs even if results download fails"
+        assert job.job_id in manager._completed_jobs, \
+            "Job should be in completed_jobs after failure"
+        
+        # Verify job status was changed to FAILED
+        assert job.status == BatchStatus.FAILED
+        assert "failed to download results" in job.error_message.lower() or \
+               "failed to retrieve results" in job.error_message.lower()
+        
+        # Verify the future got an exception
+        assert future.done()
+        with pytest.raises(RuntimeError):
+            future.result()
+
 
 # ==============================================================================
 # Integration Tests

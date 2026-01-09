@@ -839,10 +839,20 @@ class BatchQueueManager:
             # Check if completed
             if job.status == BatchStatus.COMPLETED:
                 # Download and process results
-                await self._report_job_status(job, f"Batch downloading: {job.model}")
-                results = await client.get_batch_results(job)
-                await self._process_results(job, results)
-                await self._complete_job(job)
+                try:
+                    await self._report_job_status(job, f"Batch downloading: {job.model}")
+                    results = await client.get_batch_results(job)
+                    await self._process_results(job, results)
+                    await self._complete_job(job)
+                except Exception as e:
+                    # CRITICAL: Ensure job is removed from _active_jobs even on failure
+                    # Otherwise the job stays stuck with status=COMPLETED forever
+                    logger.error(
+                        f"Failed to download/process results for completed batch job {job.job_id}: {e}"
+                    )
+                    job.status = BatchStatus.FAILED
+                    job.error_message = f"Failed to retrieve results: {e}"
+                    await self._complete_job(job)
                 
             elif job.status == BatchStatus.CANCELLED:
                 # Server-side cancellation - retry if under limit
