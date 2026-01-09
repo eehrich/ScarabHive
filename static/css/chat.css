@@ -541,6 +541,22 @@ form {
   font-style: italic;
 }
 
+/* Reconnect info message */
+.response-text.reconnect-info {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+
+.response-text.reconnect-info em {
+  color: #8b949e;
+  display: block;
+  margin-top: 4px;
+}
+
 /* Base font size for all response content */
 .response-text {
   font-size: 1em !important;

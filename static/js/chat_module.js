@@ -662,71 +662,369 @@
   let currentStreamingContent = '';
   let currentStreamingStep = null;
   
+  // DOM elements (set in init, shared across handlers)
+  let runBtn = null;
+  let stopBtn = null;
+  let chatContainer = null;
+  
   // Session and request tracking (shared across init and event listeners)
   let currentRequestId = null;
   // Initialize from sessionStorage to handle page refresh before session:loaded event fires
   let currentSessionId = sessionStorage.getItem('lastSessionId') || null;
-  if (currentSessionId) {
-    console.log('[chat_module] Initialized currentSessionId from sessionStorage:', currentSessionId);
+  
+  // Store/retrieve active request ID for reconnect after browser refresh
+  const ACTIVE_REQUEST_KEY = 'activeRequestId';
+  
+  function storeActiveRequest(requestId) {
+    if (requestId) {
+      localStorage.setItem(ACTIVE_REQUEST_KEY, requestId);
+    } else {
+      localStorage.removeItem(ACTIVE_REQUEST_KEY);
+    }
+  }
+  
+  function getStoredActiveRequest() {
+    return localStorage.getItem(ACTIVE_REQUEST_KEY);
+  }
+
+  // Helper functions to update UI displays (module-level for handleSSEEvent access)
+  function updateHeaderSessionId() {
+    const sessionElement = document.getElementById('headerSessionId');
+    if (sessionElement) {
+      const sessionId = currentSessionId || '';
+      // No 'Session:' prefix per design; leave empty when no session
+      sessionElement.textContent = sessionId;
+      const container = document.querySelector('.session-id-bottom');
+      if (container) {
+        container.style.display = currentSessionId ? 'block' : 'none';
+        // set title to full id so users can hover to see it
+        container.title = sessionId || '';
+      }
+    } else {
+      console.warn('headerSessionId element not found');
+    }
+  }
+  
+  function updateRequestId() {
+    if (currentRequestId) {
+      // Find the latest assistant message
+      const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
+      if (latestAssistant) {
+        // Avoid inserting duplicate request id elements
+        let existing = latestAssistant.querySelector('.message-request-id');
+        if (!existing) {
+          const requestIdElement = document.createElement('div');
+          requestIdElement.className = 'message-request-id';
+          requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
+          requestIdElement.title = `Request ID: ${currentRequestId}`;
+          latestAssistant.appendChild(requestIdElement);
+        } else {
+          existing.innerHTML = `Request: <span>${currentRequestId}</span>`;
+          existing.title = `Request ID: ${currentRequestId}`;
+        }
+      }
+    }
+
+    // Also update the global request display (keep for compatibility)
+    const requestElement = document.getElementById('currentRequestId');
+    const requestContainer = document.getElementById('requestIdDisplay');
+    if (requestElement && requestContainer) {
+      requestElement.textContent = currentRequestId || '--';
+      requestContainer.style.display = 'none'; // Hide the global one, we use per-message now
+    }
+  }
+
+  // Shared SSE event handler for both EventSource and manual fetch() parsing
+  // Module-level so it can be used by both normal requests and reconnect logic
+  function handleSSEEvent(data, blk) {
+    switch (data.type) {
+      case 'start':
+        currentRequestId = data.request_id;
+        currentSessionId = data.session_id;
+        // Store for reconnect after browser refresh
+        storeActiveRequest(currentRequestId);
+        // update exported values
+        try { global.currentSessionId = currentSessionId; } catch (e) {}
+        
+        // Notify session manager about new/updated session
+        if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
+          window.sessionManager.onSessionUpdated(currentSessionId);
+        }
+        
+        // Update header session ID display
+        updateHeaderSessionId();
+        
+        // Update request ID display  
+        updateRequestId();
+        break;
+      case 'reconnect':
+        // Reconnected to existing running job (after browser refresh)
+        currentRequestId = data.request_id;
+        currentSessionId = data.session_id;
+        // update exported values
+        try { global.currentSessionId = currentSessionId; } catch (e) {}
+        
+        // Update agent selector to match the job's agent
+        if (data.agent_name && window.selectorModule && typeof window.selectorModule.setAgent === 'function') {
+          window.selectorModule.setAgent(data.agent_name);
+        }
+        
+        // Notify session manager about reconnected session
+        if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
+          window.sessionManager.onSessionUpdated(currentSessionId);
+        }
+        
+        // Update header session ID display
+        updateHeaderSessionId();
+        
+        // Update request ID display  
+        updateRequestId();
+        
+        // Show reconnect info in response area
+        showSection(blk.t);
+        blk.t.innerHTML = `<div class="response-text reconnect-info">🔄 ${data.message}${data.last_status ? '<br><em>Last status: ' + data.last_status + '</em>' : ''}</div>`;
+        break;
+      case 'heartbeat':
+        // Keep-alive heartbeat during long LLM calls - ignore but log in debug mode
+        if (window.DEBUG_MODE) {
+          console.log('Heartbeat received (step', data.step, ')');
+        }
+        break;
+      case 'thinking_delta':
+        // Real-time token streaming from LLM - stream directly to response box
+        if (data.step !== currentStreamingStep) {
+          // New step - reset accumulator
+          currentStreamingContent = '';
+          currentStreamingStep = data.step;
+        }
+        
+        // Update with accumulated content + cursor directly in response box
+        currentStreamingContent = data.accumulated || '';
+        showSection(blk.t);
+        blk.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
+        
+        // Auto-scroll to keep cursor visible
+        blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        break;
+      case 'thinking_complete':
+        // Final thinking event from streaming - remove cursor, keep content
+        currentStreamingContent = '';
+        currentStreamingStep = null;
+        
+        if (data.assistant && data.assistant.content) {
+          // Content was already displayed via thinking_delta
+          // Now show final formatted content (HTML from format_output hook)
+          const contentFormat = data.content_format || 'text';
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text">${formatContent(data.assistant.content, contentFormat)}</div>`;
+          
+          // Apply Prism.js syntax highlighting if available and content is HTML
+          if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+            Prism.highlightAllUnder(blk.t);
+          }
+        }
+        
+        // Note: Tool calls display is handled by the 'thinking' event to avoid duplicates
+        break;
+      case 'thinking':
+        // Complete thinking event (also handles backward compatibility)
+        // Only clear streaming state if this has actual content (final thinking event)
+        if (data.assistant) {
+          // Final thinking event with content - clear streaming state
+          currentStreamingContent = '';
+          currentStreamingStep = null;
+          if (blk.think) {
+            blk.think.classList.remove('streaming');
+            // Remove typing cursor if present
+            const cursor = blk.think.querySelector('.typing-cursor');
+            if (cursor) cursor.remove();
+          }
+          
+          // Create think section if not exists
+          if (!blk.think) {
+            blk.think = document.createElement('pre');
+            blk.think.className = 'think-section';
+            blk.r.appendChild(blk.think);
+          }
+          
+          if (data.assistant.content) {
+            blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
+          }
+          if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
+            blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+            data.assistant.tool_calls.forEach((tc, i) => {
+              const func = tc.function || {};
+              blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
+            });
+            blk.think.textContent += '\n';
+          }
+          showSection(blk.think);
+        } else {
+          // Step marker event (before LLM call) - don't interfere with streaming
+          // Just ensure think section exists
+          if (!blk.think) {
+            blk.think = document.createElement('pre');
+            blk.think.className = 'think-section';
+            blk.r.appendChild(blk.think);
+          }
+        }
+        break;
+      case 'status':
+        // Status events are now delivered through /events stream
+        // Show status events for this request AND all hierarchical children (sub-agents)
+        // e.g., if currentRequestId is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
+        if (blk && blk.status) {
+          const eventRequestId = data.request_id || '';
+          // Check if this event belongs to current request hierarchy
+          // Either exact match OR starts with current request_id followed by underscore (child operation)
+          const matches = eventRequestId === currentRequestId || 
+              (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+          
+          if (matches) {
+            addStatusEvent(blk.status, data);
+          }
+          // Otherwise silently ignore status from other requests/sessions
+        }
+        break;
+      case 'status_batch':
+        // Batched status events for efficiency (multiple events in one SSE message)
+        if (blk && blk.status && data.events && Array.isArray(data.events)) {
+          data.events.forEach(statusEvent => {
+            const eventRequestId = statusEvent.request_id || '';
+            const matches = eventRequestId === currentRequestId || 
+                (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+            
+            if (matches) {
+              addStatusEvent(blk.status, statusEvent);
+            }
+          });
+        }
+        break;
+      case 'final':
+        // Mark completion for reconnect logic
+        sseReceivedFinalOrEnd = true;
+        sseReconnectAttempts = 0;
+        // Clear stored request (job finished)
+        storeActiveRequest(null);
+        
+        // Only show final if content box is still empty (no streaming happened)
+        // or if it's a different format
+        const finalContent = data.summary || data.content || '';
+        const finalContentFormat = data.content_format || 'text';
+        
+        if (!blk.t.innerHTML || blk.t.innerHTML.trim() === '') {
+          // No streaming happened, show final content
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text">${formatContent(finalContent, finalContentFormat)}</div>`;
+          
+          // Apply Prism.js syntax highlighting if available and content is HTML
+          if (finalContentFormat === 'html' && typeof Prism !== 'undefined') {
+            Prism.highlightAllUnder(blk.t);
+          }
+        }
+        // If streaming already filled the content, skip this (content already there)
+        break;
+      case 'end':
+        // Mark completion for reconnect logic
+        sseReceivedFinalOrEnd = true;
+        sseReconnectAttempts = 0;
+        // Clear stored request (job finished)
+        storeActiveRequest(null);
+        
+        // Close EventSource immediately to prevent auto-reconnect attempts
+        // EventSource will try to reconnect if the server closes the connection,
+        // which causes spurious "Connection failed" errors in the onerror handler
+        if (currentEventSource) {
+          currentEventSource.close();
+          currentEventSource = null;
+        }
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        
+        // Clear any pending reconnect timer
+        if (sseReconnectTimer) {
+          clearTimeout(sseReconnectTimer);
+          sseReconnectTimer = null;
+        }
+        
+        runBtn.style.display = 'block'; // Show run button
+        stopBtn.style.display = 'none'; // Hide stop button
+        // Reset stop button state
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        
+        // Reload sessions after conversation completes
+        if (window.sessionManager && typeof window.sessionManager.loadSessions === 'function') {
+          window.sessionManager.loadSessions();
+        }
+        break;
+      case 'error':
+        showSection(blk.t);
+        blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message)}</div>`;
+        // Clear any pending close timer
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        if (currentEventSource) {
+          currentEventSource.close();
+          currentEventSource = null;
+        }
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
+          currentStatusEventSource = null;
+        }
+        runBtn.style.display = 'block'; // Show run button
+        stopBtn.style.display = 'none'; // Hide stop button
+        // Reset stop button state
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        break;
+      case 'cancelled':
+        // Request was cancelled - clean up and reset UI
+        console.log('Request cancelled:', data.request_id, 'at step', data.step);
+        // Clear any pending close timer
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        if (currentEventSource) {
+          currentEventSource.close();
+          currentEventSource = null;
+        }
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
+          currentStatusEventSource = null;
+        }
+        // Show cancelled status with step number
+        showSection(blk.t);
+        const stepInfo = data.step ? ` at step ${data.step}` : '';
+        blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
+        runBtn.style.display = 'block'; // Show run button
+        stopBtn.style.display = 'none'; // Hide stop button
+        // Reset stop button state
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        break;
+    }
+    scrollBottom();
   }
 
   // Public init function that wires the chat form behavior
   chatModule.init = function (opts) {
     const chatForm = document.getElementById('f');
     const taskInput = document.getElementById('task');
-    const runBtn = document.getElementById('runBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const chatContainer = document.getElementById('chat');
-    
-    // Helper functions to update UI displays
-    function updateHeaderSessionId() {
-      console.log('updateHeaderSessionId called, currentSessionId:', currentSessionId);
-      const sessionElement = document.getElementById('headerSessionId');
-      if (sessionElement) {
-        const sessionId = currentSessionId || '';
-        // No 'Session:' prefix per design; leave empty when no session
-        sessionElement.textContent = sessionId;
-        const container = document.querySelector('.session-id-bottom');
-        if (container) {
-          container.style.display = currentSessionId ? 'block' : 'none';
-          // set title to full id so users can hover to see it
-          container.title = sessionId || '';
-        }
-      } else {
-        console.warn('headerSessionId element not found');
-      }
-    }
-    
-    function updateRequestId() {
-      console.log('updateRequestId called, currentRequestId:', currentRequestId);
-
-      if (currentRequestId) {
-        // Find the latest assistant message
-        const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
-        if (latestAssistant) {
-          // Avoid inserting duplicate request id elements
-          let existing = latestAssistant.querySelector('.message-request-id');
-          if (!existing) {
-            const requestIdElement = document.createElement('div');
-            requestIdElement.className = 'message-request-id';
-            requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
-            requestIdElement.title = `Request ID: ${currentRequestId}`;
-            latestAssistant.appendChild(requestIdElement);
-          } else {
-            existing.innerHTML = `Request: <span>${currentRequestId}</span>`;
-            existing.title = `Request ID: ${currentRequestId}`;
-          }
-        }
-      }
-
-      // Also update the global request display (keep for compatibility)
-      const requestElement = document.getElementById('currentRequestId');
-      const requestContainer = document.getElementById('requestIdDisplay');
-      if (requestElement && requestContainer) {
-        requestElement.textContent = currentRequestId || '--';
-        requestContainer.style.display = 'none'; // Hide the global one, we use per-message now
-      }
-    }
+    runBtn = document.getElementById('runBtn');
+    stopBtn = document.getElementById('stopBtn');
+    chatContainer = document.getElementById('chat');
     
     // Expose current session id for other modules (fallback for UI)
     chatModule.getCurrentSessionId = function() { return currentSessionId; };
@@ -922,261 +1220,6 @@
       stopBtn.setAttribute('aria-label', 'Stop');
       currentRequestId = null; // Will be set when SSE 'start' event arrives
 
-      // Shared SSE event handler for both EventSource and manual fetch() parsing
-      const handleSSEEvent = (data, blk) => {
-        switch (data.type) {
-          case 'start':
-            currentRequestId = data.request_id;
-            currentSessionId = data.session_id;
-            // update exported values
-            try { global.currentSessionId = currentSessionId; } catch (e) {}
-            console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
-            
-            // Notify session manager about new/updated session
-            if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
-              window.sessionManager.onSessionUpdated(currentSessionId);
-            }
-            
-            // Update header session ID display
-            updateHeaderSessionId();
-            
-            // Update request ID display  
-            updateRequestId();
-            break;
-          case 'heartbeat':
-            // Keep-alive heartbeat during long LLM calls - ignore but log in debug mode
-            if (window.DEBUG_MODE) {
-              console.log('Heartbeat received (step', data.step, ')');
-            }
-            break;
-          case 'cancelled':
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
-            break;
-          case 'thinking_delta':
-            // Real-time token streaming from LLM - stream directly to response box
-            if (data.step !== currentStreamingStep) {
-              // New step - reset accumulator
-              currentStreamingContent = '';
-              currentStreamingStep = data.step;
-            }
-            
-            // Update with accumulated content + cursor directly in response box
-            currentStreamingContent = data.accumulated || '';
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
-            
-            // Auto-scroll to keep cursor visible
-            blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            break;
-          case 'thinking_complete':
-            // Final thinking event from streaming - remove cursor, keep content
-            currentStreamingContent = '';
-            currentStreamingStep = null;
-            
-            if (data.assistant && data.assistant.content) {
-              // Content was already displayed via thinking_delta
-              // Now show final formatted content (HTML from format_output hook)
-              const contentFormat = data.content_format || 'text';
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${formatContent(data.assistant.content, contentFormat)}</div>`;
-              
-              // Apply Prism.js syntax highlighting if available and content is HTML
-              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-                Prism.highlightAllUnder(blk.t);
-              }
-            }
-            
-            // Note: Tool calls display is handled by the 'thinking' event to avoid duplicates
-            break;
-          case 'thinking':
-            // Complete thinking event (also handles backward compatibility)
-            // Only clear streaming state if this has actual content (final thinking event)
-            if (data.assistant) {
-              // Final thinking event with content - clear streaming state
-              currentStreamingContent = '';
-              currentStreamingStep = null;
-              if (blk.think) {
-                blk.think.classList.remove('streaming');
-                // Remove typing cursor if present
-                const cursor = blk.think.querySelector('.typing-cursor');
-                if (cursor) cursor.remove();
-              }
-              
-              // Create think section if not exists
-              if (!blk.think) {
-                blk.think = document.createElement('pre');
-                blk.think.className = 'think-section';
-                blk.r.appendChild(blk.think);
-              }
-              
-              if (data.assistant.content) {
-                blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
-              }
-              if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-                blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
-                data.assistant.tool_calls.forEach((tc, i) => {
-                  const func = tc.function || {};
-                  blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-                });
-                blk.think.textContent += '\n';
-              }
-              showSection(blk.think);
-            } else {
-              // Step marker event (before LLM call) - don't interfere with streaming
-              // Just ensure think section exists
-              if (!blk.think) {
-                blk.think = document.createElement('pre');
-                blk.think.className = 'think-section';
-                blk.r.appendChild(blk.think);
-              }
-            }
-            break;
-          case 'status':
-            // Status events are now delivered through /events stream
-            // Show status events for this request AND all hierarchical children (sub-agents)
-            // e.g., if currentRequestId is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
-            if (blk && blk.status) {
-              const eventRequestId = data.request_id || '';
-              // Check if this event belongs to current request hierarchy
-              // Either exact match OR starts with current request_id followed by underscore (child operation)
-              const matches = eventRequestId === currentRequestId || 
-                  (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
-              
-              if (matches) {
-                addStatusEvent(blk.status, data);
-              }
-              // Otherwise silently ignore status from other requests/sessions
-            }
-            break;
-          case 'status_batch':
-            // Batched status events for efficiency (multiple events in one SSE message)
-            if (blk && blk.status && data.events && Array.isArray(data.events)) {
-              data.events.forEach(statusEvent => {
-                const eventRequestId = statusEvent.request_id || '';
-                const matches = eventRequestId === currentRequestId || 
-                    (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
-                
-                if (matches) {
-                  addStatusEvent(blk.status, statusEvent);
-                }
-              });
-            }
-            break;
-          case 'final':
-            // Mark completion for reconnect logic
-            sseReceivedFinalOrEnd = true;
-            sseReconnectAttempts = 0;
-            
-            // Only show final if content box is still empty (no streaming happened)
-            // or if it's a different format
-            const content = data.summary || data.content || '';
-            const contentFormat = data.content_format || 'text';
-            
-            if (!blk.t.innerHTML || blk.t.innerHTML.trim() === '') {
-              // No streaming happened, show final content
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-              
-              // Apply Prism.js syntax highlighting if available and content is HTML
-              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-                Prism.highlightAllUnder(blk.t);
-              }
-            }
-            // If streaming already filled the content, skip this (content already there)
-            break;
-          case 'end':
-            // Mark completion for reconnect logic
-            sseReceivedFinalOrEnd = true;
-            sseReconnectAttempts = 0;
-            
-            // Close EventSource immediately to prevent auto-reconnect attempts
-            // EventSource will try to reconnect if the server closes the connection,
-            // which causes spurious "Connection failed" errors in the onerror handler
-            if (currentEventSource) {
-              currentEventSource.close();
-              currentEventSource = null;
-            }
-            if (closeEventSourceTimer) {
-              clearTimeout(closeEventSourceTimer);
-              closeEventSourceTimer = null;
-            }
-            
-            // Clear any pending reconnect timer
-            if (sseReconnectTimer) {
-              clearTimeout(sseReconnectTimer);
-              sseReconnectTimer = null;
-            }
-            
-            runBtn.style.display = 'block'; // Show run button
-            stopBtn.style.display = 'none'; // Hide stop button
-            // Reset stop button state
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            
-            // Reload sessions after conversation completes
-            if (window.sessionManager && typeof window.sessionManager.loadSessions === 'function') {
-              window.sessionManager.loadSessions();
-            }
-            break;
-          case 'error':
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message)}</div>`;
-            // Clear any pending close timer
-            if (closeEventSourceTimer) {
-              clearTimeout(closeEventSourceTimer);
-              closeEventSourceTimer = null;
-            }
-            if (currentEventSource) {
-              currentEventSource.close();
-              currentEventSource = null;
-            }
-            if (currentStatusEventSource) {
-              currentStatusEventSource.close();
-              currentStatusEventSource = null;
-            }
-            runBtn.style.display = 'block'; // Show run button
-            stopBtn.style.display = 'none'; // Hide stop button
-            // Reset stop button state
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            break;
-          case 'cancelled':
-            // Request was cancelled - clean up and reset UI
-            console.log('Request cancelled:', data.request_id, 'at step', data.step);
-            // Clear any pending close timer
-            if (closeEventSourceTimer) {
-              clearTimeout(closeEventSourceTimer);
-              closeEventSourceTimer = null;
-            }
-            if (currentEventSource) {
-              currentEventSource.close();
-              currentEventSource = null;
-            }
-            if (currentStatusEventSource) {
-              currentStatusEventSource.close();
-              currentStatusEventSource = null;
-            }
-            // Show cancelled status with step number
-            showSection(blk.t);
-            const stepInfo = data.step ? ` at step ${data.step}` : '';
-            blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
-            runBtn.style.display = 'block'; // Show run button
-            stopBtn.style.display = 'none'; // Hide stop button
-            // Reset stop button state
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            break;
-        }
-        scrollBottom();
-      };
-
       // Use FormData for all requests (supports both text-only and multimodal)
       if (hasFiles) {
         // Build FormData for multimodal request
@@ -1202,7 +1245,6 @@
         const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
         if (effectiveSessionId) {
           formData.append('session_id', effectiveSessionId);
-          console.log('[chat_module] Using session_id:', effectiveSessionId, currentSessionId ? '(from memory)' : '(from sessionStorage fallback)');
         }
 
         try {
@@ -1342,7 +1384,6 @@
       let eventUrl = `/events?task=${encodeURIComponent(task)}`;
       if (effectiveSessionId) {
         eventUrl += `&session_id=${encodeURIComponent(effectiveSessionId)}`;
-        console.log('[chat_module] SSE using session_id:', effectiveSessionId, currentSessionId ? '(from memory)' : '(from sessionStorage fallback)');
       }
       if (selectedAgent) {
         eventUrl += `&agent_name=${encodeURIComponent(selectedAgent)}`;
@@ -1439,7 +1480,7 @@
         
         // If we've already received final/end, this is just cleanup - don't show error
         if (sseReceivedFinalOrEnd) {
-          console.log('[SSE] Connection closed after completion, ignoring error');
+          console.debug('[SSE] Connection closed after completion');
           currentEventSource = null;
           return;
         }
@@ -1456,7 +1497,7 @@
         if (shouldReconnect) {
           sseReconnectAttempts++;
           const delay = SSE_BASE_RECONNECT_DELAY_MS * Math.pow(2, sseReconnectAttempts - 1);
-          console.log(`[SSE] Will attempt reconnect #${sseReconnectAttempts} in ${delay}ms`);
+          console.debug(`[SSE] Will attempt reconnect #${sseReconnectAttempts} in ${delay}ms`);
           
           // Show reconnecting status
           if (blk && blk.status) {
@@ -1471,11 +1512,11 @@
           // Schedule reconnect
           sseReconnectTimer = setTimeout(() => {
             if (!currentRequestId || sseReceivedFinalOrEnd) {
-              console.log('[SSE] Reconnect cancelled - request completed or cancelled');
+              console.debug('[SSE] Reconnect cancelled - request completed');
               return;
             }
             
-            console.log(`[SSE] Attempting reconnect #${sseReconnectAttempts}`);
+            console.debug(`[SSE] Attempting reconnect #${sseReconnectAttempts}`);
             
             // Create new EventSource to status endpoint for this request
             // Note: We can't resume the original stream, but we can poll for completion
@@ -1485,7 +1526,7 @@
               .then(status => {
                 if (status.completed) {
                   // Request completed while we were disconnected
-                  console.log('[SSE] Request completed during reconnect');
+                  console.debug('[SSE] Request completed during reconnect');
                   sseReceivedFinalOrEnd = true;
                   if (status.result) {
                     showSection(blk.t);
@@ -1506,7 +1547,7 @@
                   sseReconnectAttempts = 0;
                 } else {
                   // Request still running - schedule another check
-                  console.log('[SSE] Request still running, scheduling next poll');
+                  console.debug('[SSE] Request still running, scheduling next poll');
                   if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
                     sseReconnectTimer = setTimeout(() => {
                       // Trigger another onerror to continue polling
@@ -1569,8 +1610,73 @@
         sseReconnectAttempts = 0;
       };
     });
+    
+    // Check for active request to reconnect after page refresh
+    (async function reconnectToActiveJob() {
+      const storedRequestId = getStoredActiveRequest();
+      if (!storedRequestId) {
+        return;
+      }
+      
+      try {
+        // Check if job is still running
+        const response = await fetch(`/request/${storedRequestId}/status`);
+        const status = await response.json();
+        
+        if (status.status === 'running') {
+          // Use the SAME setup as normal request - addAssistantBlock, etc.
+          const blk = addAssistantBlock(chatContainer);
+          
+          runBtn.style.display = 'none';
+          stopBtn.style.display = 'block';
+          stopBtn.disabled = false;
+          stopBtn.setAttribute('title', 'Stop');
+          stopBtn.setAttribute('aria-label', 'Stop');
+          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+          
+          // Build SSE URL - only pass request_id, backend uses job's agent
+          const session = sessionStorage.getItem('lastSessionId') || '';
+          let sseUrl = `/events?task=&request_id=${encodeURIComponent(storedRequestId)}&session_id=${encodeURIComponent(session)}`;
+          
+          const token = localStorage.getItem('token');
+          if (token) {
+            sseUrl += `&token=${encodeURIComponent(token)}`;
+          }
+          
+          // Create EventSource and use THE SAME handleSSEEvent as normal flow
+          const es = new EventSource(sseUrl, { withCredentials: true });
+          currentEventSource = es;
+          currentRequestId = storedRequestId;
+          
+          es.onmessage = (ev) => {
+            try {
+              const data = JSON.parse(ev.data);
+              handleSSEEvent(data, blk);
+            } catch (err) {
+              console.warn('[chat_module] SSE reconnect parse error:', err);
+            }
+          };
+          
+          es.onerror = () => {
+            es.close();
+            currentEventSource = null;
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            storeActiveRequest(null);
+          };
+          
+        } else {
+          storeActiveRequest(null);
+        }
+      } catch (error) {
+        console.warn('[chat_module] Failed to check active job status:', error);
+        storeActiveRequest(null);
+      }
+    })();
   };
-
+  
   function showSection(element) {
     const section = element.closest('.container-section');
     if (section && section.style.display === 'none') {

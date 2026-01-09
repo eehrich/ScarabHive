@@ -30,6 +30,11 @@ from .llm.batch.initialization import init_batch_system, shutdown_batch_system, 
 # Import services
 from .services import ConfigService, MCPService, ToolService, AgentService
 from .services.session_manager import SessionManager, SessionPermissionError
+from .services.background_job_manager import (
+    BackgroundJob,
+    JobStatus,
+    get_background_job_manager,
+)
 
 
 # Global registry for MCP endpoints access
@@ -62,6 +67,11 @@ async def lifespan(app: FastAPI):
 
     # Startup: Initialize MCP integration
     global _mcp_integration, _mcp_service, _tool_service, _session_manager, _session_service
+    
+    # Initialize background job manager and start cleanup loop
+    job_manager = get_background_job_manager()
+    asyncio.create_task(job_manager.cleanup_loop())
+    logger.info("BackgroundJobManager initialized")
 
     # Get config from global service
     if _config_service is None:
@@ -857,6 +867,59 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "packages": packages
         }
 
+    async def _format_and_yield_event(
+        ev: dict,
+        selected_agent,
+        request_id: str,
+        session_id: str,
+        user_id: str,
+        agent_name: Optional[str],
+        llm_profile: Optional[str],
+        was_new_session: bool
+    ) -> str:
+        """Format event payload and return SSE data string."""
+        if hasattr(ev, 'to_dict'):
+            payload = ev.to_dict()
+        else:
+            payload = ev
+
+        # Format output for final event and thinking_complete event
+        if selected_agent._hook_manager:
+            # Format final event summary to HTML
+            if ev.get("type") == "final" and ev.get("summary"):
+                try:
+                    formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                        output=payload["summary"],
+                        request_id=request_id,
+                        session_id=session_id,
+                        output_format='html'
+                    )
+                    payload["summary"] = formatted_summary
+                    payload["content_format"] = content_format
+                except Exception as e:
+                    logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+
+            # Also format thinking_complete content to HTML (for streaming)
+            elif ev.get("type") == "thinking_complete" and ev.get("assistant", {}).get("content"):
+                try:
+                    formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                        output=payload["assistant"]["content"],
+                        request_id=request_id,
+                        session_id=session_id,
+                        output_format='html'
+                    )
+                    payload["assistant"]["content"] = formatted_content
+                    payload["content_format"] = content_format
+                except Exception as e:
+                    logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
+
+        try:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except (TypeError, ValueError) as e:
+            logger.error("Failed to serialize event %s: %s", ev, e)
+            error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
+            return f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
         """Get agent instance with optional overrides.
 
@@ -1264,7 +1327,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         effective_llm_profile,
                         was_new_session
                     )
-                    logger.debug(f"[SESSION_SAVE] Saved session {session_id} after /run (text-only)")
 
                 return result
             finally:
@@ -1368,9 +1430,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
-                            old_session_id = actual_session_id
                             actual_session_id = event["session_id"]
-                            logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
 
                         # CRITICAL: Always set/update session metadata (even for existing sessions)
                         # This ensures user_id is available for tool execution AND respects llm_profile overrides
@@ -1443,7 +1503,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         session_id: Optional[str] = Query(default=None),
         agent: Optional[str] = Query(default=None, alias="agent"),  # Accept both 'agent' and 'agent_name'
         agent_name: Optional[str] = Query(default=None),
-        llm_profile: Optional[str] = Query(default=None)
+        llm_profile: Optional[str] = Query(default=None),
+        request_id: Optional[str] = Query(default=None)  # For reconnecting to existing job
     ):
         """Stream agent events for a task.
 
@@ -1452,13 +1513,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent or agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        - request_id: Optional request ID to reconnect to an existing running job
 
         Authentication:
         - If user is authenticated (JWT token or API key), sessions are saved to their account
         - If not authenticated, sessions use "anonymous" user_id
         """
         logger = logging.getLogger(__name__)
-        request_id = short_id()
 
         # Prioritize 'agent' parameter over 'agent_name' for backwards compatibility
         agent_name = agent or agent_name
@@ -1469,16 +1530,120 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"
 
+        # Check if reconnecting to an existing job
+        job_manager = get_background_job_manager()
+        existing_job: Optional[BackgroundJob] = None
+        if request_id:
+            existing_job = await job_manager.get_job(request_id)
+            if existing_job:
+                # Verify user owns this job
+                if existing_job.user_id != user_id:
+                    raise HTTPException(status_code=403, detail="Access denied to this request")
+                logger.info(f"Client reconnecting to job {request_id}")
+                # Use the agent_name from the original job, not from query params
+                agent_name = existing_job.agent_name
+        
+        # Generate new request_id if not reconnecting
+        if not existing_job:
+            request_id = short_id()
+            
         # Register request ownership for status stream security
         _request_user_map[request_id] = user_id
 
-        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s",
-                   task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id)
+        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s, reconnect=%s",
+                   task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id, existing_job is not None)
 
+        # FAST PATH: For reconnecting clients, skip all setup and go straight to streaming
+        if existing_job:
+            # Load agent for event formatting (needed for HTML conversion via hooks)
+            # Start with the global default agent from build_app()
+            reconnect_agent = app.state.agent  # Global agent from build_app
+            
+            # Try to load the specific agent if it's different from the default
+            if existing_job.agent_name and existing_job.agent_name != reconnect_agent.name:
+                try:
+                    reconnect_agent = _app_registry.get(existing_job.agent_name)  # type: ignore[attr-defined]
+                except Exception as e:
+                    logger.warning(f"Could not load agent '{existing_job.agent_name}': {e}, using default")
+            
+            async def reconnect_event_stream():
+                """Simplified event stream for reconnecting clients."""
+                import asyncio as _asyncio
+                
+                # Send immediate :ok to establish connection
+                yield ":ok\n\n"
+                
+                # Increment client count
+                await job_manager.increment_sse_client(request_id)
+                
+                # Send reconnect event
+                reconnect_payload = {
+                    "type": "reconnect",
+                    "request_id": request_id,
+                    "session_id": existing_job.actual_session_id or existing_job.session_id,
+                    "agent_name": existing_job.agent_name,
+                    "status": existing_job.status.value,
+                    "task": existing_job.task_description,
+                    "created_at": existing_job.created_at,
+                    "message": f"Reconnected to running job (started {int(time.time() - existing_job.created_at)}s ago)"
+                }
+                if existing_job.last_status_message:
+                    reconnect_payload["last_status"] = existing_job.last_status_message
+                yield f"data: {json.dumps(reconnect_payload, ensure_ascii=False)}\n\n"
+                
+                keepalive_interval = config.status.sse_keepalive_interval
+                actual_session_id = existing_job.actual_session_id or existing_job.session_id
+                
+                try:
+                    while True:
+                        if existing_job.status != JobStatus.RUNNING:
+                            # Drain remaining events
+                            while not existing_job.event_queue.empty():
+                                try:
+                                    ev = existing_job.event_queue.get_nowait()
+                                    if ev is not None:
+                                        yield await _format_and_yield_event(
+                                            ev, reconnect_agent, request_id, actual_session_id or "unknown",
+                                            user_id, existing_job.agent_name, llm_profile, False
+                                        )
+                                except Exception:
+                                    break
+                            break
+                        
+                        try:
+                            ev = await _asyncio.wait_for(existing_job.event_queue.get(), timeout=keepalive_interval)
+                        except _asyncio.TimeoutError:
+                            yield ":keepalive\n\n"
+                            continue
+                        
+                        if ev is None:
+                            break
+                        
+                        # Track status for future reconnects
+                        if ev.get("type") == "status" and ev.get("message"):
+                            existing_job.last_status_message = ev["message"]
+                        
+                        yield await _format_and_yield_event(
+                            ev, reconnect_agent, request_id, actual_session_id or "unknown",
+                            user_id, existing_job.agent_name, llm_profile, False
+                        )
+                        
+                except _asyncio.CancelledError:
+                    raise
+                finally:
+                    await job_manager.decrement_sse_client(request_id)
+            
+            return StreamingResponse(
+                reconnect_event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        # NORMAL PATH: For new requests, do full setup
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
-        # Load existing session if session_id provided
+        # Load existing session if session_id provided (only for new jobs)
         session_exists = False
         if session_id and _session_service:
             try:
@@ -1504,6 +1669,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             })
 
         async def event_stream():
+            nonlocal job_manager
+            
             # Check if server is already shutting down
             if _shutdown_event and _shutdown_event.is_set():
                 yield ":server_shutdown\n\n"
@@ -1514,93 +1681,72 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
 
-            # Keep-alive mechanism: Send periodic heartbeat comments to prevent connection timeout
-            # Browser/proxy may drop connection if no data sent for 30-60 seconds during long LLM calls
+            # Keep-alive mechanism
             keepalive_interval = config.status.sse_keepalive_interval
             
-            # Capture asyncio functions at closure level to avoid scoping issues
             import asyncio as _asyncio
-            get_time = _asyncio.get_event_loop().time
             CancelledError = _asyncio.CancelledError
-            create_task = _asyncio.create_task
-            Queue = _asyncio.Queue
             
-            last_event_time = get_time()
+            # Create new background job (reconnects use the fast path above)
+            async def agent_runner():
+                """Run the agent and yield events"""
+                async for ev in selected_agent.run_events(
+                    task, request_id, actual_session_id, 
+                    llm_override=llm_override, llm_profile_info_override=llm_profile_info
+                ):
+                    yield ev
             
-            # Event batching for status events (optimization to reduce overhead)
-            status_batch: list = []
-            last_batch_time = get_time()
-            
-            async def flush_status_batch():
-                """Send accumulated status events as batch"""
-                nonlocal status_batch, last_batch_time, last_event_time
-                if status_batch:
-                    # Send batch as single SSE event with array
-                    batch_payload = {"type": "status_batch", "events": status_batch}
-                    yield f"data: {json.dumps(batch_payload, ensure_ascii=False)}\n\n"
-                    status_batch = []
-                    last_batch_time = get_time()
-                    last_event_time = last_batch_time
-            
-            # Create event generator and use a queue to decouple event production from SSE sending
-            # This allows us to send keepalives while waiting for events without cancelling the generator
-            event_queue: Queue = Queue()
-            generator_done = False
-            generator_error: Exception | None = None
-            
-            async def event_producer():
-                """Background task that reads events from generator and puts them in queue"""
-                nonlocal generator_done, generator_error
-                try:
-                    async for ev in selected_agent.run_events(
-                        task, request_id, actual_session_id, 
-                        llm_override=llm_override, llm_profile_info_override=llm_profile_info
-                    ):
-                        await event_queue.put(ev)
-                    generator_done = True
-                    await event_queue.put(None)  # Signal end
-                except CancelledError:
-                    generator_done = True
-                    await event_queue.put(None)
-                    raise
-                except Exception as e:
-                    generator_error = e
-                    generator_done = True
-                    await event_queue.put(None)
-            
-            producer_task = create_task(event_producer(), name=f"sse_producer_{request_id}")
+            job = await job_manager.create_job(
+                request_id=request_id,
+                user_id=user_id,
+                agent_name=agent_name or "default",
+                session_id=session_id,
+                agent_runner=agent_runner
+            )
+            # Store task description for reconnect
+            job.task_description = task
 
             try:
+                # Read events from job's event queue
                 while True:
+                    # Check if job is done
+                    if job.status != JobStatus.RUNNING:
+                        # Job finished - drain remaining events
+                        while not job.event_queue.empty():
+                            try:
+                                ev = job.event_queue.get_nowait()
+                                if ev is not None:
+                                    yield await _format_and_yield_event(
+                                        ev, selected_agent, request_id, actual_session_id or "unknown",
+                                        user_id, agent_name, llm_profile, was_new_session
+                                    )
+                            except Exception:
+                                break
+                        break
+                    
                     # Try to get next event from queue with timeout
-                    # If timeout fires, send keepalive and try again
                     try:
-                        ev = await _asyncio.wait_for(event_queue.get(), timeout=keepalive_interval)
+                        ev = await _asyncio.wait_for(job.event_queue.get(), timeout=keepalive_interval)
                     except _asyncio.TimeoutError:
                         # No event received within keepalive interval - send keepalive
-                        logger.debug("[KEEPALIVE] Sending keepalive (no events for %.1fs)", keepalive_interval)
-                        last_event_time = get_time()
                         yield ":keepalive\n\n"
                         continue
                     
                     if ev is None:
-                        # Generator finished
-                        if generator_error:
-                            raise generator_error
+                        # Job finished signal
                         break
                     
-                    # Update last event time since we're sending real data
-                    last_event_time = get_time()
-                    
-                    logger.debug("SSE event: %s", ev.get("type"))
-
+                    # Track session_id from start event
                     if ev.get("type") == "start" and ev.get("session_id"):
-                        old_session_id = actual_session_id
                         actual_session_id = ev["session_id"]
-                        logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
+                        # Store in job for reconnect support
+                        job.actual_session_id = actual_session_id
+                    
+                    # Track status messages for reconnect
+                    if ev.get("type") == "status" and ev.get("message"):
+                        job.last_status_message = ev["message"]
 
-                    # CRITICAL: Always set/update session metadata (even for existing sessions)
-                    # This ensures user_id is available for tool execution AND respects llm_profile overrides
+                    # Update session metadata
                     if was_new_session or ev.get("type") == "start":
                         effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                         selected_agent._session_tracker.set_session_metadata(actual_session_id, {
@@ -1608,82 +1754,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             "agent_name": agent_name or "default",
                             "llm_profile": effective_llm_profile
                         })
-                        logger.debug(f"[SESSION] Set metadata for session {actual_session_id}: user_id={user_id}")
 
-                    if hasattr(ev, 'to_dict'):
-                        payload = ev.to_dict()
-                    else:
-                        payload = ev
-
-                    # Format output for final event and thinking_complete event
-                    if selected_agent._hook_manager:
-                        # Format final event summary to HTML
-                        if ev.get("type") == "final" and ev.get("summary"):
-                            try:
-                                formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                                    output=payload["summary"],
-                                    request_id=request_id,
-                                    session_id=actual_session_id or "unknown",
-                                    output_format='html'
-                                )
-                                payload["summary"] = formatted_summary
-                                payload["content_format"] = content_format
-                            except Exception as e:
-                                logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
-
-                        # Also format thinking_complete content to HTML (for streaming)
-                        elif ev.get("type") == "thinking_complete" and ev.get("assistant", {}).get("content"):
-                            try:
-                                formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                                    output=payload["assistant"]["content"],
-                                    request_id=request_id,
-                                    session_id=actual_session_id or "unknown",
-                                    output_format='html'
-                                )
-                                payload["assistant"]["content"] = formatted_content
-                                payload["content_format"] = content_format
-                            except Exception as e:
-                                logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
-
-                    try:
-                        # Send status events immediately (no batching for status)
-                        # Batching caused delays during LLM calls when no events are generated
-                        if payload.get("type") == "status":
-                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                        else:
-                            # Send non-status events immediately (but flush status batch first)
-                            if status_batch:
-                                async for batch_msg in flush_status_batch():
-                                    yield batch_msg
-                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                    except (TypeError, ValueError) as e:
-                        logger.error("Failed to serialize event %s: %s", ev, e)
-                        error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
-                        yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                    # Format and yield event
+                    yield await _format_and_yield_event(
+                        ev, selected_agent, request_id, actual_session_id or "unknown",
+                        user_id, agent_name, llm_profile, was_new_session
+                    )
+                    
             except CancelledError:
-                # Flush any remaining status events before cancellation
-                if status_batch:
-                    try:
-                        async for batch_msg in flush_status_batch():
-                            yield batch_msg
-                    except Exception:
-                        pass
-                
-                # Stream was cancelled - send cancellation event to WebUI
-                logger.info(f"Stream cancelled for request {request_id}, sending cancellation event")
-                cancelled_payload = {"type": "cancelled", "request_id": request_id, "message": "Request cancelled by user"}
+                # SSE connection cancelled (client disconnect)
+                # Send cancellation event to client (if possible)
+                cancelled_payload = {"type": "disconnected", "request_id": request_id, "message": "SSE connection closed, job continues in background"}
                 try:
                     yield f"data: {json.dumps(cancelled_payload, ensure_ascii=False)}\n\n"
-                except Exception as e:
-                    logger.warning(f"Failed to send cancellation event: {e}")
-                # Cancel producer task and re-raise
-                if not producer_task.done():
-                    producer_task.cancel()
-                    try:
-                        await producer_task
-                    except CancelledError:
-                        pass
-                raise  # Re-raise to ensure proper cleanup
+                except Exception:
+                    pass
+                raise
             except Exception as e:
                 # Other errors - send error event
                 logger.error(f"Error in event stream for request {request_id}: {e}", exc_info=True)
@@ -1691,57 +1777,31 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 try:
                     yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
                 except Exception:
-                    pass  # Best effort
-                # Cancel producer task
-                if not producer_task.done():
-                    producer_task.cancel()
-                    try:
-                        await producer_task
-                    except CancelledError:
-                        pass
+                    pass
                 raise
             finally:
-                # Track if stream was interrupted (not completed normally)
-                stream_interrupted = not generator_done
+                # Decrement SSE client count
+                await job_manager.decrement_sse_client(request_id)
                 
-                # Ensure producer task is cancelled (if not already)
-                if not producer_task.done():
-                    stream_interrupted = True
-                    producer_task.cancel()
-                    try:
-                        await producer_task
-                    except CancelledError:
-                        pass
+                # NOTE: We do NOT cancel the job here! The job continues running in background.
+                # The job will be cancelled only via explicit /cancel endpoint.
                 
-                # Only cancel request if stream was interrupted (SSE disconnect, error, etc.)
-                # If generator completed normally, the request cleanup is already done
-                if stream_interrupted:
-                    # CRITICAL: Cancel the request to propagate cancellation to all tools/sub-agents
-                    # This handles SSE disconnect (network timeout, browser closed, etc.)
-                    # The cancel_request uses prefix-matching so sub-agents with request IDs like
-                    # "parent_req_123_sub_456" will also receive the cancellation token
-                    try:
-                        await selected_agent.cancel_request(request_id)
-                        logger.info(f"[SSE_CLEANUP] Sent cancellation for interrupted request {request_id}")
-                    except Exception as e:
-                        logger.warning(f"[SSE_CLEANUP] Failed to cancel request {request_id}: {e}")
-                
-                # ALWAYS persist session after streaming, even if client disconnects
-                logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
-                if actual_session_id and _session_service:
-                    # Use actual agent name and effective llm_profile (respecting overrides)
-                    effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-                    await _session_service.save_session(
-                        selected_agent,
-                        user_id,
-                        actual_session_id,
-                        selected_agent.name,
-                        effective_llm_profile,
-                        was_new_session
-                    )
+                # Persist session if job is completed
+                if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+                    if actual_session_id and _session_service:
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                        await _session_service.save_session(
+                            selected_agent,
+                            user_id,
+                            actual_session_id,
+                            selected_agent.name,
+                            effective_llm_profile,
+                            was_new_session
+                        )
 
-                # Cleanup: Remove request_id from ownership map to prevent memory leak
-                _request_user_map.pop(request_id, None)
+                # Cleanup: Remove request_id from ownership map only if job is done
+                if job.status != JobStatus.RUNNING:
+                    _request_user_map.pop(request_id, None)
 
         return StreamingResponse(
             event_stream(),
@@ -1756,7 +1816,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         Used by the WebUI to poll for request completion when SSE connection is lost.
         Returns whether the request is still running or completed.
         """
-        # Check if request is still active
+        # First check BackgroundJobManager for more accurate status
+        job_manager = get_background_job_manager()
+        job = await job_manager.get_job(request_id)
+        if job:
+            return {
+                "request_id": request_id,
+                "status": job.status.value,
+                "completed": job.status != JobStatus.RUNNING,
+                "error": job.error_message,
+                "sse_clients": job.sse_client_count,
+                "events_buffered": job.event_queue.qsize() if job.event_queue else 0
+            }
+        
+        # Fallback to session tracker
         is_active = await agent._session_tracker.is_request_active(request_id)
         
         if is_active:
@@ -1767,7 +1840,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             }
         
         # Request not active - it either completed or was never started
-        # We can't retrieve the result after completion (not stored)
         return {
             "request_id": request_id,
             "status": "completed",
@@ -1781,6 +1853,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger = logging.getLogger(__name__)
         logger.info("Cancel request received for request_id=%s", request_id)
 
+        # Use BackgroundJobManager
+        job_manager = get_background_job_manager()
+        success = await job_manager.cancel_job(request_id)
+        if success:
+            return {"status": "cancelled", "request_id": request_id}
+        
+        # Fallback to agent cancel_request
         success = await agent.cancel_request(request_id)
         if success:
             return {"status": "cancelled", "request_id": request_id}
