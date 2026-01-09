@@ -12,11 +12,12 @@ Reference: https://platform.openai.com/docs/guides/batch
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import httpx
 
@@ -27,6 +28,88 @@ from ..models import LLMRateLimitError, LLMQuotaExhaustedError
 from .. import openai_utils
 
 logger = logging.getLogger(__name__)
+
+# Type variable for retry function
+T = TypeVar("T")
+
+# Retry configuration for network operations
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BASE_DELAY = 1.0  # seconds
+DEFAULT_MAX_DELAY = 30.0  # seconds
+
+
+async def _retry_with_backoff(
+    operation: Callable[[], Awaitable[T]],
+    operation_name: str,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    retryable_exceptions: tuple = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError),
+) -> T:
+    """Execute an async operation with exponential backoff retry.
+    
+    Args:
+        operation: Async callable to execute (must return a coroutine)
+        operation_name: Name for logging
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+        retryable_exceptions: Tuple of exception types to retry on
+        
+    Returns:
+        Result of the operation
+        
+    Raises:
+        The last exception if all retries fail
+    """
+    import random
+    last_exception: Optional[Exception] = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return await operation()
+        except retryable_exceptions as e:
+            last_exception = e
+            if attempt < max_retries:
+                # Exponential backoff with jitter
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                # Add small random jitter (±10%)
+                delay = delay * (0.9 + random.random() * 0.2)
+                
+                logger.warning(
+                    f"{operation_name} failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"{operation_name} failed after {max_retries + 1} attempts: {e}"
+                )
+                raise
+        except httpx.HTTPStatusError as e:
+            # Retry on 5xx server errors, but not on 4xx client errors
+            if e.response.status_code >= 500:
+                last_exception = e
+                if attempt < max_retries:
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    logger.warning(
+                        f"{operation_name} got server error {e.response.status_code} "
+                        f"(attempt {attempt + 1}/{max_retries + 1}). Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"{operation_name} failed after {max_retries + 1} attempts: {e}"
+                    )
+                    raise
+            else:
+                # Don't retry 4xx errors
+                raise
+    
+    # Should not reach here, but satisfy type checker
+    if last_exception:
+        raise last_exception
+    raise RuntimeError(f"{operation_name} failed unexpectedly")
 
 
 class _DateTimeEncoder(json.JSONEncoder):
@@ -212,33 +295,40 @@ class OpenAIBatchClient(BatchProviderClient):
         logger.debug(f"Created input file with {len(requests)} requests: {file_path}")
     
     async def _upload_file(self, file_path: Path) -> str:
-        """Upload a file to OpenAI Files API.
+        """Upload a file to OpenAI Files API with retry on transient failures.
         
         Returns:
             File ID
         """
         url = f"{self.base_url}/files"
         
-        # Use multipart form upload
-        with open(file_path, "rb") as f:
-            files = {
-                "file": (file_path.name, f, "application/jsonl"),
-            }
-            data = {
-                "purpose": "batch",
-            }
+        async def do_upload() -> str:
+            # Use multipart form upload
+            # Re-open file on each attempt in case of retry
+            with open(file_path, "rb") as f:
+                files = {
+                    "file": (file_path.name, f, "application/jsonl"),
+                }
+                data = {
+                    "purpose": "batch",
+                }
+                
+                # Don't override headers - let httpx set multipart/form-data automatically
+                response = await self._client.post(
+                    url,
+                    files=files,
+                    data=data,
+                )
             
-            # Don't override headers - let httpx set multipart/form-data automatically
-            response = await self._client.post(
-                url,
-                files=files,
-                data=data,
-            )
+            self._raise_for_status(response, "File upload failed")
+            
+            result = response.json()
+            return result.get("id")
         
-        self._raise_for_status(response, "File upload failed")
-        
-        result = response.json()
-        return result.get("id")
+        return await _retry_with_backoff(
+            do_upload,
+            f"File upload ({file_path.name})",
+        )
     
     async def _create_batch(self, input_file_id: str) -> Dict[str, Any]:
         """Create a batch job.
@@ -379,7 +469,7 @@ class OpenAIBatchClient(BatchProviderClient):
         return results
     
     async def _download_file(self, file_id: str) -> str:
-        """Download a file from OpenAI Files API.
+        """Download a file from OpenAI Files API with retry on transient failures.
         
         Args:
             file_id: File ID to download
@@ -389,11 +479,15 @@ class OpenAIBatchClient(BatchProviderClient):
         """
         url = f"{self.base_url}/files/{file_id}/content"
         
-        response = await self._client.get(url)
+        async def do_download() -> str:
+            response = await self._client.get(url)
+            self._raise_for_status(response, "File download failed")
+            return response.text
         
-        self._raise_for_status(response, "File download failed")
-        
-        return response.text
+        return await _retry_with_backoff(
+            do_download,
+            f"File download ({file_id[:16]}...)",
+        )
     
     async def cancel_batch(self, batch_id: str) -> Dict[str, Any]:
         """Cancel a batch job.
