@@ -598,6 +598,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
 
+            # Reactivate archived sub-agent BEFORE execution starts
+            # This ensures the sub-agent shows as "active" during execution
+            await manager.update_sub_session_metadata(
+                parent_session_id=parent_session_id,
+                sub_session_id=instance_id,
+                status="active"
+            )
+            logger.debug(f"Reactivated sub-agent {instance_id} (was potentially archived)")
+
             # Check if sub-agent is already running (prevent concurrent execution)
             # CRITICAL: Use single try-finally to ensure _running_agents is ALWAYS cleaned up
             async with self._running_lock:
@@ -708,12 +717,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 messages = sub_session_data.get("messages", [])
                 new_message_count = len(messages) + 2  # existing + user + assistant
 
-                # Update last_used timestamp and message_count in parent metadata
+                # Update last_used timestamp, message_count, and reactivate status in parent metadata
+                # IMPORTANT: Reactivate archived sub-agents by setting status back to "active"
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=instance_id,
                     last_used=datetime.now(UTC).isoformat(),
-                    message_count=new_message_count
+                    message_count=new_message_count,
+                    status="active"  # Reactivate archived sub-agents
                 )
 
                 if status:
@@ -1188,11 +1199,12 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     was_new_session=True
                 )
 
-                # Update metadata
+                # Update metadata (ensure status is active for async jobs)
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=instance_id,
-                    last_used=datetime.now(UTC).isoformat()
+                    last_used=datetime.now(UTC).isoformat(),
+                    status="active"  # Ensure active status for running async jobs
                 )
 
                 # Mark job as completed (keep in memory until polled once)
