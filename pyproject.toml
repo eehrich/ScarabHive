@@ -48,7 +48,7 @@ dependencies = [
     "markdownify>=0.11.0",
     "pygments>=2.15.0",
     "websockets>=15.0.0",
-    "chromadb==0.6.3",  # Pin exact version for stability
+    "chromadb>=1.4.0,<2.0",  # Update to fix Pydantic 2.11 compatibility
     "posthog>=3.0.0,<3.2.0",  # Pin compatible version - 7.x has breaking changes
     "chroma-hnswlib>=0.7.6",  # ChromaDB's compatible fork (NOT hnswlib!)
     "sqlite-vec>=0.1.0",

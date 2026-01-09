@@ -1316,10 +1316,15 @@ class TestBatchLLMClient:
     def test_supports_streaming_with_fallback(
         self, mock_underlying_client, mock_queue_manager, batch_provider_config
     ):
-        """Test streaming support depends on fallback setting."""
+        """Test that BatchLLMClient never supports streaming, even with fallback enabled.
+        
+        Streaming is not supported by batch APIs. Even with fallback_to_sync enabled,
+        the fallback happens at runtime when a request is made, not at the client level.
+        The BatchLLMClient itself doesn't support streaming.
+        """
         from agent_system.llm.batch.batch_client import BatchLLMClient
         
-        # With fallback enabled
+        # With fallback enabled - still no streaming support
         batch_provider_config.fallback_to_sync = True
         client = BatchLLMClient(
             underlying_client=mock_underlying_client,
@@ -1328,9 +1333,9 @@ class TestBatchLLMClient:
             model_name="gpt-4",
             batch_provider="openai",
         )
-        assert client.supports_streaming() is True
+        assert client.supports_streaming() is False
         
-        # Without fallback
+        # Without fallback - also no streaming support
         batch_provider_config.fallback_to_sync = False
         client2 = BatchLLMClient(
             underlying_client=mock_underlying_client,

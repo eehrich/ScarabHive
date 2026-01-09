@@ -107,22 +107,33 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     # The CLI prints some status lines before the JSON blob; extract just the JSON object
-    # by finding the first ``{`` and matching closing ``}``.
-    json_start = out.find('{')
-    assert json_start != -1, f"No JSON object found in output: {out!r}"
-    # Find matching closing brace for the JSON object
-    json_text = out[json_start:]
-    brace_count = 0
-    json_end = 0
-    for i, ch in enumerate(json_text):
-        if ch == '{':
-            brace_count += 1
-        elif ch == '}':
-            brace_count -= 1
-            if brace_count == 0:
-                json_end = i + 1
-                break
-    parsed = json.loads(json_text[:json_end])
+    # by finding the LAST valid JSON object (ignore any error messages that might also contain JSON)
+    # Find all JSON objects and use the last complete one
+    json_objects = []
+    i = 0
+    while i < len(out):
+        if out[i] == '{':
+            json_text = out[i:]
+            brace_count = 0
+            json_end = 0
+            for j, ch in enumerate(json_text):
+                if ch == '{':
+                    brace_count += 1
+                elif ch == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = j + 1
+                        try:
+                            json_objects.append(json.loads(json_text[:json_end]))
+                        except json.JSONDecodeError:
+                            pass  # Not valid JSON, continue
+                        break
+            i += json_end if json_end > 0 else 1
+        else:
+            i += 1
+    
+    assert len(json_objects) > 0, f"No valid JSON objects found in output: {out!r}"
+    parsed = json_objects[-1]  # Use the last JSON object (the actual CLI output)
     assert parsed["task"] == "do it"
     assert parsed["summary"] == "done"
 

@@ -78,7 +78,7 @@ class TestDuckDuckGoSearchServer:
             {"title": "Test Result 2", "href": "https://example.com/2", "body": "Test snippet 2"}
         ]
         
-        with patch('ddgs.DDGS') as mock_ddgs:
+        with patch('duckduckgo_search.DDGS') as mock_ddgs:
             mock_instance = mock_ddgs.return_value
             mock_instance.text.return_value = mock_search_results
 
