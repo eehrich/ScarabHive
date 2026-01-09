@@ -73,26 +73,6 @@ def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock, temp_stora
         mcp_config=mock_mcp_config,
     )
     
-    # Clear all cached collections and reset ChromaDB
-    srv._collections_cache.clear()
-    srv._memory_counters.clear()
-    
-    # Reset ChromaDB client (deletes all in-memory collections, not persistence files)
-    try:
-        srv.chroma_client.reset()
-    except Exception:
-        pass  # Ignore if reset fails
-    
-    # Delete ChromaDB persistence files
-    chroma_path = temp_storage / "chroma"
-    if chroma_path.exists():
-        import shutil
-        shutil.rmtree(chroma_path, ignore_errors=True)
-    
-    # Delete all JSON session files
-    for json_file in temp_storage.glob("*.json"):
-        json_file.unlink(missing_ok=True)
-    
     return srv
 
 

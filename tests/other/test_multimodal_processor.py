@@ -461,11 +461,12 @@ class TestCreateMultimodalMessageExtended:
         )
         
         assert isinstance(message, ChatMessage)
-        assert len(message.content) == 1  # Text content only (text files are prepended)
-        # The text file content should be included in the text
-        assert "test_document.txt" in message.content[0].text
-        assert "Hello" in message.content[0].text
-        assert "Analyze this file" in message.content[0].text
+        assert len(message.content) == 2  # Text + text_file (separate items now)
+        assert message.content[0].type == "text"
+        assert message.content[0].text == "Analyze this file"
+        assert message.content[1].type == "text_file"
+        assert message.content[1].name == "test_document.txt"
+        assert "Hello" in message.content[1].content
     
     def test_create_with_image(self, temp_image):
         """Test creating message with image."""
@@ -498,11 +499,12 @@ class TestCreateMultimodalMessageExtended:
             text_file_paths=[temp_text_file]
         )
         
-        # Should have: text (with file content prepended) + image + audio
-        assert len(message.content) == 3
+        # Should have: text + text_file + image + audio (4 items now)
+        assert len(message.content) == 4
         
         types = [c.type for c in message.content]
         assert "text" in types
+        assert "text_file" in types
         assert "image_url" in types
         assert "audio" in types
 

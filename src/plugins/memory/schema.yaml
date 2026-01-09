@@ -70,6 +70,11 @@ hooks:
       before: ["message_validation"]
 
 config:
+  storage_path:
+    type: string
+    default: "data/memories"
+    description: "Directory path for storing memory metadata and vector embeddings"
+
   max_memories:
     type: integer
     default: 10

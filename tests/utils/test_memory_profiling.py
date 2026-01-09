@@ -163,14 +163,21 @@ class TestReferenceTracker:
         tracker = ReferenceTracker()
         
         class Inner:
-            pass
+            def __init__(self):
+                self.data = "test"
         
         obj = Inner()
         
+        # Store in a container to guarantee a referrer
+        container = {"key": obj}
+        
         referrers = tracker.get_referrers(obj)
         
-        # Should find at least the container dict and local scope
+        # Should find at least the container dict
         assert len(referrers) > 0
+        # Verify container is in referrers
+        dict_refs = [r for r in referrers if r["type"] == "dict"]
+        assert len(dict_refs) > 0
     
     def test_track_non_weakrefable(self):
         """Test tracking objects that don't support weakrefs."""

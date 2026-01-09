@@ -130,8 +130,13 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
     ):
         super().__init__(name, system_config, mcp_config)
 
-        # Storage paths
-        self.storage_path = Path("data/memories")
+        # Storage paths (use config if available, otherwise default)
+        config_storage = getattr(mcp_config, 'storage_path', None)
+        if config_storage:
+            self.storage_path = Path(config_storage)
+        else:
+            self.storage_path = Path("data/memories")
+        
         self.vector_store_path = self.storage_path / "vectors"
 
         # Create directories
