@@ -673,18 +673,19 @@
   let currentSessionId = sessionStorage.getItem('lastSessionId') || null;
   
   // Store/retrieve active request ID for reconnect after browser refresh
+  // Using sessionStorage (not localStorage) so each tab has its own request ID
   const ACTIVE_REQUEST_KEY = 'activeRequestId';
   
   function storeActiveRequest(requestId) {
     if (requestId) {
-      localStorage.setItem(ACTIVE_REQUEST_KEY, requestId);
+      sessionStorage.setItem(ACTIVE_REQUEST_KEY, requestId);
     } else {
-      localStorage.removeItem(ACTIVE_REQUEST_KEY);
+      sessionStorage.removeItem(ACTIVE_REQUEST_KEY);
     }
   }
   
   function getStoredActiveRequest() {
-    return localStorage.getItem(ACTIVE_REQUEST_KEY);
+    return sessionStorage.getItem(ACTIVE_REQUEST_KEY);
   }
 
   // Helper functions to update UI displays (module-level for handleSSEEvent access)
