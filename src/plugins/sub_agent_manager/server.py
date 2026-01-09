@@ -18,6 +18,21 @@ from plugins.sub_agent_manager.manager import SubAgentManager
 logger = logging.getLogger(__name__)
 
 
+def _register_request_user(request_id: str, user_id: str) -> None:
+    """Register sub-agent request_id -> user_id mapping.
+    
+    This ensures sub-agent requests are properly associated with their user
+    in the admin dashboard and other user-aware features.
+    """
+    try:
+        from agent_system.app import _request_user_map
+        _request_user_map[request_id] = user_id
+        logger.debug(f"Registered sub-request {request_id} for user {user_id}")
+    except ImportError:
+        # app not available (e.g., in tests without full app context)
+        logger.debug("Could not register request user mapping: app not available")
+
+
 class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     """MCP server for sub-agent management with hook support.
 
@@ -155,16 +170,6 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         # Call parent implementation (will re-render with fresh template vars)
         return await super().list_tools()
-
-        # NOTE: Registry and SessionService will be injected via params during tool/hook calls
-        # by the ToolExecutionManager or via HookContext.agent
-
-        logger.info(
-            f"SubAgentManagerServer '{self.name}' initialized - "
-            f"max_sub_agents={self.max_sub_agents}, max_history={self.max_history}, "
-            f"max_nesting_depth={self.max_nesting_depth}, "
-            f"allowed_agents={self.allowed_agents}, blocked_agents={self.blocked_agents}"
-        )
 
     def _extract_session_service(self, params: dict[str, Any]):
         """Extract session_service from params (_session_service or _agent._session_service).
@@ -438,6 +443,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # Fallback to simple ID if no parent request_id
                     sub_request_id = f"sub_{short_id()}"
 
+                # Register sub-request user mapping for admin dashboard
+                _register_request_user(sub_request_id, user_id)
+
                 async for event in agent.run_events(
                     task=task,
                     request_id=sub_request_id,
@@ -629,6 +637,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
                 else:
                     sub_request_id = f"sub_cont_{short_id()}"
+
+                # Register sub-request user mapping for admin dashboard
+                _register_request_user(sub_request_id, user_id)
 
                 async for event in agent.run_events(
                     task=message,
@@ -1122,6 +1133,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 parent_request_id = params.get("_request_id")
                 sub_request_id = f"{parent_request_id}_async_{short_id(6)}" if parent_request_id else f"async_{short_id()}"
 
+                # Register sub-request user mapping for admin dashboard
+                _register_request_user(sub_request_id, user_id)
+
                 async for event in agent.run_events(
                     task=task,
                     request_id=sub_request_id,
@@ -1451,15 +1465,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             results = await asyncio.gather(*wait_tasks, return_exceptions=True)
 
             # Format results
-            formatted_results = []
+            formatted_results: list[dict[str, Any]] = []
             for i, result in enumerate(results):
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     formatted_results.append({
                         "instance_id": instance_ids[i],
                         "status": "error",
                         "error": str(result)
                     })
                 else:
+                    # result is dict[str, Any] from wait_for_result
                     formatted_results.append(result)
 
             # Count statuses
