@@ -180,21 +180,119 @@ class TestBackgroundJobManager:
         assert not_found is None
     
     @pytest.mark.asyncio
-    async def test_cancel_job(self, job_manager):
-        """Test cancelling a running job."""
+    async def test_cancel_job_graceful(self, job_manager):
+        """Test graceful cancellation - sets token, agent detects and shuts down."""
+        from agent_system.core.cancellation import get_cancellation_manager
+        
+        cancellation_detected = asyncio.Event()
+        
+        async def cancellation_aware_runner():
+            """Runner that checks cancellation token like a real agent."""
+            cancellation_manager = get_cancellation_manager()
+            token = cancellation_manager.create_token("req_graceful")
+            
+            yield {"type": "start"}
+            
+            # Simulate agent loop checking for cancellation
+            for i in range(100):
+                if token.is_cancelled:
+                    cancellation_detected.set()
+                    yield {"type": "cancelled", "reason": "User requested cancellation"}
+                    return  # Clean exit
+                await asyncio.sleep(0.05)
+            
+            yield {"type": "end"}
+        
+        job = await job_manager.create_job(
+            request_id="req_graceful",
+            user_id="user1",
+            agent_name="test_agent",
+            session_id=None,
+            agent_runner=cancellation_aware_runner,
+        )
+        
+        # Wait for job to start
+        await asyncio.sleep(0.1)
+        assert job.status == JobStatus.RUNNING
+        
+        # Cancel gracefully (no force timeout)
+        result = await job_manager.cancel_job("req_graceful")
+        assert result is True
+        
+        # Wait for agent to detect cancellation and shutdown cleanly
+        await asyncio.wait_for(cancellation_detected.wait(), timeout=2.0)
+        
+        # Give the job time to complete cleanly
+        await asyncio.sleep(0.2)
+        assert job.status == JobStatus.COMPLETED  # Completed cleanly, not CANCELLED
+    
+    @pytest.mark.asyncio
+    async def test_cancel_job_force(self, job_manager):
+        """Test force cancellation after timeout."""
         cancel_event = asyncio.Event()
         
-        async def slow_runner():
+        async def unresponsive_runner():
+            """Runner that ignores cancellation token."""
             yield {"type": "start"}
             try:
-                await asyncio.sleep(10)  # Long running
+                await asyncio.sleep(10)  # Long running, doesn't check cancellation
                 yield {"type": "end"}
             except asyncio.CancelledError:
                 cancel_event.set()
                 raise
         
         job = await job_manager.create_job(
-            request_id="req1",
+            request_id="req_force",
+            user_id="user1",
+            agent_name="test_agent",
+            session_id=None,
+            agent_runner=unresponsive_runner,
+        )
+        
+        # Wait for job to start
+        await asyncio.sleep(0.1)
+        assert job.status == JobStatus.RUNNING
+        
+        # Cancel with force timeout (very short for test)
+        result = await job_manager.cancel_job("req_force", force_timeout=0.2)
+        assert result is True
+        
+        # Wait for force cancellation
+        await asyncio.sleep(0.3)
+        assert job.status == JobStatus.CANCELLED
+    
+    @pytest.mark.asyncio
+    async def test_cancel_nonexistent_job(self, job_manager):
+        """Test cancelling a job that doesn't exist."""
+        result = await job_manager.cancel_job("nonexistent")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_job_propagates_to_sub_requests(self, job_manager):
+        """Test that cancelling a job also cancels sub-request tokens via CancellationManager.
+        
+        This is critical for sub-agents: when parent agent is cancelled,
+        sub-agents with request_ids like "parent_sub_xxx" should also be cancelled.
+        """
+        from agent_system.core.cancellation import get_cancellation_manager
+        
+        # Create tokens for parent and sub-requests (simulating sub-agent scenario)
+        cancellation_manager = get_cancellation_manager()
+        parent_token = cancellation_manager.create_token("parent_123")
+        sub_token_1 = cancellation_manager.create_token("parent_123_sub_abc")
+        sub_token_2 = cancellation_manager.create_token("parent_123_sub_def")
+        unrelated_token = cancellation_manager.create_token("other_request")
+        
+        # Create a job with the parent request_id
+        async def slow_runner():
+            yield {"type": "start"}
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                raise
+        
+        await job_manager.create_job(
+            request_id="parent_123",
             user_id="user1",
             agent_name="test_agent",
             session_id=None,
@@ -203,21 +301,24 @@ class TestBackgroundJobManager:
         
         # Wait for job to start
         await asyncio.sleep(0.1)
-        assert job.status == JobStatus.RUNNING
         
-        # Cancel the job
-        result = await job_manager.cancel_job("req1")
+        # Cancel the parent job
+        result = await job_manager.cancel_job("parent_123")
         assert result is True
         
-        # Wait for cancellation
-        await asyncio.sleep(0.2)
-        assert job.status == JobStatus.CANCELLED
-    
-    @pytest.mark.asyncio
-    async def test_cancel_nonexistent_job(self, job_manager):
-        """Test cancelling a job that doesn't exist."""
-        result = await job_manager.cancel_job("nonexistent")
-        assert result is False
+        # All tokens with the parent prefix should be cancelled
+        assert parent_token.is_cancelled, "Parent token should be cancelled"
+        assert sub_token_1.is_cancelled, "Sub-request token 1 should be cancelled"
+        assert sub_token_2.is_cancelled, "Sub-request token 2 should be cancelled"
+        
+        # Unrelated token should NOT be cancelled
+        assert not unrelated_token.is_cancelled, "Unrelated token should NOT be cancelled"
+        
+        # Cleanup
+        cancellation_manager.unregister_request("parent_123")
+        cancellation_manager.unregister_request("parent_123_sub_abc")
+        cancellation_manager.unregister_request("parent_123_sub_def")
+        cancellation_manager.unregister_request("other_request")
     
     @pytest.mark.asyncio
     async def test_sse_client_tracking(self, job_manager):

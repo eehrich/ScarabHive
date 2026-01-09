@@ -1850,20 +1850,33 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.post("/cancel/{request_id}")
-    async def cancel_request(request_id: str):
-        """Cancel an active request by its ID."""
-        logger = logging.getLogger(__name__)
-        logger.info("Cancel request received for request_id=%s", request_id)
-
-        # Use BackgroundJobManager
-        job_manager = get_background_job_manager()
-        success = await job_manager.cancel_job(request_id)
-        if success:
-            return {"status": "cancelled", "request_id": request_id}
+    async def cancel_request(request_id: str, force: bool = Query(default=False)):
+        """Cancel an active request by its ID.
         
-        # Fallback to agent cancel_request
-        success = await agent.cancel_request(request_id)
-        if success:
+        Performs graceful cancellation:
+        1. Sets cancellation tokens (agent detects via is_cancelled() and shuts down cleanly)
+        2. Agent can save session, send status events, yield "cancelled" event
+        3. If force=True, waits 5s then force-cancels task if still running
+        
+        Args:
+            request_id: The request ID to cancel
+            force: If True, force-cancel after 5s if agent doesn't respond to graceful cancel
+        """
+        logger = logging.getLogger(__name__)
+        logger.info("Cancel request received for request_id=%s (force=%s)", request_id, force)
+
+        # Use BackgroundJobManager for graceful cancellation
+        # This sets cancellation tokens - agent will detect and shutdown cleanly
+        job_manager = get_background_job_manager()
+        force_timeout = 5.0 if force else 0.0
+        job_success = await job_manager.cancel_job(request_id, force_timeout=force_timeout)
+        
+        # ALWAYS also call agent.cancel_request for belt-and-suspenders
+        # This ensures the agent's internal request tracking is updated
+        agent_success = await agent.cancel_request(request_id)
+        
+        if job_success or agent_success:
+            logger.info(f"Cancel successful: job_manager={job_success}, agent={agent_success}")
             return {"status": "cancelled", "request_id": request_id}
         else:
             return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}

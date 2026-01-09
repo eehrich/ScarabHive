@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from agent_system.core.cancellation import get_cancellation_manager
+
 if TYPE_CHECKING:
     pass
 
@@ -236,18 +238,52 @@ class BackgroundJobManager:
         async with self._lock:
             return self._jobs.get(request_id)
     
-    async def cancel_job(self, request_id: str) -> bool:
-        """Cancel a running job.
+    async def cancel_job(self, request_id: str, force_timeout: float = 0.0) -> bool:
+        """Cancel a running job gracefully.
+        
+        Performs graceful cancellation:
+        1. Uses CancellationManager to cancel tokens with prefix matching
+           (this propagates to sub-agents with request_ids like "parent_sub_xxx")
+        2. The agent checks is_cancelled() at each step and can shutdown cleanly
+           (save session, send status events, yield "cancelled" event)
+        3. Only if force_timeout > 0, waits that long then force-cancels the asyncio task
+        
+        Args:
+            request_id: The request ID to cancel
+            force_timeout: If > 0, force-cancel task after this many seconds if still running
         
         Returns:
             True if job was found and cancellation initiated, False otherwise
         """
+        # Use CancellationManager for token-based cancellation with prefix matching
+        # This cancels the main request AND all sub-requests (e.g., sub-agents)
+        # The agent will detect this via _is_cancelled() and shutdown gracefully
+        cancellation_manager = get_cancellation_manager()
+        token_cancelled = cancellation_manager.cancel_request(request_id)
+        
+        if token_cancelled:
+            logger.info(f"[BACKGROUND_JOB] Set cancellation token for {request_id} (including sub-requests)")
+        
+        # Check if job exists
         async with self._lock:
             job = self._jobs.get(request_id)
-            if job and job.status == JobStatus.RUNNING:
-                job.task.cancel()
-                return True
-        return False
+            job_exists = job is not None and job.status == JobStatus.RUNNING
+        
+        if not job_exists:
+            return token_cancelled  # Return True if we at least cancelled tokens
+        
+        # If force_timeout specified, wait then force-cancel if still running
+        if force_timeout > 0:
+            logger.info(f"[BACKGROUND_JOB] Waiting {force_timeout}s for graceful shutdown of {request_id}")
+            await asyncio.sleep(force_timeout)
+            
+            async with self._lock:
+                job = self._jobs.get(request_id)
+                if job and job.status == JobStatus.RUNNING:
+                    logger.warning(f"[BACKGROUND_JOB] Force-cancelling task for {request_id} after timeout")
+                    job.task.cancel()
+        
+        return True
     
     async def get_active_jobs(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
         """Get list of active jobs, optionally filtered by user.

@@ -168,8 +168,8 @@ class TestReferenceTracker:
         
         obj = Inner()
         
-        # Store in a container to guarantee a referrer
-        container = {"key": obj}
+        # Store in a container to guarantee a referrer (container must exist for gc.get_referrers)
+        container = {"key": obj}  # noqa: F841
         
         referrers = tracker.get_referrers(obj)
         

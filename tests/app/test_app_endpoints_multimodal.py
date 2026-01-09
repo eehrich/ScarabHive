@@ -1,9 +1,6 @@
 """Tests for multimodal API endpoint."""
 
-from io import BytesIO
-from PIL import Image
 import base64
-import pytest
 
 
 # TestMultimodalEndpoint removed - requires running server with real LLM
