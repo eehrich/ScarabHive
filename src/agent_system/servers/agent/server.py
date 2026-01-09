@@ -1013,6 +1013,26 @@ class Agent(MCPServer):
                     self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
                     logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
                 
+                # CRITICAL: Also save to disk at end of request
+                # This ensures the session is saved even if no SSE client is connected
+                # (e.g., browser disconnected during background job execution)
+                if self._session_service:
+                    session_meta = self._session_tracker.get_session_metadata(sid)
+                    if session_meta:
+                        save_user_id = session_meta.get("user_id", "anonymous")
+                        save_agent_name = session_meta.get("agent_name", self.name)
+                        save_llm_profile = session_meta.get("llm_profile", self.agent_config.default_llm_profile)
+                        
+                        await self._session_service.save_session(
+                            agent=self,
+                            user_id=save_user_id,
+                            session_id=sid,
+                            agent_name=save_agent_name,
+                            llm_profile=save_llm_profile,
+                            was_new_session=False
+                        )
+                        logger.debug(f"Saved session {sid} to disk at end of request")
+                
                 # Keep the request->session mapping (don't pop it immediately)
                 # This allows append requests that arrive shortly after completion to find the session
             except Exception as e:
