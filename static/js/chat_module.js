@@ -770,6 +770,11 @@
           window.selectorModule.setAgent(data.agent_name);
         }
         
+        // Update LLM profile selector to match the job's profile
+        if (data.llm_profile && window.selectorModule && typeof window.selectorModule.setLLMProfile === 'function') {
+          window.selectorModule.setLLMProfile(data.llm_profile);
+        }
+        
         // Notify session manager about reconnected session
         if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
           window.sessionManager.onSessionUpdated(currentSessionId);

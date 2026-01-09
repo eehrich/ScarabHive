@@ -51,6 +51,8 @@ class BackgroundJob:
     last_status_message: Optional[str] = None
     # Task description for display
     task_description: Optional[str] = None
+    # LLM profile used for this job
+    llm_profile: Optional[str] = None
 
 
 class BackgroundJobManager:
@@ -147,6 +149,7 @@ class BackgroundJobManager:
         agent_name: str,
         session_id: Optional[str],
         agent_runner: Callable[[], Any],  # async generator function
+        llm_profile: Optional[str] = None,
     ) -> BackgroundJob:
         """Create and start a new background job.
         
@@ -156,6 +159,7 @@ class BackgroundJobManager:
             agent_name: Name of the agent to run
             session_id: Optional session ID for continuity
             agent_runner: Async generator function that yields events
+            llm_profile: Optional LLM profile override
             
         Returns:
             BackgroundJob instance with task and event_queue
@@ -218,6 +222,7 @@ class BackgroundJobManager:
             session_id=session_id,
             task=task,
             event_queue=event_queue,
+            llm_profile=llm_profile,
         )
         
         async with self._lock:

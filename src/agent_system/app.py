@@ -1582,6 +1582,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "request_id": request_id,
                     "session_id": existing_job.actual_session_id or existing_job.session_id,
                     "agent_name": existing_job.agent_name,
+                    "llm_profile": existing_job.llm_profile,
                     "status": existing_job.status.value,
                     "task": existing_job.task_description,
                     "created_at": existing_job.created_at,
@@ -1701,7 +1702,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 user_id=user_id,
                 agent_name=agent_name or "default",
                 session_id=session_id,
-                agent_runner=agent_runner
+                agent_runner=agent_runner,
+                llm_profile=llm_profile,
             )
             # Store task description for reconnect
             job.task_description = task
