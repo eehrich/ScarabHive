@@ -344,13 +344,11 @@ plugins:
       enabled: true
       max_nesting_depth: 5
       allowed_agents:
-        - basic_agent
-        - web_research_agent
         - financial_analyst_agent
         - code_reviewer_agent
         - meta_web_research_agent
-        - parallel_thinking_agent
-        - thinking_agent
+        - sysadmin_agent
+        - comfyui_agent
       hook_config:
         enabled: true
         inject_sub_agent_context:

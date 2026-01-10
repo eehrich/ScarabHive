@@ -9,16 +9,10 @@ plugins:
         llm_profile: normal
         max_steps: 50
 
-        system_template: "config/prompts/meta_agent_prompt.yaml"
+        system_template: "config/agents/prompts/meta_agent_prompt.yaml"
 
         tools:
           allowed:
-            - "sysadmin_agent/*"
-            - "meta_web_research_agent/*"
-            - "thinking_agent/*"
-            #- "financial_analyst_agent/*"
-            #- "code_reviewer_agent/*"
-            #- "basic_agent/*"
             - "basic_operations/*"
             - "datetime/*"
             - "sequential_thinking/*"
