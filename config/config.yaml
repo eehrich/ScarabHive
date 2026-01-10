@@ -92,6 +92,11 @@ logging:
   file: logs/agent.log
   file_cli: logs/cli.log
   file_api: logs/api.log
+  
+  # Log rotation settings
+  rotation_enabled: true  # Enable automatic log rotation
+  max_bytes: "10MB"  # Maximum size per log file before rotation (supports KB, MB, GB or plain bytes as int)
+  backup_count: 5  # Number of backup files to keep (e.g., agent.log.1, agent.log.2, ...)
 
   # Cancellation system configuration
   cancellation: # type CancellationConfig

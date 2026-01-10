@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 
@@ -116,10 +117,19 @@ class SafeUnicodeFormatter(logging.Formatter):
         return formatted
 
 
-def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
+def setup_logging(
+    enabled: bool, 
+    level: str, 
+    file_path: str,
+    rotation_enabled: bool = True,
+    max_bytes: int = 10485760,  # 10 MB
+    backup_count: int = 5
+) -> Optional[str]:
     """Configure root logging with explicit handlers.
 
-    - File handler: always created when enabled is True, using the configured level, truncating on start.
+    - File handler: always created when enabled is True, using the configured level.
+      If rotation_enabled=True, uses RotatingFileHandler to rotate logs when they exceed max_bytes.
+      Otherwise uses standard FileHandler that truncates on start.
     - Console handler: attached as well; CLI may adjust its level later (e.g., to WARNING when not verbose).
 
     Avoid logging.basicConfig to ensure we override any prior handlers reliably.
@@ -175,12 +185,22 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     # Capture everything at root; handlers will filter by their levels
     root.setLevel(logging.DEBUG)
 
-    # File handler (truncate on each start) - strip ANSI codes for files.
+    # File handler - strip ANSI codes for files.
+    # Use RotatingFileHandler if rotation is enabled, otherwise use standard FileHandler.
     # Use a context-aware approach: create the handler and rely on the
     # atexit/handler.close() behavior, but also keep it attached to root so
     # tests that inspect root handlers see it. We ensure earlier handlers
     # were closed above to avoid duplicate open descriptors.
-    file_handler = logging.FileHandler(file_path, mode="w", encoding="utf-8")
+    if rotation_enabled:
+        file_handler = RotatingFileHandler(
+            file_path, 
+            maxBytes=max_bytes, 
+            backupCount=backup_count,
+            encoding="utf-8"
+        )
+    else:
+        file_handler = logging.FileHandler(file_path, mode="w", encoding="utf-8")
+    
     file_handler.setLevel(lvl)
     file_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=False)
     file_handler.setFormatter(file_formatter)

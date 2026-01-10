@@ -487,7 +487,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logging.getLogger(__name__).info("Overriding log level from environment: %s", env_level)
         config.logging.level = env_level
 
-    log_file = setup_logging(config.logging.enabled, level_to_use, log_path)
+    log_file = setup_logging(
+        config.logging.enabled, 
+        level_to_use, 
+        log_path,
+        rotation_enabled=config.logging.rotation_enabled,
+        max_bytes=config.logging.max_bytes,
+        backup_count=config.logging.backup_count
+    )
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
 

@@ -7,8 +7,9 @@ for LLM and MCP configurations.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
-from typing import Literal, Optional, Dict, List, Any
+import re
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal, Optional, Dict, List, Any, Union
 
 
 # ===========================
@@ -384,6 +385,45 @@ class LoggingConfig(BaseModel):
     file_cli: Optional[str] = None
     file_api: Optional[str] = None
     cancellation: Optional[CancellationConfig] = None
+    
+    # Log rotation settings
+    rotation_enabled: bool = True  # Enable log rotation
+    max_bytes: Union[int, str] = "10MB"  # Max size per log file (int in bytes or string like "10MB", "100KB", "1GB")
+    backup_count: int = 5  # Number of backup files to keep
+    
+    @field_validator('max_bytes', mode='before')
+    @classmethod
+    def parse_max_bytes(cls, v: Union[int, str]) -> int:
+        """Parse max_bytes from human-readable format (e.g., '10MB') to bytes."""
+        if isinstance(v, int):
+            return v
+        
+        if isinstance(v, str):
+            # Match number followed by optional unit (KB, MB, GB, case-insensitive)
+            match = re.match(r'^(\d+(?:\.\d+)?)\s*(KB|MB|GB|K|M|G)?$', v.strip(), re.IGNORECASE)
+            if not match:
+                raise ValueError(
+                    f"Invalid size format: '{v}'. "
+                    "Expected format: number with optional unit (KB/MB/GB), e.g., '10MB', '100KB', '1GB'"
+                )
+            
+            number = float(match.group(1))
+            unit = (match.group(2) or '').upper()
+            
+            # Convert to bytes
+            multipliers = {
+                '': 1,
+                'K': 1024,
+                'KB': 1024,
+                'M': 1024 * 1024,
+                'MB': 1024 * 1024,
+                'G': 1024 * 1024 * 1024,
+                'GB': 1024 * 1024 * 1024,
+            }
+            
+            return int(number * multipliers[unit])
+        
+        raise ValueError(f"max_bytes must be int or string, got {type(v).__name__}")
 
 
 class ContextConfig(BaseModel):

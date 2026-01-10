@@ -1197,7 +1197,14 @@ def main() -> None:
 
     # Determine logfile: prefer explicit per-role setting if provided in config.
     log_path = config.logging.file_cli or _role_logfile(config.logging.file or "logs/agent.log", "cli")
-    log_file = setup_logging(config.logging.enabled, config.logging.level, log_path)
+    log_file = setup_logging(
+        config.logging.enabled, 
+        config.logging.level, 
+        log_path,
+        rotation_enabled=config.logging.rotation_enabled,
+        max_bytes=config.logging.max_bytes,
+        backup_count=config.logging.backup_count
+    )
     logger = logging.getLogger(__name__)
     # If verbose not set, reduce console output to WARNING to avoid noisy logs on stdout
     if not args.verbose:
