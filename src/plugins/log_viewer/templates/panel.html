@@ -43,45 +43,47 @@
 <body>
 <div class="log-viewer-wrapper">
     <div class="log-controls-fixed">
-        <div class="log-controls-left">
-            <label for="logFileSelect">Log File:</label>
-            <select id="logFileSelect">
-                <option value="">Loading...</option>
-            </select>
+        <div class="log-controls-top">
+            <div class="log-controls-row">
+                <button id="refreshBtn" class="icon-only" title="Refresh">🔄</button>
+                <button id="autoRefreshBtn" class="icon-only" title="Auto-refresh: OFF">⏱️</button>
+                <button id="autoScrollBtn" class="icon-only active" title="Auto-scroll">📜</button>
+            </div>
+            
+            <div class="log-controls-row">
+                <label for="logFileSelect">Log File:</label>
+                <select id="logFileSelect">
+                    <option value="">Loading...</option>
+                </select>
 
-            <button id="refreshBtn" class="icon-only" title="Refresh">🔄</button>
-            <button id="autoRefreshBtn" class="icon-only" title="Auto-refresh: OFF">⏱️</button>
-            <button id="autoScrollBtn" class="icon-only active" title="Auto-scroll">📜</button>
+                <input type="text" id="searchInput" placeholder="Search logs..." style="width: 150px;">
 
-            <input type="text" id="searchInput" placeholder="Search logs..." style="width: 150px;">
+                <label for="lineLimitSelect">Lines:</label>
+                <select id="lineLimitSelect" style="width: 70px;">
+                    <option value="100">100</option>
+                    <option value="250">250</option>
+                    <option value="500" selected>500</option>
+                    <option value="1000">1000</option>
+                    <option value="5000">5000</option>
+                </select>
 
-            <label for="lineLimitSelect">Lines:</label>
-            <select id="lineLimitSelect" style="width: 70px;">
-                <option value="100">100</option>
-                <option value="250">250</option>
-                <option value="500" selected>500</option>
-                <option value="1000">1000</option>
-                <option value="5000">5000</option>
-            </select>
-
-            <span id="logStatus" class="status">Ready</span>
-        </div>
-
-        <div class="log-controls-right">
-            <div class="filter-dropdown">
-                <button id="filterDropdownBtn" class="dropdown-btn">
-                    <span id="filterLabel">Levels: All</span>
-                    <span class="dropdown-arrow">▼</span>
-                </button>
-                <div id="filterDropdownMenu" class="dropdown-menu">
-                    <label class="filter-checkbox"><input type="checkbox" id="filterError" value="error" checked> ERROR</label>
-                    <label class="filter-checkbox"><input type="checkbox" id="filterWarning" value="warning" checked> WARN</label>
-                    <label class="filter-checkbox"><input type="checkbox" id="filterInfo" value="info" checked> INFO</label>
-                    <label class="filter-checkbox"><input type="checkbox" id="filterDebug" value="debug" checked> DEBUG</label>
-                    <div class="dropdown-divider"></div>
-                    <button class="dropdown-action" id="selectAllLevels">Select All</button>
-                    <button class="dropdown-action" id="selectNoneLevels">Select None</button>
+                <div class="filter-dropdown">
+                    <button id="filterDropdownBtn" class="dropdown-btn">
+                        <span id="filterLabel">Levels: All</span>
+                        <span class="dropdown-arrow">▼</span>
+                    </button>
+                    <div id="filterDropdownMenu" class="dropdown-menu">
+                        <label class="filter-checkbox"><input type="checkbox" id="filterError" value="error" checked> ERROR</label>
+                        <label class="filter-checkbox"><input type="checkbox" id="filterWarning" value="warning" checked> WARN</label>
+                        <label class="filter-checkbox"><input type="checkbox" id="filterInfo" value="info" checked> INFO</label>
+                        <label class="filter-checkbox"><input type="checkbox" id="filterDebug" value="debug" checked> DEBUG</label>
+                        <div class="dropdown-divider"></div>
+                        <button class="dropdown-action" id="selectAllLevels">Select All</button>
+                        <button class="dropdown-action" id="selectNoneLevels">Select None</button>
+                    </div>
                 </div>
+
+                <span id="logStatus" class="status">Ready</span>
             </div>
         </div>
     </div>

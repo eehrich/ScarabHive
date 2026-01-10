@@ -35,14 +35,29 @@
     position: sticky;
     top: 0;
     z-index: 100;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
     padding: 8px 12px;
     background-color: #1e1e1e;
     border-bottom: 1px solid #3e3e42;
     box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     flex-shrink: 0;
+}
+
+.log-controls-top {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.log-controls-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.log-controls-row:first-child {
+    /* First row with action buttons */
+    justify-content: flex-start;
 }
 
 .log-controls-left {
@@ -57,7 +72,31 @@
     gap: 8px;
 }
 
-.log-controls-left select, .log-controls-left button {
+.log-controls-row label {
+    font-size: 12px;
+    color: #858585;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.log-controls-row select,
+.log-controls-row input[type="text"] {
+    padding: 8px 12px;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+    font-size: 14px;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    cursor: pointer;
+}
+
+.log-controls-row select:focus,
+.log-controls-row input[type="text"]:focus {
+    outline: none;
+    border-color: #569cd6;
+}
+
+.log-controls-row button {
     padding: 4px 8px;
     background-color: #3e3e42;
     color: #d4d4d4;
@@ -68,40 +107,18 @@
     transition: all 0.2s ease;
 }
 
-.log-controls-left button:hover {
+.log-controls-row button:hover {
     background-color: #505050;
     border-color: #569cd6;
 }
 
-.log-controls-left button.active {
+.log-controls-row button.active {
     background-color: #16825d;
     border-color: #1a9970;
     color: white;
 }
 
-.log-controls-left select:focus, .log-controls-left button:focus {
-    outline: none;
-    border-color: #569cd6;
-    box-shadow: 0 0 0 2px rgba(86, 156, 214, 0.2);
-}
-
-.log-controls-left label {
-    font-size: 12px;
-    color: #d4d4d4;
-    font-weight: 500;
-}
-
-.log-controls-left input[type="text"] {
-    padding: 4px 8px;
-    background-color: #3e3e42;
-    color: #d4d4d4;
-    border: 1px solid #3e3e42;
-    border-radius: 4px;
-    font-size: 12px;
-    transition: all 0.2s ease;
-}
-
-.log-controls-left input[type="text"]:focus {
+.log-controls-row button:focus {
     outline: none;
     border-color: #569cd6;
     box-shadow: 0 0 0 2px rgba(86, 156, 214, 0.2);
