@@ -82,8 +82,8 @@ auth:
 
   # Default admin user (created on first startup if no users exist)
   default_admin_username: "admin"
-  default_admin_password: "admin"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
-  default_admin_email: "admin@localhost"
+  default_admin_password: "admin123"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
+  default_admin_email: "admin@example.com"
 
 # Logging configuration
 logging:
