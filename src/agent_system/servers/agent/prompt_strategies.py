@@ -68,6 +68,11 @@ class PromptStrategy(ABC):
             )
             context_vals.update(dt_ctx)
         
+        # Add custom template variables from agent config
+        # These override built-in variables if there's a conflict
+        if context.agent_config.template_vars:
+            context_vals.update(context.agent_config.template_vars)
+        
         return context_vals
 
 

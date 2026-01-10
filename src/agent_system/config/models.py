@@ -185,6 +185,7 @@ class AgentConfig(BaseModel):
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
+    template_vars: Optional[Dict[str, Any]] = None  # Custom variables for Jinja2 template rendering
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)  # Timeout configuration for deadlock prevention
 
     @property

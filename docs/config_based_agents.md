@@ -115,6 +115,7 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
+| `template_vars` | object | No | null | Custom variables for Jinja2 template rendering |
 | `tools` | object | No | {} | Tool access control |
 | `context_management` | object | No | defaults | Context management config |
 
@@ -239,6 +240,141 @@ Reference in agent config:
 ```yaml
 agent_config:
   system_template: "config/prompts/my_prompt.yaml"
+```
+
+### Template Variables (Jinja2)
+
+You can define custom variables directly in your agent configuration that are available for Jinja2 template rendering. This allows you to create reusable prompt templates with agent-specific values without writing Python code.
+
+#### Defining Template Variables
+
+Add `template_vars` to your `agent_config`:
+
+```yaml
+agents:
+  my_agent:
+    enabled: true
+    description: "Agent with custom template variables"
+    agent_config:
+      llm_profile: "chat"
+      system_prompt: |
+        You are the {{ project_name }} assistant, version {{ version }}.
+        Project author: {{ author }}
+        {% if debug_mode %}Debug mode is enabled.{% endif %}
+        
+        Focus areas: {{ focus_areas | join(', ') }}
+      
+      template_vars:
+        project_name: "AgentSystem"
+        version: "2.0.0"
+        author: "Development Team"
+        debug_mode: false
+        focus_areas:
+          - "code quality"
+          - "best practices"
+          - "performance"
+```
+
+#### Available Variables
+
+The following variables are automatically available in all templates:
+
+| Variable | Description |
+|----------|-------------|
+| `tools` | List of available tool names |
+| `max_steps` | Maximum reasoning steps configured |
+| `current_step` | Current step number (1-indexed) |
+| `current_date` | Current date (YYYY-MM-DD) |
+| `current_time` | Current time (HH:MM:SS) |
+| `current_datetime` | ISO format datetime |
+| `current_timezone` | Configured timezone |
+| `current_location` | Configured location |
+| `current_weekday` | Day name (e.g., "Monday") |
+| `current_month` | Month name (e.g., "January") |
+| `current_year` | Year (e.g., 2025) |
+
+Custom `template_vars` are merged with these built-in variables. **Custom variables take precedence** if there's a name conflict.
+
+#### Using with Template Files
+
+Works with both inline `system_prompt` and `system_template` files:
+
+**config/prompts/reusable_prompt.md:**
+```markdown
+# {{ project_name }} Agent
+
+You are a specialized assistant for **{{ project_name }}**.
+
+## Configuration
+- Version: {{ version }}
+- Author: {{ author }}
+
+## Your Focus Areas
+{% for area in focus_areas %}
+- {{ area }}
+{% endfor %}
+
+## Current Context
+Today is {{ current_weekday }}, {{ current_date }}.
+You are on step {{ current_step }} of {{ max_steps }}.
+```
+
+**config/agents/my_agent.yaml:**
+```yaml
+plugins:
+  servers:
+    my_custom_agent:
+      type: basic_agent
+      enabled: true
+      agent_config:
+        llm_profile: "chat"
+        max_steps: 20
+        system_template: "config/prompts/reusable_prompt.md"
+        template_vars:
+          project_name: "MyProject"
+          version: "1.0.0"
+          author: "My Team"
+          focus_areas:
+            - "feature development"
+            - "bug fixing"
+```
+
+#### Complex Variable Types
+
+`template_vars` supports nested objects and lists:
+
+```yaml
+template_vars:
+  # Simple values
+  name: "MyAgent"
+  max_retries: 3
+  
+  # Nested objects
+  config:
+    debug: true
+    verbosity: "high"
+    features:
+      streaming: true
+      caching: false
+  
+  # Lists
+  allowed_domains:
+    - "example.com"
+    - "api.example.com"
+  
+  # Mixed
+  team:
+    - name: "Alice"
+      role: "Lead"
+    - name: "Bob"
+      role: "Developer"
+```
+
+Access in templates:
+```
+Config debug: {{ config.debug }}
+First domain: {{ allowed_domains[0] }}
+Team lead: {{ team[0].name }} ({{ team[0].role }})
 ```
 
 ## LLM Profiles
