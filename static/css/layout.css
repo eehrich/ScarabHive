@@ -24,6 +24,7 @@ header h1 {
   font-weight: 600;
   margin: 0;
   flex: 1;
+  white-space: nowrap; /* Prevent text wrapping during page load */
 }
 
 /* Header left section with title and session ID */
@@ -32,6 +33,7 @@ header h1 {
   align-items: center;
   gap: 12px;
   flex: 1;
+  min-width: 0; /* Allow flex shrinking */
 }
 
 /* Session ID display in header */
@@ -101,6 +103,15 @@ header .header-buttons {
   display: flex;
   gap: 8px;
   align-items: center;
+  visibility: hidden; /* Initially hidden to prevent flash, JS will make visible after measurement */
+}
+
+/* User menu container - always visible, not part of mobile menu */
+.header-user-menu {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 /* Common button styling for header buttons */
@@ -250,6 +261,168 @@ header .header-buttons {
   .main-container {
     flex-direction: column;
   }
+}
+
+/* ==========================================
+   RESPONSIVE DESIGN - Dynamic Hamburger Menu
+   ========================================== */
+
+/* Hamburger menu button - hidden by default, shown via JS when needed */
+.menu-toggle {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border-normal);
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+  color: #9ab;
+  transition: all 0.2s ease;
+  z-index: 101;
+  visibility: hidden; /* Initially hidden to prevent flash, JS will make visible if needed */
+}
+
+/* Show hamburger when JS adds .visible class */
+.menu-toggle.visible {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  visibility: visible; /* Override initial hidden state */
+}
+
+.menu-toggle:hover {
+  background: var(--bg-dark);
+  border-color: var(--border-strong);
+  color: #b3c5d4;
+}
+
+.menu-toggle svg {
+  display: block;
+}
+
+/* Header buttons - collapsed state (controlled by JS) */
+.header-buttons.collapsed {
+  position: fixed;
+  top: 54px;
+  right: 0;
+  left: 0;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
+  border-radius: 0 0 12px 12px;
+  padding: 12px;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  transition: max-height 0.3s ease, opacity 0.2s ease, visibility 0.2s ease;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.header-buttons.collapsed.open {
+  max-height: 80vh;
+  overflow-y: auto;
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Full-width buttons when collapsed */
+.header-buttons.collapsed button,
+.header-buttons.collapsed .header-button {
+  width: 100%;
+  text-align: left;
+  padding: 12px 16px;
+  font-size: 14px;
+}
+
+/* Fallback media query for very small screens (always collapse) */
+@media (max-width: 480px) {
+  .menu-toggle {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  .header-buttons {
+    position: fixed !important;
+    top: 54px !important;
+    right: 0 !important;
+    left: 0 !important;
+    background: var(--bg-darkest) !important;
+    border: 1px solid var(--border-normal) !important;
+    border-radius: 0 0 12px 12px !important;
+    padding: 12px !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    z-index: 100 !important;
+    max-height: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    transition: max-height 0.3s ease, opacity 0.2s ease, visibility 0.2s ease !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4) !important;
+  }
+  
+  .header-buttons.open {
+    max-height: 80vh !important;
+    overflow-y: auto !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+  
+  .header-buttons button,
+  .header-buttons .header-button {
+    width: 100% !important;
+    text-align: left !important;
+    padding: 12px 16px !important;
+    font-size: 14px !important;
+  }
+  
+  /* Hide session ID */
+  .header-session {
+    display: none;
+  }
+  
+  header h1 {
+    font-size: 14px;
+  }
+}
+
+/* Very small screens (320px and below) */
+@media (max-width: 320px) {
+  header h1 {
+    font-size: 12px;
+  }
+  
+  .input-bar-top .selector-group {
+    flex: 1 1 100%;
+  }
+}
+
+/* Menu open state - switch icons */
+.menu-toggle[aria-expanded="true"] .menu-icon {
+  display: none;
+}
+
+.menu-toggle[aria-expanded="true"] .close-icon {
+  display: block;
+}
+
+/* Overlay when menu is open - hidden by default, shown only on mobile */
+.menu-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: transparent;
+  z-index: 50;
+}
+
+.menu-overlay.visible {
+  display: block;
 }
 
 @keyframes fadeIn {

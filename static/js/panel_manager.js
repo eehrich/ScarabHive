@@ -61,8 +61,6 @@ window.AgentSystem.PanelManager = {
   },
 
   createPanel: function(id, title, content = '', additionalClasses = '', headerContent = '') {
-    console.log(`Creating panel: ${id}`);
-
     // If panel already exists return it and update content
     if (this.activePanels.has(id)) {
       const existing = this.activePanels.get(id);
@@ -201,13 +199,70 @@ window.AgentSystem.PanelManager = {
       }
     });
 
-    // Make panel draggable and resizable
-    this.makeDraggable(panel);
-    this.makeResizable(panel);
-
-    console.log(`Panel ${id} created and added to DOM`);
+    // Make panel draggable and resizable (only on desktop)
+    if (!this._isMobile()) {
+      this.makeDraggable(panel);
+      this.makeResizable(panel);
+    } else {
+      // On mobile: add swipe-down-to-close gesture on header
+      this._addMobileSwipeClose(panel);
+    }
 
     return panel;
+  },
+  
+  // Check if we're on a mobile device (based on viewport width)
+  // Check if we're on a mobile device (based on viewport width)
+  _isMobile: function() {
+    return window.innerWidth <= 768;
+  },
+  
+  // Add swipe-down-to-close gesture for mobile panels
+  _addMobileSwipeClose: function(panel) {
+    const header = panel.querySelector('.floating-panel-header');
+    if (!header) return;
+    
+    const self = this;
+    let touchStartY = 0;
+    let touchCurrentY = 0;
+    let isDragging = false;
+    
+    header.addEventListener('touchstart', function(e) {
+      touchStartY = e.touches[0].clientY;
+      isDragging = true;
+      panel.style.transition = 'none';
+    }, { passive: true });
+    
+    header.addEventListener('touchmove', function(e) {
+      if (!isDragging) return;
+      touchCurrentY = e.touches[0].clientY;
+      const deltaY = touchCurrentY - touchStartY;
+      
+      // Only allow dragging down
+      if (deltaY > 0) {
+        panel.style.transform = `translateY(${deltaY}px)`;
+      }
+    }, { passive: true });
+    
+    header.addEventListener('touchend', function(e) {
+      if (!isDragging) return;
+      isDragging = false;
+      
+      const deltaY = touchCurrentY - touchStartY;
+      panel.style.transition = 'transform 0.3s ease';
+      
+      // If swiped down more than 100px, close the panel
+      if (deltaY > 100) {
+        panel.style.transform = 'translateY(100%)';
+        setTimeout(() => self.closePanel(panel.id), 300);
+      } else {
+        // Snap back
+        panel.style.transform = 'translateY(0)';
+      }
+      
+      touchStartY = 0;
+      touchCurrentY = 0;
+    });
   },
   
   // Initialize global mouse/pointer event handlers (once)
@@ -275,8 +330,6 @@ window.AgentSystem.PanelManager = {
         self._endResize();
       }
     });
-    
-    console.log('PanelManager global handlers initialized');
   },
   
   // Handle drag movement
@@ -471,7 +524,6 @@ window.AgentSystem.PanelManager = {
             if (window.AgentSystem && window.AgentSystem[pluginId]) {
               const pluginModule = window.AgentSystem[pluginId];
               if (typeof pluginModule.destroy === 'function') {
-                console.log(`Calling destroy() for plugin: ${pluginId}`);
                 pluginModule.destroy();
               }
             }
@@ -585,5 +637,3 @@ window.AgentSystem.PanelManager = {
     });
   }
 };
-
-console.log('PanelManager module loaded');

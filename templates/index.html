@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent System (MCP)</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/base.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', path='css/layout.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', path='css/panels.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', path='css/mcp.css') }}?v=blocked-tools">
-  <link rel="stylesheet" href="{{ url_for('static', path='css/debug.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', path='css/chat.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', path='css/components.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', path='css/sessions.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/base.css') }}?v=responsive2" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/layout.css') }}?v=responsive2" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/panels.css') }}?v=responsive2" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/mcp.css') }}?v=responsive2">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/debug.css') }}?v=responsive2" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/chat.css') }}?v=responsive2" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/components.css') }}?v=responsive2" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/sessions.css') }}?v=responsive2" />
   
   <!-- Prism.js for Syntax Highlighting -->
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
@@ -27,12 +27,31 @@
           <span id="headerSessionId">--</span>
         </div>
       </div>
-      <div class="header-buttons">
+      
+      <!-- Hamburger menu button (mobile only) -->
+      <button id="menuToggleBtn" class="menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+        <svg class="menu-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+        <svg class="close-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      
+      <div class="header-buttons" id="headerButtons">
         <button id="mcpToggleBtn" aria-expanded="false" title="Show MCP servers & tools">
           MCP-Servers
         </button>
         <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
         <!-- Plugin buttons will be dynamically inserted here -->
+      </div>
+      
+      <!-- User menu - always visible, separate from mobile menu -->
+      <div class="header-user-menu" id="headerUserMenu">
+        <!-- User dropdown menu will be dynamically inserted here -->
       </div>
     </header>
 
@@ -100,19 +119,19 @@
     </div>
 
         <!-- Load JavaScript Modules (order matters) -->
-    <script src="{{ url_for('static', path='js/auth.js') }}"></script>
-    <script src="{{ url_for('static', path='js/panel_manager.js') }}"></script>
-    <script src="{{ url_for('static', path='js/plugin_manager.js') }}"></script>
-    <script src="{{ url_for('static', path='js/user_profile.js') }}"></script>
-    <script src="{{ url_for('static', path='js/dropdown_menu.js') }}"></script>
-    <script src="{{ url_for('static', path='js/selector_module.js') }}"></script>
-    <script type="module" src="{{ url_for('static', path='js/session_module.js') }}"></script>
-    <script src="{{ url_for('static', path='js/mcp_module.js') }}?v=blocked-tools"></script>
-    <script src="{{ url_for('static', path='js/status_module.js') }}"></script>
-    <script src="{{ url_for('static', path='js/file_upload_module.js') }}"></script>
-    <script src="{{ url_for('static', path='js/chat_module.js') }}"></script>
-    <script src="{{ url_for('static', path='js/textarea_module.js') }}"></script>
-    <script src="{{ url_for('static', path='js/main.js') }}"></script>
+    <script src="{{ url_for('static', path='js/auth.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/panel_manager.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/plugin_manager.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/user_profile.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/dropdown_menu.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/selector_module.js') }}?v=responsive2"></script>
+    <script type="module" src="{{ url_for('static', path='js/session_module.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/mcp_module.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/status_module.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/file_upload_module.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/chat_module.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/textarea_module.js') }}?v=responsive2"></script>
+    <script src="{{ url_for('static', path='js/main.js') }}?v=responsive2"></script>
     
     <!-- Prism.js for Syntax Highlighting -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>

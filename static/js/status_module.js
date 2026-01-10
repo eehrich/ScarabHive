@@ -6,8 +6,6 @@ window.AgentSystem.Status = {
   lastRefreshTime: null,
   
   showPanel: function() {
-    console.log('Status panel requested');
-    
     // Create header with controls (like profiling panel)
     const headerContent = `
       <span id="statusLastRefresh" style="font-size: 11px; color: #858585; margin-right: 8px;"></span>
@@ -388,5 +386,3 @@ window.AgentSystem.Status = {
     `;
   }
 };
-
-console.log('Status module loaded');

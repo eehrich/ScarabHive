@@ -75,6 +75,8 @@ window.AgentSystem.DropdownMenu = {
    */
   renderMenus() {
     const headerButtons = document.querySelector('.header-buttons');
+    const headerUserMenu = document.querySelector('.header-user-menu');
+    
     if (!headerButtons) {
       console.error('Header buttons container not found');
       return;
@@ -88,7 +90,7 @@ window.AgentSystem.DropdownMenu = {
 
     // If no menus (not logged in), show login button
     if (this.menus.size === 0) {
-      this.renderLoginButton(headerButtons, pluginMarker);
+      this.renderLoginButton(headerUserMenu || headerButtons, pluginMarker);
       return;
     }
 
@@ -106,8 +108,10 @@ window.AgentSystem.DropdownMenu = {
           headerButtons.appendChild(container);
         }
       } else {
-        // Insert on right side (before auth UI or at plugin marker)
-        if (pluginMarker) {
+        // User menu (right side) goes to separate container to stay visible on mobile
+        if (headerUserMenu) {
+          headerUserMenu.appendChild(container);
+        } else if (pluginMarker) {
           headerButtons.insertBefore(container, pluginMarker);
         } else {
           headerButtons.appendChild(container);
@@ -209,6 +213,10 @@ window.AgentSystem.DropdownMenu = {
     panel.id = `menu-panel-${menuId}`;
     panel.setAttribute('role', 'menu');
 
+    // Create inner wrapper for multi-column support
+    const inner = document.createElement('div');
+    inner.className = 'dropdown-menu-panel-inner';
+
     // Organize items by section
     const sections = this.groupItemsBySection(items);
     
@@ -217,14 +225,16 @@ window.AgentSystem.DropdownMenu = {
       const empty = document.createElement('div');
       empty.className = 'dropdown-menu-empty';
       empty.textContent = 'No items available';
-      panel.appendChild(empty);
+      inner.appendChild(empty);
     } else {
       // Render sections
       sections.forEach((sectionItems, sectionName) => {
         const section = this.createMenuSection(sectionName, sectionItems);
-        panel.appendChild(section);
+        inner.appendChild(section);
       });
     }
+    
+    panel.appendChild(inner);
 
     // Assemble
     container.appendChild(button);
@@ -452,6 +462,37 @@ window.AgentSystem.DropdownMenu = {
     menuData.btnElement?.setAttribute('aria-expanded', 'true');
     menuData.panelElement?.classList.add('open');
     this.openMenuId = menuId;
+    
+    // Check if menu needs multi-column layout
+    this.checkMenuOverflow(menuData.panelElement);
+  },
+  
+  /**
+   * Check if menu overflows viewport and apply multi-column if needed
+   */
+  checkMenuOverflow(panel) {
+    if (!panel) return;
+    
+    const inner = panel.querySelector('.dropdown-menu-panel-inner');
+    if (!inner) return;
+    
+    // Reset any previous multi-column state
+    inner.classList.remove('multi-column');
+    inner.style.maxHeight = '';
+    inner.style.columnCount = '';
+    
+    // Get measurements
+    const viewportHeight = window.innerHeight;
+    const panelRect = panel.getBoundingClientRect();
+    const maxAllowedHeight = viewportHeight - panelRect.top - 20; // 20px margin from bottom
+    
+    // If content is taller than available space, use multi-column
+    if (inner.scrollHeight > maxAllowedHeight) {
+      const columns = Math.ceil(inner.scrollHeight / maxAllowedHeight);
+      inner.classList.add('multi-column');
+      inner.style.maxHeight = maxAllowedHeight + 'px';
+      inner.style.columnCount = columns;
+    }
   },
 
   /**

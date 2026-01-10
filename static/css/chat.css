@@ -118,6 +118,8 @@
   align-items: center;
   padding-top: 0;
   padding-bottom: 12px;
+  padding-left: 12px; /* Small margin on sides */
+  padding-right: 12px; /* Small margin on sides */
   z-index: 20; /* ensure input bar sits above request id display */
 }
 
@@ -139,18 +141,23 @@
   align-items: center;
   padding-top: 8px;
   gap: 16px;
+  flex-wrap: wrap; /* Allow wrapping on very small screens */
 }
 
 .input-bar-top .selector-group {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0; /* Allow shrinking */
+  flex-shrink: 1; /* Allow group to shrink */
 }
 
 .input-bar-top .selector-group label {
   color: #64748b;
   font-weight: 500;
   font-size: 12px;
+  white-space: nowrap; /* Prevent label wrapping */
+  flex-shrink: 0; /* Label stays full width */
 }
 
 .input-bar-top .selector-group select {
@@ -162,6 +169,12 @@
   font-size: 12px;
   outline: none;
   cursor: pointer;
+  min-width: 80px; /* Minimum readable width */
+  max-width: 150px; /* Prevent excessive width */
+  width: 100%; /* Take available space */
+  overflow: hidden; /* Cut off long text */
+  text-overflow: ellipsis; /* Show ... for cut text */
+  white-space: nowrap; /* Don't wrap option text */
 }
 
 .input-bar-top .selector-group select:disabled {
@@ -1387,4 +1400,91 @@ div .container-section .container-header .toggle-arrow {
 /* Smooth scrolling for streaming content */
 .think-section.streaming {
   scroll-behavior: smooth;
+}
+/* ==========================================
+   RESPONSIVE STYLES - Chat & Input
+   ========================================== */
+
+@media (max-width: 768px) {
+  /* Input bar adjustments */
+  .input-bar-container {
+    max-width: 100%;
+    margin: 0 8px;
+  }
+  
+  /* Textarea smaller on mobile */
+  #task {
+    font-size: 14px;
+  }
+  
+  /* Code blocks scroll horizontally */
+  .msg pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  
+  /* Tool calls more compact */
+  .tool-call {
+    padding: 8px;
+  }
+  
+  .tool-call-header {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  
+  /* Think sections more compact */
+  .think-section {
+    padding: 8px 10px;
+    margin: 6px 0;
+  }
+  
+  /* Artifacts responsive */
+  .artifact-wrapper {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Even smaller textarea */
+  #task {
+    font-size: 13px;
+    min-height: 36px;
+  }
+  
+  /* Compact input bar */
+  .input-bar-container {
+    margin: 0 4px;
+    padding: 6px 8px;
+  }
+  
+  /* Hide labels, show only icons/selects */
+  .input-bar-top .selector-group label {
+    display: none;
+  }
+  
+  .input-bar-top .selector-group select {
+    padding: 6px;
+  }
+  
+  /* Smaller run/stop buttons */
+  .icon-action {
+    padding: 6px;
+  }
+  
+  /* Code blocks smaller font */
+  .msg pre code {
+    font-size: 11px;
+  }
+  
+  /* User image previews smaller */
+  .user-image-previews img {
+    max-width: 120px;
+    max-height: 120px;
+  }
+  
+  /* Message bubbles full width */
+  .msg {
+    max-width: 98%;
+  }
 }

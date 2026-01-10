@@ -294,3 +294,76 @@
   box-shadow: 0 0 0 3px rgba(12,56,72,0.12);
   border-color: #1f9bb5;
 }
+
+/* ==========================================
+   RESPONSIVE STYLES - Panels
+   ========================================== */
+
+@media (max-width: 768px) {
+  /* Panels take full width on mobile */
+  .floating-panel {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 100% !important;
+    height: 70vh !important;
+    min-height: 50vh !important;
+    max-height: 85vh !important;
+    border-radius: 16px 16px 0 0;
+    z-index: 1000 !important;
+  }
+  
+  /* Disable drag on mobile - panels are fixed to bottom */
+  .floating-panel-header {
+    cursor: default;
+  }
+  
+  /* Larger touch targets */
+  .floating-panel-header .icon-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+  
+  /* Hide resize handle on mobile */
+  .resize-handle {
+    display: none;
+  }
+  
+  /* Panel title smaller */
+  .floating-panel-header span {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Even more compact on small phones */
+  .floating-panel {
+    height: 80vh !important;
+    max-height: 90vh !important;
+  }
+  
+  .floating-panel-body {
+    padding: 8px;
+  }
+  
+  /* Smaller toggle switches */
+  .toggle-track {
+    width: 36px;
+    height: 18px;
+  }
+  
+  .toggle-knob {
+    width: 14px;
+    height: 14px;
+  }
+  
+  .toggle-track.active .toggle-knob {
+    transform: translateX(16px);
+  }
+}

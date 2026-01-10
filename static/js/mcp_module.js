@@ -7,8 +7,6 @@ window.AgentSystem.MCP = {
   autoRefreshInterval: null,
   
   showPanel: function() {
-    console.log('MCP panel requested');
-    
     // Create header with controls (like profiling panel)
     const headerContent = `
       <input id="mcpFilterInput" type="text" placeholder="Filter servers/tools..." 
@@ -290,5 +288,3 @@ window.AgentSystem.MCP = {
     }
   }
 };
-
-console.log('MCP module loaded');
