@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime  # noqa: F401 - used in health endpoint
 from .utils.id import short_id
 import yaml
 from contextlib import asynccontextmanager
@@ -217,8 +218,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     logger = logging.getLogger(__name__)
     
     # Log startup marker for log analysis and debugging
-    import datetime
-    startup_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    startup_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info("═" * 80)
     logger.info(f"║  AgentSystem API Server STARTING - {startup_time}")
     logger.info(f"║  Version: {config.version}")
