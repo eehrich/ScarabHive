@@ -8,7 +8,6 @@ import time
 from .utils.id import short_id
 import yaml
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
 
@@ -216,6 +215,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     
     # Get logger AFTER logging is configured
     logger = logging.getLogger(__name__)
+    
+    # Log startup marker for log analysis and debugging
+    import datetime
+    startup_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logger.info("═" * 80)
+    logger.info(f"║  AgentSystem API Server STARTING - {startup_time}")
+    logger.info(f"║  Version: {config.version}")
+    logger.info(f"║  Config: {cfg_path}")
+    logger.info("═" * 80)
 
     # Store config for lazy batch queue manager initialization
     # This allows LLMFactory to create the manager on first use
@@ -330,6 +338,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         await _init_mcp_for_app(app)
         logger.info("MCP integration initialized during lifespan startup")
         
+        # Log startup complete marker
+        logger.info("═" * 80)
+        logger.info("║  AgentSystem API Server READY - accepting connections")
+        logger.info("═" * 80)
+        
         # Start profiling if enabled
         from .utils.profiling import start_profiling, stop_profiling, PROFILING_ENABLED
         if PROFILING_ENABLED:
@@ -350,6 +363,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         
         yield
         # Shutdown
+        logger.info("═" * 80)
+        logger.info("║  AgentSystem API Server SHUTTING DOWN")
+        logger.info("═" * 80)
+        
         try:
             # Signal all SSE streams to terminate gracefully
             if _shutdown_event:
@@ -373,6 +390,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             
             await shutdown_mcp()
             logger.info("MCP integration shut down during lifespan")
+            
+            logger.info("═" * 80)
+            logger.info("║  AgentSystem API Server STOPPED")
+            logger.info("═" * 80)
         except Exception as e:
             logger.exception("Error shutting down MCP integration during lifespan: %s", e)
 
