@@ -118,6 +118,11 @@ class AuthManager {
             console.error('Logout error:', error);
         } finally {
             this.clearAuth();
+            // Re-initialize dropdown menu to show login button
+            if (window.AgentSystem && window.AgentSystem.DropdownMenu) {
+                window.AgentSystem.DropdownMenu.initialized = false;
+                await window.AgentSystem.DropdownMenu.init();
+            }
         }
     }
 

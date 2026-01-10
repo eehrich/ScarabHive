@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 import uvicorn
-from fastapi import FastAPI, Request, Query, Header, HTTPException
+from fastapi import FastAPI, Request, Query, Header, HTTPException, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
@@ -301,10 +301,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             logger.info("MCP integration and services initialized for API")
 
-            # Apply plugin web capabilities
+            # Apply plugin web capabilities with security
             from .plugins.web_adapter import plugin_web_registry
-            plugin_web_registry.apply_to_app(app)
-            logger.info("Plugin web capabilities applied to app")
+            plugin_web_registry.apply_to_app(app, auth_config=config.auth)
+            logger.info("Plugin web capabilities applied to app with security enforcement")
 
         except Exception as e:
             logger.exception("Failed to initialize MCP integration for API: %s", e)
@@ -400,6 +400,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Create FastAPI app
     app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
 
+    # Initialize security enforcer (always created, respects auth.enabled)
+    from .auth.enforcement import EndpointSecurityEnforcer, AnonymousUser
+    _security_enforcer = EndpointSecurityEnforcer(config.auth)
+    logger.info(f"Security enforcer initialized: auth.enabled={config.auth.enabled}, "
+                f"anonymous_access={config.auth.anonymous_access.enabled}")
+
     # Helper function for optional user authentication
     async def _get_current_user_optional(request: Request) -> Optional[Any]:
         """Get current user if authenticated, None otherwise.
@@ -452,6 +458,65 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # User not authenticated
             logger.debug(f"[AUTH_DEBUG] ❌ Authentication failed: {e}")
             return None
+
+    async def _enforce_endpoint_security(request: Request) -> Any:
+        """Enforce security for an endpoint and return the user.
+        
+        This is the central security enforcement function that should be called
+        at the start of protected endpoints. It:
+        1. Checks if auth is required for this endpoint
+        2. Validates user authentication
+        3. Checks role permissions
+        4. Returns user (or AnonymousUser if permitted)
+        
+        Raises:
+            HTTPException: 401 if auth required but not provided
+            HTTPException: 403 if user lacks required role
+        
+        Returns:
+            User object or AnonymousUser
+        """
+        return await _security_enforcer.enforce_endpoint_security(
+            request,
+            _get_current_user_optional
+        )
+
+    def _validate_llm_access(user: Any, is_llm_request: bool = False) -> None:
+        """Validate that user is allowed to make LLM requests.
+        
+        Args:
+            user: User object (User or AnonymousUser)
+            is_llm_request: Whether this is an LLM API call
+        
+        Raises:
+            HTTPException: 403 if user not allowed LLM access
+        """
+        if not is_llm_request:
+            return
+        
+        if not config.auth.enabled:
+            return
+        
+        llm_security = config.auth.llm_security
+        
+        if not llm_security.require_valid_user:
+            return
+        
+        # Check if anonymous user
+        if isinstance(user, AnonymousUser) or (user and not getattr(user, 'is_authenticated', True)):
+            if llm_security.max_requests_per_hour_anonymous == 0:
+                logger.warning("[SECURITY] Anonymous LLM request blocked")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Anonymous users are not allowed to make LLM requests. Please log in."
+                )
+        
+        if user is None:
+            logger.warning("[SECURITY] LLM request without user context blocked")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="LLM requests require authentication"
+            )
 
     # Mount static files
     if static_path.exists():
@@ -1216,9 +1281,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        
+        Security:
+        - Requires authentication when auth.enabled=true
+        - Validates LLM request permissions
+        - Enforces session ownership
         """
         logger = logging.getLogger(__name__)
         request_id = short_id()
+
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        
+        # SECURITY: Validate LLM access (this is an LLM-consuming endpoint)
+        _validate_llm_access(current_user, is_llm_request=True)
+        
+        # Determine user_id for session management
+        user_id = current_user.username if current_user else "anonymous"
 
         # Try to parse task and files from the request in a flexible way
         task = None
@@ -1274,14 +1355,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if query_task:
                 task = query_task
 
-        logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s",
-                   task, len(upload_files), request_id, session_id, agent_name or "default", llm_profile or "default")
-
-        # Get current user (optional authentication)
-        current_user = await _get_current_user_optional(request)
-
-        # Determine user_id for session management
-        user_id = current_user.username if current_user else "anonymous"
+        logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user=%s",
+                   task, len(upload_files), request_id, session_id, agent_name or "default", 
+                   llm_profile or "default", user_id)
 
         # Register request ownership for status stream security
         _request_user_map[request_id] = user_id
@@ -1543,17 +1619,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
         - request_id: Optional request ID to reconnect to an existing running job
 
-        Authentication:
+        Security:
+        - Requires authentication when auth.enabled=true
+        - Validates LLM request permissions
         - If user is authenticated (JWT token or API key), sessions are saved to their account
-        - If not authenticated, sessions use "anonymous" user_id
+        - If not authenticated (when anonymous allowed), sessions use "anonymous" user_id
         """
         logger = logging.getLogger(__name__)
 
         # Prioritize 'agent' parameter over 'agent_name' for backwards compatibility
         agent_name = agent or agent_name
 
-        # Get current user (optional authentication)
-        current_user = await _get_current_user_optional(request)
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        
+        # SECURITY: Validate LLM access (this is an LLM-consuming endpoint)
+        _validate_llm_access(current_user, is_llm_request=True)
 
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"

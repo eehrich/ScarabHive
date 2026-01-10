@@ -50,7 +50,7 @@ default_agent: meta_agent
 
 # Multi-user authentication and authorization (optional)
 auth:
-  enabled: true  # Set to true to enable multi-user authentication
+  enabled: true  # Disabled for development - set to true for production
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
   access_token_expire_minutes: 5256000  # ~10 years - essentially unlimited for dev
@@ -85,6 +85,135 @@ auth:
   default_admin_password: "admin123"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
   default_admin_email: "admin@example.com"
 
+  # ============================================================
+  # Anonymous Access Configuration (NEW)
+  # ============================================================
+  # When auth.enabled=true but anonymous_access.enabled=true,
+  # unauthenticated users can access certain endpoints with limited permissions.
+  anonymous_access:
+    enabled: false  # Set to true to allow unauthenticated access
+    role: "guest"   # Role assigned to anonymous users
+    allowed_endpoints:
+      - "GET /health"
+      - "GET /static/*"
+      - "GET /login"
+      - "POST /auth/login"
+      - "POST /auth/register"
+    rate_limit_multiplier: 0.5  # 50% of normal rate limit for anonymous users
+
+  # ============================================================
+  # Endpoint Security Rules (NEW)
+  # ============================================================
+  # Fine-grained control over which endpoints require authentication
+  # and what role is needed. Rules are processed in order, first match wins.
+  endpoint_security:
+    default_policy: "require_auth"  # Default: require authentication
+    rules:
+      # Public API endpoints - no auth required
+      - pattern: "GET /api/menu-definitions"
+        policy: "allow_anonymous"
+        description: "Menu definitions needed for login button display"
+      
+      - pattern: "GET /api/menu-items"
+        policy: "allow_anonymous"
+        description: "Menu items needed for UI initialization"
+      
+      - pattern: "GET /agents"
+        policy: "allow_anonymous"
+        description: "Agent listing for UI dropdown"
+      
+      - pattern: "GET /llm/overrides"
+        policy: "allow_anonymous"
+        description: "LLM override listing for UI dropdown"
+      
+      # Login/Auth endpoints - must be public
+      - pattern: "* /auth/*"
+        policy: "allow_anonymous"
+        description: "Auth endpoints must be public for login"
+      
+      - pattern: "GET /login"
+        policy: "allow_anonymous"
+        description: "Login page must be public"
+      
+      - pattern: "GET /"
+        policy: "allow_anonymous"
+        description: "Index page is public (auth checked via API calls)"
+      
+      # Static files - always public
+      - pattern: "GET /static/*"
+        policy: "allow_anonymous"
+        description: "Static assets are public"
+      
+      # Admin endpoints - always require admin role
+      - pattern: "/admin/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Admin endpoints require admin privileges"
+      
+      # Agent execution - requires user role
+      - pattern: "POST /run"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Agent execution requires authentication"
+      
+      # Event streams - requires user role
+      - pattern: "GET /events"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Event streams require authentication"
+      
+      # Session management - requires user role
+      - pattern: "* /sessions/*"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Session management requires authentication"
+      
+      # LLM profile listing - can be opened for UI
+      - pattern: "GET /llm/profiles"
+        policy: "require_auth"
+        min_role: "user"
+        description: "LLM profile listing requires authentication"
+
+  # ============================================================
+  # LLM Request Security (NEW)
+  # ============================================================
+  # Security settings for LLM API calls (which incur costs)
+  llm_security:
+    require_valid_user: true          # LLM calls require authenticated user
+    validate_session_ownership: true  # Users can only access their own sessions
+    audit_llm_requests: true          # Log all LLM requests with user info
+    max_tokens_per_request_anonymous: null  # Token limit for anonymous (null = blocked)
+    max_requests_per_hour_anonymous: 0      # 0 = anonymous users cannot make LLM requests
+
+  # ============================================================
+  # Plugin Endpoint Security (NEW)
+  # ============================================================
+  # Centralized security for all plugin-provided HTTP endpoints
+  plugin_security:
+    default_policy: "require_auth"    # Default: all plugin endpoints require auth
+    default_min_role: "user"          # Default minimum role for plugin endpoints
+    audit_enabled: true               # Log all plugin endpoint access
+    
+    # Plugin-specific overrides (uncomment and customize as needed)
+    # plugin_overrides:
+    #   todo:
+    #     policy: "allow_anonymous"   # Allow anonymous access to todo plugin
+    #   admin_tools:
+    #     min_role: "admin"           # Require admin for admin_tools plugin
+    
+    # Endpoint pattern rules (highest priority, processed in order)
+    endpoint_rules:
+      # Block all plugin admin endpoints for non-admins
+      - pattern: "/plugins/*/admin/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Plugin admin endpoints require admin role"
+      
+      # Example: Allow anonymous access to specific plugin endpoint
+      # - pattern: "GET /plugins/todo/panel"
+      #   policy: "allow_anonymous"
+      #   description: "Todo panel is publicly viewable"
+
 # Logging configuration
 logging:
   enabled: true
@@ -102,8 +231,6 @@ logging:
   cancellation: # type CancellationConfig
     cleanup_timeout: 10.0  # Seconds to wait for graceful cleanup before forcing termination
     monitor_interval: 1.0  # Seconds between timeout checks
-
-
 
 
 

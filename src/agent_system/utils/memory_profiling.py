@@ -516,26 +516,32 @@ async def start_memory_profiling() -> None:
         # Default to 5 minutes to reduce overhead
         interval = int(os.getenv("AGENT_MEMORY_SNAPSHOT_INTERVAL", "300"))
         memory_profiling_logger.info(f"Memory snapshot interval: {interval}s")
-        while True:
-            await asyncio.sleep(interval)
-            try:
-                # Use async version to avoid blocking event loop
-                # Don't include tracemalloc in periodic snapshots (too expensive)
-                await detector.take_snapshot_async(include_tracemalloc=False)
-                diff = detector.get_latest_diff()
-                if diff and diff.memory_delta_mb > 50:  # 50MB growth
-                    memory_profiling_logger.warning(
-                        f"Significant memory growth: {diff.memory_delta_mb:.1f}MB "
-                        f"in {diff.time_delta_seconds:.0f}s"
-                    )
-                    if diff.top_growth:
-                        memory_profiling_logger.warning(f"Top growers: {diff.top_growth[:5]}")
-                else:
-                    memory_profiling_logger.debug(
-                        f"Memory snapshot: delta={diff.memory_delta_mb:.1f}MB" if diff else "No diff"
-                    )
-            except Exception as e:
-                memory_profiling_logger.error(f"Error taking memory snapshot: {e}")
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    # Use async version to avoid blocking event loop
+                    # Don't include tracemalloc in periodic snapshots (too expensive)
+                    await detector.take_snapshot_async(include_tracemalloc=False)
+                    diff = detector.get_latest_diff()
+                    if diff and diff.memory_delta_mb > 50:  # 50MB growth
+                        memory_profiling_logger.warning(
+                            f"Significant memory growth: {diff.memory_delta_mb:.1f}MB "
+                            f"in {diff.time_delta_seconds:.0f}s"
+                        )
+                        if diff.top_growth:
+                            memory_profiling_logger.warning(f"Top growers: {diff.top_growth[:5]}")
+                    else:
+                        memory_profiling_logger.debug(
+                            f"Memory snapshot: delta={diff.memory_delta_mb:.1f}MB" if diff else "No diff"
+                        )
+                except asyncio.CancelledError:
+                    raise  # Re-raise to exit the loop
+                except Exception as e:
+                    memory_profiling_logger.error(f"Error taking memory snapshot: {e}")
+        except asyncio.CancelledError:
+            memory_profiling_logger.debug("Memory profiling task cancelled (shutdown)")
+            # Don't re-raise - graceful exit
     
     _snapshot_task = asyncio.create_task(periodic_snapshots())
     memory_profiling_logger.info("Memory profiling started")
@@ -543,13 +549,15 @@ async def start_memory_profiling() -> None:
 
 
 async def stop_memory_profiling() -> None:
-    """Stop memory profiling."""
+    """Stop memory profiling gracefully."""
     global _snapshot_task, _profiling_executor
     
     if _snapshot_task:
         _snapshot_task.cancel()
         try:
             await _snapshot_task
+        except asyncio.CancelledError:
+            pass  # Expected during shutdown
         except Exception:
             pass
         _snapshot_task = None

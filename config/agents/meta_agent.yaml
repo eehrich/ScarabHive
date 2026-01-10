@@ -27,6 +27,8 @@ plugins:
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
+            sub_agent_manager.inject_sub_agent_context:
+              enabled: true              
             todo.inject_todo_tasks:
               enabled: true
             memory.inject_memory_context:

@@ -114,6 +114,25 @@ header .header-buttons {
   margin-left: auto;
 }
 
+/* Login button styling */
+.header-login-btn {
+  padding: 8px 16px;
+  background: rgba(35, 134, 54, 0.2);
+  border: 1px solid rgba(35, 134, 54, 0.4);
+  border-radius: 6px;
+  color: #7ee787;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.header-login-btn:hover {
+  background: rgba(35, 134, 54, 0.3);
+  border-color: rgba(35, 134, 54, 0.6);
+}
+
 /* Common button styling for header buttons */
 #statusToggleBtn,
 #mcpToggleBtn,

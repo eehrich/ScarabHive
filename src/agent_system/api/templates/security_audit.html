@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plugin Security Audit</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+
+        .filters {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        select, input {
+            padding: 8px 12px;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #569cd6;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .controls span {
+            margin-left: auto;
+            color: #858585;
+            font-size: 12px;
+        }
+
+        .audit-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .audit-table th {
+            background: #2d2d30;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #569cd6;
+            font-size: 13px;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .audit-table td {
+            padding: 10px 12px;
+            border-top: 1px solid #3e3e42;
+            font-size: 13px;
+        }
+
+        .audit-table tbody tr:hover {
+            background: #2d2d30;
+        }
+
+        .status-allowed {
+            color: #4ec9b0;
+        }
+
+        .status-denied {
+            color: #f48771;
+        }
+
+        .timestamp {
+            color: #858585;
+            font-size: 12px;
+        }
+
+        .plugin-name {
+            color: #569cd6;
+            font-weight: 500;
+        }
+
+        .method {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .method-get {
+            background: #0e639c;
+            color: white;
+        }
+
+        .method-post {
+            background: #107c10;
+            color: white;
+        }
+
+        .method-put {
+            background: #ca5010;
+            color: white;
+        }
+
+        .method-delete {
+            background: #d13438;
+            color: white;
+        }
+
+        code {
+            background: #1e1e1e;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-family: 'Consolas', monospace;
+            color: #ce9178;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+        }
+
+        .error {
+            color: #f48771;
+            text-align: center;
+            padding: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 Plugin Security Audit Log</h1>
+        
+        <div class="controls">
+            <select id="pluginFilter" onchange="loadAudit()">
+                <option value="">All Plugins</option>
+            </select>
+            <input type="number" id="limitInput" placeholder="Limit" value="100" style="width: 80px;" onchange="loadAudit()">
+            <button class="icon-only" onclick="loadAudit()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only active" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
+                ⏱️
+            </button>
+            <span id="lastUpdate"></span>
+        </div>
+
+        <table class="audit-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Plugin</th>
+                    <th>Method</th>
+                    <th>Path</th>
+                    <th>User</th>
+                    <th>Status</th>
+                    <th>Reason</th>
+                </tr>
+            </thead>
+            <tbody id="auditBody">
+                <tr><td colspan="7" class="loading">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let refreshInterval;
+        let autoRefreshEnabled = true;
+
+        async function loadAudit() {
+            const plugin = document.getElementById('pluginFilter').value;
+            const limit = document.getElementById('limitInput').value || 100;
+            
+            const url = `/api/plugins/security/audit?limit=${limit}${plugin ? '&plugin_name=' + plugin : ''}`;
+            
+            try {
+                const response = await fetch(url, { credentials: 'include' });
+                const data = await response.json();
+                
+                updatePluginFilter(data.plugins_with_routers || []);
+                renderAuditLog(data.audit_log || []);
+                updateLastRefresh();
+            } catch (error) {
+                document.getElementById('auditBody').innerHTML = 
+                    '<tr><td colspan="7" class="error">Error loading audit log</td></tr>';
+            }
+        }
+
+        function updateLastRefresh() {
+            document.getElementById('lastUpdate').textContent = 
+                'Updated: ' + new Date().toLocaleTimeString();
+        }
+
+        function updatePluginFilter(plugins) {
+            const filter = document.getElementById('pluginFilter');
+            const currentValue = filter.value;
+            
+            filter.innerHTML = '<option value="">All Plugins</option>';
+            plugins.forEach(plugin => {
+                const option = document.createElement('option');
+                option.value = plugin;
+                option.textContent = plugin;
+                if (plugin === currentValue) option.selected = true;
+                filter.appendChild(option);
+            });
+        }
+
+        function renderAuditLog(entries) {
+            const tbody = document.getElementById('auditBody');
+            
+            if (entries.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="loading">No audit entries</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = entries.map(entry => {
+                const statusClass = entry.allowed ? 'status-allowed' : 'status-denied';
+                const statusIcon = entry.allowed ? '✓' : '✗';
+                const methodClass = `method method-${entry.method.toLowerCase()}`;
+                
+                return `
+                    <tr>
+                        <td class="timestamp">${new Date(entry.timestamp).toLocaleString()}</td>
+                        <td class="plugin-name">${entry.plugin_name}</td>
+                        <td><span class="${methodClass}">${entry.method}</span></td>
+                        <td><code>${entry.path}</code></td>
+                        <td>${entry.user_id || 'anonymous'}</td>
+                        <td class="${statusClass}">${statusIcon} ${entry.allowed ? 'Allowed' : 'Denied'}</td>
+                        <td style="color: #858585; font-size: 12px;">${entry.reason || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('autoRefreshBtn');
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Paused';
+            } else {
+                refreshInterval = setInterval(loadAudit, 5000);
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
+            }
+        }
+
+        // Start auto-refresh
+        refreshInterval = setInterval(loadAudit, 5000);
+        
+        // Initial load
+        loadAudit();
+    </script>
+</body>
+</html>

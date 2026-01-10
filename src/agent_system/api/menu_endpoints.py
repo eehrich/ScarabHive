@@ -146,6 +146,22 @@ async def get_menu_items(
             from agent_system.utils.profiling import PROFILING_ENABLED
             from agent_system.utils.memory_profiling import MEMORY_PROFILING_ENABLED
             
+            # Security Audit (always available for admins)
+            items.append({
+                "id": "security_audit",
+                "menu_id": "user",
+                "section": "admin",
+                "label": "Security Audit",
+                "action": "openPanel",
+                "panel_endpoint": "/api/security/audit",
+                "panel_title": "Plugin Security Audit",
+                "icon": "🔒",
+                "order": 54,  # Before performance dashboard
+                "builtin": True,
+                "requires_admin": True,
+                "tooltip": "View plugin endpoint access audit log"
+            })
+            
             if PROFILING_ENABLED:
                 items.append({
                     "id": "performance_dashboard",

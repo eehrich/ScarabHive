@@ -21,12 +21,15 @@ window.AgentSystem.DropdownMenu = {
     
     try {
       await this.loadMenuData();
-      this.renderMenus();
-      this.setupGlobalListeners();
-      this.initialized = true;
     } catch (error) {
-      console.error('Failed to initialize DropdownMenu:', error);
+      console.error('Failed to load menu data:', error);
+      // Continue with empty menus - will show login button
     }
+    
+    // Always render menus (shows login button if no menus/not authenticated)
+    this.renderMenus();
+    this.setupGlobalListeners();
+    this.initialized = true;
   },
 
   /**
@@ -82,6 +85,11 @@ window.AgentSystem.DropdownMenu = {
       return;
     }
 
+    // Clear existing menus before re-rendering
+    if (headerUserMenu) {
+      headerUserMenu.innerHTML = '';
+    }
+
     // Find plugin buttons comment marker
     const pluginMarker = Array.from(headerButtons.childNodes).find(
       node => node.nodeType === Node.COMMENT_NODE &&
@@ -127,42 +135,20 @@ window.AgentSystem.DropdownMenu = {
   /**
    * Render login button when not authenticated
    */
-  renderLoginButton(headerButtons, pluginMarker) {
+  renderLoginButton(container, pluginMarker) {
+    console.log('[DropdownMenu] Rendering login button, container:', container?.id || container?.className);
+    
     // Create login link/button
     const loginLink = document.createElement('a');
     loginLink.href = '/login';
-    loginLink.className = 'header-button';
-    loginLink.style.cssText = `
-      margin-left: auto;
-      padding: 8px 16px;
-      background: rgba(35, 134, 54, 0.2);
-      border: 1px solid rgba(35, 134, 54, 0.4);
-      border-radius: 6px;
-      color: #7ee787;
-      text-decoration: none;
-      font-size: 14px;
-      font-weight: 500;
-      transition: all 0.2s ease;
-    `;
+    loginLink.className = 'header-login-btn';
+    loginLink.id = 'headerLoginBtn';
     loginLink.textContent = 'Login';
     loginLink.title = 'Login to your account';
     
-    // Hover effect
-    loginLink.addEventListener('mouseenter', () => {
-      loginLink.style.background = 'rgba(35, 134, 54, 0.3)';
-      loginLink.style.borderColor = 'rgba(35, 134, 54, 0.6)';
-    });
-    loginLink.addEventListener('mouseleave', () => {
-      loginLink.style.background = 'rgba(35, 134, 54, 0.2)';
-      loginLink.style.borderColor = 'rgba(35, 134, 54, 0.4)';
-    });
-
-    // Insert at the end (right side)
-    if (pluginMarker) {
-      headerButtons.insertBefore(loginLink, pluginMarker);
-    } else {
-      headerButtons.appendChild(loginLink);
-    }
+    // Append directly to container
+    container.appendChild(loginLink);
+    console.log('[DropdownMenu] Login button added to DOM');
   },
 
   /**

@@ -28,7 +28,7 @@ class TestWebUICancellation:
         )
         
         agent_config = AgentConfig(llm_profile="normal")
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config.model_dump())
 
         agent = Agent(
             "test_agent",
