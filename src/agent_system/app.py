@@ -1105,7 +1105,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     continue
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
-        return {"agents": agents}
+        return {"agents": sorted(agents)}
 
     @app.get("/llm/profiles")
     def list_llm_profiles():
@@ -1125,7 +1125,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to list LLM profiles: {e}")
         return {
-            "profiles": profiles,
+            "profiles": sorted(profiles, key=lambda p: p["name"].lower()),
             "default": default_profile or "normal"
         }
 
