@@ -48,6 +48,7 @@
                 <button id="refreshBtn" class="icon-only" title="Refresh">🔄</button>
                 <button id="autoRefreshBtn" class="icon-only" title="Auto-refresh: OFF">⏱️</button>
                 <button id="autoScrollBtn" class="icon-only active" title="Auto-scroll">📜</button>
+                <span id="logStatus" class="status"></span>
             </div>
             
             <div class="log-controls-row">
@@ -78,12 +79,12 @@
                         <label class="filter-checkbox"><input type="checkbox" id="filterInfo" value="info" checked> INFO</label>
                         <label class="filter-checkbox"><input type="checkbox" id="filterDebug" value="debug" checked> DEBUG</label>
                         <div class="dropdown-divider"></div>
-                        <button class="dropdown-action" id="selectAllLevels">Select All</button>
-                        <button class="dropdown-action" id="selectNoneLevels">Select None</button>
+                        <div class="filter-actions">
+                            <button id="selectAllLevels">All</button>
+                            <button id="selectNoneLevels">None</button>
+                        </div>
                     </div>
                 </div>
-
-                <span id="logStatus" class="status">Ready</span>
             </div>
         </div>
     </div>

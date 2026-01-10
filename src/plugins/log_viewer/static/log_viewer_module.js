@@ -362,7 +362,7 @@ window.AgentSystem.log_viewer = {
     if (!filename) return;
 
     this.currentLogFile = filename;
-    this.updateStatus(`Connecting to ${filename}...`);
+    this.updateStatus(`Connecting...`);
 
     // Stop any existing polling
     this.stopPolling();
@@ -420,7 +420,7 @@ window.AgentSystem.log_viewer = {
         }
       }
 
-      this.updateStatus(`${filename} loaded (${data.lines?.length || 0} lines)`);
+      this.updateStatus(`Updated: ${new Date().toLocaleTimeString()}`);
 
     } catch (error) {
       console.error('Failed to load initial log content:', error);
@@ -433,8 +433,6 @@ window.AgentSystem.log_viewer = {
     this.currentFile = filename;
     this.lastTimestamp = 0;
     this.stopPolling(); // Stop any existing polling
-
-    this.updateStatus(`Loading ${filename}...`);
 
     // Initial load - wait for it to complete before starting polling
     // This ensures lastTimestamp is set before polling begins
