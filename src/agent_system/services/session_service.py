@@ -52,7 +52,7 @@ class SessionService:
             session_data = await self.session_manager.load_session(user_id, session_id)
 
             if not session_data.get("messages"):
-                logger.info(f"[SESSION] Session {session_id} found but has no messages")
+                logger.debug(f"[SESSION] Session {session_id} found but has no messages")
                 return True, 0
 
             # Convert dict messages to ChatMessage objects
@@ -77,7 +77,7 @@ class SessionService:
                 "llm_profile": session_data.get("llm_profile")
             })
 
-            logger.info(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
+            logger.debug(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
 
         except SessionPermissionError:
@@ -85,7 +85,7 @@ class SessionService:
             raise
         except SessionNotFoundError:
             # Session doesn't exist - return False so caller can create new one
-            logger.info(f"[SESSION] Session {session_id} not found")
+            logger.debug(f"[SESSION] Session {session_id} not found")
             return False, 0
         except Exception as e:
             # Other errors (e.g., corrupt session file) - log and return False
@@ -180,7 +180,7 @@ class SessionService:
                 # Save back
                 await self.session_manager.save_session(session_data)
 
-            logger.info(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
+            logger.debug(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
             return True
 
         except Exception as save_err:

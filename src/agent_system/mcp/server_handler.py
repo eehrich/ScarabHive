@@ -395,7 +395,7 @@ class MCPServerHandler:
             raise Exception(f"Plugin not found: {plugin_name}")
         
         # Call tool
-        logger.info(f"Executing tool: {tool_name} with args: {arguments}")
+        logger.debug(f"Executing tool: {tool_name} with args: {arguments}")
         
         try:
             if hasattr(server, 'call_tool'):

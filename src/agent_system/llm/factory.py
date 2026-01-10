@@ -259,7 +259,7 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
         llm_kwargs["is_batch_model"] = True
         llm_kwargs["batch_provider"] = batch_provider
         llm_kwargs["model_ref"] = model_ref
-        logger.info("Batch model detected: %s (batch_provider=%s)", model_ref, batch_provider)
+        logger.debug("Batch model detected: %s (batch_provider=%s)", model_ref, batch_provider)
     else:
         llm_kwargs["is_batch_model"] = False
 
@@ -345,7 +345,7 @@ class LLMFactory:
                     provider_config = getattr(batch_system_config.providers, batch_provider, None)
                     if provider_config and provider_config.enabled:
                         from .batch.batch_client import BatchLLMClient
-                        logger.info("Wrapping LLM client with batch support: model=%s, provider=%s",
+                        logger.debug("Wrapping LLM client with batch support: model=%s, provider=%s",
                                    model_ref, batch_provider)
                         return BatchLLMClient(
                             underlying_client=underlying_client,

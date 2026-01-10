@@ -316,7 +316,7 @@ class GeminiSDKClient(LLMClient):
                 system_instruction, sdk_tools, force_any_mode=force_any_mode
             )
             if force_any_mode:
-                logger.info(f"[GeminiSDK] Retry #{attempt} with forced function calling (mode=ANY)")
+                logger.debug(f"[GeminiSDK] Retry #{attempt} with forced function calling (mode=ANY)")
             
             try:
                 logger.debug(f"[GeminiSDK] Starting streaming request to {self.model} (attempt {attempt + 1})")

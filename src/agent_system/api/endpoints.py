@@ -139,10 +139,10 @@ async def get_plugin_ui_metadata():
         from agent_system.plugins.web_adapter import get_web_plugin_registry
         from agent_system.plugins.mcp_adapter import plugin_mcp_registry
         
-        logger.info("Getting plugin UI metadata...")
+        logger.debug("Getting plugin UI metadata...")
         
         registry = get_web_plugin_registry()
-        logger.info(f"Registry returned: {registry}")
+        logger.debug(f"Registry returned: {registry}")
         
         if not registry:
             logger.warning("Registry is empty or None")
@@ -153,7 +153,7 @@ async def get_plugin_ui_metadata():
         
         ui_plugins = []
         for plugin_id, plugin_info in registry.items():
-            logger.info(f"Processing plugin {plugin_id}: {plugin_info}")
+            logger.debug(f"Processing plugin {plugin_id}: {plugin_info}")
             
             try:
                 # Get schema from already registered plugin server instead of reloading from file
@@ -161,10 +161,10 @@ async def get_plugin_ui_metadata():
                 
                 if plugin_server and plugin_server.plugin_schema:
                     schema = plugin_server.plugin_schema
-                    logger.info(f"Got schema for {plugin_id} from plugin server")
+                    logger.debug(f"Got schema for {plugin_id} from plugin server")
                     
                     web_ui = schema.get('web_ui') if schema else None
-                    logger.info(f"Web UI config for {plugin_id}: {web_ui}")
+                    logger.debug(f"Web UI config for {plugin_id}: {web_ui}")
                     
                     if web_ui:
                         # Check button.enabled
@@ -186,17 +186,17 @@ async def get_plugin_ui_metadata():
                                 description=panel_config.get('description', plugin_info.get('description'))
                             )
                             ui_plugins.append(plugin_metadata)
-                            logger.info(f"Added UI plugin button: {plugin_metadata}")
+                            logger.debug(f"Added UI plugin button: {plugin_metadata}")
                         else:
-                            logger.info(f"Plugin {plugin_id} button disabled in schema")
+                            logger.debug(f"Plugin {plugin_id} button disabled in schema")
                     else:
-                        logger.info(f"Plugin {plugin_id} has no web_ui config")
+                        logger.debug(f"Plugin {plugin_id} has no web_ui config")
                 else:
-                    logger.info(f"No plugin server or schema found for {plugin_id}")
+                    logger.debug(f"No plugin server or schema found for {plugin_id}")
             except Exception as schema_error:
                 logger.error(f"Error processing plugin {plugin_id}: {schema_error}")
         
-        logger.info(f"Returning {len(ui_plugins)} UI plugins: {ui_plugins}")
+        logger.debug(f"Returning {len(ui_plugins)} UI plugins: {ui_plugins}")
         return ui_plugins
     except Exception as e:
         logger.error(f"Error getting plugin UI metadata: {e}")

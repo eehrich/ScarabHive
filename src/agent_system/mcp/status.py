@@ -103,7 +103,7 @@ class LogStatusHandler(StatusHandler):
     
     async def process(self, event: StatusEvent) -> None:
         """Log the status event"""
-        logger.info(f"Status: {event.server} [{event.phase.value}] {event.message}")
+        logger.debug(f"Status: {event.server} [{event.phase.value}] {event.message}")
 
 
 class QueueStatusHandler(StatusHandler):

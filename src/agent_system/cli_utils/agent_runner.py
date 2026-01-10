@@ -104,7 +104,7 @@ def get_agent_with_llm_override(
             provider = llm_kwargs.get('provider', 'unknown')
             llm_profile_info = f"{llm_profile}:{provider}/{model}"
             
-            logger.info(f"Using LLM override: {llm_profile_info}")
+            logger.debug(f"Using LLM override: {llm_profile_info}")
         except Exception as e:
             logger.error(f"Failed to create LLM override: {e}", exc_info=True)
             raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")
@@ -139,7 +139,7 @@ async def create_and_register_agent(
     try:
         existing_agent = registry.get(agent_name)
         if isinstance(existing_agent, Agent):
-            logger.info(f"Using existing agent '{agent_name}' from registry")
+            logger.debug(f"Using existing agent '{agent_name}' from registry")
             # Update session_service for existing agent
             if session_service and hasattr(existing_agent, '_session_service'):
                 existing_agent._session_service = session_service

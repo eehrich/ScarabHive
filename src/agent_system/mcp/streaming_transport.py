@@ -92,7 +92,7 @@ class HTTPStreamingTransport(MCPTransport):
         clean HTTP connection management.
         """
         self._connected = True
-        logger.info(f"HTTP streaming transport connected to {self.url}")
+        logger.debug(f"HTTP streaming transport connected to {self.url}")
 
     async def disconnect(self) -> None:
         """Close transport and any open SSE streams"""

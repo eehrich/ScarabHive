@@ -72,7 +72,7 @@ async def list_users(
         for u in users_in_db
     ]
     
-    logger.info(f"Admin {admin_user.username} listed users (skip={skip}, limit={limit})")
+    logger.debug(f"Admin {admin_user.username} listed users (skip={skip}, limit={limit})")
     
     return UserListResponse(
         users=users,
@@ -110,7 +110,7 @@ async def get_user(
             detail=f"User with ID {user_id} not found"
         )
     
-    logger.info(f"Admin {admin_user.username} retrieved user {user_in_db.username}")
+    logger.debug(f"Admin {admin_user.username} retrieved user {user_in_db.username}")
     
     return User(
         id=user_in_db.id,

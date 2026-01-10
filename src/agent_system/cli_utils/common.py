@@ -341,7 +341,7 @@ async def format_output_with_hooks(
         return output, 'text'
     
     try:
-        logger.info(f"Formatting output with format='{output_format}' (length: {len(output)})")
+        logger.debug(f"Formatting output with format='{output_format}' (length: {len(output)})")
         
         # Execute format hooks with requested output format
         formatted_output, content_format = await agent_instance._hook_manager.execute_format_output_hooks(
@@ -351,7 +351,7 @@ async def format_output_with_hooks(
             output_format=output_format
         )
         
-        logger.info(f"Formatting complete: format={content_format}, length={len(formatted_output)}")
+        logger.debug(f"Formatting complete: format={content_format}, length={len(formatted_output)}")
         return formatted_output, content_format
         
     except Exception as e:

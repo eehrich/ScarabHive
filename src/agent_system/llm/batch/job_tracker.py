@@ -76,7 +76,7 @@ class BatchJobTracker:
                         }
                         total = sum(len(jobs) for jobs in self._tracked_jobs.values())
                         if total > 0:
-                            logger.info(f"Loaded {total} tracked batch jobs from {self.tracker_file}")
+                            logger.debug(f"Loaded {total} tracked batch jobs from {self.tracker_file}")
                 except Exception as e:
                     logger.warning(f"Failed to load tracked jobs: {e}")
                     self._tracked_jobs = {}

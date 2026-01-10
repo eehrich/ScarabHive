@@ -164,7 +164,7 @@ class GeminiClient(LLMClient):
             # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
             # This helps the model generate proper JSON instead of Python code
             if attempt > 0 and got_malformed_function_call:
-                logger.info(f"[Gemini] Retry #{attempt} with forced function calling (mode=ANY)")
+                logger.debug(f"[Gemini] Retry #{attempt} with forced function calling (mode=ANY)")
                 if "toolConfig" not in payload:
                     payload["toolConfig"] = {}
                 payload["toolConfig"]["functionCallingConfig"] = {"mode": "ANY"}
@@ -562,7 +562,7 @@ class GeminiClient(LLMClient):
             
             # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
             if attempt > 0 and got_malformed_function_call:
-                logger.info(f"[Gemini] Non-streaming retry #{attempt} with forced function calling (mode=ANY)")
+                logger.debug(f"[Gemini] Non-streaming retry #{attempt} with forced function calling (mode=ANY)")
                 if "toolConfig" not in payload:
                     payload["toolConfig"] = {}
                 payload["toolConfig"]["functionCallingConfig"] = {"mode": "ANY"}
