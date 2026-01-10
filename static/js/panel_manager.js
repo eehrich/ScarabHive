@@ -5,6 +5,8 @@ window.AgentSystem = window.AgentSystem || {};
 window.AgentSystem.PanelManager = {
   activePanels: new Map(), // Track multiple panels
   zIndexCounter: 1000,
+  Z_INDEX_BASE: 1000,      // Base z-index for panels
+  Z_INDEX_MAX: 8999,       // Max z-index before rebase (below dropdown at 9000)
   MIN_WIDTH: 380,
   MIN_HEIGHT: 320,
   ORDER_KEY: 'panelOrder',
@@ -425,7 +427,16 @@ window.AgentSystem.PanelManager = {
   bringToFront: function(panel) {
     try {
       if (!panel) return;
-      // update stored order and re-apply z-indexes
+      
+      // Check if we need to rebase z-indexes (compact them back to base range)
+      if (this.zIndexCounter >= this.Z_INDEX_MAX) {
+        this.rebaseZIndexes();
+      }
+      
+      // Simply increment counter and assign to this panel
+      panel.style.zIndex = ++this.zIndexCounter;
+      
+      // Update saved order for persistence
       this.updateOrderOnFront(panel.id);
     } catch (err) {
       console.warn('bringToFront failed for', panel && panel.id, err);
@@ -460,35 +471,67 @@ window.AgentSystem.PanelManager = {
       const order = this.loadOrder().filter(x => x !== id);
       order.push(id);
       this.saveOrder(order);
-      this.applyOrderToActivePanels(order);
+      // Don't re-apply z-indexes here anymore - that's done in bringToFront
     } catch (err) {
       console.warn('Failed to update panel order for', id, err);
     }
   },
-
-  // Apply saved order to currently active panels (assign z-indexes)
-  applyOrderToActivePanels: function(order) {
+  
+  // Rebase all panel z-indexes to compact range starting from Z_INDEX_BASE
+  rebaseZIndexes: function() {
     try {
-      const ord = Array.isArray(order) ? order : this.loadOrder();
-      // start from current counter to avoid collisions
-      let z = this.zIndexCounter || 1000;
+      console.log('Rebasing panel z-indexes...');
+      const order = this.loadOrder();
+      let z = this.Z_INDEX_BASE;
       const assigned = new Set();
-      // assign z-index to panels in stored order
-      ord.forEach(id => {
+      
+      // Assign z-indexes in saved order
+      order.forEach(id => {
         const panel = this.activePanels.get(id);
         if (panel) {
-          z += 1;
-          panel.style.zIndex = z;
+          panel.style.zIndex = z++;
           assigned.add(id);
         }
       });
-      // assign z-index to panels not in order (older/new ones)
+      
+      // Assign z-indexes to panels not in order
       this.activePanels.forEach((panel, id) => {
         if (!assigned.has(id)) {
-          z += 1;
-          panel.style.zIndex = z;
+          panel.style.zIndex = z++;
         }
       });
+      
+      this.zIndexCounter = z;
+      console.log(`Rebased ${this.activePanels.size} panels, new counter: ${this.zIndexCounter}`);
+    } catch (err) {
+      console.warn('Failed to rebase z-indexes', err);
+    }
+  },
+
+  // Apply saved order to currently active panels (assign z-indexes)
+  // Only called on initialization or after rebase
+  applyOrderToActivePanels: function(order) {
+    try {
+      const ord = Array.isArray(order) ? order : this.loadOrder();
+      let z = this.Z_INDEX_BASE;
+      const assigned = new Set();
+      
+      // Assign z-indexes in saved order
+      ord.forEach(id => {
+        const panel = this.activePanels.get(id);
+        if (panel) {
+          panel.style.zIndex = z++;
+          assigned.add(id);
+        }
+      });
+      
+      // Assign z-indexes to panels not in order
+      this.activePanels.forEach((panel, id) => {
+        if (!assigned.has(id)) {
+          panel.style.zIndex = z++;
+        }
+      });
+      
       this.zIndexCounter = z;
     } catch (err) {
       console.warn('Failed to apply panel order', err);

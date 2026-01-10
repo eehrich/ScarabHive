@@ -10,7 +10,7 @@ header {
   padding: 12px 18px;
   border-bottom: 1px solid var(--border-subtle);
   backdrop-filter: blur(6px);
-  z-index: 10;
+  z-index: 100; /* Low so panels can be dragged over it */
   display: flex;
   align-items: center;
   justify-content: space-between;

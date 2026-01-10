@@ -128,7 +128,8 @@ window.AgentSystem.DropdownMenu = {
 
       // Store references
       menuData.btnElement = container.querySelector('.dropdown-menu-btn');
-      menuData.panelElement = container.querySelector('.dropdown-menu-panel');
+      // Panel is attached to body (portal mode), find it by ID
+      menuData.panelElement = document.getElementById(`menu-panel-${menuId}`);
     });
   },
 
@@ -193,11 +194,13 @@ window.AgentSystem.DropdownMenu = {
     arrow.textContent = '▼';
     button.appendChild(arrow);
 
-    // Create dropdown panel
+    // Create dropdown panel as PORTAL (attached to body, not header)
     const panel = document.createElement('div');
     panel.className = 'dropdown-menu-panel';
     panel.id = `menu-panel-${menuId}`;
     panel.setAttribute('role', 'menu');
+    panel.dataset.menuId = menuId;
+    panel.dataset.alignLeft = definition.position === 'left' ? 'true' : 'false';
 
     // Create inner wrapper for multi-column support
     const inner = document.createElement('div');
@@ -222,9 +225,13 @@ window.AgentSystem.DropdownMenu = {
     
     panel.appendChild(inner);
 
-    // Assemble
+    // PORTAL PATTERN: Attach panel to body instead of header
+    // This breaks out of the header's stacking context (z-index: 100)
+    // allowing the panel (z-index: 9000) to appear above floating panels (z-index: 1000-8999)
+    document.body.appendChild(panel);
+
+    // Only button goes in container (header)
     container.appendChild(button);
-    container.appendChild(panel);
 
     // Event listeners
     button.addEventListener('click', (e) => {
@@ -446,11 +453,37 @@ window.AgentSystem.DropdownMenu = {
 
     menuData.btnElement?.classList.add('open');
     menuData.btnElement?.setAttribute('aria-expanded', 'true');
+    
+    // Position panel under button (portal mode)
+    this.positionPanel(menuData.btnElement, menuData.panelElement);
+    
     menuData.panelElement?.classList.add('open');
     this.openMenuId = menuId;
     
     // Check if menu needs multi-column layout
     this.checkMenuOverflow(menuData.panelElement);
+  },
+  
+  /**
+   * Position dropdown panel under button (for portal mode)
+   */
+  positionPanel(button, panel) {
+    if (!button || !panel) return;
+    
+    const btnRect = button.getBoundingClientRect();
+    const alignLeft = panel.dataset.alignLeft === 'true';
+    
+    // Position below button
+    panel.style.position = 'fixed';
+    panel.style.top = `${btnRect.bottom + 8}px`;
+    
+    if (alignLeft) {
+      panel.style.left = `${btnRect.left}px`;
+      panel.style.right = 'auto';
+    } else {
+      panel.style.right = `${window.innerWidth - btnRect.right}px`;
+      panel.style.left = 'auto';
+    }
   },
   
   /**
