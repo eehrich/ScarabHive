@@ -61,6 +61,35 @@ class LogViewerWebEndpoints(PluginWebInterface):
 
         logger.info(f"LogViewerWebEndpoints initialized: {name}")
 
+    def _find_rotation_files(self, base_log_path: Path) -> List[Path]:
+        """Find all rotation files for a base log file.
+        
+        For example, if base_log_path is 'logs/agent.log', returns:
+        [Path('logs/agent.log'), Path('logs/agent.log.1'), Path('logs/agent.log.2'), ...]
+        in oldest-to-newest order (so .log is last).
+        """
+        rotation_files = []
+        
+        # Check base file
+        if base_log_path.exists():
+            rotation_files.append(base_log_path)
+        
+        # Check for rotation files (.log.1, .log.2, etc.)
+        index = 1
+        max_rotations = 100  # Safety limit
+        while index <= max_rotations:
+            rotation_path = Path(f"{base_log_path}.{index}")
+            if rotation_path.exists():
+                rotation_files.append(rotation_path)
+                index += 1
+            else:
+                break
+        
+        # Return in oldest-to-newest order (highest number first, base file last)
+        return sorted(rotation_files, key=lambda p: (
+            0 if str(p) == str(base_log_path) else int(str(p).rsplit('.', 1)[-1])
+        ), reverse=True)
+
     def _group_multiline_entries(self, lines: List[str]) -> List[Dict[str, Any]]:
         """Group multiline log entries together"""
         grouped = []
@@ -362,24 +391,35 @@ class LogViewerWebEndpoints(PluginWebInterface):
     # Handler methods (called by schema router)
     
     async def list_log_files(self, request: Request):
-        """List available log files"""
+        """List available log files with rotation file information"""
         from fastapi.responses import JSONResponse
         
         available_logs = []
         for log_file in self.log_files:
             log_path = Path(log_file)
-            if log_path.exists():
-                stat = log_path.stat()
+            
+            # Find all rotation files for this base log
+            rotation_files = self._find_rotation_files(log_path)
+            
+            if rotation_files:
+                # Calculate total size across all rotation files
+                total_size = sum(f.stat().st_size for f in rotation_files)
+                # Get newest modification time
+                newest_mtime = max(f.stat().st_mtime for f in rotation_files)
+                
                 available_logs.append({
                     "name": log_file,
-                    "size": stat.st_size,
-                    "modified": stat.st_mtime,
-                    "exists": True
+                    "size": total_size,
+                    "modified": newest_mtime,
+                    "exists": True,
+                    "rotation_count": len(rotation_files),
+                    "rotation_files": [str(f) for f in rotation_files]
                 })
             else:
                 available_logs.append({
                     "name": log_file,
-                    "exists": False
+                    "exists": False,
+                    "rotation_count": 0
                 })
 
         return JSONResponse({"logs": available_logs})
@@ -405,7 +445,11 @@ class LogViewerWebEndpoints(PluginWebInterface):
             return JSONResponse({"error": "Log file not allowed"})
 
         log_path = Path(log_name)
-        if not log_path.exists():
+        
+        # Find all rotation files for this base log
+        rotation_files = self._find_rotation_files(log_path)
+        
+        if not rotation_files:
             return JSONResponse({"error": f"Log file {log_name} not found"})
 
         # Parse filter parameters
@@ -430,37 +474,50 @@ class LogViewerWebEndpoints(PluginWebInterface):
             return True
 
         try:
-            # Get file stats first (fast operation)
-            file_stat = log_path.stat()
+            # Get file stats from newest file (base log)
+            file_stat = log_path.stat() if log_path.exists() else rotation_files[0].stat()
             parsed_lines = []
 
             if since_timestamp is None:
-                # Initial load - use filtered reading if filters are active
+                # Initial load - read from all rotation files
+                all_lines = []
+                
+                # Read rotation files in order (oldest to newest)
+                for rotation_file in rotation_files:
+                    file_lines = await self._read_last_lines_async(rotation_file, lines * 10)  # Read more to account for distribution
+                    all_lines.extend(file_lines)
+                
+                # Now process the combined lines
                 if level_filter or search_term:
-                    # NEW: Read backwards until we have N matching lines
-                    # This ensures we always get the requested number of filtered results
-                    filtered_entries = await self._read_filtered_lines_async(
-                        log_path, lines, level_filter, search_term
-                    )
+                    # Filter the combined lines
+                    grouped_entries = self._group_multiline_entries(all_lines)
                     
-                    # Parse the filtered entries
-                    for idx, entry in enumerate(filtered_entries):
-                        # Split multiline entry back into main line and continuation
-                        entry_lines = entry.split('\n')
-                        main_line = entry_lines[0]
+                    for entry in grouped_entries:
+                        # Filter out log viewer requests to avoid recursion
+                        if '/plugins/log_viewer' in entry['main_line']:
+                            continue
+
+                        parsed_line = self._parse_log_line(entry['main_line'].rstrip())
                         
-                        parsed_line = self._parse_log_line(main_line.rstrip())
-                        parsed_line['line_number'] = idx + 1  # Approximate
-                        parsed_line['full_content'] = entry
-                        parsed_line['has_multiline'] = len(entry_lines) > 1
+                        # Check if matches filters
+                        if level_filter:
+                            line_level = parsed_line.get('level', '').lower()
+                            if line_level not in level_filter:
+                                continue
+                        
+                        if search_term:
+                            message = parsed_line.get('message', '').lower()
+                            full_content = entry['full_content'].lower()
+                            if search_term not in message and search_term not in full_content:
+                                continue
+                        
+                        parsed_line['line_number'] = entry['line_number']
+                        parsed_line['full_content'] = entry['full_content']
+                        parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
                         parsed_lines.append(parsed_line)
                 else:
-                    # No filters - use simple tail read (faster)
-                    buffer_multiplier = 3
-                    max_lines_to_read = lines * buffer_multiplier
-                    
-                    recent_lines = await self._read_last_lines_async(log_path, max_lines_to_read)
-                    grouped_entries = self._group_multiline_entries(recent_lines)
+                    # No filters - use simple processing
+                    grouped_entries = self._group_multiline_entries(all_lines)
 
                     for entry in grouped_entries:
                         # Filter out log viewer requests to avoid recursion
@@ -472,9 +529,9 @@ class LogViewerWebEndpoints(PluginWebInterface):
                         parsed_line['full_content'] = entry['full_content']
                         parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
                         parsed_lines.append(parsed_line)
-                    
-                    # Take only the last N entries
-                    parsed_lines = parsed_lines[-lines:]
+                
+                # Take only the last N entries
+                parsed_lines = parsed_lines[-lines:]
             else:
                 # Streaming mode - read last N*3 lines efficiently
                 buffer_multiplier = 3

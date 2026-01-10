@@ -388,7 +388,7 @@ class LoggingConfig(BaseModel):
     
     # Log rotation settings
     rotation_enabled: bool = True  # Enable log rotation
-    max_bytes: Union[int, str] = "10MB"  # Max size per log file (int in bytes or string like "10MB", "100KB", "1GB")
+    max_bytes: Union[int, str] = Field(default="10MB")  # Max size per log file (int in bytes or string like "10MB", "100KB", "1GB")
     backup_count: int = 5  # Number of backup files to keep
     
     @field_validator('max_bytes', mode='before')
@@ -424,6 +424,12 @@ class LoggingConfig(BaseModel):
             return int(number * multipliers[unit])
         
         raise ValueError(f"max_bytes must be int or string, got {type(v).__name__}")
+    
+    def model_post_init(self, __context) -> None:
+        """Post-init hook to parse default values through validator."""
+        # Manually trigger validation for max_bytes if it's still a string
+        if isinstance(self.max_bytes, str):
+            self.max_bytes = self.parse_max_bytes(self.max_bytes)
 
 
 class ContextConfig(BaseModel):
