@@ -8,6 +8,57 @@ window.AgentSystem.PanelManager = {
   MIN_WIDTH: 380,
   MIN_HEIGHT: 320,
   ORDER_KEY: 'panelOrder',
+  
+  // Global drag/resize state - prevents stuck states
+  _dragState: null,   // { panel, startX, startY, panelStartX, panelStartY, header }
+  _resizeState: null, // { panel, startX, startY, panelStartW, panelStartH, minW, minH }
+  _rafId: null,       // requestAnimationFrame ID for throttling
+  _initialized: false,
+  _iframeOverlay: null, // Overlay to block iframe mouse events during drag/resize
+
+  // Block iframes from capturing mouse events during drag/resize
+  _blockIframes: function() {
+    // Method 1: Disable pointer-events on ALL iframes
+    document.querySelectorAll('iframe').forEach(iframe => {
+      iframe.dataset.previousPointerEvents = iframe.style.pointerEvents || '';
+      iframe.style.pointerEvents = 'none';
+    });
+    
+    // Method 2: Also add a full-screen overlay as backup
+    if (!this._iframeOverlay) {
+      this._iframeOverlay = document.createElement('div');
+      this._iframeOverlay.id = 'panel-iframe-blocker';
+      this._iframeOverlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 2147483647;
+        background: transparent;
+        pointer-events: auto;
+      `;
+    }
+    if (!this._iframeOverlay.parentNode) {
+      document.body.appendChild(this._iframeOverlay);
+    }
+  },
+
+  // Remove iframe blocker overlay and restore pointer-events
+  _unblockIframes: function() {
+    // Remove overlay
+    if (this._iframeOverlay && this._iframeOverlay.parentNode) {
+      this._iframeOverlay.parentNode.removeChild(this._iframeOverlay);
+    }
+    
+    // Restore pointer-events on all iframes
+    document.querySelectorAll('iframe').forEach(iframe => {
+      if (iframe.dataset.previousPointerEvents !== undefined) {
+        iframe.style.pointerEvents = iframe.dataset.previousPointerEvents;
+        delete iframe.dataset.previousPointerEvents;
+      }
+    });
+  },
 
   createPanel: function(id, title, content = '', additionalClasses = '', headerContent = '') {
     console.log(`Creating panel: ${id}`);
@@ -158,6 +209,165 @@ window.AgentSystem.PanelManager = {
 
     return panel;
   },
+  
+  // Initialize global mouse/pointer event handlers (once)
+  _initGlobalHandlers: function() {
+    if (this._initialized) return;
+    this._initialized = true;
+    
+    const self = this;
+    
+    // Global mousemove handler with requestAnimationFrame throttling
+    const onMouseMove = (e) => {
+      if (!self._dragState && !self._resizeState) return;
+      
+      // Cancel any pending frame
+      if (self._rafId) {
+        cancelAnimationFrame(self._rafId);
+      }
+      
+      // Schedule update on next frame for smooth performance
+      self._rafId = requestAnimationFrame(() => {
+        if (self._dragState) {
+          self._handleDragMove(e.clientX, e.clientY);
+        }
+        if (self._resizeState) {
+          self._handleResizeMove(e.clientX, e.clientY);
+        }
+      });
+    };
+    
+    // Global mouseup handler - reset all drag/resize states
+    const onMouseUp = (e) => {
+      self._endDrag();
+      self._endResize();
+    };
+    
+    // Handle window blur/focus loss - cancel any active operations
+    const onBlur = () => {
+      self._endDrag();
+      self._endResize();
+    };
+    
+    // Handle mouse leaving window - also end operations to prevent stuck state
+    const onMouseLeave = (e) => {
+      // Only trigger if actually leaving the window (not entering a child element)
+      if (e.relatedTarget === null || e.relatedTarget.nodeName === 'HTML') {
+        self._endDrag();
+        self._endResize();
+      }
+    };
+    
+    // Attach to window for reliable event capture even when mouse leaves document
+    window.addEventListener('mousemove', onMouseMove, { passive: true });
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('blur', onBlur);
+    document.addEventListener('mouseleave', onMouseLeave);
+    
+    // Also handle pointer events for better touch/pen support
+    window.addEventListener('pointerup', onMouseUp);
+    window.addEventListener('pointercancel', onMouseUp);
+    
+    // Handle visibility change (tab switch, minimize)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        self._endDrag();
+        self._endResize();
+      }
+    });
+    
+    console.log('PanelManager global handlers initialized');
+  },
+  
+  // Handle drag movement
+  _handleDragMove: function(clientX, clientY) {
+    const state = this._dragState;
+    if (!state) return;
+    
+    const deltaX = clientX - state.startX;
+    const deltaY = clientY - state.startY;
+    
+    const newX = state.panelStartX + deltaX;
+    const newY = state.panelStartY + deltaY;
+    
+    // Keep panel within viewport
+    const maxX = window.innerWidth - state.panel.offsetWidth;
+    const maxY = window.innerHeight - state.panel.offsetHeight;
+    
+    state.panel.style.left = Math.max(0, Math.min(newX, maxX)) + 'px';
+    state.panel.style.top = Math.max(0, Math.min(newY, maxY)) + 'px';
+    state.panel.style.right = 'auto';
+  },
+  
+  // End drag operation
+  _endDrag: function() {
+    const state = this._dragState;
+    if (!state) return;
+    
+    // Remove iframe blocker
+    this._unblockIframes();
+    
+    state.header.style.cursor = 'grab';
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    
+    // Persist panel position
+    try {
+      const rect = state.panel.getBoundingClientRect();
+      const savedState = JSON.parse(localStorage.getItem('panelState:' + state.panel.id) || '{}');
+      savedState.left = Math.round(rect.left);
+      savedState.top = Math.round(rect.top);
+      localStorage.setItem('panelState:' + state.panel.id, JSON.stringify(savedState));
+    } catch (err) {
+      console.warn('Failed to save panel position', state.panel.id, err);
+    }
+    
+    this._dragState = null;
+  },
+  
+  // Handle resize movement
+  _handleResizeMove: function(clientX, clientY) {
+    const state = this._resizeState;
+    if (!state) return;
+    
+    const deltaX = clientX - state.startX;
+    const deltaY = clientY - state.startY;
+    
+    const newWidth = state.panelStartW + deltaX;
+    const newHeight = state.panelStartH + deltaY;
+    
+    // Enforce minimum and maximum sizes
+    const maxWidth = window.innerWidth - 20;
+    const maxHeight = window.innerHeight - 100;
+    
+    state.panel.style.width = Math.max(state.minW, Math.min(newWidth, maxWidth)) + 'px';
+    state.panel.style.height = Math.max(state.minH, Math.min(newHeight, maxHeight)) + 'px';
+  },
+  
+  // End resize operation
+  _endResize: function() {
+    const state = this._resizeState;
+    if (!state) return;
+    
+    // Remove iframe blocker
+    this._unblockIframes();
+    
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    
+    // Persist panel size
+    try {
+      const rect = state.panel.getBoundingClientRect();
+      const savedState = JSON.parse(localStorage.getItem('panelState:' + state.panel.id) || '{}');
+      savedState.width = Math.round(Math.max(rect.width, state.minW));
+      savedState.height = Math.round(Math.max(rect.height, state.minH));
+      localStorage.setItem('panelState:' + state.panel.id, JSON.stringify(savedState));
+    } catch (err) {
+      console.warn('Failed to save panel size', state.panel.id, err);
+    }
+    
+    this._resizeState = null;
+  },
 
   bringToFront: function(panel) {
     try {
@@ -302,128 +512,76 @@ window.AgentSystem.PanelManager = {
   },
 
   makeDraggable: function(panel) {
+    // Ensure global handlers are initialized (once)
+    this._initGlobalHandlers();
+    
     const header = panel.querySelector('.floating-panel-header');
-    let isDragging = false;
-    let dragStart = { x: 0, y: 0 };
-    let panelStart = { x: 0, y: 0 };
+    const self = this;
 
-    header.addEventListener('mousedown', (e) => {
-      // bring panel to front when interacting with header
-      this.bringToFront(panel);
+    header.addEventListener('mousedown', function(e) {
+      // Bring panel to front when interacting with header
+      self.bringToFront(panel);
+      
       // Don't start dragging if clicking on buttons or inputs
-      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.closest('button') || e.target.closest('input')) {
+      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || 
+          e.target.closest('button') || e.target.closest('input')) {
         return;
       }
 
-      isDragging = true;
-      dragStart.x = e.clientX;
-      dragStart.y = e.clientY;
+      // Block iframes from capturing mouse events
+      self._blockIframes();
 
       const rect = panel.getBoundingClientRect();
-      panelStart.x = rect.left;
-      panelStart.y = rect.top;
+      
+      // Set global drag state - global handlers will take over
+      self._dragState = {
+        panel: panel,
+        startX: e.clientX,
+        startY: e.clientY,
+        panelStartX: rect.left,
+        panelStartY: rect.top,
+        header: header
+      };
 
       header.style.cursor = 'grabbing';
       document.body.style.userSelect = 'none';
-    });
-
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-
-      const deltaX = e.clientX - dragStart.x;
-      const deltaY = e.clientY - dragStart.y;
-
-      const newX = panelStart.x + deltaX;
-      const newY = panelStart.y + deltaY;
-
-      // Keep panel within viewport
-      const maxX = window.innerWidth - panel.offsetWidth;
-      const maxY = window.innerHeight - panel.offsetHeight;
-
-      panel.style.left = Math.max(0, Math.min(newX, maxX)) + 'px';
-      panel.style.top = Math.max(0, Math.min(newY, maxY)) + 'px';
-      panel.style.right = 'auto';
-    });
-
-    document.addEventListener('mouseup', () => {
-      if (isDragging) {
-        isDragging = false;
-        header.style.cursor = 'grab';
-        document.body.style.userSelect = '';
-        // Persist panel position
-        try {
-          const rect = panel.getBoundingClientRect();
-          const state = JSON.parse(localStorage.getItem('panelState:' + panel.id) || '{}');
-          state.left = Math.round(rect.left);
-          state.top = Math.round(rect.top);
-          localStorage.setItem('panelState:' + panel.id, JSON.stringify(state));
-        } catch (err) {
-          console.warn('Failed to save panel position', panel.id, err);
-        }
-      }
+      e.preventDefault();
     });
   },
 
   makeResizable: function(panel) {
+    // Ensure global handlers are initialized (once)
+    this._initGlobalHandlers();
+    
     const resizeHandle = panel.querySelector('.resize-handle');
     if (!resizeHandle) return;
 
-    let isResizing = false;
-    let resizeStart = { x: 0, y: 0 };
-    let panelStart = { width: 0, height: 0 };
-    // Define min width/height in the outer scope so both mousemove & mouseup handlers can reference them.
-  // Capture min width/height once so mouse handlers reference stable values
-  const minWidth = this.MIN_WIDTH;
-  const minHeight = this.MIN_HEIGHT;
+    const self = this;
+    const minWidth = this.MIN_WIDTH;
+    const minHeight = this.MIN_HEIGHT;
 
-    resizeHandle.addEventListener('mousedown', (e) => {
-      // bring panel to front when starting resize
-      this.bringToFront(panel);
-      isResizing = true;
-      resizeStart.x = e.clientX;
-      resizeStart.y = e.clientY;
-
+    resizeHandle.addEventListener('mousedown', function(e) {
+      // Bring panel to front when starting resize
+      self.bringToFront(panel);
+      
+      // Block iframes from capturing mouse events
+      self._blockIframes();
+      
       const rect = panel.getBoundingClientRect();
-      panelStart.width = rect.width;
-      panelStart.height = rect.height;
+      
+      // Set global resize state - global handlers will take over
+      self._resizeState = {
+        panel: panel,
+        startX: e.clientX,
+        startY: e.clientY,
+        panelStartW: rect.width,
+        panelStartH: rect.height,
+        minW: minWidth,
+        minH: minHeight
+      };
 
       document.body.style.userSelect = 'none';
       e.preventDefault();
-    });
-
-    document.addEventListener('mousemove', (e) => {
-      if (!isResizing) return;
-
-      const deltaX = e.clientX - resizeStart.x;
-      const deltaY = e.clientY - resizeStart.y;
-
-      const newWidth = panelStart.width + deltaX;
-      const newHeight = panelStart.height + deltaY;
-
-    // Enforce minimum and maximum sizes
-      const maxWidth = window.innerWidth - 20;
-      const maxHeight = window.innerHeight - 100;
-
-      panel.style.width = Math.max(minWidth, Math.min(newWidth, maxWidth)) + 'px';
-      panel.style.height = Math.max(minHeight, Math.min(newHeight, maxHeight)) + 'px';
-    });
-
-    document.addEventListener('mouseup', () => {
-      if (isResizing) {
-        isResizing = false;
-        document.body.style.userSelect = '';
-        // Persist panel size
-        try {
-          const rect = panel.getBoundingClientRect();
-          const state = JSON.parse(localStorage.getItem('panelState:' + panel.id) || '{}');
-          // enforce minimum when persisting
-          state.width = Math.round(Math.max(rect.width, minWidth));
-          state.height = Math.round(Math.max(rect.height, minHeight));
-          localStorage.setItem('panelState:' + panel.id, JSON.stringify(state));
-        } catch (err) {
-          console.warn('Failed to save panel size', panel.id, err);
-        }
-      }
     });
   }
 };
