@@ -3,7 +3,11 @@ Test the unified execute() method with background parameter.
 """
 import pytest
 import asyncio
+import sys
 from plugins.terminal.server import TerminalServer
+
+# Use sys.executable to get the correct Python interpreter path
+PYTHON = sys.executable
 
 
 class TestTerminalExecuteUnified:
@@ -73,7 +77,7 @@ class TestTerminalExecuteUnified:
         try:
             # Start background process
             result = await server.execute({
-                "command": "python -u -c 'import time; print(\"bg\"); time.sleep(1)'",
+                "command": f"{PYTHON} -u -c 'import time; print(\"bg\"); time.sleep(1)'",
                 "background": True,
                 "_status": mock_status
             })

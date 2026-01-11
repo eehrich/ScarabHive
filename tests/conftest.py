@@ -500,4 +500,75 @@ def mock_mcp_config():
     return MCPConfig(type="test", enabled=True, agent_config=agent_config)
 
 
+# ============================================================================
+# GLOBAL STATE RESET FIXTURES
+# These fixtures reset singleton/global state between tests to avoid cross-test
+# contamination when tests run in parallel or in different order.
+# ============================================================================
+
+def _reset_all_global_state():
+    """Helper function to reset all known global state."""
+    # Reset auth database
+    try:
+        from agent_system.auth import database as auth_db_module
+        auth_db_module._db = None
+    except ImportError:
+        pass
+    
+    # Reset plugin registries
+    try:
+        from agent_system.plugins import mcp_adapter
+        mcp_adapter.plugin_mcp_registry = mcp_adapter.PluginMCPRegistry()
+    except ImportError:
+        pass
+    
+    try:
+        from agent_system.plugins import web_adapter
+        web_adapter.plugin_web_registry = web_adapter.PluginWebRegistry()
+    except ImportError:
+        pass
+    
+    # Reset app registry
+    try:
+        from agent_system import app as app_module
+        app_module._app_registry = None
+        app_module._mcp_service = None
+        app_module._mcp_integration = None
+        app_module._tool_service = None
+        app_module._agent_service = None
+        app_module._initialization_service = None
+        app_module._session_manager = None
+        app_module._session_service = None
+        app_module._config_service = None
+    except ImportError:
+        pass
+    
+    # Reset hook registry
+    try:
+        from agent_system.hooks import registry as hooks_registry_module
+        hooks_registry_module._global_hook_registry = None
+    except ImportError:
+        pass
+    
+    # Reset MCP service module state
+    try:
+        from agent_system.mcp import service as mcp_service_module
+        if hasattr(mcp_service_module, '_service'):
+            mcp_service_module._service = None
+        if hasattr(mcp_service_module, '_mcp_registry'):
+            mcp_service_module._mcp_registry = None
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def reset_global_state():
+    """Reset all global state before and after each test."""
+    # Reset BEFORE test runs
+    _reset_all_global_state()
+    yield
+    # Reset AFTER test runs  
+    _reset_all_global_state()
+
+
 # End of conftest.py fixtures

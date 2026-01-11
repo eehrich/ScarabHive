@@ -1,12 +1,16 @@
 """Integration tests for Terminal plugin persistent sessions and background processes."""
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agent_system.config import AgentSystemConfig, MCPConfig
 from plugins.terminal.server import TerminalServer
+
+# Use sys.executable to get the correct Python interpreter path
+PYTHON = sys.executable
 
 
 @pytest.fixture
@@ -59,7 +63,7 @@ class TestTerminalServerIntegration:
         try:
             # Start background process (-u for unbuffered Python output)
             start_result = await server.execute_background({
-                "command": "python -u -c 'import time; [print(i) for i in range(3)]; time.sleep(0.5)'",
+                "command": f"{PYTHON} -u -c 'import time; [print(i) for i in range(3)]; time.sleep(0.5)'",
                 "_status": mock_status
             })
             

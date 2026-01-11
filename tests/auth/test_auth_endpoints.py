@@ -16,6 +16,19 @@ from fastapi.testclient import TestClient
 from agent_system.auth.models import UserRole, UserCreate
 from agent_system.auth.security import create_access_token
 from agent_system.auth.database import setup_database
+import agent_system.auth.database as auth_db_module
+
+
+@pytest.fixture(autouse=True)
+def reset_global_db():
+    """Reset the global database instance before each test."""
+    # Store original value
+    original_db = auth_db_module._db
+    # Reset to None before test
+    auth_db_module._db = None
+    yield
+    # Restore after test (or keep None to ensure clean state)
+    auth_db_module._db = None
 
 
 @pytest.fixture

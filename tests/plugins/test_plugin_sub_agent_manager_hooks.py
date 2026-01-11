@@ -1,7 +1,7 @@
 """Tests for sub-agent context injection hook."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 
 from plugins.sub_agent_manager.hooks import SubAgentContextInjector
 from agent_system.hooks.plugin_hook import HookContext, HookType
@@ -119,7 +119,11 @@ async def test_inject_context_with_sub_agents(injector, mock_manager):
 
 @pytest.mark.asyncio
 async def test_inject_context_limits_max_shown(mock_manager):
-    """Test that hook respects max_sub_agents_shown configuration."""
+    """Test that hook respects max_sub_agents_shown configuration.
+    
+    The hook sorts sub-agents by last_used (most recent first) and shows
+    only the N most recent ones where N = max_sub_agents_shown.
+    """
     # Create injector with max_shown=2
     config = {
         "max_sub_agents_shown": 2,
@@ -128,7 +132,8 @@ async def test_inject_context_limits_max_shown(mock_manager):
     }
     injector = SubAgentContextInjector(mock_manager, config)
     
-    # Mock 5 sub-agents
+    # Mock 5 sub-agents with distinct timestamps (index 4 is most recent)
+    base_time = datetime.now(UTC)
     sub_agents = [
         {
             "instance_id": f"parent_sub_agent_{i:03d}",
@@ -136,7 +141,7 @@ async def test_inject_context_limits_max_shown(mock_manager):
             "status": "active",
             "message_count": 10,
             "task_summary": f"Task {i}",
-            "last_used": datetime.now(UTC).isoformat()
+            "last_used": (base_time + timedelta(seconds=i)).isoformat()
         }
         for i in range(5)
     ]
@@ -163,9 +168,12 @@ async def test_inject_context_limits_max_shown(mock_manager):
     assert result.metadata.get("sub_agents_count") == 2
     
     injected_content = context.messages[0].content  # Inserted before user message
-    assert "parent_sub_agent_000" in injected_content
-    assert "parent_sub_agent_001" in injected_content
-    # Should NOT contain agents 2, 3, 4
+    # Should contain the 2 most recent (indices 4 and 3)
+    assert "parent_sub_agent_004" in injected_content
+    assert "parent_sub_agent_003" in injected_content
+    # Should NOT contain older agents (0, 1, 2)
+    assert "parent_sub_agent_000" not in injected_content
+    assert "parent_sub_agent_001" not in injected_content
     assert "parent_sub_agent_002" not in injected_content
 
 
