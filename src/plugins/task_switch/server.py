@@ -17,6 +17,22 @@ my_agent:
         - "task_switch/*"
 ```
 
+Plugin configuration in plugins.yaml:
+```yaml
+plugins:
+  servers:
+    task_switch:
+      type: task_switch
+      enabled: true
+      config:
+        task_var_name: "current_task"  # Variable name in template_vars
+        allowed_tasks:  # Optional: restrict valid task states
+          - init
+          - analyze
+          - execute
+          - review
+```
+
 Example prompt usage:
 ```jinja2
 {% if current_task == 'analyze' %}
@@ -27,7 +43,7 @@ Execute the plan step by step.
 ```
 """
 
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import logging
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
@@ -45,11 +61,22 @@ class TaskSwitchServer(SchemaBasedMCPServer):
                  mcp_config: "MCPConfig") -> None:
         super().__init__(name, system_config, mcp_config)
         
-        # Config for variable name (default: current_task)
+        # Config for variable name and allowed tasks
         self._task_var_name = "current_task"
+        self._allowed_tasks: Optional[List[str]] = None
+        
         config_dict = mcp_config.config if hasattr(mcp_config, "config") else {}
         if config_dict:
             self._task_var_name = config_dict.get("task_var_name", "current_task")
+            allowed = config_dict.get("allowed_tasks")
+            if allowed and isinstance(allowed, list):
+                self._allowed_tasks = [str(t) for t in allowed]
+    
+    def get_template_vars(self) -> Dict[str, Any]:
+        """Provide template variables for schema rendering."""
+        base_vars = super().get_template_vars()
+        base_vars["allowed_tasks"] = self._allowed_tasks or []
+        return base_vars
     
     async def set_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Set the current task state."""
@@ -59,6 +86,13 @@ class TaskSwitchServer(SchemaBasedMCPServer):
         
         if not task_name:
             return {"status": "error", "error": "task_name is required"}
+        
+        # Validate task is allowed (if restrictions configured)
+        if self._allowed_tasks and task_name not in self._allowed_tasks:
+            return {
+                "status": "error",
+                "error": f"Invalid task '{task_name}'. Allowed tasks: {self._allowed_tasks}"
+            }
         
         # Get agent_config from agent instance
         agent_config = agent.agent_config if agent and hasattr(agent, 'agent_config') else None

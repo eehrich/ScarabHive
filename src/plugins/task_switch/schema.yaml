@@ -5,7 +5,7 @@ tools:
     function:
       name: "{{ name }}_set_task"
       description: |
-        Switch to a different task/state. This will change your prompt dynamically to the new task and your behavior.       
+        Switch to a different task/state. This will change your prompt dynamically to the new task and your behavior.
       parameters:
         type: object
         properties:
@@ -14,7 +14,22 @@ tools:
             description: |
               The name of the task/state to switch to.
               This will be provided in your prompt context. Use it to adapt your behavior.
+            {% if allowed_tasks %}enum: {{ allowed_tasks | tojson }}
+            {% endif %}
         required:
           - task_name
         additionalProperties: false
 
+
+config:
+  task_var_name:
+    type: string
+    default: "current_task"
+    description: "Variable name in template_vars to store current task state"
+  
+  allowed_tasks:
+    type: array
+    default: []
+    description: "Optional list of allowed task states. Empty list = any task allowed. When set, only these tasks are valid."
+    items:
+      type: string

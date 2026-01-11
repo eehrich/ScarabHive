@@ -45,13 +45,31 @@ Agent (task=execute) → Completes task
 
 ## Configuration
 
-Optional custom variable name in `plugins.yaml`:
+Configure in `plugins.yaml`:
 
 ```yaml
 plugins:
   servers:
     task_switch:
-      type: task_switch    
+      type: task_switch
+      enabled: true
       config:
         task_var_name: "workflow_state"  # Default: "current_task"
+        allowed_tasks:                    # Optional: restrict valid states
+          - init
+          - analyze
+          - execute
+          - review
+```
+
+### allowed_tasks
+
+When `allowed_tasks` is configured:
+- The tool schema shows an enum with valid values (LLM sees options)
+- Invalid task names return an error to the LLM
+- Without this config, any task name is allowed
+
+Example error for invalid task:
+```json
+{"status": "error", "error": "Invalid task 'invalid'. Allowed tasks: ['init', 'analyze', 'execute', 'review']"}
 ```
