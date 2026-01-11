@@ -1431,13 +1431,31 @@
         if (!sseOk) {
           try {
             const r = await fetch('/run?task=' + encodeURIComponent(task), { method: 'POST' });
-            const j = await r.json();
-            const content = j.summary || JSON.stringify(j, null, 2);
-            const contentFormat = j.content_format || 'text';
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-            if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-              Prism.highlightAllUnder(blk.t);
+            if (!r.ok) {
+              // Extract error message from response
+              const errorText = await r.text();
+              let errorMsg = 'Request failed';
+              try {
+                const errorJson = JSON.parse(errorText);
+                errorMsg = errorJson.detail || errorJson.error || errorMsg;
+                // Add status code info if available
+                if (errorJson.status_code) {
+                  errorMsg = `${errorMsg} (${errorJson.status_code})`;
+                }
+              } catch (e) {
+                errorMsg = errorText || errorMsg;
+              }
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
+            } else {
+              const j = await r.json();
+              const content = j.summary || JSON.stringify(j, null, 2);
+              const contentFormat = j.content_format || 'text';
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+                Prism.highlightAllUnder(blk.t);
+              }
             }
           } catch (e) {
             showSection(blk.t);
@@ -1590,10 +1608,57 @@
           return; // Don't show error yet, we're reconnecting
         }
         
-        // No reconnect possible - show error and reset UI
-        const errorMessage = sseOk 
-          ? 'Connection lost - possible timeout or network issue'
-          : 'Connection failed - server may be unreachable';
+        // No reconnect possible - check for auth errors first
+        if (!sseOk) {
+          // Initial connection failed - try to get error details via fetch
+          fetch(eventUrl)
+            .then(async (resp) => {
+              let errorMsg = 'Connection failed - server may be unreachable';
+              if (!resp.ok) {
+                try {
+                  const errorText = await resp.text();
+                  const errorJson = JSON.parse(errorText);
+                  if (errorJson.status_code === 401) {
+                    errorMsg = '🔒 ' + (errorJson.detail || 'Authentication required') + ' - Please log in';
+                  } else if (errorJson.status_code === 403) {
+                    errorMsg = '🚫 ' + (errorJson.detail || 'Access denied');
+                  } else {
+                    errorMsg = errorJson.detail || errorJson.error || errorMsg;
+                  }
+                } catch (e) {
+                  errorMsg = `HTTP ${resp.status}: ${resp.statusText}`;
+                }
+              }
+              showSection(blk.t);
+              const currentContent = blk.t.textContent || '';
+              if (!currentContent.trim() || currentContent.includes('Thinking')) {
+                blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
+              } else {
+                const errorNotice = document.createElement('div');
+                errorNotice.className = 'response-text error';
+                errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMsg);
+                blk.t.appendChild(errorNotice);
+              }
+            })
+            .catch(() => {
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Connection failed - server may be unreachable')}</div>`;
+            })
+            .finally(() => {
+              runBtn.style.display = 'block';
+              stopBtn.style.display = 'none';
+              stopBtn.setAttribute('title', 'Stop');
+              stopBtn.setAttribute('aria-label', 'Stop');
+              stopBtn.disabled = false;
+              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+              currentEventSource = null;
+              sseReconnectAttempts = 0;
+            });
+          return;
+        }
+        
+        // Connection was lost mid-stream
+        const errorMessage = 'Connection lost - possible timeout or network issue';
         
         showSection(blk.t);
         const currentContent = blk.t.textContent || '';

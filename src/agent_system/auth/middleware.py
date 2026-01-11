@@ -231,15 +231,27 @@ class EndpointSecurityMiddleware:
         """Send an error response."""
         import json
         
-        body = json.dumps({"detail": detail}).encode("utf-8")
+        # Create detailed error response
+        error_body = {
+            "detail": detail,
+            "error": "Unauthorized" if status_code == 401 else "Forbidden",
+            "status_code": status_code
+        }
+        body = json.dumps(error_body).encode("utf-8")
+        
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ]
+        
+        # Add WWW-Authenticate header for 401 responses (RFC 7235)
+        if status_code == 401:
+            headers.append((b"www-authenticate", b'Bearer realm="AgentSystem API"'))
         
         await send({
             "type": "http.response.start",
             "status": status_code,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
+            "headers": headers,
         })
         await send({
             "type": "http.response.body",
