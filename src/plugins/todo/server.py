@@ -2000,10 +2000,12 @@ Example: `todo(operation="create", title="Analyze data and create report", prior
         return labels.get(priority, priority.upper())
 
     def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert task list (after first system message)."""
+        """Find position to insert task list (after all consecutive system messages at start)."""
+        # Find the end of consecutive system messages at the beginning
+        position = 0
         for i, msg in enumerate(messages):
             if msg.role == "system":
-                return i + 1
-
-        # No system message found, insert at beginning
-        return 0
+                position = i + 1  # Keep moving past system messages
+            else:
+                break  # Stop at first non-system message
+        return position
