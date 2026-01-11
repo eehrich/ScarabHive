@@ -175,6 +175,58 @@
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  max-height: 100%;
+}
+
+/* Fix iframe height in flex container - prevent 1px overflow */
+.floating-panel-body .panel-content iframe {
+  display: block;
+  height: 100%;
+  max-height: 100%;
+}
+
+/* Hide scrollbar by default in Chrome/Safari, show on hover */
+.floating-panel-body::-webkit-scrollbar,
+.floating-panel-body .panel-content::-webkit-scrollbar {
+  width: 10px;
+  background: transparent;
+}
+
+.floating-panel-body::-webkit-scrollbar-track,
+.floating-panel-body .panel-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.floating-panel-body::-webkit-scrollbar-thumb,
+.floating-panel-body .panel-content::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.floating-panel-body:hover::-webkit-scrollbar-thumb,
+.floating-panel-body .panel-content:hover::-webkit-scrollbar-thumb {
+  background: rgba(121, 121, 121, 0.4);
+  background-clip: padding-box;
+}
+
+.floating-panel-body::-webkit-scrollbar-thumb:hover,
+.floating-panel-body .panel-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 100, 100, 0.7);
+  background-clip: padding-box;
+}
+
+/* Firefox scrollbar - thin and only visible when needed */
+.floating-panel-body,
+.floating-panel-body .panel-content {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.floating-panel-body:hover,
+.floating-panel-body .panel-content:hover {
+  scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
 }
 
 /* Resize handle for floating panels */

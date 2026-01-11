@@ -532,7 +532,7 @@ header .header-buttons {
   flex: 1 1 auto;
   min-height: 0; /* allow flex children to shrink and enable scrolling */
   overflow: auto; /* enable scroll when content is larger than panel */
-  padding: 12px;
+  padding: 10px;
 }
 
 .floating-panel .panel-content {
