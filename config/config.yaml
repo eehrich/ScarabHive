@@ -234,6 +234,11 @@ auth:
         policy: "require_auth"
         min_role: "admin"
         description: "Plugin admin endpoints require admin role"
+
+      - pattern: "/plugins/user_management/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Management of users via plugin requires admin role"        
       
       # Example: Allow anonymous access to specific plugin endpoint
       # - pattern: "GET /plugins/todo/panel"
