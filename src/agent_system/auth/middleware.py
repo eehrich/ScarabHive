@@ -12,6 +12,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from urllib.parse import unquote, parse_qs
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -87,6 +88,44 @@ class EndpointSecurityMiddleware:
             except re.error as e:
                 logger.warning(f"Invalid pattern '{pattern}': {e}")
     
+    def _normalize_path(self, path: str) -> str:
+        """Normalize path to prevent traversal attacks.
+        
+        - URL-decodes the path
+        - Resolves .. and . segments
+        - Removes duplicate slashes
+        - Always starts with /
+        - Cannot escape above root (/../ becomes /)
+        
+        Args:
+            path: Raw URL path
+            
+        Returns:
+            Normalized path string
+        """
+        # URL decode (handles %2e%2e for .. etc)
+        decoded = unquote(path)
+        
+        try:
+            # Split into parts and filter out empty/dangerous segments
+            parts = decoded.split('/')
+            normalized_parts: list[str] = []
+            
+            for part in parts:
+                if part == '..':
+                    # Go up one level (but don't go above root - just ignore)
+                    if normalized_parts:
+                        normalized_parts.pop()
+                    # If no parts to pop, we're at root - ignore the ..
+                elif part and part != '.':
+                    normalized_parts.append(part)
+            
+            normalized = '/' + '/'.join(normalized_parts)
+            return normalized
+        except Exception:
+            # Fallback: return original if normalization fails
+            return path if path.startswith('/') else '/' + path
+    
     def _get_endpoint_policy(self, method: str, path: str) -> tuple:
         """Get the security policy for an endpoint.
         
@@ -94,6 +133,9 @@ class EndpointSecurityMiddleware:
             Tuple of (requires_auth, min_role, policy_name)
         """
         method = method.upper()
+        
+        # Normalize path to prevent traversal attacks
+        path = self._normalize_path(path)
         
         # Check configured rules in order
         for compiled_pattern, rule_method, rule in self._compiled_patterns:
@@ -112,28 +154,41 @@ class EndpointSecurityMiddleware:
     def _extract_user_info(self, scope: Scope) -> tuple:
         """Extract user info from JWT token.
         
+        Checks in priority order:
+        1. Authorization: Bearer <token> header
+        2. access_token cookie
+        3. ?token=<token> query parameter (for WebSocket/SSE connections)
+        
         Returns:
             Tuple of (username, role) or (None, None) if not authenticated
         """
         from jose import jwt, JWTError
         
         headers = dict(scope.get("headers", []))
-        
-        # Try Authorization header
-        auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
         token = None
         
+        # 1. Try Authorization header (highest priority)
+        auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
         if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
+            token = auth_header[7:].strip()
         
-        # Try cookie
+        # 2. Try cookie
         if not token:
             cookie_header = headers.get(b"cookie", b"").decode("utf-8", errors="ignore")
             for part in cookie_header.split(";"):
                 part = part.strip()
                 if part.startswith("access_token="):
-                    token = part[13:]
+                    token = part[13:].strip()
                     break
+        
+        # 3. Try query parameter (for SSE/WebSocket where headers may not be available)
+        if not token:
+            query_string = scope.get("query_string", b"").decode("utf-8", errors="ignore")
+            if query_string:
+                query_params = parse_qs(query_string)
+                token_list = query_params.get("token", [])
+                if token_list:
+                    token = token_list[0].strip()
         
         if not token:
             return (None, None)
@@ -147,6 +202,22 @@ class EndpointSecurityMiddleware:
             )
             username = payload.get("sub")
             role = payload.get("role", "user")
+            
+            # Validate extracted values
+            if not username or not isinstance(username, str):
+                logger.debug("JWT token has invalid or missing 'sub' claim")
+                return (None, None)
+            
+            # Sanitize username (alphanumeric, underscore, hyphen, dot only)
+            if not all(c.isalnum() or c in '_-.' for c in username):
+                logger.warning("JWT token has invalid username format")
+                return (None, None)
+            
+            # Validate role is a known value
+            if not isinstance(role, str) or role.lower() not in ROLE_HIERARCHY:
+                logger.debug(f"JWT token has unknown role: {role}, defaulting to 'user'")
+                role = "user"
+            
             return (username, role)
         except JWTError as e:
             logger.debug(f"JWT token error: {e}")
@@ -210,13 +281,16 @@ class EndpointSecurityMiddleware:
                         return
             
             # Return 401
-            logger.info(f"[SECURITY] Unauthorized: {method} {path} - no valid token")
+            safe_path = path.replace('\n', '').replace('\r', '')[:200]
+            logger.info(f"[SECURITY] Unauthorized: {method} {safe_path} - no valid token")
             await self._send_error_response(send, 401, "Authentication required")
             return
         
         # Check role
         if min_role and not self._check_role(user_role, min_role):
-            logger.info(f"[SECURITY] Forbidden: {method} {path} - user {username} "
+            safe_path = path.replace('\n', '').replace('\r', '')[:200]
+            safe_username = str(username).replace('\n', '').replace('\r', '')[:50] if username else 'unknown'
+            logger.info(f"[SECURITY] Forbidden: {method} {safe_path} - user {safe_username} "
                        f"has role {user_role}, requires {min_role}")
             await self._send_error_response(
                 send, 403, 
@@ -470,7 +544,6 @@ class SecurityAuditMiddleware:
         
         # Log to file
         if SecurityAuditMiddleware._security_logger:
-            level = "INFO" if allowed else "WARNING"
             status_str = "ALLOWED" if allowed else "DENIED"
             SecurityAuditMiddleware._security_logger.log(
                 logging.INFO if allowed else logging.WARNING,

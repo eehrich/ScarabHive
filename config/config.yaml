@@ -3,7 +3,7 @@
 # ================================
 
 name: "AgentSystem"
-version: "0.5.1"
+version: "0.5.2"
 description: "Scarab Flexible AI Agent System with plugin support"
 
 # all included configs
@@ -145,6 +145,23 @@ auth:
         policy: "allow_anonymous"
         description: "Static assets are public"
       
+      # Health and version endpoints - public for monitoring
+      - pattern: "GET /health"
+        policy: "allow_anonymous"
+        description: "Health check is public for load balancers"
+      
+      - pattern: "GET /api/health"
+        policy: "allow_anonymous"
+        description: "API health check is public"
+      
+      - pattern: "GET /api/version"
+        policy: "allow_anonymous"
+        description: "Version info is public"
+      
+      - pattern: "GET /favicon.ico"
+        policy: "allow_anonymous"
+        description: "Favicon is public"
+      
       # Admin-only endpoints - Documentation and debugging
       - pattern: "GET /docs"
         policy: "require_auth"
@@ -166,16 +183,79 @@ auth:
         min_role: "admin"
         description: "Debug endpoints require admin role"
       
+      - pattern: "* /api/debug/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "API debug endpoints require admin role"
+      
       - pattern: "* /api/plugins/security/*"
         policy: "require_auth"
         min_role: "admin"
         description: "Security audit endpoints require admin role"
+      
+      # Config endpoint - admin only (exposes system configuration)
+      # Note: Now under /admin/config (moved from /config)
+      
+      # Hook endpoints - admin only (system internals)
+      - pattern: "* /hooks/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Hook endpoints expose system internals"
+      
+      - pattern: "GET /hooks"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Hook listing requires admin role"
+      
+      # MCP endpoints - admin only (system internals)
+      - pattern: "* /mcp/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "MCP endpoints expose plugin internals"
+      
+      - pattern: "POST /mcp"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "MCP protocol endpoint requires admin"
+      
+      # Status pages - user role (system status is useful for all users)
+      - pattern: "GET /status"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Status page requires authentication"
+      
+      - pattern: "GET /status/*"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Status endpoints require authentication"
+      
+      # Agent debug endpoints - admin only (grouped under /agents/debug/*)
+      - pattern: "GET /agents/debug/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Agent debug endpoints require admin role"
       
       # Admin endpoints - always require admin role
       - pattern: "/admin/*"
         policy: "require_auth"
         min_role: "admin"
         description: "Admin endpoints require admin privileges"
+      
+      # Request management - requires user role (now under /api/requests/*)
+      - pattern: "GET /api/requests/*/status"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Request status requires authentication"
+      
+      - pattern: "POST /api/requests/*/cancel"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Cancel requests require authentication"
+      
+      - pattern: "POST /events/*/append"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Event append requires authentication"
       
       # Agent execution - requires user role
       - pattern: "POST /run"
@@ -194,6 +274,17 @@ auth:
         policy: "require_auth"
         min_role: "user"
         description: "Session management requires authentication"
+      
+      - pattern: "POST /sessions"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Session creation requires authentication"
+      
+      # Agent tool listing - user role
+      - pattern: "GET /agents/*/allowed-tools"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Agent tool listing requires authentication"
       
       # LLM profile listing - can be opened for UI
       - pattern: "GET /llm/profiles"

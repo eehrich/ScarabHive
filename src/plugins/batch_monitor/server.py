@@ -6,7 +6,6 @@ Provides web UI for monitoring batch queue status.
 from __future__ import annotations
 
 import logging
-import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING

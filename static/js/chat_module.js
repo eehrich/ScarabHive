@@ -1098,7 +1098,7 @@
         }, 60000); // 60 Sekunden
 
         try {
-          const response = await fetch(`/cancel/${currentRequestId}`, { method: 'POST' });
+          const response = await fetch(`/api/requests/${currentRequestId}/cancel`, { method: 'POST' });
           const result = await response.json();
           console.log('Cancel request result:', result);
           
@@ -1552,7 +1552,7 @@
             
             // Create new EventSource to status endpoint for this request
             // Note: We can't resume the original stream, but we can poll for completion
-            const statusUrl = `/request/${currentRequestId}/status`;
+            const statusUrl = `/api/requests/${currentRequestId}/status`;
             fetch(statusUrl)
               .then(r => r.json())
               .then(status => {
@@ -1699,7 +1699,7 @@
       
       try {
         // Check if job is still running
-        const response = await fetch(`/request/${storedRequestId}/status`);
+        const response = await fetch(`/api/requests/${storedRequestId}/status`);
         const status = await response.json();
         
         if (status.status === 'running') {

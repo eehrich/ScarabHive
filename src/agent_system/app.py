@@ -1077,8 +1077,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         return selected_agent, llm_override, llm_profile_info
 
-    @app.get("/config")
+    @app.get("/admin/config")
     def get_config():
+        """Return the full system configuration (admin only)."""
         return config.model_dump()
 
     @app.get("/agents")
@@ -1156,7 +1157,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
 
-    @app.get("/agents/{agent_name}/allowed-tools/debug")
+    @app.get("/agents/debug/{agent_name}/allowed-tools")
     async def get_agent_allowed_tools_debug(agent_name: str):
         """Return detailed pattern match diagnostics for an agent's allowed tools.
 
@@ -1165,6 +1166,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - Phase 2: Tool-level filtering (actual tools after expansion and blocked filtering)
         
         This shows the complete two-phase filtering process.
+        
+        Note: This endpoint is admin-only (requires admin role).
         """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
@@ -1243,7 +1246,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
 
-    @app.get("/agents/{agent_name}/system-prompt")
+    @app.get("/agents/debug/{agent_name}/system-prompt")
     async def get_agent_system_prompt(agent_name: str):
         """Return the currently rendered system & tools prompt for the agent.
 
@@ -1251,6 +1254,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
           - allowed tool filtering
           - max_steps (minus one for planning budget inside prompt)
           - datetime context (if enabled)
+        
+        Note: This endpoint is admin-only (requires admin role).
         """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
@@ -1925,7 +1930,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    @app.get("/request/{request_id}/status")
+    @app.get("/api/requests/{request_id}/status")
     async def get_request_status(request_id: str):
         """Get the status of a request for reconnection purposes.
         
@@ -1963,7 +1968,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "message": "Request finished - check session for results"
         }
 
-    @app.post("/cancel/{request_id}")
+    @app.post("/api/requests/{request_id}/cancel")
     async def cancel_request(request_id: str, force: bool = Query(default=False)):
         """Cancel an active request by its ID.
         
