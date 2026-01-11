@@ -1,0 +1,20 @@
+# Task Switch Plugin - State machine control for prompt segments
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_set_task"
+      description: |
+        Switch to a different task/state. This will change your prompt dynamically to the new task and your behavior.       
+      parameters:
+        type: object
+        properties:
+          task_name:
+            type: string
+            description: |
+              The name of the task/state to switch to.
+              This will be provided in your prompt context. Use it to adapt your behavior.
+        required:
+          - task_name
+        additionalProperties: false
+
