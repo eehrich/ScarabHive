@@ -384,7 +384,7 @@ async def _register_batch_clients(
                     api_key = os.environ.get("OPENAI_API_KEY", "")
                 
                 if not api_key:
-                    log.warning("No OpenAI API key found, skipping OpenAI batch client")
+                    log.info("No OpenAI API key found, skipping OpenAI batch client")
                     continue
                     
                 client = OpenAIBatchClient(api_key=api_key)
@@ -400,7 +400,7 @@ async def _register_batch_clients(
                     api_key = os.environ.get("GOOGLE_API_KEY", "")
                 
                 if not api_key:
-                    log.warning("No Gemini API key found, skipping Gemini batch client")
+                    log.info("No Gemini API key found, skipping Gemini batch client")
                     continue
                     
                 client = GeminiBatchClient(api_key=api_key)
@@ -416,7 +416,7 @@ async def _register_batch_clients(
                     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
                 
                 if not api_key:
-                    log.warning("No Anthropic API key found, skipping Anthropic batch client")
+                    log.info("No Anthropic API key found, skipping Anthropic batch client")
                     continue
                 
                 # Get default model from config if available
