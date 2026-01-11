@@ -873,6 +873,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             requests_per_minute=config.auth.requests_per_minute,
             security_headers_enabled=config.auth.security_headers_enabled,
             trusted_hosts=config.auth.trusted_hosts,
+            audit_enabled=config.auth.endpoint_security.audit_enabled,
         )
 
         # Include auth and admin routers

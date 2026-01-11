@@ -502,6 +502,9 @@ class EndpointSecurityConfig(BaseModel):
     # Default policy when no specific rule matches
     default_policy: Literal["require_auth", "allow_anonymous"] = "require_auth"
     
+    # Audit logging for all endpoint access (logs to security.log)
+    audit_enabled: bool = True
+    
     # Custom rules (processed in order, first match wins)
     rules: List[EndpointSecurityRule] = Field(default_factory=lambda: [
         # Admin endpoints always require admin role
@@ -557,9 +560,6 @@ class PluginSecurityConfig(BaseModel):
     # Global default for all plugin endpoints
     default_policy: Literal["require_auth", "allow_anonymous"] = "require_auth"
     default_min_role: str = "user"  # Default minimum role for plugin endpoints
-    
-    # Audit logging for plugin endpoint access
-    audit_enabled: bool = True
     
     # Plugin-specific overrides (plugin_name -> config)
     # Example: {"todo": {"policy": "allow_anonymous"}, "admin_tools": {"min_role": "admin"}}

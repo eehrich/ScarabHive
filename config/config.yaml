@@ -108,6 +108,7 @@ auth:
   # and what role is needed. Rules are processed in order, first match wins.
   endpoint_security:
     default_policy: "require_auth"  # Default: require authentication
+    audit_enabled: true             # Log all endpoint access to security.log
     rules:
       # Public API endpoints - no auth required
       - pattern: "GET /api/menu-definitions"
@@ -192,7 +193,6 @@ auth:
   plugin_security:
     default_policy: "require_auth"    # Default: all plugin endpoints require auth
     default_min_role: "user"          # Default minimum role for plugin endpoints
-    audit_enabled: true               # Log all plugin endpoint access
     
     # Plugin-specific overrides (uncomment and customize as needed)
     # plugin_overrides:

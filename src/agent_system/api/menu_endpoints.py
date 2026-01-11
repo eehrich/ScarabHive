@@ -95,6 +95,7 @@ async def get_menu_definitions(
 
 @menu_router.get("/menu-items")
 async def get_menu_items(
+    request: Request,
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """Get all menu items from plugins
@@ -103,6 +104,9 @@ async def get_menu_items(
     Includes built-in user menu items and plugin-contributed items.
     """
     items = []
+    
+    # Get config from app state
+    config = getattr(request.app.state, "config", None)
     
     # Add built-in user menu items
     if current_user:
@@ -146,21 +150,26 @@ async def get_menu_items(
             from agent_system.utils.profiling import PROFILING_ENABLED
             from agent_system.utils.memory_profiling import MEMORY_PROFILING_ENABLED
             
-            # Security Audit (always available for admins)
-            items.append({
-                "id": "security_audit",
-                "menu_id": "user",
-                "section": "admin",
-                "label": "Security Audit",
-                "action": "openPanel",
-                "panel_endpoint": "/api/security/audit",
-                "panel_title": "Plugin Security Audit",
-                "icon": "🔒",
-                "order": 54,  # Before performance dashboard
-                "builtin": True,
-                "requires_admin": True,
-                "tooltip": "View plugin endpoint access audit log"
-            })
+            # Security Audit (only when audit_enabled is true)
+            audit_enabled = (
+                config.auth.endpoint_security.audit_enabled 
+                if config and config.auth else False
+            )
+            if audit_enabled:
+                items.append({
+                    "id": "security_audit",
+                    "menu_id": "user",
+                    "section": "admin",
+                    "label": "Security Audit",
+                    "action": "openPanel",
+                    "panel_endpoint": "/api/security/audit",
+                    "panel_title": "Security Audit",
+                    "icon": "🔒",
+                    "order": 54,  # Before performance dashboard
+                    "builtin": True,
+                    "requires_admin": True,
+                    "tooltip": "View all endpoint access audit log"
+                })
             
             if PROFILING_ENABLED:
                 items.append({

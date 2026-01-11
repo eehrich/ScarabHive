@@ -288,7 +288,7 @@ class PluginEndpointSecurityEnforcer:
             allowed: Whether access was allowed
             reason: Reason for the decision
         """
-        if not self.auth_config or not self.auth_config.plugin_security.audit_enabled:
+        if not self.auth_config or not self.auth_config.endpoint_security.audit_enabled:
             return
         
         from datetime import datetime, timezone
@@ -647,92 +647,120 @@ class PluginWebRegistry:
                 logger.error(f"Failed to get plugin panels: {e}")
                 return {"panels": [], "error": str(e)}
         
-        # Add plugin security audit panel (admin only)
-        @app.get("/api/security/audit")
-        async def get_plugin_security_audit_panel(request: Request):
-            """HTML panel for plugin security audit log (admin only)."""
-            # Check admin access
-            if auth_config and auth_config.enabled:
-                from agent_system.auth.dependencies import require_admin
-                from agent_system.auth.database import get_db
-                
-                try:
-                    # Use the require_admin dependency properly
-                    db = get_db()
-                    from fastapi.security import HTTPBearer
-                    bearer = HTTPBearer(auto_error=False)
-                    credentials = await bearer(request)
-                    
-                    from agent_system.auth.dependencies import get_current_user, get_current_active_user
-                    user = await get_current_user(
-                        request=request,
-                        credentials=credentials,
-                        x_api_key=request.headers.get("x-api-key"),
-                        db=db
-                    )
-                    # Call require_admin to check admin role
-                    await require_admin(await get_current_active_user(user))
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    logger.error(f"Auth error in security audit: {e}")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Authentication required"
-                    )
-            
-            from fastapi.templating import Jinja2Templates
-            from pathlib import Path
-            
-            templates_dir = Path(__file__).parent.parent / "api" / "templates"
-            templates = Jinja2Templates(directory=str(templates_dir))
-            
-            return templates.TemplateResponse(
-                "security_audit.html",
-                {"request": request}
-            )
+        # Add security audit endpoints only if audit is enabled
+        audit_enabled = (
+            auth_config.endpoint_security.audit_enabled 
+            if auth_config else False
+        )
         
-        # Add plugin security audit endpoint (admin only)
-        @app.get("/api/plugins/security/audit")
-        async def get_plugin_security_audit(
-            request: Request,
-            plugin_name: Optional[str] = None,
-            limit: int = 100
-        ):
-            """Get plugin endpoint security audit log (admin only)."""
-            # Check admin access
-            if auth_config and auth_config.enabled:
-                from agent_system.auth.dependencies import require_admin, get_current_user, get_current_active_user
-                from agent_system.auth.database import get_db
-                from fastapi.security import HTTPBearer
-                
-                try:
-                    db = get_db()
-                    bearer = HTTPBearer(auto_error=False)
-                    credentials = await bearer(request)
+        if audit_enabled:
+            # Add plugin security audit panel (admin only)
+            @app.get("/api/security/audit")
+            async def get_plugin_security_audit_panel(request: Request):
+                """HTML panel for plugin security audit log (admin only)."""
+                # Check admin access
+                if auth_config and auth_config.enabled:
+                    from agent_system.auth.dependencies import require_admin
+                    from agent_system.auth.database import get_db
                     
-                    user = await get_current_user(
-                        request=request,
-                        credentials=credentials,
-                        x_api_key=request.headers.get("x-api-key"),
-                        db=db
-                    )
-                    await require_admin(await get_current_active_user(user))
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    logger.error(f"Auth error in security audit data: {e}")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Authentication required"
-                    )
-            
-            enforcer = get_plugin_security_enforcer()
-            return {
-                "audit_log": enforcer.get_audit_log(plugin_name, limit),
-                "total_plugins": len(self.web_plugins),
-                "plugins_with_routers": list(self.active_routers.keys()),
-            }
+                    try:
+                        # Use the require_admin dependency properly
+                        db = get_db()
+                        from fastapi.security import HTTPBearer
+                        bearer = HTTPBearer(auto_error=False)
+                        credentials = await bearer(request)
+                        
+                        from agent_system.auth.dependencies import get_current_user, get_current_active_user
+                        user = await get_current_user(
+                            request=request,
+                            credentials=credentials,
+                            x_api_key=request.headers.get("x-api-key"),
+                            db=db
+                        )
+                        # Call require_admin to check admin role
+                        await require_admin(await get_current_active_user(user))
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Auth error in security audit: {e}")
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Authentication required"
+                        )
+                
+                from fastapi.templating import Jinja2Templates
+                from pathlib import Path
+                
+                templates_dir = Path(__file__).parent.parent / "api" / "templates"
+                templates = Jinja2Templates(directory=str(templates_dir))
+                
+                return templates.TemplateResponse(
+                    "security_audit.html",
+                    {"request": request}
+                )
+        
+            # Add security audit endpoint (admin only) - now uses global middleware
+            @app.get("/api/plugins/security/audit")
+            async def get_security_audit(
+                request: Request,
+                category: Optional[str] = None,
+                limit: int = 100,
+                status_filter: Optional[str] = None
+            ):
+                """Get security audit log (admin only).
+                
+                Args:
+                    category: Filter by category (plugin, api, agent, auth, mcp, debug, health, other)
+                    limit: Maximum entries to return
+                    status_filter: Filter by status code range (2xx, 3xx, 4xx, 5xx, all)
+                """
+                # Check admin access
+                if auth_config and auth_config.enabled:
+                    from agent_system.auth.dependencies import require_admin, get_current_user, get_current_active_user
+                    from agent_system.auth.database import get_db
+                    from fastapi.security import HTTPBearer
+                    
+                    try:
+                        db = get_db()
+                        bearer = HTTPBearer(auto_error=False)
+                        credentials = await bearer(request)
+                        
+                        user = await get_current_user(
+                            request=request,
+                            credentials=credentials,
+                            x_api_key=request.headers.get("x-api-key"),
+                            db=db
+                        )
+                        await require_admin(await get_current_active_user(user))
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Auth error in security audit data: {e}")
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Authentication required"
+                        )
+                
+                # Get from new middleware
+                from agent_system.auth.middleware import get_security_audit_middleware
+                audit_middleware = get_security_audit_middleware()
+                
+                if audit_middleware:
+                    audit_log = audit_middleware.get_audit_log(category, limit, status_filter)
+                else:
+                    # Fallback to plugin enforcer (legacy)
+                    enforcer = get_plugin_security_enforcer()
+                    audit_log = enforcer.get_audit_log(category, limit)
+                
+                # Get available categories
+                categories = ["plugin", "api", "agent", "auth", "mcp", "debug", "health", "other"]
+                
+                return {
+                    "audit_log": audit_log,
+                    "categories": categories,
+                    "total_plugins": len(self.web_plugins),
+                    "plugins_with_routers": list(self.active_routers.keys()),
+                }
         
         # Add plugin security status endpoint
         @app.get("/api/plugins/security/status")
@@ -785,7 +813,7 @@ class PluginWebRegistry:
                 ) if auth_config else False,
                 "default_policy": auth_config.plugin_security.default_policy if auth_config else "allow_anonymous",
                 "default_min_role": auth_config.plugin_security.default_min_role if auth_config else None,
-                "audit_enabled": auth_config.plugin_security.audit_enabled if auth_config else False,
+                "audit_enabled": auth_config.endpoint_security.audit_enabled if auth_config else False,
                 "plugins": plugin_status,
             }
         
