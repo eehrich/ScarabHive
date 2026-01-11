@@ -113,7 +113,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
             handler_class=self
         )
 
-    async def panel_html(self, request: Request) -> HTMLResponse:
+    async def panel(self, request: Request) -> HTMLResponse:
         """Serve the SSH control panel HTML."""
         return self.templates.TemplateResponse(
             request,
@@ -123,10 +123,6 @@ class SSHControlWebEndpoints(PluginWebInterface):
                 "timestamp": int(time.time())
             }
         )
-
-    async def panel(self, request: Request) -> HTMLResponse:
-        """Serve alternate endpoint for the SSH control panel."""
-        return await self.panel_html(request)
 
     async def list_machines(self):
         """List all configured SSH machines with connection status."""

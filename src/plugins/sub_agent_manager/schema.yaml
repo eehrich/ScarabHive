@@ -99,6 +99,7 @@ web_ui:
   panel:
     enabled: true
     title: "{{ name }}"
+    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     width: "1000px"

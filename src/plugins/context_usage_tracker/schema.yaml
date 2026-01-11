@@ -13,7 +13,7 @@ web_ui:
   button:
     enabled: true
     icon: "📊"
-    label: "Context Usage"
+    text: "Context Usage"
     tooltip: "View context and token usage statistics"
     
   panel:

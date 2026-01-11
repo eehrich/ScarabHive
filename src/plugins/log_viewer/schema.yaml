@@ -58,12 +58,18 @@ web_ui:
   panel:
     enabled: true
     title: "Real-time Log Viewer"
-    panel_id: "log_viewer"
-    endpoint: "/plugins/log_viewer/panel"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"  # How to load content: "fetch" or "iframe"
     description: "View application logs with polling-based updates (avoids infinite logging loops)"
   
   endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "panel"
+      response_type: "html"
+      description: "Main log viewer UI panel"
+    
     - path: "/logs/list"
       method: "GET"
       handler: "list_log_files"

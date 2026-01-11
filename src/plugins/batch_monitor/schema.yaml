@@ -10,7 +10,7 @@ web_ui:
         section: "Monitoring"
         label: "Batch Queues"
         action: "openPanel"
-        panel_id: "batch_monitor"
+        panel_id: "{{ name }}"
         icon: "⚡"
         requires_admin: false
         order: 200
@@ -19,7 +19,8 @@ web_ui:
   panel:
     enabled: true
     title: "Batch Queues"
-    endpoint: "/plugins/batch_monitor/"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     width: "900px"
     height: "600px"

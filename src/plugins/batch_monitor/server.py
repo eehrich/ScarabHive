@@ -50,12 +50,16 @@ class BatchMonitorWebFactory:
         self._load_schema()
     
     def _load_schema(self) -> None:
-        """Load schema.yaml for endpoint definitions."""
-        schema_path = self.plugin_dir / "schema.yaml"
-        if schema_path.exists():
-            with open(schema_path, 'r', encoding='utf-8') as f:
-                self.schema = yaml.safe_load(f)
-        else:
+        """Load schema.yaml for endpoint definitions with template variable substitution."""
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        
+        try:
+            self.schema = load_schema_from_dir(
+                self.plugin_dir,
+                template_vars={"name": self.name}
+            )
+        except Exception as e:
+            logger.error(f"Failed to load schema for {self.name}: {e}")
             self.schema = {}
     
     def get_schema_data(self) -> dict:

@@ -174,9 +174,9 @@ web_ui:
   # Panel configuration
   panel:
     enabled: true
-    title: "{{name}}"
-    panel_id: "{{name}}"
-    endpoint: "/plugins/{{name}}/"
+    title: "{{ name }}"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     description: "View summarization events with before/after message counts and token savings"
 

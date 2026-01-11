@@ -21,7 +21,7 @@ web_ui:
         section: "admin"  # Admin section within user menu
         label: "Manage Users"
         action: "openPanel"
-        panel_id: "user_management"
+        panel_id: "{{ name }}"
         icon: "👥"
         requires_admin: true
         order: 50
@@ -31,8 +31,8 @@ web_ui:
   panel:
     enabled: true
     title: "User Management"
-    panel_id: "user_management"
-    endpoint: "/plugins/user_management/"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"  # Load as iframe - X-Frame-Options set to SAMEORIGIN in endpoints.py
     description: "Admin dashboard for managing user accounts, roles, and permissions"
   
