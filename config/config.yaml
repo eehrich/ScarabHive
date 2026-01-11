@@ -145,6 +145,32 @@ auth:
         policy: "allow_anonymous"
         description: "Static assets are public"
       
+      # Admin-only endpoints - Documentation and debugging
+      - pattern: "GET /docs"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Swagger UI requires admin role"
+      
+      - pattern: "GET /redoc"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "ReDoc UI requires admin role"
+      
+      - pattern: "GET /openapi.json"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "OpenAPI schema requires admin role"
+      
+      - pattern: "* /debug/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Debug endpoints require admin role"
+      
+      - pattern: "* /api/plugins/security/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Security audit endpoints require admin role"
+      
       # Admin endpoints - always require admin role
       - pattern: "/admin/*"
         policy: "require_auth"

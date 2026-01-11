@@ -747,7 +747,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Store agent and registry in app state for dependency injection
     app.state.agent = agent
     app.state.mcp_registry = registry
-    logger.info("Default agent and registry stored in app.state for dependency injection")
+    app.state.config = config
+    logger.info("Default agent, registry, and config stored in app.state for dependency injection")
 
     # Store registry and config globally
     global _app_registry, _app_config, _mcp_server_handler
@@ -869,6 +870,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Configure security middleware
         configure_security_middleware(
             app,
+            auth_config=config.auth,
             rate_limit_enabled=config.auth.rate_limit_enabled,
             requests_per_minute=config.auth.requests_per_minute,
             security_headers_enabled=config.auth.security_headers_enabled,

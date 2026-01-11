@@ -25,6 +25,228 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Role hierarchy: higher value = more permissions
+ROLE_HIERARCHY = {
+    "guest": 1,
+    "user": 2,
+    "admin": 3,
+}
+
+
+class EndpointSecurityMiddleware:
+    """
+    Endpoint security enforcement middleware (Pure ASGI implementation).
+    
+    Enforces endpoint_security rules from config.yaml by checking
+    JWT tokens and validating user roles for admin-only endpoints.
+    """
+    
+    def __init__(self, app: ASGIApp, auth_config: "AuthConfig"):
+        """
+        Initialize endpoint security middleware.
+        
+        Args:
+            app: ASGI application
+            auth_config: Authentication configuration with endpoint_security rules
+        """
+        self.app = app
+        self.auth_config = auth_config
+        self._compiled_patterns: List[tuple] = []
+        self._compile_patterns()
+    
+    def _compile_patterns(self) -> None:
+        """Compile endpoint patterns into regex for efficient matching."""
+        import fnmatch
+        import re
+        
+        self._compiled_patterns = []
+        
+        for rule in self.auth_config.endpoint_security.rules:
+            pattern = rule.pattern.strip()
+            
+            # Parse method prefix if present (e.g., "POST /run")
+            method = "*"
+            path_pattern = pattern
+            
+            parts = pattern.split(" ", 1)
+            if len(parts) == 2 and parts[0].upper() in ("GET", "POST", "PUT", "DELETE", "PATCH", "*"):
+                method = parts[0].upper()
+                path_pattern = parts[1]
+            
+            # Convert glob pattern to regex
+            regex_pattern = fnmatch.translate(path_pattern)
+            
+            # Only remove \Z for wildcard patterns (to allow prefix matching)
+            # For exact matches (no wildcards), keep \Z for exact match
+            if '*' in path_pattern or '?' in path_pattern:
+                regex_pattern = regex_pattern.replace(r'\Z', '')
+            
+            try:
+                compiled = re.compile(regex_pattern, re.IGNORECASE)
+                self._compiled_patterns.append((compiled, method, rule))
+            except re.error as e:
+                logger.warning(f"Invalid pattern '{pattern}': {e}")
+    
+    def _get_endpoint_policy(self, method: str, path: str) -> tuple:
+        """Get the security policy for an endpoint.
+        
+        Returns:
+            Tuple of (requires_auth, min_role, policy_name)
+        """
+        method = method.upper()
+        
+        # Check configured rules in order
+        for compiled_pattern, rule_method, rule in self._compiled_patterns:
+            if rule_method != "*" and rule_method != method:
+                continue
+            
+            if compiled_pattern.match(path):
+                requires_auth = rule.policy == "require_auth"
+                min_role = rule.min_role if requires_auth else None
+                return (requires_auth, min_role, rule.pattern)
+        
+        # No rule matched, use default policy
+        default_requires_auth = self.auth_config.endpoint_security.default_policy == "require_auth"
+        return (default_requires_auth, "user" if default_requires_auth else None, "default")
+    
+    def _extract_user_info(self, scope: Scope) -> tuple:
+        """Extract user info from JWT token.
+        
+        Returns:
+            Tuple of (username, role) or (None, None) if not authenticated
+        """
+        from jose import jwt, JWTError
+        
+        headers = dict(scope.get("headers", []))
+        
+        # Try Authorization header
+        auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
+        token = None
+        
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        
+        # Try cookie
+        if not token:
+            cookie_header = headers.get(b"cookie", b"").decode("utf-8", errors="ignore")
+            for part in cookie_header.split(";"):
+                part = part.strip()
+                if part.startswith("access_token="):
+                    token = part[13:]
+                    break
+        
+        if not token:
+            return (None, None)
+        
+        # Decode JWT token with verification
+        try:
+            payload = jwt.decode(
+                token, 
+                self.auth_config.secret_key, 
+                algorithms=[self.auth_config.algorithm]
+            )
+            username = payload.get("sub")
+            role = payload.get("role", "user")
+            return (username, role)
+        except JWTError as e:
+            logger.debug(f"JWT token error: {e}")
+            return (None, None)
+    
+    def _check_role(self, user_role: Optional[str], min_role: Optional[str]) -> bool:
+        """Check if user has sufficient role.
+        
+        Returns:
+            True if user has required role or higher
+        """
+        if min_role is None:
+            return True
+        
+        if user_role is None:
+            return False
+        
+        user_level = ROLE_HIERARCHY.get(user_role.lower(), 0)
+        required_level = ROLE_HIERARCHY.get(min_role.lower(), 0)
+        
+        return user_level >= required_level
+    
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Process request with security enforcement."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        
+        path = scope.get("path", "")
+        method = scope.get("method", "GET")
+        
+        # Get policy for this endpoint
+        requires_auth, min_role, matched_pattern = self._get_endpoint_policy(method, path)
+        
+        # If no auth required, pass through
+        if not requires_auth:
+            await self.app(scope, receive, send)
+            return
+        
+        # Auth required - check user
+        username, user_role = self._extract_user_info(scope)
+        
+        # No user and auth required
+        if username is None:
+            # Check if anonymous access is allowed for this endpoint
+            if self.auth_config.anonymous_access.enabled:
+                import fnmatch
+                for allowed in self.auth_config.anonymous_access.allowed_endpoints:
+                    allowed = allowed.strip()
+                    allowed_method = "*"
+                    allowed_path = allowed
+                    
+                    parts = allowed.split(" ", 1)
+                    if len(parts) == 2:
+                        allowed_method = parts[0].upper()
+                        allowed_path = parts[1]
+                    
+                    if (allowed_method == "*" or allowed_method == method.upper()) and \
+                       fnmatch.fnmatch(path, allowed_path):
+                        await self.app(scope, receive, send)
+                        return
+            
+            # Return 401
+            logger.info(f"[SECURITY] Unauthorized: {method} {path} - no valid token")
+            await self._send_error_response(send, 401, "Authentication required")
+            return
+        
+        # Check role
+        if min_role and not self._check_role(user_role, min_role):
+            logger.info(f"[SECURITY] Forbidden: {method} {path} - user {username} "
+                       f"has role {user_role}, requires {min_role}")
+            await self._send_error_response(
+                send, 403, 
+                f"Insufficient permissions. Required role: {min_role}"
+            )
+            return
+        
+        # User authenticated and authorized
+        await self.app(scope, receive, send)
+    
+    async def _send_error_response(self, send: Send, status_code: int, detail: str) -> None:
+        """Send an error response."""
+        import json
+        
+        body = json.dumps({"detail": detail}).encode("utf-8")
+        
+        await send({
+            "type": "http.response.start",
+            "status": status_code,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": body,
+        })
+
+
 class SecurityAuditMiddleware:
     """
     Security audit middleware (Pure ASGI implementation).
@@ -468,6 +690,7 @@ def configure_cors(
 
 def configure_security_middleware(
     app,
+    auth_config: Optional["AuthConfig"] = None,
     rate_limit_enabled: bool = True,
     requests_per_minute: int = 60,
     security_headers_enabled: bool = True,
@@ -479,12 +702,21 @@ def configure_security_middleware(
     
     Args:
         app: FastAPI application
+        auth_config: Authentication configuration for endpoint security enforcement
         rate_limit_enabled: Enable rate limiting
         requests_per_minute: Maximum requests per minute per IP
         security_headers_enabled: Enable security headers
         trusted_hosts: List of trusted host patterns (e.g., ["*.example.com"])
         audit_enabled: Enable security audit logging
     """
+    # Endpoint security enforcement (must be early to block unauthorized requests)
+    if auth_config and auth_config.enabled:
+        app.add_middleware(
+            EndpointSecurityMiddleware,
+            auth_config=auth_config,
+        )
+        logger.info("Endpoint security enforcement middleware enabled")
+    
     # Security audit (must be first to capture all requests)
     if audit_enabled:
         app.add_middleware(
