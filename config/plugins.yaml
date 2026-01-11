@@ -384,12 +384,12 @@ plugins:
         # Smart JSON truncation for tool responses
         # When tool response JSON exceeds max_message_length_chars,
         # long strings within the JSON are truncated while keeping structure valid
-        max_json_string_length: 10000  # Max chars per string in JSON
+        max_json_string_length: 50000  # Max chars per string in JSON
         keep_string_end: true  # Keep END of strings (newest data) vs beginning
         
         # Message preservation rules
         preserve_system_messages: true  # Never remove system messages
-        preserve_last_n_messages: 5  # Always keep last N messages
+        preserve_last_n_messages: 7  # Always keep last N messages
         
         # Remove consecutive duplicate messages (same role + content)
         remove_duplicates: true
@@ -409,8 +409,8 @@ plugins:
         
         # Tool result storage settings
         tool_result_min_size: 300      # Min tokens to store tool result externally
-        tool_result_keep_last: 5       # Keep last N tool results inline (unless too large)
-        tool_result_max_inline_size: 5000  # ALWAYS archive results > this size (even if last N)
+        tool_result_keep_last: 7       # Keep last N tool results inline (unless too large)
+        tool_result_max_inline_size: 10000  # ALWAYS archive results > this size (even if last N) *2 will also affect last tool call
         
         # Variable substitution settings
         variable_min_size: 300         # Min tokens to create $VAR_N variable
