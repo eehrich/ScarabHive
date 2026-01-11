@@ -243,13 +243,13 @@ web_ui:
     enabled: true
     title: "Context Engineer"
     panel_id: "{{ name }}"
-    endpoint: "/plugins/{{ name }}/panel"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     description: "View context engineering statistics including compaction history, core memory, and token savings"
 
   # API endpoints
   endpoints:
-    - path: "/panel"
+    - path: "/"
       methods: ["GET"]
       handler: "get_panel"
       response_type: "html"
