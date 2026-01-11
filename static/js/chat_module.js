@@ -1040,6 +1040,14 @@
     // Also export to global window for older modules
     try { global.currentSessionId = currentSessionId; } catch (e) { /* ignore */ }
     
+    // Clear session function (called on logout)
+    chatModule.clearSession = function() {
+      currentSessionId = null;
+      try { global.currentSessionId = null; } catch (e) { /* ignore */ }
+      sessionStorage.removeItem('lastSessionId');
+      updateHeaderSessionId();
+    };
+    
     // Event sources are now declared at module level (above init function)
 
     if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {

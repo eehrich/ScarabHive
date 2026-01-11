@@ -591,41 +591,19 @@ window.handleLogout = async function() {
     // Perform logout
     await window.authManager.logout();
     
-    // Re-initialize dropdown menu system (will show login button)
-    if (window.AgentSystem && window.AgentSystem.DropdownMenu) {
-      // Clear existing menus
-      window.AgentSystem.DropdownMenu.menus.clear();
-      const container = document.querySelector('.header-buttons');
-      if (container) {
-        const menuContainers = container.querySelectorAll('.dropdown-menu-container');
-        menuContainers.forEach(el => el.remove());
-      }
-      
-      // Reset initialization flag and re-initialize
-      window.AgentSystem.DropdownMenu.initialized = false;
-      await window.AgentSystem.DropdownMenu.init();
-    }
+    // Clear session data from storage (important: sessions are user-specific!)
+    sessionStorage.removeItem('lastSessionId');
+    sessionStorage.removeItem('currentSessionId');
+    localStorage.removeItem('lastSessionId');
+    localStorage.removeItem('currentSessionId');
     
-    // Clear chat or other user-specific UI elements
-    const chatElement = document.getElementById('chat');
-    if (chatElement) {
-      chatElement.innerHTML = '';
-    }
+    // Clear active request tracking
+    sessionStorage.removeItem('activeRequestId');
+    sessionStorage.removeItem('activeRequestTask');
+    sessionStorage.removeItem('activeRequestTimestamp');
     
-    // Close and clear sessions sidebar
-    if (window.sessionManager) {
-      const sidebar = document.getElementById('sessionsSidebar');
-      if (sidebar) {
-        sidebar.classList.remove('open');
-        // Clear session list
-        const sessionList = document.getElementById('sessionsList');
-        if (sessionList) {
-          sessionList.innerHTML = '';
-        }
-      }
-      // Reset session manager state
-      window.sessionManager.sidebarOpen = false;
-    }
+    // Reload page to reset all UI state (cleanest way to handle role-based UI)
+    window.location.reload();
     
   } catch (error) {
     console.error('Logout failed:', error);
