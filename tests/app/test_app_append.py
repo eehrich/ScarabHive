@@ -11,11 +11,6 @@ def test_http_append_consumed(tmp_path):
     This test patches auth.enabled to False during app build,
     effectively disabling all auth checks for this integration test.
     """
-    # Remove cached modules to ensure fresh import
-    modules_to_remove = [m for m in sys.modules if m.startswith('agent_system')]
-    for mod in modules_to_remove:
-        del sys.modules[mod]
-    
     # Patch the AuthConfig.enabled property to return False
     from agent_system.config.models import AuthConfig
     original_enabled = AuthConfig.__dict__.get('enabled', None)

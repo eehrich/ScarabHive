@@ -8,11 +8,6 @@ pytestmark = pytest.mark.anyio  # single backend auto-selected
 
 def _build_app_with_auth_disabled():
     """Build app with auth disabled for testing."""
-    # Remove cached modules to ensure fresh import
-    modules_to_remove = [m for m in sys.modules if m.startswith('agent_system')]
-    for mod in modules_to_remove:
-        del sys.modules[mod]
-    
     # Patch AuthConfig.enabled to return False
     from agent_system.config.models import AuthConfig
     

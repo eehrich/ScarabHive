@@ -21,18 +21,20 @@ def config_service():
 @pytest.fixture
 def mock_config():
     """Fixture providing a mock AgentSystemConfig with new structure."""
-    from agent_system.config.models import PluginsConfig
+    from agent_system.config.models import PluginsConfig, MCPConfig
     return AgentSystemConfig(
         plugins=PluginsConfig(
             plugin_dirs=["src/plugins", "external/plugins"],
             servers={
                 "test_server": MCPConfig(
                     enabled=True,
+                    type="basic_agent",
                     command="test_command",
                     args=["arg1", "arg2"]
                 ),
                 "disabled_server": MCPConfig(
                     enabled=False,
+                    type="basic_agent",
                     command="disabled_command"
                 )
             }

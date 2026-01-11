@@ -525,21 +525,26 @@ def _reset_all_global_state():
     try:
         from agent_system.plugins import web_adapter
         web_adapter.plugin_web_registry = web_adapter.PluginWebRegistry()
+        web_adapter._plugin_security_enforcer = None
     except ImportError:
         pass
     
-    # Reset app registry
+    # Reset app registry and all app-level globals
     try:
         from agent_system import app as app_module
         app_module._app_registry = None
-        app_module._mcp_service = None
+        app_module._app_config = None
         app_module._mcp_integration = None
+        app_module._mcp_server_handler = None
+        app_module._config_service = None
+        app_module._mcp_service = None
         app_module._tool_service = None
         app_module._agent_service = None
         app_module._initialization_service = None
         app_module._session_manager = None
         app_module._session_service = None
-        app_module._config_service = None
+        app_module._shutdown_event = None
+        app_module._app_start_time = None
     except ImportError:
         pass
     
@@ -557,6 +562,118 @@ def _reset_all_global_state():
             mcp_service_module._service = None
         if hasattr(mcp_service_module, '_mcp_registry'):
             mcp_service_module._mcp_registry = None
+    except ImportError:
+        pass
+    
+    # Reset MCP integration global instance
+    try:
+        from agent_system.mcp import integration as mcp_integration_module
+        mcp_integration_module.mcp_integration = None
+    except ImportError:
+        pass
+    
+    # Reset config service singleton
+    try:
+        from agent_system.services import config_service as config_service_module
+        if hasattr(config_service_module, '_config_service'):
+            config_service_module._config_service = None
+        if hasattr(config_service_module, '_cached_config'):
+            config_service_module._cached_config = None
+    except ImportError:
+        pass
+    
+    # Reset cancellation manager
+    try:
+        from agent_system.core import cancellation as cancellation_module
+        cancellation_module._cancellation_manager = None
+    except ImportError:
+        pass
+    
+    # Reset background job manager
+    try:
+        from agent_system.services import background_job_manager as bjm_module
+        bjm_module._background_job_manager = None
+    except ImportError:
+        pass
+    
+    # Reset profiling utils
+    try:
+        from agent_system.utils import profiling as profiling_module
+        profiling_module._request_profiler = None
+        profiling_module._task_monitor = None
+        profiling_module._loop_monitor = None
+    except ImportError:
+        pass
+    
+    # Reset memory profiling
+    try:
+        from agent_system.utils import memory_profiling as mem_module
+        mem_module._leak_detector = None
+        mem_module._reference_tracker = None
+        mem_module._snapshot_task = None
+        # Don't reset _profiling_executor as it may have active threads
+    except ImportError:
+        pass
+    
+    # Reset LLM batch components
+    try:
+        from agent_system.llm.batch import initialization as batch_init_module
+        batch_init_module._batch_queue_manager = None
+    except ImportError:
+        pass
+    
+    try:
+        from agent_system.llm.batch import job_tracker as job_tracker_module
+        job_tracker_module._job_tracker = None
+    except ImportError:
+        pass
+    
+    try:
+        from agent_system.llm import factory as llm_factory_module
+        llm_factory_module._batch_queue_manager = None
+        llm_factory_module._batch_manager_config = None
+    except ImportError:
+        pass
+    
+    # Reset config settings cache
+    try:
+        from agent_system.config import settings as settings_module
+        settings_module._plugins_cache = None
+        # Clear inheritance cache
+        if hasattr(settings_module, '_inheritance_cache'):
+            settings_module._inheritance_cache.clear()
+    except ImportError:
+        pass
+    
+    # Reset LLM capabilities registry
+    try:
+        from agent_system.llm import capabilities as capabilities_module
+        if hasattr(capabilities_module, '_capabilities_registry'):
+            capabilities_module._capabilities_registry.clear()
+    except ImportError:
+        pass
+    
+    # Reset plugin discovery shared modules
+    try:
+        from agent_system.plugins import discovery as discovery_module
+        if hasattr(discovery_module, '_registered_shared_modules'):
+            discovery_module._registered_shared_modules.clear()
+    except ImportError:
+        pass
+    
+    # Reset tool service locks
+    try:
+        from agent_system.services import tool_service as tool_service_module
+        if hasattr(tool_service_module, '_config_file_locks'):
+            tool_service_module._config_file_locks.clear()
+    except ImportError:
+        pass
+    
+    # Reset vector store backend cache
+    try:
+        from agent_system.utils import vector_store as vector_store_module
+        vector_store_module._VECTOR_BACKEND = None
+        vector_store_module._ONNX_PROVIDERS = None
     except ImportError:
         pass
 
