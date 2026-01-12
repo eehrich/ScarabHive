@@ -259,6 +259,11 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 # Markdown requires blank line before lists, but LLMs often forget this
                 html_content = self._fix_list_formatting(html_content)
                 
+                # Remove inline style attributes from table elements
+                # The Python markdown 'tables' extension adds style="text-align: ..." attributes
+                # which can interfere with CSS styling in the frontend
+                html_content = self._remove_table_inline_styles(html_content)
+                
                 # Sanitize HTML if enabled
                 if self.sanitize_html:
                     html_content = self._sanitize_html(html_content)
@@ -504,5 +509,26 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
         
         # Apply fix to paragraphs
         html = re.sub(r'<p>(.*?)</p>', fix_inline_list, html, flags=re.DOTALL)
+        
+        return html
+
+    def _remove_table_inline_styles(self, html: str) -> str:
+        """Remove inline style attributes from table elements.
+        
+        The Python markdown 'tables' extension adds style="text-align: ..." attributes
+        to <th> and <td> elements based on the alignment specified in the markdown (: --- :).
+        These inline styles have higher CSS specificity and can interfere with our
+        responsive CSS styling. This method removes them so CSS can control alignment.
+        
+        Args:
+            html: HTML content that may contain tables with inline styles
+            
+        Returns:
+            HTML with style attributes removed from table elements
+        """
+        # Remove style attributes from <th> and <td> elements
+        # Pattern: style="..." within table header or data cells
+        html = re.sub(r'(<th[^>]*)\s+style="[^"]*"', r'\1', html)
+        html = re.sub(r'(<td[^>]*)\s+style="[^"]*"', r'\1', html)
         
         return html

@@ -680,7 +680,12 @@ form {
   background: var(--bg-darkest);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
-  overflow: hidden;
+}
+
+/* Table header styling */
+.container-section .response-text table thead,
+.container-section .response-text .markdown-table thead {
+  background: var(--border-normal);
 }
 
 .container-section .response-text table th,
@@ -691,40 +696,47 @@ form {
   padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border-strong);
-  border-right: 1px solid var(--border-subtle);  /* Spalten-Trenner */
+  border-right: 1px solid var(--border-subtle);
 }
 
 .container-section .response-text table th:last-child,
 .container-section .response-text .markdown-table th:last-child {
-  border-right: none;  /* Kein Trenner bei letzter Spalte */
+  border-right: none;
+}
+
+/* Table body styling */
+.container-section .response-text table tbody,
+.container-section .response-text .markdown-table tbody {
+  background: var(--bg-darkest);
 }
 
 .container-section .response-text table td,
 .container-section .response-text .markdown-table td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
-  border-right: 1px solid var(--border-subtle);  /* Spalten-Trenner */
+  border-right: 1px solid var(--border-subtle);
   color: #e6edf3;
+  text-align: left;
 }
 
 .container-section .response-text table td:last-child,
 .container-section .response-text .markdown-table td:last-child {
-  border-right: none;  /* Kein Trenner bei letzter Spalte */
+  border-right: none;
 }
 
-.container-section .response-text table tr:last-child td,
-.container-section .response-text .markdown-table tr:last-child td {
+.container-section .response-text table tbody tr:last-child td,
+.container-section .response-text .markdown-table tbody tr:last-child td {
   border-bottom: none;
 }
 
-/* Zebra-Streifen: ungerade Zeilen mit leicht hellerem Hintergrund */
+/* Zebra-Streifen für bessere Lesbarkeit */
 .container-section .response-text table tbody tr:nth-child(odd),
-.container-section .response-text .markdown-table tr:nth-child(odd) {
-  background: rgba(56, 139, 253, 0.08);  /* Leicht blau-transparenter Hintergrund */
+.container-section .response-text .markdown-table tbody tr:nth-child(odd) {
+  background: rgba(56, 139, 253, 0.08);
 }
 
 .container-section .response-text table tbody tr:nth-child(even),
-.container-section .response-text .markdown-table tr:nth-child(even) {
+.container-section .response-text .markdown-table tbody tr:nth-child(even) {
   background: var(--bg-darkest);
 }
 
