@@ -21,6 +21,20 @@ plugins:
       type: ssh_control
       enabled: true
       machines:
+        - name: hosta
+          host: 192.0.2.2
+          port: 22
+          username: root
+          auth_method: key
+          key_path: ~/.ssh/id_rsa
+          max_connections: 3      
+        - name: hostb
+          host: 192.0.2.4
+          port: 22
+          username: root
+          auth_method: key
+          key_path: ~/.ssh/id_rsa
+          max_connections: 3
         - name: controlhost
           host: 192.0.2.114
           port: 22
@@ -35,7 +49,13 @@ plugins:
           auth_method: key
           key_path: ~/.ssh/id_rsa
           max_connections: 3
-
+        - name: PiHole
+          host: 192.0.2.25
+          port: 22
+          username: root
+          auth_method: key
+          key_path: ~/.ssh/id_rsa
+          max_connections: 3
 
     # the agent
     sysadmin_agent:
