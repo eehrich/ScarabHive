@@ -142,6 +142,16 @@ class GeminiSDKClient(LLMClient):
                     # thoughtSignature is stored directly in the part_dict
                     thought_sig = part_dict.get("thoughtSignature")
                     
+                    # Convert thought_signature to bytes if it's a base64 string
+                    # (happens when messages were JSON-serialized from session storage)
+                    if thought_sig and isinstance(thought_sig, str):
+                        try:
+                            import base64
+                            thought_sig = base64.b64decode(thought_sig)
+                        except Exception:
+                            # If decoding fails, try encoding as UTF-8 bytes
+                            thought_sig = thought_sig.encode('utf-8')
+                    
                     # CRITICAL: For Gemini 3 Pro, all function calls in current turn MUST have
                     # a thought_signature. If we don't have one (e.g., from a different model,
                     # or from older sessions), use Google's documented bypass token.
