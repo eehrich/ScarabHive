@@ -146,18 +146,22 @@ def convert_openai_messages_to_gemini(
                 if not thought_sig:
                     thought_sig = tc.get("thought_signature")
                 
-                # CRITICAL: For Gemini 3 models, all function calls in current turn MUST have
-                # a thought_signature. If we don't have one (e.g., from a different model,
-                # or from older sessions), use Google's documented bypass token to skip validation.
-                # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
-                # Valid bypass tokens: "skip_thought_signature_validator" or "context_engineering_is_the_way_to_go"
+                # Only set thoughtSignature if we actually have one from the original response.
+                # 
+                # IMPORTANT: Do NOT set skip_thought_signature_validator for ALL function calls!
+                # Google's documentation says validation is only for the CURRENT TURN.
+                # Setting bypass tokens on historical function calls can cause MALFORMED_FUNCTION_CALL.
+                #
+                # The bypass token should ONLY be used when:
+                # 1. Switching from another model (e.g., DeepSeek to Gemini) mid-conversation
+                # 2. AND the function call is in the CURRENT turn (after last user text message)
+                # 3. AND there's no original thought_signature
+                #
+                # For now, we only restore existing signatures. The model-switch case needs
+                # more sophisticated turn detection to work properly.
                 if thought_sig:
                     part["thoughtSignature"] = thought_sig
                     logger.debug(f"[Gemini] Restored thoughtSignature for {func_name}")
-                else:
-                    # Use bypass token for Gemini 3 compatibility
-                    part["thoughtSignature"] = "skip_thought_signature_validator"
-                    logger.debug(f"[Gemini] Using bypass thoughtSignature for {func_name} (no original signature)")
                 
                 parts.append(part)
             
