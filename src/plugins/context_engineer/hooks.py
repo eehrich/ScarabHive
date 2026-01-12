@@ -81,6 +81,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         
         # Variable settings
         self.variable_min_size = int(config.get("variable_min_size", 200))
+        self.assistant_keep_last = int(config.get("assistant_keep_last", 3))
         
         # Message settings
         self.archive_after_turns = int(config.get("archive_after_turns", 10))
@@ -177,6 +178,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 tool_result_keep_last=self.tool_result_keep_last,
                 tool_result_max_inline_size=self.tool_result_max_inline_size,
                 variable_min_size=self.variable_min_size,
+                assistant_keep_last=self.assistant_keep_last,
                 archive_after_turns=self.archive_after_turns,
                 drop_after_turns=self.drop_after_turns,
                 keep_system_messages=self.keep_system_messages

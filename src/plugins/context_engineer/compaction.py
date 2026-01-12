@@ -56,6 +56,7 @@ class CompactionConfig:
     
     # Variable settings
     variable_min_size: int = 200     # Min tokens to create variable
+    assistant_keep_last: int = 3    # Keep last N assistant messages inline (never create variables for recent messages)
     
     # Message archival settings
     archive_after_turns: int = 10    # Archive messages older than N turns
@@ -301,6 +302,7 @@ class LayeredCompactionStrategy:
         
         # Process messages in reverse (newer first, but skip last N tool results UNLESS too large)
         tool_results_seen = 0
+        assistant_messages_seen = 0
         
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
@@ -353,6 +355,12 @@ class LayeredCompactionStrategy:
             
             # Process assistant messages with large content
             elif msg.get("role") == "assistant":
+                assistant_messages_seen += 1
+                
+                # Skip recent assistant messages - they are still relevant to the conversation
+                if assistant_messages_seen <= self.config.assistant_keep_last:
+                    continue
+                
                 content = msg.get("content")
                 if content and isinstance(content, str):
                     token_count = estimate_content_tokens(content)
