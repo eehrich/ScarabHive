@@ -505,3 +505,46 @@ async def test_execute_task_with_request_id(agent_service, mock_agent):
         result_events.append(event)
     
     assert len(result_events) == 2
+
+
+@pytest.mark.asyncio
+async def test_exception_cancels_sub_requests():
+    """Test that exceptions during agent execution cancel sub-request tokens.
+    
+    This is critical for sub-agents: when parent agent fails with an exception,
+    sub-agents should also be cancelled to prevent them from continuing to run.
+    """
+    from agent_system.core.cancellation import get_cancellation_manager
+    
+    # Get the global cancellation manager
+    cancellation_manager = get_cancellation_manager()
+    
+    # Create tokens simulating parent and sub-agent scenario
+    parent_request_id = "test_parent_exception"
+    parent_token = cancellation_manager.create_token(parent_request_id)
+    sub_token_1 = cancellation_manager.create_token(f"{parent_request_id}_sub_abc")
+    sub_token_2 = cancellation_manager.create_token(f"{parent_request_id}_sub_def")
+    unrelated_token = cancellation_manager.create_token("other_request_xyz")
+    
+    try:
+        # Simulate what happens in Agent._run_events when an exception occurs:
+        # The exception handler calls cancel_request() with prefix matching
+        cancelled_count = cancellation_manager.cancel_request(parent_request_id)
+        
+        # Should have cancelled parent + 2 sub-requests = 3
+        assert cancelled_count > 0, "Should have cancelled at least the parent token"
+        
+        # Verify all parent-related tokens are cancelled
+        assert parent_token.is_cancelled, "Parent token should be cancelled"
+        assert sub_token_1.is_cancelled, "Sub-request token 1 should be cancelled"
+        assert sub_token_2.is_cancelled, "Sub-request token 2 should be cancelled"
+        
+        # Unrelated token should NOT be cancelled
+        assert not unrelated_token.is_cancelled, "Unrelated token should NOT be cancelled"
+        
+    finally:
+        # Cleanup
+        cancellation_manager.unregister_request(parent_request_id)
+        cancellation_manager.unregister_request(f"{parent_request_id}_sub_abc")
+        cancellation_manager.unregister_request(f"{parent_request_id}_sub_def")
+        cancellation_manager.unregister_request("other_request_xyz")

@@ -2059,6 +2059,14 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.exception("Agent execution failed with exception:")
                 yield {"type": "error", "message": f"Agent execution failed: {e}"}
+                
+                # CRITICAL: Cancel all sub-requests when parent agent fails
+                # This ensures sub-agents don't continue running when the parent has an error
+                # Uses prefix matching: request_id "abc123" will cancel "abc123_sub_xxx" etc.
+                cancellation_manager = get_cancellation_manager()
+                cancelled_count = cancellation_manager.cancel_request(request_id)
+                if cancelled_count:
+                    logger.info(f"Cancelled {cancelled_count} sub-request(s) due to parent agent error")
             finally:
                 # Phase 3: Finalize and cleanup
                 # Note: This runs even if generator is closed early, but we can't yield in that case

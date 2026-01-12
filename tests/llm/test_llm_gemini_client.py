@@ -370,10 +370,12 @@ class TestGeminiClientMessageConversion:
         assert image_part["inlineData"]["data"] == "UklGRiQAAABXRUJQ"
 
     def test_convert_tool_calls_without_thought_signature(self, gemini_client):
-        """Test that missing thought signature is omitted (not set to skip validator).
+        """Test that missing thought signature is replaced with bypass token for Gemini 3 compatibility.
         
-        This prevents MALFORMED_FUNCTION_CALL errors with historical function calls.
-        Gemini will handle missing signatures automatically.
+        Gemini 3 models require a thought_signature on all function calls in the current turn.
+        When no original signature is available (e.g., from older sessions or different models),
+        we use Google's documented bypass token to skip validation.
+        See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
         """
         messages = [
             ChatMessage(
@@ -394,8 +396,9 @@ class TestGeminiClientMessageConversion:
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
         part = contents[0]["parts"][0]
-        # Should NOT have thoughtSignature field when not present originally
-        assert "thoughtSignature" not in part
+        # Should have bypass thoughtSignature for Gemini 3 compatibility
+        assert "thoughtSignature" in part
+        assert part["thoughtSignature"] == "skip_thought_signature_validator"
 
 
 class TestGeminiClientToolConversion:

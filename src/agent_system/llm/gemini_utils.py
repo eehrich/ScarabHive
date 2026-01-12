@@ -146,12 +146,18 @@ def convert_openai_messages_to_gemini(
                 if not thought_sig:
                     thought_sig = tc.get("thought_signature")
                 
+                # CRITICAL: For Gemini 3 models, all function calls in current turn MUST have
+                # a thought_signature. If we don't have one (e.g., from a different model,
+                # or from older sessions), use Google's documented bypass token to skip validation.
+                # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
+                # Valid bypass tokens: "skip_thought_signature_validator" or "context_engineering_is_the_way_to_go"
                 if thought_sig:
                     part["thoughtSignature"] = thought_sig
                     logger.debug(f"[Gemini] Restored thoughtSignature for {func_name}")
-                # IMPORTANT: Do NOT set skip_thought_signature_validator for historical function calls
-                # Gemini will handle this automatically. Setting it explicitly can cause
-                # MALFORMED_FUNCTION_CALL errors when the model tries to validate historical calls.
+                else:
+                    # Use bypass token for Gemini 3 compatibility
+                    part["thoughtSignature"] = "skip_thought_signature_validator"
+                    logger.debug(f"[Gemini] Using bypass thoughtSignature for {func_name} (no original signature)")
                 
                 parts.append(part)
             
