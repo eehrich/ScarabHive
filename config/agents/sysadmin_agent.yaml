@@ -35,6 +35,13 @@ plugins:
           auth_method: key
           key_path: ~/.ssh/id_rsa
           max_connections: 3
+        - name: Ubuntu-hostb
+          host: 192.0.2.125
+          port: 22
+          username: operator
+          auth_method: key
+          key_path: ~/.ssh/id_rsa
+          max_connections: 3             
         - name: controlhost
           host: 192.0.2.114
           port: 22
