@@ -79,6 +79,8 @@ system_prompt: |
   Default Mode: Autonomous operation with proactive problem-solving.
   Seek clarification only for ambiguous requirements or high-risk operations.
 
+  Output Rules: Short and precise responses. Use bullet points and numbered lists for clarity.
+
 tools_prompt: |
   Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tools configured){% endif %}
 

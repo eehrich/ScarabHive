@@ -19,6 +19,7 @@ dependencies = [
     "requests>=2.28",
     "urllib3>=1.24.2,<2.4.0",  # <2.4.0 needed for kubernetes compatibility
     "duckduckgo-search>=6.1.6,<9.0",  # Note: ddgs package was hijacked by another project at v9.x
+    "tavily-python>=0.5.0",  # Tavily AI-powered web search
     "yfinance>=0.2.52",
     "curl-cffi>=0.5.0",
     "snscrape>=0.7.0",

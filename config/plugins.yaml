@@ -253,6 +253,17 @@ plugins:
       type: twitter_search
       enabled: false
 
+    # Tavily AI-powered web search (better than DuckDuckGo for complex queries)
+    # Get API key at: https://app.tavily.com
+    tavily_search:
+      type: tavily_search
+      enabled: true
+      api_key: "***REMOVED***"  # Set via TAVILY_API_KEY env var (recommended) or here
+      cache_ttl: 1800  # 30 minutes
+      cache_enabled: true
+      default_max_results: 5
+      default_search_depth: "basic"  # "basic" or "advanced" (2x credits)
+
     weather:
       type: weather
       enabled: true

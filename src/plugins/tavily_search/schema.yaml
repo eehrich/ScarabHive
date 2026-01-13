@@ -1,0 +1,103 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_web_search"
+      description: |
+        AI-powered web search using Tavily. Returns high-quality, relevant search results 
+        with content snippets. Supports filtering by time range, domains, and topic category.
+        Better than traditional search for complex queries requiring understanding of context.
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Search query - can be a question or keywords"
+          max_results:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 5
+            description: "Maximum number of search results (1-20)"
+          search_depth:
+            type: string
+            enum: ["basic", "advanced"]
+            default: "basic"
+            description: "'basic' for quick results, 'advanced' for more thorough search (uses 2 API credits)"
+          topic:
+            type: string
+            enum: ["general", "news", "finance"]
+            default: "general"
+            description: "Search category - 'general', 'news' (recent articles), or 'finance' (financial data)"
+          time_range:
+            type: string
+            enum: ["day", "week", "month", "year"]
+            description: "Filter results by recency (optional)"
+          include_domains:
+            type: array
+            items:
+              type: string
+            description: "Only include results from these domains (e.g. ['wikipedia.org', 'github.com'])"
+          exclude_domains:
+            type: array
+            items:
+              type: string
+            description: "Exclude results from these domains"
+          include_raw_content:
+            type: boolean
+            default: false
+            description: "Include full page content (markdown) - useful when snippets aren't enough"
+          include_answer:
+            type: boolean
+            default: false
+            description: "Include AI-generated answer summarizing search results"
+          ignore_cache:
+            type: boolean
+            default: false
+            description: "Bypass cache and fetch fresh results"
+        required: [query]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_extract"
+      description: |
+        Extract and parse content from URLs using Tavily's advanced extraction.
+        Returns clean, structured content from web pages. Better success rate than 
+        traditional scraping due to AI-powered extraction. Supports up to 20 URLs per request.
+      parameters:
+        type: object
+        properties:
+          urls:
+            type: array
+            items:
+              type: string
+            minItems: 1
+            maxItems: 20
+            description: "URLs to extract content from (max 20)"
+          extract_depth:
+            type: string
+            enum: ["basic", "advanced"]
+            default: "basic"
+            description: "'basic' for standard extraction, 'advanced' for better results on complex pages (LinkedIn, dynamic content)"
+          format:
+            type: string
+            enum: ["markdown", "text"]
+            default: "markdown"
+            description: "Output format - 'markdown' (default) or 'text'"
+          include_images:
+            type: boolean
+            default: false
+            description: "Include image URLs from extracted pages"
+          ignore_cache:
+            type: boolean
+            default: false
+            description: "Bypass cache and fetch fresh content"
+        required: [urls]
+        additionalProperties: false
+
+config:
+  api_key: ""  # Set via TAVILY_API_KEY env var or in plugins.yaml
+  cache_ttl: 1800  # 30 minutes default
+  cache_enabled: true
+  default_max_results: 5
+  default_search_depth: "basic"
