@@ -34,7 +34,10 @@ class ConnectionPool:
         self.strict_host_key_checking = strict_host_key_checking
         self.max_connections = machine_config.max_connections
         
-        # Connection pool
+        # Semaphore limits concurrent connections - guarantees FIFO fairness
+        self._semaphore = asyncio.Semaphore(self.max_connections)
+        
+        # Connection pool (reusable connections)
         self.available: asyncio.Queue[asyncssh.SSHClientConnection] = asyncio.Queue()
         self.in_use: set[asyncssh.SSHClientConnection] = set()
         self.total_created = 0
@@ -46,84 +49,99 @@ class ConnectionPool:
         
         self._lock = asyncio.Lock()
     
-    async def acquire(self) -> asyncssh.SSHClientConnection:
-        """Acquire connection from pool.
+    async def acquire(self, timeout: float = 30.0) -> asyncssh.SSHClientConnection:
+        """Acquire connection from pool using semaphore for fairness.
+        
+        Uses a semaphore to guarantee FIFO ordering - requests are served
+        in the order they arrive, preventing starvation.
+        
+        Args:
+            timeout: Maximum time to wait for connection slot (default: 30s)
         
         Returns:
             SSH connection
             
         Raises:
             asyncssh.Error: On connection failure
+            asyncio.TimeoutError: If no connection slot available within timeout
         """
         self.last_used = time.time()
         
-        # Try to get existing connection
+        # Wait for semaphore slot (FIFO queue) with timeout
         try:
-            conn = self.available.get_nowait()
-            
-            # Verify connection is still alive
-            try:
-                # Simple keepalive check
-                result = await asyncio.wait_for(
-                    conn.run('echo 1', check=False),
-                    timeout=5.0
-                )
-                if result.exit_status == 0:
-                    async with self._lock:
-                        self.in_use.add(conn)
-                    logger.debug(f"Reusing connection to {self.config.name}")
-                    return conn
-                else:
-                    # Connection broken, close it
-                    conn.close()
-            except (asyncio.TimeoutError, asyncssh.Error):
-                # Connection broken, close it
-                conn.close()
-        except asyncio.QueueEmpty:
-            pass
-        
-        # Create new connection if under limit
-        async with self._lock:
-            if self.total_created < self.max_connections:
-                logger.info(f"Creating new connection to {self.config.name} ({self.total_created + 1}/{self.max_connections})")
-                conn = await SSHAuthenticator.create_connection(
-                    self.config,
-                    self.known_hosts_file,
-                    self.strict_host_key_checking
-                )
-                self.total_created += 1
-                self.in_use.add(conn)
-                return conn
-        
-        # Wait for available connection
-        logger.debug(f"Waiting for available connection to {self.config.name}")
-        conn = await self.available.get()
-        
-        # Verify connection is still alive
-        try:
-            result = await asyncio.wait_for(
-                conn.run('echo 1', check=False),
-                timeout=5.0
+            acquired = await asyncio.wait_for(
+                self._semaphore.acquire(),
+                timeout=timeout
             )
-            if result.exit_status == 0:
-                async with self._lock:
-                    self.in_use.add(conn)
-                return conn
-            else:
-                # Connection broken, recreate
-                conn.close()
-                async with self._lock:
-                    self.total_created -= 1
-                return await self.acquire()  # Recursive retry
-        except (asyncio.TimeoutError, asyncssh.Error):
-            # Connection broken, recreate
-            conn.close()
+            if not acquired:
+                raise asyncio.TimeoutError("Failed to acquire semaphore")
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Timeout waiting for connection slot to {self.config.name} after {timeout}s "
+                f"(max_connections={self.max_connections}, {len(self.in_use)} in use)"
+            )
+            raise asyncio.TimeoutError(
+                f"No connection slot available to {self.config.name} within {timeout}s. "
+                f"All {self.max_connections} slots are busy. "
+                f"Consider increasing max_connections or reducing parallel commands."
+            )
+        
+        # We have a slot - now get or create a connection
+        try:
+            conn = await self._get_or_create_connection()
             async with self._lock:
-                self.total_created -= 1
-            return await self.acquire()  # Recursive retry
+                self.in_use.add(conn)
+            return conn
+        except Exception:
+            # Release semaphore slot on failure
+            self._semaphore.release()
+            raise
+    
+    async def _get_or_create_connection(self) -> asyncssh.SSHClientConnection:
+        """Get existing connection from pool or create new one.
+        
+        Called after semaphore is acquired, so we're guaranteed a slot.
+        """
+        # Try to get existing connection from pool
+        while True:
+            try:
+                conn = self.available.get_nowait()
+                
+                # Verify connection is still alive
+                try:
+                    result = await asyncio.wait_for(
+                        conn.run('echo 1', check=False),
+                        timeout=5.0
+                    )
+                    if result.exit_status == 0:
+                        logger.debug(f"Reusing connection to {self.config.name}")
+                        return conn
+                    else:
+                        # Connection broken, close and try next
+                        conn.close()
+                        async with self._lock:
+                            self.total_created -= 1
+                except (asyncio.TimeoutError, asyncssh.Error):
+                    # Connection broken, close and try next
+                    conn.close()
+                    async with self._lock:
+                        self.total_created -= 1
+            except asyncio.QueueEmpty:
+                break
+        
+        # No reusable connection - create new one
+        logger.info(f"Creating new connection to {self.config.name}")
+        conn = await SSHAuthenticator.create_connection(
+            self.config,
+            self.known_hosts_file,
+            self.strict_host_key_checking
+        )
+        async with self._lock:
+            self.total_created += 1
+        return conn
     
     async def release(self, conn: asyncssh.SSHClientConnection) -> None:
-        """Release connection back to pool.
+        """Release connection back to pool and free semaphore slot.
         
         Args:
             conn: SSH connection to release
@@ -151,6 +169,9 @@ class ConnectionPool:
             async with self._lock:
                 self.total_created -= 1
             logger.warning(f"Connection to {self.config.name} is dead, closed it", exc_info=True)
+        finally:
+            # Always release semaphore slot
+            self._semaphore.release()
     
     async def close_all(self) -> None:
         """Close all connections in pool."""
@@ -172,6 +193,9 @@ class ConnectionPool:
         
         async with self._lock:
             self.total_created = 0
+        
+        # Reset semaphore to initial state
+        self._semaphore = asyncio.Semaphore(self.max_connections)
 
 
 class SSHConnectionManager:
