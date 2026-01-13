@@ -275,6 +275,100 @@ class GeminiSDKClient(LLMClient):
         
         return usage
 
+    async def _cancellable_stream(
+        self,
+        stream_coro,
+        cancellation_token,
+        check_interval: float = 0.1
+    ) -> AsyncGenerator[Any, None]:
+        """Wrap an async stream to make it cancellable.
+        
+        The Google SDK's streaming doesn't natively support cancellation.
+        This wrapper periodically checks the cancellation token and raises
+        CancelledError if cancelled, even while waiting for chunks.
+        
+        Args:
+            stream_coro: Coroutine that returns an async iterator
+            cancellation_token: Token to check for cancellation
+            check_interval: How often to check cancellation while waiting (seconds)
+            
+        Yields:
+            Chunks from the underlying stream
+        """
+        stream = await stream_coro
+        stream_iter = stream.__aiter__()
+        
+        while True:
+            # Check cancellation before each chunk
+            if cancellation_token and cancellation_token.is_cancelled:
+                logger.info("[GeminiSDK] Cancellation detected, breaking stream")
+                raise asyncio.CancelledError("Request cancelled during streaming")
+            
+            # Use wait_for with timeout to allow periodic cancellation checks
+            try:
+                # Get next chunk with timeout
+                chunk = await asyncio.wait_for(
+                    stream_iter.__anext__(),
+                    timeout=check_interval
+                )
+                yield chunk
+            except asyncio.TimeoutError:
+                # Timeout just means we should check cancellation again
+                continue
+            except StopAsyncIteration:
+                # Stream finished
+                break
+
+    async def _cancellable_request(
+        self,
+        coro,
+        cancellation_token,
+        check_interval: float = 0.5
+    ) -> Any:
+        """Wrap a single async request to make it cancellable.
+        
+        For non-streaming requests, we run the request in a task and
+        periodically check the cancellation token.
+        
+        Args:
+            coro: Coroutine to execute
+            cancellation_token: Token to check for cancellation
+            check_interval: How often to check cancellation (seconds)
+            
+        Returns:
+            Result from the coroutine
+        """
+        if not cancellation_token:
+            # No cancellation token, just await normally
+            return await coro
+        
+        # Create task for the request
+        task = asyncio.create_task(coro)
+        
+        try:
+            while not task.done():
+                # Check cancellation
+                if cancellation_token.is_cancelled:
+                    task.cancel()
+                    logger.info("[GeminiSDK] Cancellation detected, cancelling request task")
+                    raise asyncio.CancelledError("Request cancelled during execution")
+                
+                # Wait a bit for task to complete
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(task),
+                        timeout=check_interval
+                    )
+                except asyncio.TimeoutError:
+                    # Just means we should check cancellation again
+                    continue
+            
+            # Task completed, get result
+            return task.result()
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+
     async def chat_tools_streaming(
         self,
         messages: List[ChatMessage],
@@ -334,15 +428,13 @@ class GeminiSDKClient(LLMClient):
                 logger.debug(f"[GeminiSDK] Has system instruction: {system_instruction is not None}")
                 logger.debug(f"[GeminiSDK] Has tools: {sdk_tools is not None}")
                 
-                # Use async streaming
-                async for chunk in await self._client.aio.models.generate_content_stream(
+                # Use cancellable streaming wrapper for responsive cancellation
+                stream_coro = self._client.aio.models.generate_content_stream(
                     model=self.model,
                     contents=contents,
                     config=generation_config,
-                ):
-                    if cancellation_token and cancellation_token.is_cancelled:
-                        raise asyncio.CancelledError("Request cancelled during streaming")
-                    
+                )
+                async for chunk in self._cancellable_stream(stream_coro, cancellation_token):
                     # Process chunk
                     if not chunk.candidates:
                         continue
@@ -684,10 +776,14 @@ class GeminiSDKClient(LLMClient):
             try:
                 logger.debug(f"[GeminiSDK] Starting non-streaming request to {self.model}")
                 
-                response = await self._client.aio.models.generate_content(
-                    model=self.model,
-                    contents=contents,
-                    config=generation_config,
+                # Use cancellable request wrapper for responsive cancellation
+                response = await self._cancellable_request(
+                    self._client.aio.models.generate_content(
+                        model=self.model,
+                        contents=contents,
+                        config=generation_config,
+                    ),
+                    cancellation_token
                 )
                 
                 # Extract response
