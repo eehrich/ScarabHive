@@ -1,22 +1,27 @@
-// Status Module - Modern Design (VSCode Theme)
+// Status Module - Modern Design (VSCode Theme) with MCP Integration
 window.AgentSystem = window.AgentSystem || {};
 
 window.AgentSystem.Status = {
   autoRefreshInterval: null,
   lastRefreshTime: null,
+  activeTab: 'status', // 'status' or 'mcp'
+  mcpData: null,
+  mcpLastRefreshTime: null,
   
   showPanel: function() {
-    // Create header with controls (like profiling panel)
+    // Create header with controls only (tabs are in content area)
     const headerContent = `
-      <span id="statusLastRefresh" style="font-size: 11px; color: #858585; margin-right: 8px;"></span>
+      <input id="mcpFilterInput" type="text" placeholder="Filter..." 
+             style="display:none;padding:5px 8px;border:1px solid #3e3e42;border-radius:4px;background:#1e1e1e;color:#d4d4d4;font-size:11px;width:120px;" />
+      <span id="statusLastRefresh" style="font-size:11px;color:#858585;margin-right:8px;"></span>
       <button id="statusRefreshBtn" class="icon-btn" title="Refresh">🔄</button>
-      <button id="statusAutoRefreshBtn" class="icon-btn active" title="Auto-Refresh (5s) - Active">⏱️</button>
+      <button id="statusAutoRefreshBtn" class="icon-btn" title="Auto-Refresh - Paused">⏱️</button>
     `;
     
     // Create panel with loading state
     const panel = window.AgentSystem.PanelManager.createPanel(
       'floatingStatusPanel', 
-      '📊 System Status', 
+      '📊 System', 
       '<div class="status-loading">Loading...</div>',
       '',
       headerContent
@@ -25,20 +30,93 @@ window.AgentSystem.Status = {
     // Add event listeners
     const refreshBtn = panel.querySelector('#statusRefreshBtn');
     const autoRefreshBtn = panel.querySelector('#statusAutoRefreshBtn');
+    const filterInput = panel.querySelector('#mcpFilterInput');
     
     if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => this.loadStatusData(panel));
+      refreshBtn.addEventListener('click', () => this.refreshCurrentTab(panel, true));
     }
     
     if (autoRefreshBtn) {
       autoRefreshBtn.addEventListener('click', () => this.toggleAutoRefresh(panel));
     }
     
+    if (filterInput) {
+      filterInput.addEventListener('input', (e) => this.filterMCPServers(e.target.value.toLowerCase()));
+    }
+    
+    // Render initial content with tabs
+    this.renderPanelWithTabs(panel);
+    
     // Load initial data
     this.loadStatusData(panel);
+  },
+  
+  renderPanelWithTabs: function(panel) {
+    const body = panel.querySelector('.floating-panel-body');
+    const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
     
-    // Start auto-refresh
-    this.startAutoRefresh(panel);
+    contentDiv.innerHTML = `
+      <style>
+        .system-tabs { display:flex; gap:0; margin-bottom:12px; border-bottom:1px solid #3e3e42; }
+        .system-tab { padding:8px 16px; background:transparent; border:none; color:#858585; cursor:pointer; font-size:13px; transition:all 0.2s; border-radius:4px 4px 0 0; font-family:inherit; outline:none; }
+        .system-tab:hover { color:#d4d4d4; background:#2d2d30; }
+        .system-tab:focus { outline:none; }
+        .system-tab.active { color:#569cd6; background:#252526; border:1px solid #3e3e42; }
+        .system-tab-content { display:none; }
+        .system-tab-content.active { display:block; }
+      </style>
+      <div class="system-tabs">
+        <button class="system-tab active" data-tab="status">📊 Status</button>
+        <button class="system-tab" data-tab="mcp">🔌 MCP Servers</button>
+      </div>
+      <div class="system-tab-content active" id="system-tab-status">
+        <div class="status-loading">Loading...</div>
+      </div>
+      <div class="system-tab-content" id="system-tab-mcp">
+        <div class="status-loading">Loading...</div>
+      </div>
+    `;
+    
+    // Add tab click handlers
+    const tabs = contentDiv.querySelectorAll('.system-tab');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => this.switchTab(panel, tab.dataset.tab));
+    });
+  },
+  
+  switchTab: function(panel, tab) {
+    this.activeTab = tab;
+    
+    // Update tab button states
+    const tabs = panel.querySelectorAll('.system-tab');
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    
+    // Update tab content visibility
+    const statusContent = panel.querySelector('#system-tab-status');
+    const mcpContent = panel.querySelector('#system-tab-mcp');
+    if (statusContent) statusContent.classList.toggle('active', tab === 'status');
+    if (mcpContent) mcpContent.classList.toggle('active', tab === 'mcp');
+    
+    // Show/hide filter input based on tab
+    const filterInput = panel.querySelector('#mcpFilterInput');
+    if (filterInput) {
+      filterInput.style.display = tab === 'mcp' ? 'block' : 'none';
+    }
+    
+    // Load appropriate content
+    if (tab === 'status') {
+      this.loadStatusData(panel);
+    } else {
+      this.loadMCPData(panel, false);
+    }
+  },
+  
+  refreshCurrentTab: function(panel, forceRefresh = false) {
+    if (this.activeTab === 'status') {
+      this.loadStatusData(panel);
+    } else {
+      this.loadMCPData(panel, forceRefresh);
+    }
   },
   
   toggleAutoRefresh: function(panel) {
@@ -47,20 +125,23 @@ window.AgentSystem.Status = {
       this.stopAutoRefresh();
       if (btn) {
         btn.classList.remove('active');
-        btn.title = 'Auto-Refresh (5s) - Paused';
+        btn.title = 'Auto-Refresh - Paused';
       }
     } else {
       this.startAutoRefresh(panel);
       if (btn) {
         btn.classList.add('active');
-        btn.title = 'Auto-Refresh (5s) - Active';
+        btn.title = 'Auto-Refresh - Active';
       }
     }
   },
   
   startAutoRefresh: function(panel) {
     if (this.autoRefreshInterval) return;
-    this.autoRefreshInterval = setInterval(() => this.loadStatusData(panel), 5000);
+    // Status refreshes every 5s, MCP every 30s
+    this.autoRefreshInterval = setInterval(() => {
+      this.refreshCurrentTab(panel, false);
+    }, this.activeTab === 'status' ? 5000 : 30000);
   },
   
   stopAutoRefresh: function() {
@@ -72,10 +153,15 @@ window.AgentSystem.Status = {
   
   updateTimestamp: function(panel) {
     const el = panel.querySelector('#statusLastRefresh');
-    if (el && this.lastRefreshTime) {
-      el.textContent = 'Updated: ' + this.lastRefreshTime.toLocaleTimeString();
+    const time = this.activeTab === 'status' ? this.lastRefreshTime : this.mcpLastRefreshTime;
+    if (el && time) {
+      el.textContent = 'Updated: ' + time.toLocaleTimeString();
     }
   },
+  
+  // ==========================================
+  // STATUS TAB
+  // ==========================================
   
   loadStatusData: async function(panel) {
     try {
@@ -118,9 +204,10 @@ window.AgentSystem.Status = {
       this.updateTimestamp(panel);
       
       const content = this.renderStatusContent(healthData, metaData, activeSessionsData, isAdmin);
-      const body = panel.querySelector('.floating-panel-body');
-      const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
-      contentDiv.innerHTML = content;
+      const tabContent = panel.querySelector('#system-tab-status');
+      if (tabContent) {
+        tabContent.innerHTML = content;
+      }
       
       // Attach cancel button event handlers if admin
       if (isAdmin && activeSessionsData && activeSessionsData.sessions) {
@@ -129,9 +216,10 @@ window.AgentSystem.Status = {
       
     } catch (error) {
       console.error('Failed to load status data:', error);
-      const body = panel.querySelector('.floating-panel-body');
-      const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
-      contentDiv.innerHTML = '<div class="status-error">❌ Failed to load status data</div>';
+      const tabContent = panel.querySelector('#system-tab-status');
+      if (tabContent) {
+        tabContent.innerHTML = '<div class="status-error">❌ Failed to load status data</div>';
+      }
     } finally {
       const refreshBtn = panel.querySelector('#statusRefreshBtn');
       if (refreshBtn) refreshBtn.disabled = false;
@@ -384,5 +472,188 @@ window.AgentSystem.Status = {
       
       ${packagesHtml}
     `;
+  },
+  
+  // ==========================================
+  // MCP TAB
+  // ==========================================
+  
+  loadMCPData: async function(panel, forceRefresh = false) {
+    try {
+      const refreshBtn = panel.querySelector('#statusRefreshBtn');
+      if (refreshBtn) refreshBtn.disabled = true;
+      
+      const url = forceRefresh ? '/mcp/status?force_refresh=true' : '/mcp/status';
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      this.mcpData = data;
+      this.mcpLastRefreshTime = new Date();
+      this.updateTimestamp(panel);
+      
+      const content = this.renderMCPContent(data);
+      const tabContent = panel.querySelector('#system-tab-mcp');
+      if (tabContent) {
+        tabContent.innerHTML = content;
+        // Re-apply filter if any
+        const filterInput = panel.querySelector('#mcpFilterInput');
+        if (filterInput && filterInput.value) {
+          this.filterMCPServers(filterInput.value.toLowerCase());
+        }
+      }
+      
+    } catch (error) {
+      console.error('Failed to load MCP data:', error);
+      const tabContent = panel.querySelector('#system-tab-mcp');
+      if (tabContent) {
+        tabContent.innerHTML = '<div class="status-error">❌ Failed to load MCP servers</div>';
+      }
+    } finally {
+      const refreshBtn = panel.querySelector('#statusRefreshBtn');
+      if (refreshBtn) refreshBtn.disabled = false;
+    }
+  },
+  
+  renderMCPContent: function(data) {
+    if (!data.servers || data.servers.length === 0) {
+      return '<div class="status-empty" style="padding:20px;text-align:center;">No MCP servers configured</div>';
+    }
+    
+    const totalServers = data.servers.length;
+    const connectedServers = data.servers.filter(s => s.connected || s.reachable).length;
+    const totalTools = data.servers.reduce((sum, s) => sum + (s.tool_count || 0), 0);
+    
+    return `
+      <style>
+        .mcp-summary { display:flex; gap:16px; margin-bottom:12px; padding:8px 0; border-bottom:1px solid #3e3e42; font-size:13px; color:#858585; }
+        .mcp-summary-item { display:flex; gap:4px; }
+        .mcp-summary-value { color:#4ec9b0; font-weight:500; }
+        .mcp-servers-container { display:flex; flex-direction:column; gap:1px; }
+        .mcp-server { background:#252526; border-radius:2px; overflow:hidden; }
+        .mcp-server-header { display:flex; align-items:center; padding:6px 10px; cursor:pointer; gap:10px; }
+        .mcp-server-header:hover { background:#2a2d2e; }
+        .mcp-status { font-size:12px; line-height:1; }
+        .mcp-status.connected { color:#4ec9b0; }
+        .mcp-status.disconnected { color:#f48771; }
+        .mcp-server-name { color:#d4d4d4; font-size:13px; flex:1; }
+        .mcp-server-meta { display:flex; align-items:center; gap:8px; font-size:12px; color:#858585; margin-left:auto; }
+        .mcp-expand-icon { color:#858585; font-size:11px; transition:transform 0.2s; }
+        .mcp-expand-icon.expanded { transform:rotate(90deg); }
+        .mcp-server-details { display:none; padding:8px 10px 8px 32px; background:#1e1e1e; }
+        .mcp-server-details.expanded { display:block; }
+        .mcp-tools-title { font-size:12px; color:#ce9178; margin-bottom:6px; }
+        .mcp-tool { padding:3px 0; }
+        .mcp-tool-name { font-family:'Consolas',monospace; color:#dcdcaa; font-size:12px; }
+        .mcp-tool-name.blocked { color:#f48771; text-decoration:line-through; }
+        .mcp-tool-desc { font-size:11px; color:#858585; margin-left:10px; }
+        .mcp-server-url { font-size:11px; color:#569cd6; margin-top:6px; font-family:'Consolas',monospace; }
+        .mcp-server-error { font-size:11px; color:#f48771; margin-top:6px; }
+      </style>
+      
+      <div class="mcp-summary" id="mcpMetrics">
+        <div class="mcp-summary-item">Servers: <span class="mcp-summary-value">${totalServers}</span></div>
+        <div class="mcp-summary-item">Connected: <span class="mcp-summary-value" style="color:${connectedServers === totalServers ? '#4ec9b0' : '#dcdcaa'}">${connectedServers}/${totalServers}</span></div>
+        <div class="mcp-summary-item">Tools: <span class="mcp-summary-value">${totalTools}</span></div>
+      </div>
+      
+      <div class="mcp-servers-container" id="mcpServersList">
+        ${data.servers.map((server, index) => this.renderMCPServer(server, index)).join('')}
+      </div>
+    `;
+  },
+  
+  renderMCPServer: function(server, index) {
+    const statusClass = (server.connected || server.reachable) ? 'connected' : 'disconnected';
+    const toolCount = server.tool_count || 0;
+    const serverId = server.id || index;
+    
+    // Build tools HTML
+    let toolsHtml = '';
+    if (server.tools && server.tools.length > 0) {
+      if (server.detailed_tools && server.detailed_tools.length > 0) {
+        toolsHtml = server.detailed_tools.map(tool => `
+          <div class="mcp-tool">
+            <div class="mcp-tool-name ${tool.blocked ? 'blocked' : ''}">${tool.name}${tool.blocked ? ' ✗' : ''}</div>
+            ${tool.description ? `<div class="mcp-tool-desc">${tool.description}</div>` : ''}
+          </div>
+        `).join('');
+      } else {
+        toolsHtml = server.tools.map(tool => `
+          <div class="mcp-tool"><div class="mcp-tool-name">${tool}</div></div>
+        `).join('');
+      }
+    } else {
+      toolsHtml = '<div style="color:#858585;font-size:10px;font-style:italic;">No tools</div>';
+    }
+    
+    return `
+      <div class="mcp-server" data-server-name="${server.name}" data-server-type="${server.type || ''}" data-tools="${(server.tools || []).join(' ')}">
+        <div class="mcp-server-header" onclick="AgentSystem.Status.toggleMCPServer('${serverId}')">
+          <span class="mcp-status ${statusClass}">●</span>
+          <div class="mcp-server-name">${server.name}</div>
+          <div class="mcp-server-meta">
+            <span>${toolCount} tools</span>
+            <span class="mcp-expand-icon" id="mcp-icon-${serverId}">▶</span>
+          </div>
+        </div>
+        <div class="mcp-server-details" id="mcp-details-${serverId}">
+          ${server.description ? `<div style="color:#858585;font-size:9px;margin-bottom:4px;">${server.description}</div>` : ''}
+          <div class="mcp-tools-title">Tools:</div>
+          ${toolsHtml}
+          ${server.url ? `<div class="mcp-server-url">📍 ${server.url}</div>` : ''}
+          ${server.error ? `<div class="mcp-server-error">⚠️ ${server.error}</div>` : ''}
+        </div>
+      </div>
+    `;
+  },
+  
+  toggleMCPServer: function(serverId) {
+    const details = document.getElementById(`mcp-details-${serverId}`);
+    const icon = document.getElementById(`mcp-icon-${serverId}`);
+    
+    if (details && icon) {
+      const isExpanded = details.classList.contains('expanded');
+      if (isExpanded) {
+        details.classList.remove('expanded');
+        icon.classList.remove('expanded');
+      } else {
+        details.classList.add('expanded');
+        icon.classList.add('expanded');
+      }
+    }
+  },
+  
+  filterMCPServers: function(searchTerm) {
+    const servers = document.querySelectorAll('.mcp-server');
+    let visibleCount = 0;
+    let visibleConnected = 0;
+    let visibleTools = 0;
+    
+    servers.forEach((server, index) => {
+      const name = server.dataset.serverName?.toLowerCase() || '';
+      const type = server.dataset.serverType?.toLowerCase() || '';
+      const tools = server.dataset.tools?.toLowerCase() || '';
+      
+      const matches = !searchTerm || name.includes(searchTerm) || type.includes(searchTerm) || tools.includes(searchTerm);
+      server.style.display = matches ? 'block' : 'none';
+      
+      if (matches && this.mcpData?.servers[index]) {
+        const serverData = this.mcpData.servers[index];
+        visibleCount++;
+        if (serverData.connected || serverData.reachable) visibleConnected++;
+        visibleTools += serverData.tool_count || 0;
+      }
+    });
+    
+    // Update summary
+    const metricsDiv = document.getElementById('mcpMetrics');
+    if (metricsDiv && this.mcpData) {
+      const total = this.mcpData.servers.length;
+      metricsDiv.innerHTML = `
+        <div class="mcp-summary-item">${searchTerm ? 'Filtered' : 'Servers'}: <span class="mcp-summary-value">${visibleCount}${searchTerm ? '/' + total : ''}</span></div>
+        <div class="mcp-summary-item">Connected: <span class="mcp-summary-value" style="color:${visibleConnected === visibleCount ? '#4ec9b0' : '#dcdcaa'}">${visibleConnected}/${visibleCount}</span></div>
+        <div class="mcp-summary-item">Tools: <span class="mcp-summary-value">${visibleTools}</span></div>
+      `;
+    }
   }
 };

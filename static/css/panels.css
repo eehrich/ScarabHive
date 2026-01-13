@@ -58,10 +58,10 @@
   outline: none !important;
 }
 
-/* Status panel specific positioning - smaller and on the right */
+/* Status panel specific positioning - medium size on the right */
 #floatingStatusPanel {
-  width: 400px;
-  height: 700px;
+  width: 450px;
+  height: 650px;
   right: 24px;
   left: auto;
   top: 80px;

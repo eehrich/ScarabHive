@@ -88,8 +88,8 @@ window.AgentSystem.PanelManager = {
     const offset = panelCount * 30; // Stagger panels
 
     if (id.includes('status')) {
-      panel.style.width = '400px';
-      panel.style.height = '700px';
+      panel.style.width = '450px';
+      panel.style.height = '650px';
   panel.style.minWidth = '380px';
   panel.style.minHeight = '320px';
       panel.style.right = (24 + offset) + 'px';

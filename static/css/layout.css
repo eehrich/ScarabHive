@@ -134,8 +134,6 @@ header .header-buttons {
 }
 
 /* Common button styling for header buttons */
-#statusToggleBtn,
-#mcpToggleBtn,
 #debugToggleBtn,
 .header-button,
 #contextDebugToggleBtn {
@@ -151,8 +149,6 @@ header .header-buttons {
   line-height: 1.2;
 }
 
-#statusToggleBtn:hover,
-#mcpToggleBtn:hover,
 #debugToggleBtn:hover,
 .header-button:hover,
 #contextDebugToggleBtn:hover {
@@ -161,8 +157,6 @@ header .header-buttons {
   color: #b3c5d4;
 }
 
-#statusToggleBtn:active,
-#mcpToggleBtn:active,
 #debugToggleBtn:active,
 .header-button:active,
 #contextDebugToggleBtn:active {
@@ -347,8 +341,7 @@ header .header-buttons {
 }
 
 /* Full-width buttons when collapsed */
-.header-buttons.collapsed button,
-.header-buttons.collapsed .header-button {
+.header-buttons.collapsed button {
   width: 100%;
   text-align: left;
   padding: 12px 16px;
