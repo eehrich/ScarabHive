@@ -178,7 +178,7 @@ class GeminiClient(LLMClient):
                             wait_time = 2 ** attempt
                             await report_status(f"Server error ({response.status_code}), retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                             logger.warning(f"Gemini server error {response.status_code}, retrying in {wait_time}s")
-                            await asyncio.sleep(wait_time)
+                            await self._cancellable_sleep(wait_time, cancellation_token)
                             continue
                         
                         if response.status_code != 200:
@@ -196,7 +196,7 @@ class GeminiClient(LLMClient):
                                     f"[Gemini] Schema 'too many states' error (sporadic). "
                                     f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                                 )
-                                await asyncio.sleep(wait_time)
+                                await self._cancellable_sleep(wait_time, cancellation_token)
                                 continue
                             
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
@@ -379,7 +379,7 @@ class GeminiClient(LLMClient):
                                     f"[Gemini] MALFORMED_FUNCTION_CALL with empty response. "
                                     f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                                 )
-                                await asyncio.sleep(wait_time)
+                                await self._cancellable_sleep(wait_time, cancellation_token)
                                 # Reset accumulators for retry (keep got_malformed_function_call=True for mode=ANY)
                                 accumulated_content = []
                                 accumulated_thoughts = []
@@ -421,7 +421,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Request timeout, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Gemini request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
@@ -450,7 +450,7 @@ class GeminiClient(LLMClient):
                             f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
-                        await asyncio.sleep(wait_time)
+                        await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
                     # Retries exhausted - raise for fallback
@@ -483,7 +483,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Error, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators for retry
                     accumulated_content = []
                     accumulated_thoughts = []
@@ -585,7 +585,7 @@ class GeminiClient(LLMClient):
                                 f"[Gemini] Schema 'too many states' error (sporadic). "
                                 f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                             )
-                            await asyncio.sleep(wait_time)
+                            await self._cancellable_sleep(wait_time, cancellation_token)
                             continue
                         
                         raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
@@ -617,7 +617,7 @@ class GeminiClient(LLMClient):
                                 f"[Gemini] MALFORMED_FUNCTION_CALL detected. "
                                 f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                             )
-                            await asyncio.sleep(wait_time)
+                            await self._cancellable_sleep(wait_time, cancellation_token)
                             continue
                         else:
                             logger.error(
@@ -710,7 +710,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Request timeout, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Gemini request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
@@ -739,7 +739,7 @@ class GeminiClient(LLMClient):
                             f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
-                        await asyncio.sleep(wait_time)
+                        await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
                     # Retries exhausted - raise for fallback
@@ -772,7 +772,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Error, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")

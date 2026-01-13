@@ -235,6 +235,41 @@ class ChatMessage(BaseModel):
 class LLMClient:
     """Base class for LLM clients with streaming support."""
 
+    async def _cancellable_sleep(
+        self,
+        duration: float,
+        cancellation_token,
+        check_interval: float = 0.5
+    ) -> None:
+        """Sleep that can be cancelled.
+        
+        Instead of blocking for the full duration, checks cancellation
+        periodically and raises CancelledError if cancelled.
+        
+        Args:
+            duration: Total sleep duration in seconds
+            cancellation_token: Token to check for cancellation
+            check_interval: How often to check cancellation (seconds)
+        """
+        import asyncio
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not cancellation_token:
+            await asyncio.sleep(duration)
+            return
+        
+        elapsed = 0.0
+        while elapsed < duration:
+            if cancellation_token.is_cancelled:
+                logger.info(f"[LLMClient] Sleep interrupted by cancellation after {elapsed:.1f}s")
+                raise asyncio.CancelledError("Request cancelled during retry wait")
+            
+            # Sleep for check_interval or remaining time, whichever is smaller
+            sleep_time = min(check_interval, duration - elapsed)
+            await asyncio.sleep(sleep_time)
+            elapsed += sleep_time
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         raise NotImplementedError
 

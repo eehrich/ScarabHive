@@ -197,7 +197,7 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during rate limit backoff")
-                        await asyncio.sleep(wait)
+                        await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     # Handle server errors (5xx) - retry with exponential backoff
                     if status is not None and status >= 500 and attempt < max_attempts:
@@ -205,7 +205,7 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during server error backoff")
-                        await asyncio.sleep(wait)
+                        await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     if status == 400:
                         error_text = str(e)
@@ -434,7 +434,7 @@ class OpenAIAsyncClient(LLMClient):
                             logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise Exception("Request cancelled by user during rate limit backoff")
-                            await asyncio.sleep(wait)
+                            await self._cancellable_sleep(wait, cancellation_token)
                             continue
                         # Retries exhausted - raise for fallback
                         await report_status(f"Rate limit exceeded after {max_attempts} attempts: {self.model}")
@@ -455,7 +455,7 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during server error backoff")
-                        await asyncio.sleep(wait)
+                        await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     if status == 400:
                         error_text = str(e)
@@ -867,7 +867,7 @@ class OpenAIAsyncClient(LLMClient):
                     backoff_time = retry_backoff * (2 ** attempt)
                     await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                     logger.warning(f"OpenAI stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     # Reset accumulated state for retry
                     accumulated_content = []
                     accumulated_tool_calls = {}

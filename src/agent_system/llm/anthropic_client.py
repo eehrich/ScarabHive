@@ -549,7 +549,7 @@ class AnthropicAsyncClient(LLMClient):
                             f"[Anthropic] Rate limit hit. Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
-                        await asyncio.sleep(wait_time)
+                        await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators
                         accumulated_content = []
                         accumulated_thinking = []
@@ -577,7 +577,7 @@ class AnthropicAsyncClient(LLMClient):
                         f"[Anthropic] Service overloaded. Waiting {wait_time:.1f}s "
                         f"(attempt {attempt + 1}/{self.max_retries + 1})"
                     )
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators
                     accumulated_content = []
                     accumulated_thinking = []

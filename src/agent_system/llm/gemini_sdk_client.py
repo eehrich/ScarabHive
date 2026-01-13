@@ -607,7 +607,7 @@ class GeminiSDKClient(LLMClient):
                             f"[GeminiSDK] MALFORMED_FUNCTION_CALL with empty response. "
                             f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                         )
-                        await asyncio.sleep(wait_time)
+                        await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators for retry (keep got_malformed_function_call=True for mode=ANY)
                         accumulated_content = []
                         accumulated_thoughts = []
@@ -673,7 +673,7 @@ class GeminiSDKClient(LLMClient):
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
                         await report_status(f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                        await asyncio.sleep(wait_time)
+                        await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators for retry
                         accumulated_content = []
                         accumulated_thoughts = []
@@ -704,7 +704,7 @@ class GeminiSDKClient(LLMClient):
                         f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                     )
                     await report_status(f"Schema error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators for retry
                     accumulated_content = []
                     accumulated_thoughts = []
@@ -723,7 +723,7 @@ class GeminiSDKClient(LLMClient):
                         f"(attempt {attempt + 1}/{self.max_retries + 1})"
                     )
                     await report_status(f"Error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators for retry
                     accumulated_content = []
                     accumulated_thoughts = []
@@ -888,7 +888,7 @@ class GeminiSDKClient(LLMClient):
                             f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
-                        await asyncio.sleep(wait_time)
+                        await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
                     # Retries exhausted - raise for fallback
@@ -912,7 +912,7 @@ class GeminiSDKClient(LLMClient):
                         f"[GeminiSDK] Retrying in {wait_time}s "
                         f"(attempt {attempt + 1}/{self.max_retries + 1})"
                     )
-                    await asyncio.sleep(wait_time)
+                    await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")

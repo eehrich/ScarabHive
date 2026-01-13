@@ -342,7 +342,7 @@ class HTTPXOpenAIClient(LLMClient):
                             backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
                             logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                             await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                            await asyncio.sleep(backoff_time)
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
                         # Retries exhausted - raise for fallback
                         error_text = response.text[:200] if response.text else ""
@@ -362,7 +362,7 @@ class HTTPXOpenAIClient(LLMClient):
                         backoff_time = self.retry_backoff * (2 ** attempt)
                         logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
                         await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                        await asyncio.sleep(backoff_time)
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
 
                     # Check for HTTP errors (4xx client errors or exhausted retries)
@@ -388,7 +388,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying in {backoff_time}s")
                     await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                 else:
                     logger.error(f"Request failed after {self.max_retries + 1} attempts")
                     await self._report_status(status_scope, f"Request failed after retries: {self.model}")
@@ -512,7 +512,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
                                 logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                                 await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                                await asyncio.sleep(backoff_time)
+                                await self._cancellable_sleep(backoff_time, cancellation_token)
                                 continue
                             # Retries exhausted - raise for fallback
                             error_body = await response.aread()
@@ -533,7 +533,7 @@ class HTTPXOpenAIClient(LLMClient):
                             backoff_time = self.retry_backoff * (2 ** attempt)
                             logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
                             await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                            await asyncio.sleep(backoff_time)
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
 
                         # Check for errors without reading body (streaming response)
@@ -759,7 +759,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
                     await self._report_status(status_scope, f"Timeout, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
@@ -773,7 +773,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
                     await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     # Client error or max retries exceeded
@@ -789,7 +789,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")
                     await self._report_status(status_scope, f"Network error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
@@ -863,7 +863,7 @@ class HTTPXOpenAIClient(LLMClient):
                         if attempt < self.max_retries:
                             backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
                             logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                            await asyncio.sleep(backoff_time)
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
                         # Retries exhausted - raise for fallback
                         error_text = response.text[:200] if response.text else ""
@@ -893,7 +893,7 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
@@ -905,7 +905,7 @@ class HTTPXOpenAIClient(LLMClient):
                     # Server error - retry
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     # Client error or max retries exceeded
@@ -918,7 +918,7 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Network error, retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     logger.error(f"Network error after {self.max_retries + 1} attempts: {e}")

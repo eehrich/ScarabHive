@@ -279,7 +279,7 @@ class OllamaNativeAsyncClient(LLMClient):
                             backoff_time = retry_backoff * (2 ** attempt)
                             await report_status(f"Server error ({response.status_code}), retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                             logger.warning(f"Ollama server error {response.status_code}, retrying in {backoff_time}s")
-                            await asyncio.sleep(backoff_time)
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
                         
                         response.raise_for_status()
@@ -387,7 +387,7 @@ class OllamaNativeAsyncClient(LLMClient):
                     backoff_time = retry_backoff * (2 ** attempt)
                     await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                     logger.warning(f"Ollama stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     await report_status(f"Stream failed after {max_retries + 1} attempts: {self.model}")
