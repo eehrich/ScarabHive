@@ -379,6 +379,23 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
 def _deep_merge_dict(base: dict, override: dict) -> dict:
     """Deep merge two dictionaries, with override values taking precedence.
     
+    Supports explicit list merge syntax:
+    - `+item`: Append item to parent list
+    - `!pattern`: Remove matching items from parent list (supports wildcards)
+    - Items without prefix: If any +/! exists, also appended; otherwise list is replaced
+    
+    Examples:
+        # Replace entire list (no +/! prefix)
+        tools:
+          allowed: ["new_tool/*"]  # Replaces parent's list
+        
+        # Merge with parent list
+        tools:
+          allowed:
+            - "+new_tool/*"     # Add to parent
+            - "!old_tool/*"     # Remove from parent
+            - "another_tool/*"  # Also added (merge mode active)
+    
     Args:
         base: Base dictionary (default values)
         override: Override dictionary (specific values that override base)
@@ -394,9 +411,102 @@ def _deep_merge_dict(base: dict, override: dict) -> dict:
             isinstance(value, dict)):
             # Recursively merge nested dictionaries
             result[key] = _deep_merge_dict(result[key], value)
+        elif (key in result and 
+              isinstance(result[key], list) and 
+              isinstance(value, list)):
+            # Check if list uses explicit merge syntax (+/!)
+            result[key] = _merge_lists_with_syntax(result[key], value)
         elif value is not None:
             # Override with non-None values
             result[key] = value
         # Skip None values to preserve defaults
     
     return result
+
+
+def _merge_lists_with_syntax(parent_list: list, child_list: list) -> list:
+    """Merge two lists using explicit +/! syntax.
+    
+    If the child list contains any items with + or ! prefix, merge mode is activated:
+    - +item: Add item (without prefix) to result
+    - !pattern: Remove matching items from parent (supports * wildcard)
+    - item (no prefix): Also added in merge mode
+    
+    If no +/! prefixes found, the child list completely replaces the parent.
+    
+    Args:
+        parent_list: The base list from parent config
+        child_list: The override list from child config
+        
+    Returns:
+        Merged or replaced list
+    """
+    # Check if any item uses merge syntax
+    has_merge_syntax = any(
+        isinstance(item, str) and (item.startswith('+') or item.startswith('!'))
+        for item in child_list
+    )
+    
+    if not has_merge_syntax:
+        # No merge syntax - complete replacement (original behavior)
+        return child_list
+    
+    # Merge mode: start with parent list
+    result = list(parent_list)
+    
+    for item in child_list:
+        if not isinstance(item, str):
+            # Non-string items are added as-is
+            if item not in result:
+                result.append(item)
+            continue
+            
+        if item.startswith('!'):
+            # Remove pattern from result
+            pattern = item[1:]  # Strip ! prefix
+            result = [r for r in result if not _matches_pattern(r, pattern)]
+        elif item.startswith('+'):
+            # Add item (strip + prefix)
+            clean_item = item[1:]
+            if clean_item not in result:
+                result.append(clean_item)
+        else:
+            # Regular item in merge mode - also add
+            if item not in result:
+                result.append(item)
+    
+    return result
+
+
+def _matches_pattern(value: str, pattern: str) -> bool:
+    """Check if a value matches a pattern (supports * wildcard).
+    
+    Args:
+        value: The value to check
+        pattern: The pattern (e.g., "w_sam/*" or "exact_match")
+        
+    Returns:
+        True if value matches pattern
+    """
+    if not isinstance(value, str):
+        return False
+    
+    if pattern == value:
+        return True
+    
+    if '*' in pattern:
+        # Simple wildcard matching
+        if pattern.endswith('/*'):
+            # "plugin/*" matches "plugin/tool" and "plugin"
+            prefix = pattern[:-2]
+            return value == prefix or value.startswith(prefix + '/')
+        elif pattern.endswith('*'):
+            # "prefix*" matches anything starting with "prefix"
+            prefix = pattern[:-1]
+            return value.startswith(prefix)
+        elif pattern.startswith('*'):
+            # "*suffix" matches anything ending with "suffix"
+            suffix = pattern[1:]
+            return value.endswith(suffix)
+    
+    return False

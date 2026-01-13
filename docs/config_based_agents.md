@@ -163,6 +163,55 @@ tools:
 2. `blocked` takes precedence over `allowed`
 3. Patterns support wildcards (`*`)
 
+**List Merge Syntax for Inheritance:**
+
+When an agent inherits from another agent via `type:`, lists are **replaced by default**. Use explicit prefixes to merge:
+
+| Prefix | Behavior | Example |
+|--------|----------|---------|
+| `+item` | Append item to parent list | `+new_tool/*` |
+| `!pattern` | Remove matching items from parent | `!old_tool/*` |
+| `item` (no prefix) | In merge mode: also appended | `regular_tool/*` |
+
+**Example:**
+
+```yaml
+# Parent agent
+book_architect:
+  type: writer_agent
+  agent_config:
+    tools:
+      allowed:
+        - "writer_content/*"
+        - "w_sam/*"            # Parent uses standard sub-agent manager
+        - "todo/*"
+
+# Child agent inheriting from book_architect
+book_architect_gemini_batch:
+  type: book_architect         # Inherits from book_architect
+  agent_config:
+    tools:
+      allowed:
+        - "!w_sam/*"           # Remove parent's w_sam from allowed
+        - "+w_sam_gemini/*"    # Add gemini-specific sub-agent manager
+      blocked:
+        - "+w_sam/*"           # Also block it explicitly
+```
+
+**Result:** The child agent will have:
+- All parent tools EXCEPT `w_sam/*` (removed by `!`)
+- Plus `w_sam_gemini/*` (added by `+`)
+- `w_sam/*` in blocked list
+
+**Without prefixes** (complete replacement):
+```yaml
+tools:
+  allowed:
+    - "only_this_tool/*"  # Replaces entire parent list
+```
+
+This syntax works for **any list** in the config, not just tools - including `template_vars`, `llm_profile_fallbacks`, etc.
+
 ### self_tool_descriptions Configuration
 
 Override descriptions for the agent's own tools (inherited from base_type):

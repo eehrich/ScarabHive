@@ -324,3 +324,198 @@ class TestInheritanceIntegration:
         assert scene_config.agent_config.max_steps == 200
         # Should also inherit hooks
         assert scene_config.agent_config.hooks.enabled is True
+
+
+class TestListMergeSyntax:
+    """Tests for explicit +/! list merge syntax during inheritance."""
+
+    def test_list_without_syntax_replaces(self):
+        """Test that lists without +/! prefix completely replace parent list."""
+        base = {
+            "agent_config": {
+                "tools": {
+                    "allowed": ["tool_a/*", "tool_b/*"],
+                }
+            }
+        }
+        override = {
+            "agent_config": {
+                "tools": {
+                    "allowed": ["tool_c/*"],  # No +/! = REPLACE
+                }
+            }
+        }
+        result = _deep_merge_dict(base, override)
+        
+        # Should completely replace
+        assert result["agent_config"]["tools"]["allowed"] == ["tool_c/*"]
+
+    def test_plus_prefix_appends(self):
+        """Test that + prefix appends to parent list."""
+        base = {
+            "agent_config": {
+                "tools": {
+                    "allowed": ["tool_a/*", "tool_b/*"],
+                }
+            }
+        }
+        override = {
+            "agent_config": {
+                "tools": {
+                    "allowed": ["+tool_c/*"],  # + = append
+                }
+            }
+        }
+        result = _deep_merge_dict(base, override)
+        
+        # Should append (+ stripped from result)
+        assert result["agent_config"]["tools"]["allowed"] == [
+            "tool_a/*", "tool_b/*", "tool_c/*"
+        ]
+
+    def test_exclamation_prefix_removes(self):
+        """Test that ! prefix removes matching items from parent list."""
+        base = {
+            "agent_config": {
+                "tools": {
+                    "allowed": ["tool_a/*", "tool_b/*", "tool_c/*"],
+                }
+            }
+        }
+        override = {
+            "agent_config": {
+                "tools": {
+                    "allowed": ["!tool_b/*"],  # ! = remove
+                }
+            }
+        }
+        result = _deep_merge_dict(base, override)
+        
+        # Should remove tool_b/*
+        assert result["agent_config"]["tools"]["allowed"] == [
+            "tool_a/*", "tool_c/*"
+        ]
+
+    def test_combined_add_and_remove(self):
+        """Test combining + and ! in same list."""
+        base = {
+            "agent_config": {
+                "tools": {
+                    "allowed": ["w_sam/*", "datetime/*", "todo/*"],
+                }
+            }
+        }
+        override = {
+            "agent_config": {
+                "tools": {
+                    "allowed": [
+                        "!w_sam/*",        # Remove w_sam
+                        "+w_sam_gemini/*", # Add gemini version
+                    ],
+                }
+            }
+        }
+        result = _deep_merge_dict(base, override)
+        
+        assert "w_sam/*" not in result["agent_config"]["tools"]["allowed"]
+        assert "w_sam_gemini/*" in result["agent_config"]["tools"]["allowed"]
+        assert "datetime/*" in result["agent_config"]["tools"]["allowed"]
+        assert "todo/*" in result["agent_config"]["tools"]["allowed"]
+
+    def test_items_without_prefix_in_merge_mode(self):
+        """Test that items without prefix are also added when merge mode is active."""
+        base = {"items": ["a", "b"]}
+        override = {"items": ["+c", "d"]}  # d has no prefix but + exists
+        
+        result = _deep_merge_dict(base, override)
+        
+        # Both c and d should be added
+        assert result["items"] == ["a", "b", "c", "d"]
+
+    def test_wildcard_removal_pattern(self):
+        """Test that ! with wildcard removes multiple matching items."""
+        base = {
+            "tools": ["plugin_a/tool1", "plugin_a/tool2", "plugin_b/tool1"]
+        }
+        override = {
+            "tools": ["!plugin_a/*"]  # Remove all plugin_a tools
+        }
+        result = _deep_merge_dict(base, override)
+        
+        assert result["tools"] == ["plugin_b/tool1"]
+
+    def test_deduplication_on_add(self):
+        """Test that duplicate items are not added twice."""
+        base = {"items": ["a", "b", "c"]}
+        override = {"items": ["+b", "+d"]}  # b already exists
+        
+        result = _deep_merge_dict(base, override)
+        
+        # b should not be duplicated
+        assert result["items"] == ["a", "b", "c", "d"]
+
+    def test_llm_profile_fallbacks_still_replaced(self):
+        """Test that lists without +/! syntax are still replaced."""
+        base = {
+            "agent_config": {
+                "llm_profile_fallbacks": ["profile_a", "profile_b"]
+            }
+        }
+        override = {
+            "agent_config": {
+                "llm_profile_fallbacks": ["profile_c"]  # No +/! = replace
+            }
+        }
+        result = _deep_merge_dict(base, override)
+        
+        assert result["agent_config"]["llm_profile_fallbacks"] == ["profile_c"]
+
+    def test_realistic_gemini_batch_scenario(self):
+        """Test realistic scenario like book_architect_gemini_batch."""
+        parent_config = {
+            "type": "basic_agent",
+            "enabled": True,
+            "agent_config": {
+                "llm_profile": "chat",
+                "max_steps": 500,
+                "tools": {
+                    "allowed": [
+                        "writer_content/*",
+                        "writer_path/*",
+                        "w_sam/*",
+                        "datetime/*",
+                        "todo/*",
+                    ],
+                    "blocked": []
+                }
+            }
+        }
+        child_override = {
+            "type": "book_architect",
+            "agent_config": {
+                "llm_profile": "gemini-pro-batch",
+                "tools": {
+                    "allowed": [
+                        "!w_sam/*",        # Remove standard w_sam
+                        "+w_sam_gemini/*", # Add gemini version
+                    ],
+                    "blocked": ["+w_sam/*"]  # Also block it explicitly
+                }
+            }
+        }
+        
+        result = _deep_merge_dict(parent_config, child_override)
+        
+        # w_sam should be removed from allowed
+        assert "w_sam/*" not in result["agent_config"]["tools"]["allowed"]
+        # w_sam_gemini should be added
+        assert "w_sam_gemini/*" in result["agent_config"]["tools"]["allowed"]
+        # Other parent tools should remain
+        assert "writer_content/*" in result["agent_config"]["tools"]["allowed"]
+        assert "datetime/*" in result["agent_config"]["tools"]["allowed"]
+        
+        # blocked should have w_sam
+        assert "w_sam/*" in result["agent_config"]["tools"]["blocked"]
+        
+        # llm_profile should be overridden
+        assert result["agent_config"]["llm_profile"] == "gemini-pro-batch"
