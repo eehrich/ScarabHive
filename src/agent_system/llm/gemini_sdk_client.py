@@ -121,6 +121,7 @@ class GeminiSDKClient(LLMClient):
         Returns:
             (system_instruction, contents_list)
         """
+        # Debug: log input messages
         # Use shared conversion utility to get plain dicts
         system_instruction, dict_contents = convert_openai_messages_to_gemini(messages)
         
@@ -279,13 +280,13 @@ class GeminiSDKClient(LLMClient):
         self,
         stream_coro,
         cancellation_token,
-        check_interval: float = 0.1
+        check_interval: float = 0.5
     ) -> AsyncGenerator[Any, None]:
         """Wrap an async stream to make it cancellable.
         
         The Google SDK's streaming doesn't natively support cancellation.
-        This wrapper periodically checks the cancellation token and raises
-        CancelledError if cancelled, even while waiting for chunks.
+        This wrapper uses a queue-based approach to check cancellation
+        between chunks without corrupting the stream iterator.
         
         Args:
             stream_coro: Coroutine that returns an async iterator
@@ -295,29 +296,66 @@ class GeminiSDKClient(LLMClient):
         Yields:
             Chunks from the underlying stream
         """
-        stream = await stream_coro
-        stream_iter = stream.__aiter__()
+        try:
+            stream = await stream_coro
+        except Exception as e:
+            logger.error(f"[GeminiSDK] Error awaiting stream_coro: {type(e).__name__}: {e}")
+            raise
         
-        while True:
-            # Check cancellation before each chunk
-            if cancellation_token and cancellation_token.is_cancelled:
-                logger.info("[GeminiSDK] Cancellation detected, breaking stream")
-                raise asyncio.CancelledError("Request cancelled during streaming")
-            
-            # Use wait_for with timeout to allow periodic cancellation checks
+        # Use a queue to decouple reading from yielding
+        queue: asyncio.Queue[tuple[bool, Any]] = asyncio.Queue()
+        producer_done = asyncio.Event()
+        
+        async def producer():
+            """Read from stream and put chunks in queue."""
             try:
-                # Get next chunk with timeout
-                chunk = await asyncio.wait_for(
-                    stream_iter.__anext__(),
-                    timeout=check_interval
-                )
-                yield chunk
-            except asyncio.TimeoutError:
-                # Timeout just means we should check cancellation again
-                continue
-            except StopAsyncIteration:
-                # Stream finished
-                break
+                async for chunk in stream:
+                    await queue.put((False, chunk))  # (is_done, value)
+            except Exception as e:
+                await queue.put((True, e))  # Signal error
+                return
+            finally:
+                await queue.put((True, None))  # Signal completion
+                producer_done.set()
+        
+        # Start producer task
+        producer_task = asyncio.create_task(producer())
+        
+        chunk_num = 0
+        try:
+            while True:
+                # Check cancellation before waiting for chunk
+                if cancellation_token and cancellation_token.is_cancelled:
+                    logger.info("[GeminiSDK] Cancellation detected, breaking stream")
+                    raise asyncio.CancelledError("Request cancelled during streaming")
+                
+                # Wait for next item with timeout to allow cancellation checks
+                try:
+                    is_done, value = await asyncio.wait_for(queue.get(), timeout=check_interval)
+                except asyncio.TimeoutError:
+                    # Just check cancellation and continue
+                    continue
+                
+                if is_done:
+                    if value is not None:
+                        # Error from producer
+                        raise value
+                    # Stream finished normally
+                    break
+                
+                chunk_num += 1
+                yield value
+                
+        finally:
+            # Cancel producer if still running
+            if not producer_task.done():
+                producer_task.cancel()
+                try:
+                    await producer_task
+                except asyncio.CancelledError:
+                    pass
+            
+            logger.debug(f"[GeminiSDK] _cancellable_stream: finished after {chunk_num} chunks")
 
     async def _cancellable_request(
         self,
@@ -428,18 +466,27 @@ class GeminiSDKClient(LLMClient):
                 logger.debug(f"[GeminiSDK] Has system instruction: {system_instruction is not None}")
                 logger.debug(f"[GeminiSDK] Has tools: {sdk_tools is not None}")
                 
-                # Use cancellable streaming wrapper for responsive cancellation
+                # Use cancellable stream wrapper for cancellation support
                 stream_coro = self._client.aio.models.generate_content_stream(
                     model=self.model,
                     contents=contents,
                     config=generation_config,
                 )
+                chunk_count = 0
                 async for chunk in self._cancellable_stream(stream_coro, cancellation_token):
+                    chunk_count += 1
                     # Process chunk
                     if not chunk.candidates:
+                        logger.debug(f"[GeminiSDK] Chunk {chunk_count} with no candidates: {type(chunk)}")
                         continue
                     
                     candidate = chunk.candidates[0]
+                    
+                    # Debug: log raw candidate info
+                    raw_fr = getattr(candidate, 'finish_reason', None)
+                    has_content = bool(candidate.content and candidate.content.parts)
+                    num_parts = len(candidate.content.parts) if candidate.content and candidate.content.parts else 0
+                    logger.debug(f"[GeminiSDK] Chunk {chunk_count}: finish_reason={raw_fr}, has_content={has_content}, parts={num_parts}")
                     
                     # Always log finish_reason (critical for debugging MALFORMED_FUNCTION_CALL)
                     has_finish_reason = False
