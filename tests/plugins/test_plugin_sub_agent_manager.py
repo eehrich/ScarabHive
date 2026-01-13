@@ -12,8 +12,8 @@ def mock_manager():
     """Create mock SubAgentManager."""
     manager = MagicMock(spec=SubAgentManager)
     
-    # Mock list_sub_sessions to return test data
-    async def mock_list_sub_sessions(parent_session_id, include_completed=False):
+    # Mock list_sub_sessions to return test data - accepts creator_plugin for filtering
+    async def mock_list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
         return [
             {
                 "instance_id": "sub_123",
@@ -49,7 +49,7 @@ def injector(mock_manager):
         "show_tool_state": True,
         "format": "markdown"
     }
-    return SubAgentContextInjector(mock_manager, config)
+    return SubAgentContextInjector(mock_manager, "test_sam", config)
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,7 @@ async def test_hook_no_injection_when_no_sub_agents():
     manager = MagicMock(spec=SubAgentManager)
     manager.list_sub_sessions = AsyncMock(return_value=[])
     
-    injector = SubAgentContextInjector(manager, {"enabled": True})
+    injector = SubAgentContextInjector(manager, "test_sam", {"enabled": True})
     
     context = HookContext(
         hook_type="inject_sub_agent_context",
@@ -237,7 +237,7 @@ async def test_hook_updates_when_sub_agents_change(mock_manager, injector):
     assert "code_agent" in injection.content
     
     # Simulate sub-agent change - now only 1 active
-    async def new_list_sub_sessions(parent_session_id, include_completed=False):
+    async def new_list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
         return [
             {
                 "instance_id": "sub_123",

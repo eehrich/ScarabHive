@@ -25,7 +25,7 @@ def injector(mock_manager):
         "show_tool_state": True,
         "format": "markdown"
     }
-    return SubAgentContextInjector(mock_manager, config)
+    return SubAgentContextInjector(mock_manager, "test_sam", config)
 
 
 @pytest.mark.asyncio
@@ -130,7 +130,7 @@ async def test_inject_context_limits_max_shown(mock_manager):
         "show_completed": True,
         "format": "markdown"
     }
-    injector = SubAgentContextInjector(mock_manager, config)
+    injector = SubAgentContextInjector(mock_manager, "test_sam", config)
     
     # Mock 5 sub-agents with distinct timestamps (index 4 is most recent)
     base_time = datetime.now(UTC)
@@ -267,7 +267,7 @@ async def test_text_context_format(mock_manager):
         "format": "text",
         "show_completed": True
     }
-    injector = SubAgentContextInjector(mock_manager, config)
+    injector = SubAgentContextInjector(mock_manager, "test_sam", config)
     
     sub_agents = [
         {

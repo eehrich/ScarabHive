@@ -208,8 +208,11 @@ class SubAgentManager:
         logger.debug(f"Linked sub-session {sub_session_id} to parent {parent_session_id}, depth={child_depth}")
 
         # Update parent session with sub-agent metadata
+        # creator_plugin is passed via params from the server
+        creator_plugin = params.get("_creator_plugin") if params else None
         await self._link_sub_to_parent(
-            user_id, parent_session_id, sub_session_id, agent_type, initial_message, child_depth
+            user_id, parent_session_id, sub_session_id, agent_type, initial_message, child_depth,
+            creator_plugin=creator_plugin
         )
 
         return sub_session_id
@@ -221,7 +224,8 @@ class SubAgentManager:
         sub_session_id: str,
         agent_type: str,
         task_summary: str,
-        child_depth: int
+        child_depth: int,
+        creator_plugin: Optional[str] = None
     ) -> None:
         """Add sub-agent metadata to parent session.
 
@@ -232,6 +236,7 @@ class SubAgentManager:
             agent_type: Agent type
             task_summary: Task summary (truncated to 100 chars)
             child_depth: Nesting depth of child
+            creator_plugin: Name of the sub_agent_manager plugin that created this sub-agent
         """
         session_manager = self._session_service.session_manager
         parent_data = await session_manager.load_session(user_id, parent_session_id)
@@ -249,7 +254,8 @@ class SubAgentManager:
             "status": "active",
             "task_summary": task_summary[:100],
             "depth": child_depth,
-            "message_count": 0  # Will be updated after first LLM interaction
+            "message_count": 0,  # Will be updated after first LLM interaction
+            "creator_plugin": creator_plugin  # Track which sub_agent_manager created this
         }
 
         await session_manager.save_session(parent_data)
@@ -259,13 +265,15 @@ class SubAgentManager:
     async def list_sub_sessions(
         self,
         parent_session_id: str,
-        include_completed: bool = False
+        include_completed: bool = False,
+        creator_plugin: Optional[str] = None
     ) -> list[dict[str, Any]]:
         """List sub-sessions by loading parent metadata.
 
         Args:
             parent_session_id: Parent session ID
             include_completed: Include archived/completed sessions
+            creator_plugin: If set, only return sub-agents created by this plugin instance
 
         Returns:
             List of sub-agent metadata dicts
@@ -289,6 +297,9 @@ class SubAgentManager:
             # Treat "interrupted" as still visible by default (session is still present,
             # but last execution ended unexpectedly).
             if not include_completed and metadata.get("status") not in ("active", "interrupted"):
+                continue
+            # Filter by creator_plugin if specified
+            if creator_plugin and metadata.get("creator_plugin") != creator_plugin:
                 continue
             result.append(metadata)
 

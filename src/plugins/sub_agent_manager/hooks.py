@@ -15,14 +15,21 @@ logger = logging.getLogger(__name__)
 class SubAgentContextInjector:
     """Injects active sub-agent information into system prompt before LLM calls."""
 
-    def __init__(self, manager: SubAgentManager, config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, 
+        manager: SubAgentManager, 
+        server_name: str,
+        config: Optional[Dict[str, Any]] = None
+    ):
         """Initialize the context injector.
 
         Args:
             manager: SubAgentManager instance for querying sub-agents
+            server_name: Name of the sub_agent_manager plugin instance (e.g., "w_sam_gemini")
             config: Optional configuration (max_shown, show_completed, etc.)
         """
         self.manager = manager
+        self.server_name = server_name  # Track which plugin instance this belongs to
         self.config = config or {}
 
         # Configuration options
@@ -60,10 +67,12 @@ class SubAgentContextInjector:
                 return HookResult(success=True, modified=False, context=context)
 
             # Query sub-agents for this session
+            # Filter by creator_plugin (self.server_name) to only show sub-agents from THIS manager
             try:
                 sub_agents = await self.manager.list_sub_sessions(
                     parent_session_id=context.session_id,
-                    include_completed=self.show_completed
+                    include_completed=self.show_completed,
+                    creator_plugin=self.server_name  # Only show sub-agents created by THIS instance
                 )
             except (FileNotFoundError, Exception) as e:
                 # Session file doesn't exist yet (new session) or other session-related error

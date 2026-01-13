@@ -324,6 +324,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
 
+            # Inject creator_plugin into params so manager knows which instance created this sub-agent
+            params["_creator_plugin"] = self.name
+
             # Create sub-session (pass params for user_id extraction)
             try:
                 sub_session_id = await manager.create_sub_session(
@@ -331,7 +334,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     agent_type=agent_name,
                     initial_message=task,
                     instance_label=instance_label,
-                    params=params  # Pass params for user_id extraction
+                    params=params  # Pass params for user_id extraction and creator_plugin
                 )
             except ValueError as e:
                 # Handle max sub-agents limit gracefully
@@ -753,7 +756,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             }
 
     async def _handle_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle 'list' operation - list all sub-agents."""
+        """Handle 'list' operation - list all sub-agents.
+        
+        Only shows sub-agents created by this plugin instance (filtered by creator_plugin).
+        """
         status = params.get("_status")
         try:
             parent_session_id = params.get("_session_id")
@@ -769,10 +775,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             registry = params.get("_registry")  # Optional - won't fail if missing
             manager = self._get_manager(session_service, registry)
 
-            # List sub-sessions
+            # List sub-sessions - filter by this plugin instance
             sub_sessions = await manager.list_sub_sessions(
                 parent_session_id=parent_session_id,
-                include_completed=include_completed
+                include_completed=include_completed,
+                creator_plugin=self.name  # Only show sub-agents created by THIS instance
             )
 
             # Format response - load actual message count from each sub-session
@@ -1304,8 +1311,12 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         await status.error(f"Poll: {instance_id} not found (no session context)")
                     return {"status": "error", "error": "Instance not found in async tracking and no session context available"}
 
-                # Check if sub-agent exists
-                sub_agents = await manager.list_sub_sessions(parent_session_id, include_completed=False)
+                # Check if sub-agent exists (only from this manager instance)
+                sub_agents = await manager.list_sub_sessions(
+                    parent_session_id, 
+                    include_completed=False,
+                    creator_plugin=self.name  # Only check sub-agents created by THIS instance
+                )
                 # Support both dict and Pydantic object access
                 matching = [s for s in sub_agents if (s.get("instance_id") if isinstance(s, dict) else s.instance_id) == instance_id]
                 
@@ -1658,7 +1669,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             hook_config = hooks_config.get("inject_sub_agent_context", {})
 
             # Create fresh injector for this call (each agent has different session_service)
-            injector = SubAgentContextInjector(manager, hook_config)
+            # Pass self.name so injector only shows sub-agents from THIS manager instance
+            injector = SubAgentContextInjector(manager, self.name, hook_config)
 
             # Delegate to injector
             return await injector.inject_sub_agent_context(context)
