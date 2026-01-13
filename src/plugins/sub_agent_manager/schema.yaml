@@ -77,8 +77,8 @@ tools:
 # Web UI configuration
 web_ui:
   button:
-    enabled: false
-    text: "{{name}}"
+    enabled: true
+    text: "Sub-Agent Manager"
     icon: "🤖"
 
   # Dropdown menu integration
@@ -87,20 +87,20 @@ web_ui:
     items:
       - id: "sub_agents"
         menu_id: "user"
-        section: "Sub-Agents"
-        label: "{{ name }}"
+        section: "Tools"
+        label: "Sub-Agent Manager"
         action: "openPanel"
-        panel_id: "{{ name }}"
         icon: "🤖"
         requires_admin: false
         order: 100
-        tooltip: "Sub-Agent-Manager - {{ name }}"
+        tooltip: "Sub-Agent Manager"
 
   panel:
     enabled: true
-    title: "{{ name }}"
-    panel_id: "{{ name }}"
-    endpoint: "/plugins/{{ name }}/"
+    title: "Sub-Agent Manager"  # Shared title for grouped panel
+    panel_id: "sub_agent_manager"  # Shared ID for all instances
+    panel_group: "sub_agent_manager"  # Enables tab grouping
+    endpoint: "/plugins/{{ name }}/"  # Instance-specific endpoint
     type: "iframe"
     width: "1000px"
     height: "800px"

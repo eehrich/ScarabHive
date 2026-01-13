@@ -385,17 +385,32 @@ window.AgentSystem.DropdownMenu = {
       } else if (item.action === 'openPanel') {
         // Open plugin panel in floating panel
         if ((item.panel_id || item.panel_endpoint) && window.AgentSystem && window.AgentSystem.PluginManager) {
-          // Create a pseudo-plugin object from the panel_id or panel_endpoint
-          const pseudoPlugin = {
-            id: item.panel_id || item.id,
-            panel_title: item.panel_title || item.label || 'Panel',
-            panel_endpoint: item.panel_endpoint || `/plugins/${item.panel_id}/`,
-            panel_type: 'iframe',
-            description: item.tooltip || ''
-          };
-          
-          // Use PluginManager's togglePluginPanel method
-          window.AgentSystem.PluginManager.togglePluginPanel(pseudoPlugin);
+          // Check if this is a tabbed panel (has panel_tabs array)
+          if (item.panel_tabs && item.panel_tabs.length > 1) {
+            // Create a tabbed panel
+            const tabbedPlugin = {
+              id: item.panel_id || item.id,
+              panel_title: item.panel_title || item.label || 'Panel',
+              panel_type: 'tabbed-iframe',
+              description: item.tooltip || '',
+              tabs: item.panel_tabs,
+              // Default to the clicked instance's tab
+              activeTab: item.instance_id || item.panel_tabs[0].instance_id
+            };
+            window.AgentSystem.PluginManager.toggleTabbedPanel(tabbedPlugin);
+          } else {
+            // Create a pseudo-plugin object from the panel_id or panel_endpoint
+            const pseudoPlugin = {
+              id: item.panel_id || item.id,
+              panel_title: item.panel_title || item.label || 'Panel',
+              panel_endpoint: item.panel_endpoint || `/plugins/${item.panel_id}/`,
+              panel_type: 'iframe',
+              description: item.tooltip || ''
+            };
+            
+            // Use PluginManager's togglePluginPanel method
+            window.AgentSystem.PluginManager.togglePluginPanel(pseudoPlugin);
+          }
         } else {
           console.error('Panel ID or endpoint not provided, or PluginManager not available');
         }

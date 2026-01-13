@@ -207,6 +207,12 @@ async def get_menu_items(
     # Load menu items from schema.yaml (already rendered with Jinja2 templates)
     from agent_system.plugins.mcp_adapter import plugin_mcp_registry
     
+    # Track panel groups for tab aggregation
+    # panel_group -> list of {instance_id, label, endpoint, icon}
+    panel_groups: dict[str, list[dict]] = {}
+    # Track which panel_group already has a menu entry (to deduplicate)
+    panel_group_added: set[str] = set()
+    
     for name, plugin in plugin_web_registry.web_plugins.items():
         try:
             # Get schema from already registered plugin server (includes Jinja2 template rendering)
@@ -218,6 +224,7 @@ async def get_menu_items(
                 
                 web_ui = schema.get('web_ui', {})
                 menu_config = web_ui.get('menu', {})
+                panel_config = web_ui.get('panel', {})
                 
                 if menu_config.get('enabled', False):
                     schema_items = menu_config.get('items', [])
@@ -232,10 +239,42 @@ async def get_menu_items(
                         
                         item_config = dict(item)
                         item_config["plugin_name"] = name
+                        
+                        # Track panel groups for tab aggregation (read from panel config)
+                        panel_group = panel_config.get("panel_group")
+                        if panel_group:
+                            if panel_group not in panel_groups:
+                                panel_groups[panel_group] = []
+                            
+                            # Add tab info for this instance
+                            panel_groups[panel_group].append({
+                                "instance_id": name,  # Plugin instance name as tab ID
+                                "label": name,  # Plugin instance name as tab label
+                                "endpoint": panel_config.get("endpoint", f"/plugins/{name}/"),
+                                "icon": item.get("icon", ""),
+                                "plugin_name": name
+                            })
+                            
+                            # Inject panel_group into item for frontend
+                            item_config["panel_group"] = panel_group
+                            item_config["panel_id"] = panel_group  # Use panel_group as panel_id
+                            
+                            # Only add ONE menu entry per panel_group
+                            if panel_group in panel_group_added:
+                                continue  # Skip duplicate menu entries
+                            panel_group_added.add(panel_group)
+                        
                         items.append(item_config)
                 
         except Exception as e:
             logger.error(f"Error getting menu items from plugin {name}: {e}", exc_info=True)
+    
+    # Inject panel_tabs into items that have panel_group
+    for item in items:
+        panel_group = item.get("panel_group")
+        if isinstance(panel_group, str) and panel_group in panel_groups:
+            # Add all tabs for this group to the item
+            item["panel_tabs"] = panel_groups[panel_group]
     
     # Sort by menu_id, section, and order
     items.sort(key=lambda x: (

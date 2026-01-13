@@ -162,21 +162,21 @@ web_ui:
     items:
       - id: "context_summarizer"
         menu_id: "user"
-        section: "Context Summarizer"
-        label: "{{ name }}"
+        section: "Context Management"
+        label: "Context Summarizer"
         action: "openPanel"
-        panel_id: "{{ name }}"
-        icon: "🤖"
+        icon: "📝"
         requires_admin: false
         order: 100
-        tooltip: "Context Summarizer - {{ name }}"
+        tooltip: "Context Summarizer"
 
   # Panel configuration
   panel:
     enabled: true
-    title: "{{ name }}"
-    panel_id: "{{ name }}"
-    endpoint: "/plugins/{{ name }}/"
+    title: "Context Summarizer"  # Shared title for grouped panel
+    panel_id: "context_summarizer"  # Shared ID for all instances
+    panel_group: "context_summarizer"  # Enables tab grouping
+    endpoint: "/plugins/{{ name }}/"  # Instance-specific endpoint
     type: "iframe"
     description: "View summarization events with before/after message counts and token savings"
 

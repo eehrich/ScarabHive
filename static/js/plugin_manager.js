@@ -82,10 +82,20 @@ window.AgentSystem.PluginManager = {
   },
 
   togglePluginPanel(plugin) {
-    const panelId = `floating${plugin.id}Panel`;
+    const panelId = `floating${plugin.panel_group || plugin.id}Panel`;
 
     window.AgentSystem.PanelManager.togglePanel(panelId, () => {
-      this.showPluginPanel(plugin);
+      // Check if this is a tabbed panel
+      if (plugin.panel_type === 'tabbed-iframe' && plugin.panel_tabs && plugin.panel_tabs.length > 1) {
+        this.showTabbedPanel({
+          id: plugin.panel_group || plugin.id,
+          panel_title: plugin.panel_title,
+          tabs: plugin.panel_tabs,
+          activeTab: plugin.panel_tabs[0].instance_id
+        });
+      } else {
+        this.showPluginPanel(plugin);
+      }
     });
   },
 
@@ -346,5 +356,129 @@ window.AgentSystem.PluginManager = {
 
   getAllPlugins() {
     return Array.from(this.plugins.values());
+  },
+
+  /**
+   * Toggle a tabbed panel (multiple instances in tabs within one panel)
+   * @param {Object} plugin - Plugin config with tabs array
+   */
+  toggleTabbedPanel(plugin) {
+    const panelId = `floating${plugin.id}Panel`;
+    
+    window.AgentSystem.PanelManager.togglePanel(panelId, () => {
+      this.showTabbedPanel(plugin);
+    });
+  },
+
+  /**
+   * Show a tabbed panel with multiple plugin instances as tabs
+   * @param {Object} plugin - Plugin config with tabs array and activeTab
+   */
+  async showTabbedPanel(plugin) {
+    try {
+      // Create panel with loading state
+      const panel = window.AgentSystem.PanelManager.createPanel(
+        `floating${plugin.id}Panel`,
+        plugin.panel_title,
+        '<div class="loading">Loading...</div>',
+        'plugin-panel tabbed-panel'
+      );
+
+      // Build tab bar and content container
+      const contentDiv = panel.querySelector('.panel-content') || panel.querySelector('.floating-panel-body');
+      if (!contentDiv) return;
+
+      // Clear and rebuild content
+      contentDiv.innerHTML = '';
+
+      // Create tab bar
+      const tabBar = document.createElement('div');
+      tabBar.className = 'tabbed-panel-tabs';
+      tabBar.style.cssText = 'display: flex; gap: 2px; background: #1e1e1e; padding: 4px 4px 0 4px; border-bottom: 1px solid #3e3e42; margin-bottom: 0;';
+
+      // Create iframe container
+      const iframeContainer = document.createElement('div');
+      iframeContainer.className = 'tabbed-panel-content';
+      iframeContainer.style.cssText = 'flex: 1; display: flex; overflow: hidden;';
+
+      // Create tabs
+      plugin.tabs.forEach((tab, index) => {
+        const tabBtn = document.createElement('button');
+        tabBtn.className = 'tabbed-panel-tab';
+        tabBtn.dataset.instanceId = tab.instance_id;
+        tabBtn.innerHTML = `${tab.icon || ''} ${tab.label}`.trim();
+        tabBtn.style.cssText = `
+          padding: 8px 16px;
+          border: none;
+          background: ${tab.instance_id === plugin.activeTab ? '#2d2d30' : '#252526'};
+          color: ${tab.instance_id === plugin.activeTab ? '#fff' : '#858585'};
+          cursor: pointer;
+          border-radius: 4px 4px 0 0;
+          font-size: 13px;
+          transition: background 0.2s;
+          outline: none;
+        `;
+
+        tabBtn.addEventListener('click', () => {
+          this.switchTab(plugin, tab, tabBar, iframeContainer);
+        });
+
+        tabBtn.addEventListener('mouseenter', () => {
+          if (tab.instance_id !== this._activeTabbedPanelTab) {
+            tabBtn.style.background = '#323232';
+          }
+        });
+        tabBtn.addEventListener('mouseleave', () => {
+          if (tab.instance_id !== this._activeTabbedPanelTab) {
+            tabBtn.style.background = '#252526';
+          }
+        });
+
+        tabBar.appendChild(tabBtn);
+      });
+
+      contentDiv.style.cssText = 'display: flex; flex-direction: column; height: 100%;';
+      contentDiv.appendChild(tabBar);
+      contentDiv.appendChild(iframeContainer);
+
+      // Load the initially active tab
+      const activeTabData = plugin.tabs.find(t => t.instance_id === plugin.activeTab) || plugin.tabs[0];
+      this._activeTabbedPanelTab = activeTabData.instance_id;
+      this.loadTabContent(activeTabData, iframeContainer);
+
+    } catch (error) {
+      console.error(`Error showing tabbed panel for ${plugin.id}:`, error);
+    }
+  },
+
+  /**
+   * Switch to a different tab in a tabbed panel
+   */
+  switchTab(plugin, tab, tabBar, iframeContainer) {
+    // Update tab styles
+    tabBar.querySelectorAll('.tabbed-panel-tab').forEach(btn => {
+      const isActive = btn.dataset.instanceId === tab.instance_id;
+      btn.style.background = isActive ? '#2d2d30' : '#252526';
+      btn.style.color = isActive ? '#fff' : '#858585';
+    });
+
+    this._activeTabbedPanelTab = tab.instance_id;
+    this.loadTabContent(tab, iframeContainer);
+  },
+
+  /**
+   * Load content for a tab (creates/reuses iframe)
+   */
+  loadTabContent(tab, container) {
+    // Clear existing content
+    container.innerHTML = '';
+
+    // Create iframe for this tab
+    const iframe = document.createElement('iframe');
+    iframe.src = tab.endpoint;
+    iframe.style.cssText = 'width: 100%; height: 100%; border: none;';
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+
+    container.appendChild(iframe);
   }
 };
