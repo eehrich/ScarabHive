@@ -49,19 +49,12 @@ tools:
     function:
       name: "{{ name }}"
       description: |
-        Step-by-step reasoning for complex problems. Dynamic thought chains with branching/revision.
+        Step-by-step reasoning with branching/revision support.
         
-        QUICK START: Set total_thoughts=15-20 for complex tasks, 10 for medium, 5 for simple.
-        Use needs_more_thoughts=true if you need more (avoids warnings).
+        CRITICAL: total_thoughts is your UPFRONT ESTIMATE (e.g., 15), NOT the current step!
+        Set once at start, keep constant. Only increase with needs_more_thoughts=true.
         
-        KEY PARAMS:
-        - thought: Your reasoning step
-        - next_thought_needed: false=done
-        - thought_number: Your counter (server assigns real sequence)
-        - total_thoughts: Estimate (auto-clamped)
-        - needs_more_thoughts: true=increase estimate without warning
-        - is_revision: Revise earlier thought (+ revises_thought=N)
-        - branch_from_thought/branch_id: Create/switch exploration paths
+        Example: thought_number=1,2,3... (increments), total_thoughts=15 (stays fixed)
       parameters:
         type: object
         properties:
@@ -69,18 +62,18 @@ tools:
             type: string
             minLength: 1
             maxLength: 10000
-            description: "Current thinking step"
+            description: "Current reasoning step content"
           next_thought_needed:
             type: boolean
-            description: "Continue? false=done"
+            description: "true=continue, false=done"
           thought_number:
             type: integer
             minimum: 1
-            description: "Your counter (server assigns real sequence)"
+            description: "Current step (1, 2, 3, ...) - increment each call"
           total_thoughts:
             type: integer
             minimum: 1
-            description: "Estimate total (15-20 complex, 10 medium, 5 simple). Auto-clamped if exceeded."
+            description: "FIXED upfront estimate (e.g., 15). NOT the current step! Keep constant unless needs_more_thoughts=true."
           session_id:
             type: string
             description: "Session ID (auto-generated if omitted)"
