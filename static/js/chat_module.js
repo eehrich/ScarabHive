@@ -2030,7 +2030,7 @@
       // Set current session ID for continuation
       currentSessionId = session.session_id;
       
-      // Restore agent and LLM profile selectors
+      // Restore agent and LLM profile selectors (selector_module handles fallback to defaults)
       if (session.agent_name && window.selectorModule) {
         window.selectorModule.setAgent(session.agent_name);
       }

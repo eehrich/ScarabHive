@@ -46,7 +46,7 @@ network:
 
 
 # define the agent which will be startet by default if no other agent is specified
-default_agent: meta_agent
+default_agent: chat_agent
 
 # Multi-user authentication and authorization (optional)
 auth:

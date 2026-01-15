@@ -40,6 +40,10 @@
     console.log('Selector module initialized');
   }
 
+  // Store default values from API for fallback
+  let defaultAgent = null;
+  let defaultLLMProfile = null;
+
   /**
    * Load available agents from API and populate dropdown
    */
@@ -53,6 +57,9 @@
         return;
       }
 
+      // Store default agent from API
+      defaultAgent = data.default || data.agents[0];
+
       // Clear existing options
       selectElement.innerHTML = '';
 
@@ -64,8 +71,11 @@
         selectElement.appendChild(option);
       });
 
-      // Set initial selection
-      if (data.agents.length > 0) {
+      // Set initial selection to default agent
+      if (data.agents.includes(defaultAgent)) {
+        currentAgent = defaultAgent;
+        selectElement.value = defaultAgent;
+      } else if (data.agents.length > 0) {
         currentAgent = data.agents[0];
         selectElement.value = currentAgent;
       }
@@ -117,9 +127,10 @@
         selectElement.appendChild(option);
       });
 
-      // Set default selection
-      if (data.default) {
-        currentLLMProfile = data.default;
+      // Store and set default selection
+      defaultLLMProfile = data.default || (data.profiles.length > 0 ? data.profiles[0].name : null);
+      if (defaultLLMProfile) {
+        currentLLMProfile = defaultLLMProfile;
         selectElement.value = currentLLMProfile;
       } else if (data.profiles.length > 0) {
         currentLLMProfile = data.profiles[0].name;
@@ -179,10 +190,20 @@
       console.log('Agent set to:', agentName);
       return true;
     } else {
-      // Dropdown not loaded yet - store as pending
-      console.log('Agent dropdown not ready, storing pending:', agentName);
-      pendingAgent = agentName;
-      return false;
+      // Agent not found in dropdown - check if dropdown is loaded
+      if (agentSelector.options.length > 0) {
+        // Dropdown is loaded but agent not found - use default agent
+        const fallbackAgent = defaultAgent || agentSelector.options[0].value;
+        console.warn(`Agent "${agentName}" not found, using default agent "${fallbackAgent}"`);
+        agentSelector.value = fallbackAgent;
+        currentAgent = fallbackAgent;
+        return false;
+      } else {
+        // Dropdown not loaded yet - store as pending
+        console.log('Agent dropdown not ready, storing pending:', agentName);
+        pendingAgent = agentName;
+        return false;
+      }
     }
   }
 
@@ -204,10 +225,20 @@
       console.log('LLM profile set to:', profileName);
       return true;
     } else {
-      // Dropdown not loaded yet - store as pending
-      console.log('LLM profile dropdown not ready, storing pending:', profileName);
-      pendingLLMProfile = profileName;
-      return false;
+      // Profile not found in dropdown - check if dropdown is loaded
+      if (modelSelector.options.length > 0) {
+        // Dropdown is loaded but profile not found - use default profile
+        const fallbackProfile = defaultLLMProfile || modelSelector.options[0].value;
+        console.warn(`LLM profile "${profileName}" not found, using default profile "${fallbackProfile}"`);
+        modelSelector.value = fallbackProfile;
+        currentLLMProfile = fallbackProfile;
+        return false;
+      } else {
+        // Dropdown not loaded yet - store as pending
+        console.log('LLM profile dropdown not ready, storing pending:', profileName);
+        pendingLLMProfile = profileName;
+        return false;
+      }
     }
   }
 

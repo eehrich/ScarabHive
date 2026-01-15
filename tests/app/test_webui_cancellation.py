@@ -213,10 +213,10 @@ class TestAPIEndpoints:
         cancel_routes = [route for route in app.routes if hasattr(route, 'path') and 'cancel' in route.path]
         assert len(cancel_routes) > 0
         
-        # Find the cancel route
+        # Find the cancel route (actual path is /api/requests/{request_id}/cancel)
         cancel_route = None
         for route in cancel_routes:
-            if hasattr(route, 'path') and route.path == '/cancel/{request_id}':
+            if hasattr(route, 'path') and route.path == '/api/requests/{request_id}/cancel':
                 cancel_route = route
                 break
         

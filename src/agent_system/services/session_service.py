@@ -175,7 +175,9 @@ class SessionService:
                 extracted_title = self._extract_session_title(messages_dicts)
                 if session_data.get("title") == extracted_title or not session_data.get("title"):
                     session_data["title"] = extracted_title
-                # Update llm_profile
+                # CRITICAL: Always update agent_name and llm_profile from current request
+                # This ensures user-selected agent/llm overrides are persisted
+                session_data["agent_name"] = agent_name
                 session_data["llm_profile"] = llm_profile
                 # Save back
                 await self.session_manager.save_session(session_data)

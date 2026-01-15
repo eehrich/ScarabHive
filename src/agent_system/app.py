@@ -1045,14 +1045,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent._session_service = _session_service
                 logger.debug(f"Injected SessionService into agent '{agent_name}' via /run endpoint")
             except KeyError:
-                raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
+                # Agent not found - fallback to default_agent
+                default_agent_name = config.default_agent
+                logger.warning(f"Agent '{agent_name}' not found, falling back to default_agent '{default_agent_name}'")
+                try:
+                    selected_agent = _app_registry.get(default_agent_name)  # type: ignore[attr-defined]
+                    from .servers.agent.server import Agent as _Agent
+                    if not isinstance(selected_agent, _Agent):
+                        raise HTTPException(status_code=500, detail=f"Default agent '{default_agent_name}' is not an agent")
+                    selected_agent._session_service = _session_service
+                    logger.debug(f"Using default_agent '{default_agent_name}' and injected SessionService")
+                except KeyError:
+                    raise HTTPException(status_code=500, detail=f"Neither agent '{agent_name}' nor default_agent '{default_agent_name}' found")
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
 
         # Create LLM override if profile specified
         if llm_profile and config.llm_system and config.llm_system.profiles:
             if llm_profile not in config.llm_system.profiles:
-                raise HTTPException(status_code=400, detail=f"LLM profile '{llm_profile}' not found")
+                # LLM profile not found - fallback to default profile
+                default_profile = config.llm_system.default_profile
+                logger.warning(f"LLM profile '{llm_profile}' not found, falling back to default profile '{default_profile}'")
+                llm_profile = default_profile
 
             try:
                 # Use factory function that properly handles batch mode
@@ -1109,7 +1123,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     continue
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
-        return {"agents": sorted(agents)}
+        return {"agents": sorted(agents), "default": config.default_agent}
 
     @app.get("/llm/profiles")
     def list_llm_profiles():
