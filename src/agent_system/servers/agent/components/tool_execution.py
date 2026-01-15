@@ -567,7 +567,21 @@ class ToolExecutionManager:
                     server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
 
         if not server:
-            raise RuntimeError(f"Server not found for tool: {tool_name}")
+            # Return error response instead of raising - allows agent to recover from hallucinated tool names
+            logger.warning("Server not found for tool: %s (hallucinated tool call?)", tool_name)
+            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+            error_content = json.dumps({
+                "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
+                "type": "ToolNotFoundError"
+            })
+            message = ChatMessage(
+                role="tool",
+                tool_call_id=tool_call_id,
+                name=sanitize_for_llm(openai_tool_name),
+                content=sanitize_json_content(error_content),
+                timestamp=datetime.now(timezone.utc)
+            )
+            return message, [{"type": "tool_error", "tool": tool_name, "error": f"Unknown tool: {tool_name}"}], []
 
         serializable_params = self._make_params_serializable(params)
         event_request_id = serializable_params.get('request_id') or request_id
