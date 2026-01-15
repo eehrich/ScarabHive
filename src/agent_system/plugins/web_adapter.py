@@ -557,7 +557,7 @@ class PluginWebRegistry:
                         if user_in_db and user_in_db.is_active:
                             user = user_in_db
                             user_id = user.username
-                            logger.debug(f"Plugin security: Authenticated user {user_id}")
+                            #logger.debug(f"Plugin security: Authenticated user {user_id}")
                 
             except Exception as e:
                 logger.warning(f"Plugin security auth check failed: {e}")
