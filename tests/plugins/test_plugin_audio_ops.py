@@ -682,6 +682,142 @@ class TestMergeTool:
         assert result["source_count"] == 2
 
 
+class TestLoadTool:
+    """Tests for load tool."""
+    
+    @pytest.mark.asyncio
+    async def test_load_full_file(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path
+    ) -> None:
+        """Loading full file should return multimodal content."""
+        result = await server.load({
+            "file": sample_wav.name,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["file"] == sample_wav.name
+        assert result["duration_seconds"] == pytest.approx(5.0, rel=0.1)
+        assert result["format"] == "wav"
+        assert "_multimodal_content" in result
+        
+        multimodal = result["_multimodal_content"]
+        assert len(multimodal) == 1
+        assert multimodal[0]["type"] == "audio"
+        assert multimodal[0]["mime_type"] == "audio/wav"
+    
+    @pytest.mark.asyncio
+    async def test_load_segment(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path, temp_storage: Path
+    ) -> None:
+        """Loading a segment should extract and return it."""
+        result = await server.load({
+            "file": sample_wav.name,
+            "start_time": 1.0,
+            "end_time": 3.0,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["file"] == sample_wav.name
+        assert "segment" in result
+        assert result["segment"]["start_time"] == 1.0
+        assert result["segment"]["end_time"] == 3.0
+        assert result["segment"]["segment_duration_seconds"] == pytest.approx(2.0, rel=0.1)
+        
+        # Multimodal should point to segment file
+        multimodal = result["_multimodal_content"]
+        assert "_temp_segment_" in multimodal[0]["path"]
+    
+    @pytest.mark.asyncio
+    async def test_load_with_only_start_time(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path
+    ) -> None:
+        """Loading with only start time should load from start to end."""
+        result = await server.load({
+            "file": sample_wav.name,
+            "start_time": 2.0,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["segment"]["start_time"] == 2.0
+        assert result["segment"]["end_time"] == pytest.approx(5.0, rel=0.1)  # Full duration
+        assert result["segment"]["segment_duration_seconds"] == pytest.approx(3.0, rel=0.1)
+    
+    @pytest.mark.asyncio
+    async def test_load_with_only_end_time(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path
+    ) -> None:
+        """Loading with only end time should load from 0 to end."""
+        result = await server.load({
+            "file": sample_wav.name,
+            "end_time": 2.0,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["segment"]["start_time"] == 0.0
+        assert result["segment"]["end_time"] == 2.0
+        assert result["segment"]["segment_duration_seconds"] == pytest.approx(2.0, rel=0.1)
+    
+    @pytest.mark.asyncio
+    async def test_load_nonexistent_file(
+        self, server: "AudioOpsServer", mock_status: MagicMock
+    ) -> None:
+        """Loading nonexistent file should fail."""
+        result = await server.load({
+            "file": "does_not_exist.wav",
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "error"
+        assert result["error_type"] == "FileNotFoundError"
+    
+    @pytest.mark.asyncio
+    async def test_load_invalid_time_range(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path
+    ) -> None:
+        """Loading with end before start should fail."""
+        result = await server.load({
+            "file": sample_wav.name,
+            "start_time": 3.0,
+            "end_time": 1.0,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "error"
+        assert result["error_type"] == "ValidationError"
+    
+    @pytest.mark.asyncio
+    async def test_load_start_beyond_duration(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path
+    ) -> None:
+        """Loading with start beyond duration should fail."""
+        result = await server.load({
+            "file": sample_wav.name,
+            "start_time": 100.0,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "error"
+        assert result["error_type"] == "TimeRangeError"
+    
+    @pytest.mark.asyncio
+    async def test_load_mp3(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_mp3: Path
+    ) -> None:
+        """Loading MP3 should work and return correct mime type."""
+        result = await server.load({
+            "file": sample_mp3.name,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["format"] == "mp3"
+        assert result["mime_type"] == "audio/mpeg"
+
+
 class TestEdgeCases:
     """Test edge cases and boundary conditions."""
     

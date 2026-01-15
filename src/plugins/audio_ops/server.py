@@ -577,6 +577,160 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "error": str(e),
                 "error_type": type(e).__name__
             }
+    
+    async def load(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Load audio file for LLM analysis.
+        
+        Optionally loads only a segment (start_time to end_time).
+        Returns multimodal content that the LLM can analyze.
+        
+        Args:
+            params: Tool parameters:
+                - file: Audio filename to load
+                - start_time: Start position in seconds (optional)
+                - end_time: End position in seconds (optional)
+            
+        Returns:
+            Dict with file info and _multimodal_content for LLM
+        """
+        status = params.get("_status")
+        
+        try:
+            filename = params.get("file")
+            start_time = params.get("start_time")
+            end_time = params.get("end_time")
+            
+            if not filename:
+                raise AudioOpsError("file is required", "ValidationError")
+            
+            # Validate path and load audio
+            filepath = self._validate_path(filename)
+            if not filepath.exists():
+                raise AudioOpsError(
+                    f"File not found: {filename}",
+                    error_type="FileNotFoundError",
+                    details={"file": filename}
+                )
+            
+            if status:
+                await status.progress(f"Loading: {filename}")
+            
+            audio = self._load_audio(filepath)
+            duration_sec = len(audio) / 1000.0
+            
+            # Handle segment extraction if start/end provided
+            segment_info = None
+            output_path = filepath  # Default: use original file
+            
+            if start_time is not None or end_time is not None:
+                # Validate time range
+                actual_start = float(start_time) if start_time is not None else 0.0
+                actual_end = float(end_time) if end_time is not None else duration_sec
+                
+                if actual_start < 0:
+                    raise AudioOpsError(
+                        "start_time cannot be negative",
+                        error_type="ValidationError",
+                        details={"start_time": actual_start}
+                    )
+                if actual_start > duration_sec:
+                    raise AudioOpsError(
+                        f"start_time ({actual_start}s) exceeds duration ({duration_sec:.2f}s)",
+                        error_type="TimeRangeError",
+                        details={"start_time": actual_start, "duration": duration_sec}
+                    )
+                if actual_end <= actual_start:
+                    raise AudioOpsError(
+                        "end_time must be greater than start_time",
+                        error_type="ValidationError",
+                        details={"start_time": actual_start, "end_time": actual_end}
+                    )
+                
+                # Clamp end to duration
+                actual_end = min(actual_end, duration_sec)
+                
+                if status:
+                    await status.progress(f"Extracting segment: {actual_start}s to {actual_end}s")
+                
+                # Extract segment
+                start_ms = int(actual_start * 1000)
+                end_ms = int(actual_end * 1000)
+                segment = audio[start_ms:end_ms]
+                segment_duration = len(segment) / 1000.0
+                
+                # Save segment to temp file for multimodal content
+                segment_filename = f"_temp_segment_{filepath.stem}.wav"
+                segment_path = self.storage_path / segment_filename
+                segment.export(str(segment_path), format="wav")
+                output_path = segment_path
+                
+                segment_info = {
+                    "start_time": actual_start,
+                    "end_time": actual_end,
+                    "segment_duration_seconds": round(segment_duration, 2)
+                }
+            
+            # Build multimodal content for LLM
+            mime_type = self._get_mime_type(output_path)
+            
+            multimodal_content = [{
+                "type": "audio",
+                "path": str(output_path),
+                "mime_type": mime_type,
+                "description": f"Audio file: {filename}" + (
+                    f" (segment {segment_info['start_time']}s-{segment_info['end_time']}s)"
+                    if segment_info else ""
+                )
+            }]
+            
+            if status:
+                await status.end(f"Loaded {filename} for analysis")
+            
+            result: dict[str, Any] = {
+                "status": "success",
+                "file": filename,
+                "duration_seconds": round(duration_sec, 2),
+                "format": filepath.suffix[1:].lower(),
+                "mime_type": mime_type,
+                "_multimodal_content": multimodal_content
+            }
+            
+            if segment_info:
+                result["segment"] = segment_info
+            
+            return result
+            
+        except AudioOpsError as e:
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type,
+                "details": e.details
+            }
+        except Exception as e:
+            logger.error(f"Unexpected error in load: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+    
+    def _get_mime_type(self, filepath: Path) -> str:
+        """Get MIME type for audio file."""
+        ext = filepath.suffix.lower()
+        mime_map = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mpeg",
+            ".flac": "audio/flac",
+            ".ogg": "audio/ogg",
+            ".m4a": "audio/mp4",
+            ".aac": "audio/aac",
+        }
+        return mime_map.get(ext, "audio/unknown")
 
 
 # Plugin factory for dynamic loading

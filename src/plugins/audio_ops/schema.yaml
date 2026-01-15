@@ -78,3 +78,24 @@ tools:
           pattern:
             type: string
             description: "Glob pattern filter (e.g., '*.wav'). Default: all audio files"
+
+  - type: function
+    function:
+      name: "{{ name }}_load"
+      description: |
+        Load audio file for LLM analysis. Returns file as multimodal content.
+        Optionally load only a segment (start_time to end_time).
+      parameters:
+        type: object
+        properties:
+          file:
+            type: string
+            description: "Audio filename to load"
+          start_time:
+            type: number
+            description: "Start position in seconds (optional, default: 0)"
+          end_time:
+            type: number
+            description: "End position in seconds (optional, default: full duration)"
+        required:
+          - file
