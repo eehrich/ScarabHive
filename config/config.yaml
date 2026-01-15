@@ -3,7 +3,7 @@
 # ================================
 
 name: "AgentSystem"
-version: "0.5.2"
+version: "0.5.3"
 description: "Scarab Flexible AI Agent System with plugin support"
 
 # all included configs
