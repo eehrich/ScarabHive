@@ -52,7 +52,13 @@ class MockLLMClient:
 
 @pytest.mark.asyncio
 async def test_agent_prevents_infinite_loop_empty_responses():
-    """Test that agent breaks out of loop when getting consecutive empty responses."""
+    """Test that agent breaks out of loop when getting consecutive empty responses.
+    
+    With the 'Continue' prompt injection feature:
+    - First 2 empty responses: no injection yet (max_consecutive_empty=2)
+    - After 2 empty: starts injecting "Continue with your task." messages
+    - After 3 more empty responses (5 total): gives up
+    """
     from agent_system.config.models import AgentSystemConfig, MCPConfig
     
     agent_config = create_test_config()
@@ -72,8 +78,8 @@ async def test_agent_prevents_infinite_loop_empty_responses():
         if event.get("type") in ["final", "error", "end"]:
             break
     
-    # Should break early due to consecutive empty responses
-    assert mock_llm.call_count <= 3  # Should stop after 2 consecutive empty responses
+    # Should stop after 5 consecutive empty responses (2 initial + 3 with "Continue" prompts)
+    assert mock_llm.call_count <= 6  # May have 1 extra call before final break
     
     # Should have an error event about empty responses
     error_events = [e for e in events if e.get("type") == "error"]

@@ -1633,11 +1633,21 @@ class Agent(MCPServer):
             if not content and not tool_calls:
                 consecutive_empty_responses += 1
                 if consecutive_empty_responses >= max_consecutive_empty:
-                    logger.warning(f"Breaking loop: {consecutive_empty_responses} consecutive empty responses")
-                    error_msg = "LLM returned empty responses repeatedly"
-                    results.setdefault("errors", []).append(error_msg)
-                    yield {"type": "error", "message": error_msg}
-                    return
+                    logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' user message to prompt LLM")
+                    # Instead of breaking, inject a "Continue" user message to nudge the LLM
+                    # This mimics the user typing "weiter" or "continue" manually
+                    continue_message = ChatMessage(role="user", content="Continue with your task.")
+                    messages.append(continue_message)
+                    # Don't reset counter - if we get another empty response after this, we'll inject again
+                    # But cap at a reasonable limit to prevent truly infinite loops
+                    if consecutive_empty_responses >= max_consecutive_empty + 3:
+                        logger.warning(f"Breaking loop: {consecutive_empty_responses} consecutive empty responses even after 'Continue' prompts")
+                        error_msg = "LLM returned empty responses repeatedly despite continue prompts"
+                        results.setdefault("errors", []).append(error_msg)
+                        yield {"type": "error", "message": error_msg}
+                        return
+                    # Continue to next iteration with the injected message
+                    continue
             else:
                 consecutive_empty_responses = 0  # Reset counter
 
