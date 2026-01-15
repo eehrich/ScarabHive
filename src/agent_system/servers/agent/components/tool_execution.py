@@ -193,13 +193,19 @@ class ToolExecutionManager:
 
             if not tool_name or tool_name not in available_tools:
                 logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
-                events_to_yield.append({"type": "error", "message": f"Unknown tool: {tool_name}"})
+                # Use tool_error type instead of error - error type causes frontend to abort
+                events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": f"Unknown tool: {tool_name}"})
                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                # Return detailed error message so LLM can recover
+                error_content = json.dumps({
+                    "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
+                    "type": "ToolNotFoundError"
+                })
                 tool_messages.append(ChatMessage(
                     role="tool",
                     tool_call_id=tool_call_id,
                     name=openai_tool_name or "unknown",
-                    content=json.dumps({"error": f"Tool '{tool_name}' is not available."}),
+                    content=error_content,
                     timestamp=datetime.now(timezone.utc)
                 ))
                 continue

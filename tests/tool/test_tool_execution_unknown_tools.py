@@ -183,7 +183,8 @@ class TestUnknownToolHandling:
         assert message.role == "tool"
         content = json.loads(message.content)
         assert "error" in content
-        assert "not available" in content["error"]
+        # Error message should indicate the tool doesn't exist
+        assert "does not exist" in content["error"] or "Unknown tool" in content["error"]
 
     @pytest.mark.asyncio
     async def test_mixed_valid_and_invalid_tools(self, tool_execution_manager, mock_agent):
