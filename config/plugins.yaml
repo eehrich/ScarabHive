@@ -499,6 +499,12 @@ plugins:
       platform:
         bash_path: "auto"  # Auto-detect or specify path
         initial_cwd: null  # Default to current directory
+
+    audio_ops:
+      type: audio_ops
+      enabled: true
+      description: "Audio file manipulation - cut segments from FLAC/MP3/WAV files"
+      storage_path: "data/audio_ops"
  
 # ================================
 # Hook Configuration

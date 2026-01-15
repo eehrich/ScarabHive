@@ -1,0 +1,11 @@
+name: audio_ops
+description: Audio file manipulation - cut, copy segments from FLAC, MP3, WAV files
+version: 1.0.0
+author: AgentSystem
+entrypoint: server:PLUGIN_FACTORY
+type:
+  - mcp-server
+category: media
+requires:
+  agent_system: '>=0.4.0'
+  pydub: '>=0.25.0'

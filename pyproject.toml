@@ -55,6 +55,7 @@ dependencies = [
     "sqlite-vec>=0.1.0",
     "onnxruntime>=1.20.0",
     "psutil>=5.9.0",  # For performance profiling
+    "pydub>=0.25.0",  # Audio manipulation (requires ffmpeg)
 ]
 
 [project.urls]
@@ -81,6 +82,7 @@ mcp-todo-management = "plugins.todo_management.__main__:cli_main"
 mcp-file-ops = "plugins.file_ops.__main__:main"
 mcp-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
 comfyui = "scripts.comfyui:main"
+audio-ops = "scripts.audio_ops:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

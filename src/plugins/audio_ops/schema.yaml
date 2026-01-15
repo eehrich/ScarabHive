@@ -1,0 +1,80 @@
+# Audio Operations Plugin Tool Schema
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_cut"
+      description: |
+        Cut audio: extract or remove a segment.
+        - mode='extract': Copy segment [start_time, end_time] to dest_file
+        - mode='remove': Remove segment [start_time, end_time], keep rest in dest_file
+      parameters:
+        type: object
+        properties:
+          source_file:
+            type: string
+            description: "Source audio filename (FLAC/MP3/WAV)"
+          dest_file:
+            type: string
+            description: "Destination filename with extension"
+          start_time:
+            type: number
+            description: "Start position in seconds"
+          end_time:
+            type: number
+            description: "End position in seconds"
+          mode:
+            type: string
+            enum: ["extract", "remove"]
+            description: "'extract' copies the segment, 'remove' deletes it and keeps the rest. Default: extract"
+        required:
+          - source_file
+          - dest_file
+          - start_time
+          - end_time
+
+  - type: function
+    function:
+      name: "{{ name }}_merge"
+      description: "Merge multiple audio files into one. Files are concatenated in order."
+      parameters:
+        type: object
+        properties:
+          source_files:
+            type: array
+            items:
+              type: string
+            description: "List of audio filenames to merge (in order)"
+          dest_file:
+            type: string
+            description: "Output filename with extension"
+          crossfade_ms:
+            type: integer
+            description: "Crossfade duration between clips in milliseconds (0 = no crossfade). Default: 0"
+        required:
+          - source_files
+          - dest_file
+
+  - type: function
+    function:
+      name: "{{ name }}_info"
+      description: "Get audio file metadata: duration, format, channels, sample rate."
+      parameters:
+        type: object
+        properties:
+          file:
+            type: string
+            description: "Audio filename to inspect"
+        required:
+          - file
+
+  - type: function
+    function:
+      name: "{{ name }}_list"
+      description: "List audio files in storage directory."
+      parameters:
+        type: object
+        properties:
+          pattern:
+            type: string
+            description: "Glob pattern filter (e.g., '*.wav'). Default: all audio files"
