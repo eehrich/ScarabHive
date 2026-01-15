@@ -2,10 +2,10 @@
 
 ## Overview
 
-The **File Operations Plugin** provides secure, powerful file system access for AgentSystem. It offers 9 comprehensive tools for file management, search, and content manipulation with built-in security protections, background indexing, and atomic write guarantees.
+The **File Operations Plugin** provides secure, powerful file system access for AgentSystem. It offers comprehensive tools for file management, search, and content manipulation with built-in security protections, background indexing, and atomic write guarantees.
 
 **Key Features:**
-- ✅ **9 File Operations**: Read, create, edit, delete, list, check existence, get metadata, search, and grep
+- ✅ **File Operations**: Read, create, edit, delete, move, rename files and directories
 - 🔒 **Security-First Design**: Path traversal protection, symlink validation, allowed directory whitelist
 - ⚡ **Background Indexing**: Fast file search with automatic index rebuilding
 - 💾 **Atomic Writes**: Temp file + rename pattern prevents corruption
@@ -73,9 +73,114 @@ Read text file contents with optional pagination.
 
 ---
 
-### 2. `file_ops_create_file`
+### 2. `file_ops_manage`
 
-Create a new file with atomic write guarantee.
+Unified file/directory management: create, delete, move, rename.
+
+**Parameters:**
+- `operation` (string, required): Operation to perform: `create`, `delete`, `move`, `rename`
+- `path` (string, required): Absolute path to the file or directory
+- `content` (string, conditional): File content (required for `create`)
+- `destination` (string, conditional): Destination path (required for `move`)
+- `new_name` (string, conditional): New name without path (required for `rename`)
+- `recursive` (boolean, optional): Allow recursive deletion of non-empty directories (default: false)
+
+**Create Example:**
+```json
+{
+  "operation": "create",
+  "path": "/project/tmp/output.txt",
+  "content": "Hello World\nLine 2"
+}
+```
+
+**Response (create):**
+```json
+{
+  "status": "success",
+  "file_path": "/project/tmp/output.txt",
+  "bytes_written": 18
+}
+```
+
+**Delete Example (file):**
+```json
+{
+  "operation": "delete",
+  "path": "/project/tmp/old_file.txt"
+}
+```
+
+**Delete Example (non-empty directory):**
+```json
+{
+  "operation": "delete",
+  "path": "/project/tmp/old_dir",
+  "recursive": true
+}
+```
+
+**Response (delete):**
+```json
+{
+  "status": "success",
+  "path": "/project/tmp/old_file.txt",
+  "type": "file",
+  "message": "File deleted successfully"
+}
+```
+
+**Move Example:**
+```json
+{
+  "operation": "move",
+  "path": "/project/src/old_location/file.py",
+  "destination": "/project/src/new_location/file.py"
+}
+```
+
+**Response (move):**
+```json
+{
+  "status": "success",
+  "source": "/project/src/old_location/file.py",
+  "destination": "/project/src/new_location/file.py",
+  "type": "file",
+  "message": "File moved successfully"
+}
+```
+
+**Rename Example:**
+```json
+{
+  "operation": "rename",
+  "path": "/project/src/old_name.py",
+  "new_name": "new_name.py"
+}
+```
+
+**Response (rename):**
+```json
+{
+  "status": "success",
+  "old_path": "/project/src/old_name.py",
+  "new_path": "/project/src/new_name.py",
+  "type": "file",
+  "message": "File renamed successfully"
+}
+```
+
+**Behavior Notes:**
+- `create`: Fails if file exists, auto-creates parent directories
+- `delete`: Fails for non-empty directories unless `recursive: true`
+- `move`: Fails if destination exists, auto-creates parent directories
+- `rename`: Fails if target name exists, keeps file in same directory
+
+---
+
+### 3. `file_ops_create_file`
+
+Create a new file with atomic write guarantee. *(Legacy - prefer `file_ops_manage` with `operation: create`)*
 
 **Parameters:**
 - `file_path` (string, required): Absolute path for new file
@@ -111,49 +216,25 @@ Create a new file with atomic write guarantee.
 
 ---
 
-### 3. `file_ops_edit_file`
+### 4. `file_ops_replace_string_in_file`
 
-Edit existing file with three modes: append, replace, or insert.
+Replace exact string match in a file (VSCode/Copilot-style precise string replacement).
 
 **Parameters:**
-- `file_path` (string, required): Absolute path to file
-- `mode` (string, required): Edit mode - "append", "replace", or "insert"
-- `content` (string, conditional): Content to append/insert (for append/insert modes)
-- `old_string` (string, conditional): String to find (for replace mode)
-- `new_string` (string, conditional): Replacement string (for replace mode)
-- `line_number` (integer, conditional): Line to insert at (for insert mode, 0-indexed)
-- `encoding` (string, optional): Text encoding (default: "utf-8")
+- `filePath` (string, required): Absolute path to file
+- `oldString` (string, required): Exact text to find (include context for uniqueness)
+- `newString` (string, required): Replacement text
 
-**Append Example:**
+**Example:**
 ```json
 {
-  "file_path": "/project/log.txt",
-  "mode": "append",
-  "content": "\nNew log entry"
+  "filePath": "/project/config.yaml",
+  "oldString": "debug: false",
+  "newString": "debug: true"
 }
 ```
 
-**Replace Example:**
-```json
-{
-  "file_path": "/project/config.yaml",
-  "mode": "replace",
-  "old_string": "debug: false",
-  "new_string": "debug: true"
-}
-```
-
-**Insert Example:**
-```json
-{
-  "file_path": "/project/src/main.py",
-  "mode": "insert",
-  "line_number": 5,
-  "content": "import logging"
-}
-```
-
-**Response (replace mode):**
+**Response:**
 ```json
 {
   "status": "success",
@@ -165,35 +246,10 @@ Edit existing file with three modes: append, replace, or insert.
 }
 ```
 
----
-
-### 4. `file_ops_delete_file`
-
-Delete a file with confirmation requirement.
-
-**Parameters:**
-- `file_path` (string, required): Absolute path to file
-- `confirm` (boolean, required): Must be `true` to proceed
-
-**Example:**
-```json
-{
-  "file_path": "/project/tmp/temp.txt",
-  "confirm": true
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "file_path": "/project/tmp/temp.txt"
-}
-```
-
-**Safety:**
-- `confirm` parameter prevents accidental deletions
-- Returns error if `confirm` is false
+**Notes:**
+- `oldString` must match exactly including whitespace
+- Include 3+ lines of context to ensure unique match
+- Supports CRLF/LF line ending flexibility
 
 ---
 
@@ -242,15 +298,17 @@ List directory contents with optional filtering and recursion.
 
 ### 6. `file_ops_search_files`
 
-Check if a file or directory exists.
+Search for files by name using glob patterns. Uses background-indexed file name index for fast results.
 
 **Parameters:**
-- `path` (string, required): Absolute path to check
+- `pattern` (string, required): Glob pattern (e.g., `*.py`, `**/*.yaml`)
+- `max_results` (integer, optional): Maximum results to return (default: 50)
 
 **Example:**
 ```json
 {
-  "path": "/project/src/main.py"
+  "pattern": "**/*.py",
+  "max_results": 50
 }
 ```
 
@@ -258,10 +316,14 @@ Check if a file or directory exists.
 ```json
 {
   "status": "success",
-  "path": "/project/src/main.py",
-  "exists": true,
-  "is_file": true,
-  "is_directory": false
+  "pattern": "**/*.py",
+  "matches": [
+    "/project/src/main.py",
+    "/project/src/utils.py",
+    "/project/tests/test_main.py"
+  ],
+  "total_found": 3,
+  "index_enabled": true
 }
 ```
 
@@ -269,15 +331,33 @@ Check if a file or directory exists.
 
 ### 7. `file_ops_grep_search`
 
-Get file metadata and statistics.
+Search file contents for text/regex patterns with context lines.
 
 **Parameters:**
-- `file_path` (string, required): Absolute path to file
+- `query` (string, required): Search query (literal text or regex pattern)
+- `is_regex` (boolean, optional): Treat query as regex pattern (default: false)
+- `include_pattern` (string, optional): Only search in files matching this glob (e.g., `**/*.py`)
+- `case_sensitive` (boolean, optional): Case-sensitive search (default: false)
+- `max_results` (integer, optional): Maximum number of matches to return (default: 100)
+- `context_lines` (integer, optional): Number of context lines before/after match (default: 2)
 
-**Example:**
+**Example (literal search):**
 ```json
 {
-  "file_path": "/project/README.md"
+  "query": "TODO",
+  "case_sensitive": false,
+  "context_lines": 2,
+  "include_pattern": "**/*.py"
+}
+```
+
+**Example (regex search):**
+```json
+{
+  "query": "def\\s+\\w+\\(",
+  "is_regex": true,
+  "include_pattern": "src/**/*.py",
+  "max_results": 50
 }
 ```
 
@@ -285,13 +365,18 @@ Get file metadata and statistics.
 ```json
 {
   "status": "success",
-  "file_path": "/project/README.md",
-  "is_file": true,
-  "is_directory": false,
-  "size_bytes": 12543,
-  "modified_time": "2024-12-20T15:30:00",
-  "created_time": "2024-12-15T10:00:00",
-  "permissions": "644"
+  "query": "TODO",
+  "is_regex": false,
+  "matches": [
+    {
+      "file_path": "/project/src/main.py",
+      "line_number": 45,
+      "line_content": "    # TODO: Implement feature",
+      "context_before": ["def process():", "    \"\"\"Process data.\"\"\""],
+      "context_after": ["    pass"]
+    }
+  ],
+  "total_matches": 1
 }
 ```
 
@@ -372,104 +457,6 @@ AI-powered semantic code search using ChromaDB embeddings. Finds files by meanin
 - Similarity > 0.4 usually indicates good match
 - Results sorted by similarity (best first)
 
----
-
-### 9. `file_ops_search_files`
-
-Search for files by name using glob patterns. Uses background-indexed file name index for fast results.
-
-**Parameters:**
-- `pattern` (string, required): Glob pattern (e.g., "*.py", "**/*.yaml")
-- `max_results` (integer, optional): Maximum results to return (default: 100)
-
-**Example:**
-```json
-{
-  "pattern": "**/*.py",
-  "max_results": 50
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "pattern": "**/*.py",
-  "matches": [
-    "/project/src/main.py",
-    "/project/src/utils.py",
-    "/project/tests/test_main.py"
-  ],
-  "total_found": 3,
-  "index_enabled": true,
-  "last_indexed": "2024-12-20T15:25:00"
-}
-```
-
-**Performance:**
-- Uses in-memory filename index when indexing enabled
-- Falls back to filesystem walk if index disabled
-- Auto-rebuilds index every 5 minutes (configurable)
-
----
-
-### 10. `file_ops_grep_search`
-
-Search file contents for text/regex patterns with context lines.
-
-**Parameters:**
-- `query` (string, required): Search query (literal or regex)
-- `is_regex` (boolean, optional): Treat query as regex (default: false)
-- `case_sensitive` (boolean, optional): Case-sensitive search (default: false)
-- `context_lines` (integer, optional): Lines of context (default: 0, max: 10)
-- `include_pattern` (string, optional): Glob filter for files to search
-- `max_results` (integer, optional): Maximum matches to return (default: 100)
-
-**Example (literal search):**
-```json
-{
-  "query": "TODO",
-  "case_sensitive": false,
-  "context_lines": 2,
-  "include_pattern": "**/*.py"
-}
-```
-
-**Example (regex search):**
-```json
-{
-  "query": "def\\s+\\w+\\(",
-  "is_regex": true,
-  "include_pattern": "src/**/*.py",
-  "max_results": 50
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "query": "TODO",
-  "is_regex": false,
-  "matches": [
-    {
-      "file_path": "/project/src/main.py",
-      "line_number": 45,
-      "line_content": "    # TODO: Implement feature",
-      "context_before": [
-        "def process():",
-        "    \"\"\"Process data.\"\"\""
-      ],
-      "context_after": [
-        "    pass"
-      ]
-    }
-  ],
-  "total_matches": 1,
-  "index_enabled": true
-}
-```
-
 ## Configuration Reference
 
 ### Plugin Configuration (`config/plugins.yaml`)
@@ -488,6 +475,11 @@ file_ops:
     - config        # Configuration files
     - data          # Data files
   
+  # Read-only mode: disables all write operations
+  # When enabled, manage (create/delete/move/rename) and replace_string_in_file
+  # are blocked and hidden from the schema
+  read_only: false
+  
   # File size limit (prevents reading huge files)
   max_file_size_mb: 10
   
@@ -504,6 +496,16 @@ file_ops:
       - "**/*.min.css"
       - "**/*.map"
 ```
+
+#### Read-Only Mode
+
+When `read_only: true` is set:
+
+1. **Tool Visibility**: The `file_ops_manage` and `file_ops_replace_string_in_file` tools are **hidden from the schema** and won't appear in tool listings
+2. **Runtime Protection**: Even if tools are called directly, they return an error: `"Plugin is in read-only mode. Write operations are disabled."`
+3. **Read Operations**: `read_file`, `list_directory`, `search_files`, and `grep_search` remain fully functional
+
+**Use Case**: Safe browsing mode for agents that should only analyze code without making changes.
 
 ### Agent Tool Access
 

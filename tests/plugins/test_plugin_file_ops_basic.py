@@ -42,9 +42,10 @@ async def file_ops_server(tmp_allowed_dir):
 @pytest.mark.asyncio
 async def test_create_and_read_file(file_ops_server, tmp_allowed_dir):
     """Test creating and reading a file."""
-    # Create file
-    result = await file_ops_server.create_file({
-        "filePath": str(tmp_allowed_dir / "test.txt"),
+    # Create file using manage
+    result = await file_ops_server.manage({
+        "operation": "create",
+        "path": str(tmp_allowed_dir / "test.txt"),
         "content": "Hello World\nLine 2\nLine 3"
     })
 
@@ -181,8 +182,9 @@ async def test_create_file_fails_if_exists(file_ops_server, tmp_allowed_dir):
     test_file.write_text("Original")
 
     # Try to create file that already exists (should fail)
-    result = await file_ops_server.create_file({
-        "filePath": str(test_file),
+    result = await file_ops_server.manage({
+        "operation": "create",
+        "path": str(test_file),
         "content": "New content"
     })
 

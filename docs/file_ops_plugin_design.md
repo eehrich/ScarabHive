@@ -149,9 +149,87 @@ class FileSearchEngine:
 }
 ```
 
-### 2. create_file
+### 2. manage (Unified File/Directory Operations)
 
-**Purpose**: Create a new text file with content.
+**Purpose**: Unified tool for file/directory management - create, delete, move, rename.
+
+**Schema**:
+```yaml
+- type: function
+  function:
+    name: "{{ name }}_manage"
+    description: "Unified file/directory management: create, delete, move, rename."
+    parameters:
+      type: object
+      properties:
+        operation:
+          type: string
+          enum: ["create", "delete", "move", "rename"]
+          description: "Operation to perform"
+        path:
+          type: string
+          description: "Absolute path to file or directory"
+        content:
+          type: string
+          description: "File content (required for create)"
+        destination:
+          type: string
+          description: "Destination path (required for move)"
+        new_name:
+          type: string
+          description: "New name without path (required for rename)"
+        recursive:
+          type: boolean
+          default: false
+          description: "Allow recursive deletion of non-empty directories"
+      required: ["operation", "path"]
+      additionalProperties: false
+```
+
+**Response (create)**:
+```json
+{
+  "status": "success",
+  "file_path": "/project/new_file.txt",
+  "bytes_written": 1234
+}
+```
+
+**Response (delete)**:
+```json
+{
+  "status": "success",
+  "path": "/project/old_file.txt",
+  "type": "file",
+  "message": "File deleted successfully"
+}
+```
+
+**Response (move)**:
+```json
+{
+  "status": "success",
+  "source": "/project/old/file.txt",
+  "destination": "/project/new/file.txt",
+  "type": "file",
+  "message": "File moved successfully"
+}
+```
+
+**Response (rename)**:
+```json
+{
+  "status": "success",
+  "old_path": "/project/old_name.txt",
+  "new_path": "/project/new_name.txt",
+  "type": "file",
+  "message": "File renamed successfully"
+}
+```
+
+### 3. create_file (Legacy)
+
+**Purpose**: Create a new text file with content. *(Prefer `manage` with `operation: create`)*
 
 **Schema**:
 ```yaml
@@ -194,40 +272,29 @@ class FileSearchEngine:
 }
 ```
 
-### 3. edit_file
+### 4. replace_string_in_file
 
-**Purpose**: Edit existing file content using various modes.
+**Purpose**: Replace exact string match in a file (VSCode/Copilot-style).
 
 **Schema**:
 ```yaml
 - type: function
   function:
-    name: "{{ name }}_edit_file"
-    description: "Edit an existing file. Supports append, replace, and insert modes."
+    name: "{{ name }}_replace_string_in_file"
+    description: "Replace exact string in file. Include context for unique matching."
     parameters:
       type: object
       properties:
-        file_path:
+        filePath:
           type: string
           description: "Path to file to edit"
-        mode:
+        oldString:
           type: string
-          enum: ["append", "replace", "insert"]
-          description: "Edit mode: append to end, replace string, or insert at line"
-        content:
+          description: "Exact text to find (include context for uniqueness)"
+        newString:
           type: string
-          description: "Content to add/insert (for append/insert modes)"
-        old_string:
-          type: string
-          description: "String to replace (for replace mode)"
-        new_string:
-          type: string
-          description: "Replacement string (for replace mode)"
-        line_number:
-          type: integer
-          minimum: 0
-          description: "Line number to insert at (for insert mode, 0-indexed)"
-      required: ["file_path", "mode"]
+          description: "Replacement text"
+      required: ["filePath", "oldString", "newString"]
       additionalProperties: false
 ```
 
@@ -238,33 +305,10 @@ class FileSearchEngine:
   "file_path": "/absolute/path/to/file.txt",
   "mode": "replace",
   "changes": {
-    "replacements": 3,
-    "lines_modified": [12, 45, 89]
+    "replacements": 1,
+    "lines_modified": [12]
   }
 }
-```
-
-### 4. delete_file
-
-**Purpose**: Delete a file safely.
-
-**Schema**:
-```yaml
-- type: function
-  function:
-    name: "{{ name }}_delete_file"
-    description: "Delete a file. Requires confirmation for safety."
-    parameters:
-      type: object
-      properties:
-        file_path:
-          type: string
-          description: "Path to file to delete"
-        confirm:
-          type: boolean
-          description: "Must be true to confirm deletion"
-      required: ["file_path", "confirm"]
-      additionalProperties: false
 ```
 
 ### 5. list_directory
@@ -519,6 +563,9 @@ plugins:
           - "e:/Projects/AgentSystem/tmp"
         max_file_size_mb: 10
         default_encoding: "utf-8"
+        
+        # Read-only mode: disables all write operations
+        read_only: false
 
         # Search configuration
         search:
@@ -532,8 +579,16 @@ plugins:
             - "**/*.pyc"
             - "**/node_modules/**"
             - "**/.venv/**"
-        - "**/*.min.js"
+            - "**/*.min.js"
 ```
+
+### Read-Only Mode
+
+When `read_only: true` is configured:
+
+1. **Schema Hiding**: The `file_ops_manage` and `file_ops_replace_string_in_file` tools are hidden from the schema via Jinja2 conditionals
+2. **Runtime Block**: Even if tools are invoked directly, they return an error
+3. **Use Case**: Safe browsing mode for code analysis agents
 
 ## Implementation Details
 

@@ -548,6 +548,195 @@ class FileOperations:
                 "file_path": str(path)
             }
 
+    async def delete_path_safe(self, path: Path, recursive: bool = False) -> Dict[str, Any]:
+        """
+        Delete a file or directory safely.
+
+        Args:
+            path: Path to delete (file or directory)
+            recursive: If True, delete non-empty directories recursively
+
+        Returns:
+            Dict with status, path, type (file/directory)
+        """
+        import shutil
+        
+        try:
+            if not path.exists():
+                return {
+                    "status": "error",
+                    "error": f"Path not found: {path}",
+                    "error_type": "FileNotFoundError",
+                    "path": str(path)
+                }
+
+            if path.is_file():
+                path.unlink()
+                return {
+                    "status": "success",
+                    "path": str(path),
+                    "type": "file",
+                    "message": "File deleted successfully"
+                }
+            elif path.is_dir():
+                if recursive:
+                    shutil.rmtree(path)
+                    return {
+                        "status": "success",
+                        "path": str(path),
+                        "type": "directory",
+                        "message": "Directory deleted recursively"
+                    }
+                else:
+                    # Try to remove empty directory
+                    try:
+                        path.rmdir()
+                        return {
+                            "status": "success",
+                            "path": str(path),
+                            "type": "directory",
+                            "message": "Empty directory deleted"
+                        }
+                    except OSError as e:
+                        if "not empty" in str(e).lower() or "directory not empty" in str(e).lower():
+                            return {
+                                "status": "error",
+                                "error": f"Directory not empty: {path}. Use recursive=true to delete non-empty directories.",
+                                "error_type": "DirectoryNotEmptyError",
+                                "path": str(path)
+                            }
+                        raise
+            else:
+                return {
+                    "status": "error",
+                    "error": f"Unknown path type: {path}",
+                    "error_type": "UnknownPathTypeError",
+                    "path": str(path)
+                }
+
+        except Exception as e:
+            logger.error(f"Error deleting path {path}: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "path": str(path)
+            }
+
+    async def move_path_safe(self, source: Path, destination: Path) -> Dict[str, Any]:
+        """
+        Move a file or directory to a new location.
+
+        Args:
+            source: Source path
+            destination: Destination path
+
+        Returns:
+            Dict with status, source, destination, type
+        """
+        import shutil
+        
+        try:
+            if not source.exists():
+                return {
+                    "status": "error",
+                    "error": f"Source not found: {source}",
+                    "error_type": "FileNotFoundError",
+                    "source": str(source)
+                }
+
+            if destination.exists():
+                return {
+                    "status": "error",
+                    "error": f"Destination already exists: {destination}",
+                    "error_type": "FileExistsError",
+                    "destination": str(destination)
+                }
+
+            # Create parent directories if needed
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+            path_type = "file" if source.is_file() else "directory"
+            
+            # Use shutil.move for cross-device moves
+            shutil.move(str(source), str(destination))
+
+            return {
+                "status": "success",
+                "source": str(source),
+                "destination": str(destination),
+                "type": path_type,
+                "message": f"{path_type.capitalize()} moved successfully"
+            }
+
+        except Exception as e:
+            logger.error(f"Error moving {source} to {destination}: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "source": str(source),
+                "destination": str(destination)
+            }
+
+    async def rename_path_safe(self, path: Path, new_name: str) -> Dict[str, Any]:
+        """
+        Rename a file or directory (same directory).
+
+        Args:
+            path: Path to rename
+            new_name: New name (without path)
+
+        Returns:
+            Dict with status, old_path, new_path, type
+        """
+        try:
+            if not path.exists():
+                return {
+                    "status": "error",
+                    "error": f"Path not found: {path}",
+                    "error_type": "FileNotFoundError",
+                    "path": str(path)
+                }
+
+            # Validate new_name doesn't contain path separators
+            if "/" in new_name or "\\" in new_name:
+                return {
+                    "status": "error",
+                    "error": f"new_name must not contain path separators: {new_name}",
+                    "error_type": "ValidationError"
+                }
+
+            new_path = path.parent / new_name
+
+            if new_path.exists():
+                return {
+                    "status": "error",
+                    "error": f"Target already exists: {new_path}",
+                    "error_type": "FileExistsError",
+                    "new_path": str(new_path)
+                }
+
+            path_type = "file" if path.is_file() else "directory"
+            path.rename(new_path)
+
+            return {
+                "status": "success",
+                "old_path": str(path),
+                "new_path": str(new_path),
+                "type": path_type,
+                "message": f"{path_type.capitalize()} renamed successfully"
+            }
+
+        except Exception as e:
+            logger.error(f"Error renaming {path} to {new_name}: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "path": str(path)
+            }
+
     async def list_directory_safe(
         self,
         dir_path: Path,

@@ -122,12 +122,13 @@ async def test_read_file_calls_status_end(server, tmp_allowed_dir, mock_status):
 
 @pytest.mark.asyncio
 async def test_create_file_calls_status_end(server, tmp_allowed_dir, mock_status):
-    """Test that create_file calls status.end()."""
+    """Test that manage(create) calls status.end()."""
     test_file = tmp_allowed_dir / "new_file.txt"
 
-    # Call create_file
-    result = await server.create_file({
-        "filePath": str(test_file),
+    # Call manage with create operation
+    result = await server.manage({
+        "operation": "create",
+        "path": str(test_file),
         "content": "New file content",
         "_status": mock_status
     })

@@ -1,3 +1,6 @@
+# File Operations Plugin Schema
+# Jinja2 variables: {{ name }}, {{ read_only }}
+
 tools:
   - type: function
     function:
@@ -20,20 +23,42 @@ tools:
         required: ["filePath"]
         additionalProperties: false
 
+{% if not read_only %}
   - type: function
     function:
-      name: "{{ name }}_create_file"
-      description: "This is a tool for creating a new file in the workspace. The file will be created with the specified content. The directory will be created if it does not already exist. Never use this tool to edit a file that already exists."
+      name: "{{ name }}_manage"
+      description: |
+        File and directory management operations: create, delete, move, rename.
+        All paths must be within allowed directories. Parent directories are auto-created for create operation.
       parameters:
         type: object
         properties:
-          filePath:
+          operation:
             type: string
-            description: "The absolute path to the file to create."
+            enum: ["create", "delete", "move", "rename"]
+            description: |
+              Operation to perform:
+              - create: Create new file with content (fails if exists)
+              - delete: Delete file or empty directory
+              - move: Move file/directory to new location
+              - rename: Rename file/directory (same directory)
+          path:
+            type: string
+            description: "Absolute path to the file or directory to operate on"
           content:
             type: string
-            description: "The content to write to the file."
-        required: ["filePath", "content"]
+            description: "File content (required for create operation, files only)"
+          destination:
+            type: string
+            description: "Destination path (required for move operation)"
+          new_name:
+            type: string
+            description: "New name without path (required for rename operation)"
+          recursive:
+            type: boolean
+            default: false
+            description: "Allow recursive deletion of non-empty directories (for delete operation)"
+        required: ["operation", "path"]
         additionalProperties: false
 
   - type: function
@@ -57,6 +82,7 @@ tools:
             description: "The exact literal text to replace `old_string` with, preferably unescaped. Provide the EXACT text. Ensure the resulting code is correct and idiomatic."
         required: ["filePath", "oldString", "newString"]
         additionalProperties: false
+{% endif %}
 
   - type: function
     function:
@@ -173,6 +199,10 @@ tools:
         additionalProperties: false
 
 config:
+  # Read-only mode: disables all write/modification operations
+  # When true, only read_file, list_directory, search_files, grep_search, semantic_search are available
+  read_only: false
+  
   # Sandbox security: restricts file operations to these directories only
   # Prevents path traversal attacks and unauthorized file access
   allowed_directories:
