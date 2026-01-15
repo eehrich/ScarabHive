@@ -499,7 +499,7 @@ class GeminiSDKClient(LLMClient):
                         # Detect MALFORMED_FUNCTION_CALL for auto-retry
                         if 'MALFORMED' in finish_reason_str:
                             got_malformed_function_call = True
-                            # Log contents to debug what was sent
+                            # Log contents to debug what was sent (including inline_data)
                             contents_json = json.dumps([
                                 {
                                     "role": c.role,
@@ -513,7 +513,11 @@ class GeminiSDKClient(LLMClient):
                                             "function_response": {
                                                 "name": p.function_response.name if hasattr(p.function_response, 'name') else None,
                                                 "response": p.function_response.response if hasattr(p.function_response, 'response') else None
-                                            } if hasattr(p, 'function_response') and p.function_response else None
+                                            } if hasattr(p, 'function_response') and p.function_response else None,
+                                            "inline_data": {
+                                                "mime_type": p.inline_data.mime_type,
+                                                "data_len": len(p.inline_data.data) if p.inline_data.data else 0
+                                            } if hasattr(p, 'inline_data') and p.inline_data else None
                                         }
                                         for p in c.parts
                                     ]
