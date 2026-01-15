@@ -67,7 +67,15 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
     # If the master config exists, load it and then load any included files
     if cfg_path.exists():
-        master = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        try:
+            master = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as e:
+            logger.error(f"YAML syntax error in config file '{cfg_path}': {e}")
+            raise ValueError(f"Failed to parse configuration file '{cfg_path}': {e}") from e
+        except Exception as e:
+            logger.error(f"Failed to read config file '{cfg_path}': {e}")
+            raise
+        
         # Determine includes: accept either `includes` (list) or `files`
         includes = master.get("includes") or master.get("files") or []
         # If includes is a single string, make it a list
@@ -103,6 +111,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                 expanded_includes.append(inc)
         
         includes = expanded_includes
+        logger.debug(f"Config includes {len(includes)} files from glob patterns")
 
         # Load each included file and merge into specific sections
         for inc in includes:
@@ -112,6 +121,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             if inc_path.exists():
                 try:
                     part = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                    logger.debug(f"Loaded included config: {inc_path.name}")
                     
                     # Merge based on included file structure
                     if "llm_system" in part:
@@ -127,6 +137,10 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                             data["plugins"] = deep_merge(data["plugins"], part["plugins"])
                         else:
                             data["plugins"] = part["plugins"]
+                        # Log servers being added
+                        if "servers" in part.get("plugins", {}):
+                            server_names = list(part["plugins"]["servers"].keys())
+                            logger.debug(f"Added servers from {inc_path.name}: {server_names}")
                     
                     if "external_servers" in part:
                         # mcp_servers.yaml uses "external_servers" key
@@ -139,10 +153,14 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     if "agents" in part:
                         data["agents"] = part["agents"]
                         
+                except yaml.YAMLError as e:
+                    # Log YAML syntax errors and continue (allows other configs to load)
+                    logger.error(f"YAML syntax error in included config '{inc_path}': {e}")
+                    logger.warning(f"Skipping malformed config file: {inc_path}")
                 except Exception as e:
-                    # Log parsing errors but continue loading
-                    print(f"Warning: Failed to parse {inc_path}: {e}")
-                    pass
+                    # Log other parsing errors but continue loading
+                    logger.error(f"Failed to load included config '{inc_path}': {e}", exc_info=True)
+                    logger.warning(f"Skipping problematic config file: {inc_path}")
 
     # Apply simple env-variable expansion for ${VAR} patterns (keep existing loader behavior)
     def _expand_env(value):
@@ -205,7 +223,14 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             # Conservative: if resolution fails for any reason, keep original values
             pass
 
-    return AgentSystemConfig.model_validate(data)
+    # Validate configuration with Pydantic
+    try:
+        return AgentSystemConfig.model_validate(data)
+    except Exception as e:
+        logger.error(f"Configuration validation failed: {e}")
+        # Log the data structure that failed validation for debugging
+        logger.debug(f"Failed configuration data: {data}")
+        raise
 
 
 # Cache for plugin discovery (avoid repeated calls)

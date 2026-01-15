@@ -206,12 +206,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     else:
         cfg_path = config_path
 
+    # Setup early logging BEFORE config loading so YAML errors are captured
+    # This ensures config parsing errors appear in the log file
+    early_log_file = Path(__file__).parents[2] / "logs" / "api.log"
+    early_log_file.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",  # Match Uvicorn format
+        handlers=[
+            logging.FileHandler(str(early_log_file), encoding="utf-8"),
+            logging.StreamHandler()
+        ],
+        force=True  # Override any existing config
+    )
+    early_logger = logging.getLogger(__name__)
+    early_logger.debug(f"Early logging initialized, loading config from {cfg_path}")
+
     # Create ConfigService
     global _config_service
     _config_service = ConfigService()
     config = _config_service.load_config(config_path=cfg_path)
 
-    # Setup logging via ConfigService
+    # Setup full logging via ConfigService (may reconfigure handlers)
     _config_service.setup_logging()
     
     # Get logger AFTER logging is configured

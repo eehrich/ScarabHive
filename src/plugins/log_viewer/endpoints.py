@@ -102,9 +102,10 @@ class LogViewerWebEndpoints(PluginWebInterface):
                 continue
 
             # Check if this line starts a new log entry (has timestamp pattern)
-            # Support both formats:
+            # Support multiple formats:
             # - "2025-09-25 00:23:32,790" (api.log with milliseconds)
             # - "2026-01-05 20:47:21" (profiling.log without milliseconds)
+            # - "2025-09-25 00:23:32,790 - name - LEVEL" (early logging with dashes)
             timestamp_pattern = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)'
             if re.match(timestamp_pattern, line):
                 # Save previous entry if exists
@@ -171,8 +172,9 @@ class LogViewerWebEndpoints(PluginWebInterface):
         
         # Pattern to detect start of log entry
         timestamp_pattern = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)')
-        # Pattern to extract log level
-        level_pattern = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?\s+(\w+)')
+        # Pattern to extract log level - handles both formats:
+        # "2025-09-25 00:23:32,790 INFO ..." and "2025-09-25 00:23:32,790 - name - INFO ..."
+        level_pattern = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?(?:\s+-\s+[\w.]+\s+-)?\s+(\w+)')
         
         def line_matches_filter(line: str) -> bool:
             """Check if a line matches level and search filters"""
