@@ -85,7 +85,7 @@ plugins:
               enabled: true
 
       metadata:
-        visibility: "both"  # Make available as tool for meta_agent
+        visibility: "tool"  # Make available as tool for meta_agent
 
 
 
