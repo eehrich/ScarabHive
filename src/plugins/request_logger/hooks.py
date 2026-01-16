@@ -87,9 +87,12 @@ class RequestLoggerPlugin(SchemaBasedPluginHook):
                     content_preview += "..."
                 logger.debug(f"[RequestLogger] Last message: role={role}, content={content_preview}")
             
+            # IMPORTANT: Return modified=False because we only modified metadata, not messages.
+            # Returning modified=True would cause our input context (with potentially old messages)
+            # to replace the current_context, overwriting any message modifications from earlier hooks.
             return HookResult(
                 success=True,
-                modified=True,  # We modified metadata
+                modified=False,  # Only metadata was modified, not messages
                 context=context,
                 metadata={'logged': True, 'request_number': request_num}
             )
