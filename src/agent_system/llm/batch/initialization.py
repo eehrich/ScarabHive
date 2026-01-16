@@ -86,8 +86,9 @@ def setup_batch_queue_manager_sync(
     providers_config = batch_system_config.providers
     gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
     openai_enabled = providers_config.openai.enabled if providers_config.openai else False
+    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
     
-    if not gemini_enabled and not openai_enabled:
+    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
         log.debug("No batch providers enabled, skipping batch queue manager")
         return None
     
@@ -268,8 +269,9 @@ async def init_batch_system(
     providers_config = batch_system_config.providers
     gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
     openai_enabled = providers_config.openai.enabled if providers_config.openai else False
+    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
     
-    if not gemini_enabled and not openai_enabled:
+    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
         log.debug("No batch providers enabled, skipping batch initialization")
         return None
     

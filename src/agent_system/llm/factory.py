@@ -67,8 +67,9 @@ def _create_batch_queue_manager_sync(config: AgentSystemConfig) -> Optional["Bat
     providers_config = batch_system_config.providers
     gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
     openai_enabled = providers_config.openai.enabled if providers_config.openai else False
+    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
     
-    if not gemini_enabled and not openai_enabled:
+    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
         return None
     
     # Check if any model uses batch provider
@@ -223,6 +224,8 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
             provider = "gemini"
         elif batch_provider == "openai":
             provider = "openai_httpx"  # Use httpx variant for OpenAI
+        elif batch_provider == "anthropic":
+            provider = "anthropic"
         else:
             raise ValueError(f"Unknown batch_provider: {batch_provider}")
 

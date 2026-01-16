@@ -81,6 +81,7 @@ class BatchProvidersConfig(BaseModel):
     """Configuration for all batch providers."""
     gemini: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
     openai: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
+    anthropic: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
 
 
 class BatchSystemConfig(BaseModel):
