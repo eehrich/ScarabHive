@@ -106,10 +106,17 @@ class OpenAIAsyncClient(LLMClient):
         Delegates to the central utility function in multimodal_tool_content.py.
         """
         from ..utils.multimodal_tool_content import create_multimodal_injection, check_vision_support
+        
+        # Check if model supports audio input
+        supports_audio = False
+        if self.capabilities:
+            supports_audio = getattr(self.capabilities, 'audio_input', False)
+        
         return create_multimodal_injection(
             tool_msg=tool_msg,
             supports_vision=check_vision_support(self.capabilities),
-            model_name=self.model
+            model_name=self.model,
+            supports_audio=supports_audio
         )
 
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:

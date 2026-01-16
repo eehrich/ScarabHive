@@ -197,10 +197,12 @@ class TestCreateInjectionMessageContent:
             data="audiodata"
         )
         
+        # Test with supports_audio=True (audio-capable model)
         content = create_injection_message_content(
             tool_name="tts_tool",
             tool_call_id="call_456",
-            encoded_items=[encoded]
+            encoded_items=[encoded],
+            supports_audio=True
         )
         
         assert len(content) == 2
@@ -208,6 +210,28 @@ class TestCreateInjectionMessageContent:
         assert content[1]["type"] == "input_audio"
         assert content[1]["input_audio"]["data"] == "audiodata"
         assert content[1]["input_audio"]["format"] == "wav"
+    
+    def test_create_audio_injection_without_audio_support(self):
+        """Test audio is added as text note when model doesn't support audio."""
+        encoded = EncodedMultimodalContent(
+            type="audio",
+            mime_type="audio/wav",
+            data="audiodata",
+            description="Test audio"
+        )
+        
+        # Test with supports_audio=False (default - non-audio model)
+        content = create_injection_message_content(
+            tool_name="tts_tool",
+            tool_call_id="call_456",
+            encoded_items=[encoded],
+            supports_audio=False
+        )
+        
+        assert len(content) == 2
+        assert content[0]["type"] == "text"
+        assert content[1]["type"] == "text"
+        assert "audio input not supported" in content[1]["text"].lower()
     
     def test_create_video_injection_as_text_note(self):
         """Test video is added as text note (not supported by most providers)."""

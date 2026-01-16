@@ -31,10 +31,11 @@ Usage:
 from __future__ import annotations
 
 import base64
+import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..llm.models import MultimodalToolContent
@@ -45,6 +46,64 @@ logger = logging.getLogger(__name__)
 # Default size limits
 DEFAULT_MAX_IMAGE_SIZE_MB = 20.0
 DEFAULT_MAX_AUDIO_SIZE_MB = 25.0
+
+# OpenAI only supports these audio formats
+OPENAI_SUPPORTED_AUDIO_FORMATS = {"wav", "mp3"}
+OPENAI_AUDIO_CONVERSION_TARGET = "mp3"  # Convert unsupported formats to MP3
+
+
+def _convert_audio_for_openai(
+    audio_bytes: bytes,
+    source_format: str,
+) -> Tuple[bytes, str]:
+    """Convert audio to OpenAI-compatible format if needed.
+    
+    OpenAI only supports WAV and MP3 for input_audio. This function
+    converts unsupported formats (FLAC, OGG, etc.) to MP3.
+    
+    Args:
+        audio_bytes: Raw audio bytes
+        source_format: Source format (e.g., "flac", "ogg", "wav")
+    
+    Returns:
+        Tuple of (converted_bytes, new_mime_type)
+        If no conversion needed, returns original bytes with original mime_type
+    """
+    source_format = source_format.lower().lstrip(".")
+    
+    # Already supported - no conversion needed
+    if source_format in OPENAI_SUPPORTED_AUDIO_FORMATS:
+        mime_map = {"wav": "audio/wav", "mp3": "audio/mpeg"}
+        return audio_bytes, mime_map.get(source_format, f"audio/{source_format}")
+    
+    # Need to convert to MP3
+    try:
+        from pydub import AudioSegment
+        
+        # Load audio from bytes
+        audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format=source_format)
+        
+        # Export to MP3
+        output_buffer = io.BytesIO()
+        audio.export(output_buffer, format="mp3", bitrate="128k")
+        output_buffer.seek(0)
+        
+        converted_bytes = output_buffer.read()
+        logger.debug(
+            "Converted audio from %s to MP3: %d bytes → %d bytes",
+            source_format, len(audio_bytes), len(converted_bytes)
+        )
+        return converted_bytes, "audio/mpeg"
+        
+    except ImportError:
+        logger.warning(
+            "pydub not available for audio conversion. FLAC/OGG files may not work with OpenAI."
+        )
+        return audio_bytes, f"audio/{source_format}"
+    except Exception as e:
+        logger.error("Failed to convert audio from %s to MP3: %s", source_format, e)
+        # Return original - let OpenAI reject it with a clear error
+        return audio_bytes, f"audio/{source_format}"
 
 
 @dataclass
@@ -122,12 +181,20 @@ def encode_multimodal_item(
         )
         return None
     
-    # Read and encode
+    # Read file bytes
     try:
-        data = base64.b64encode(path.read_bytes()).decode("utf-8")
+        file_bytes = path.read_bytes()
     except Exception as e:
-        logger.error("Failed to encode multimodal file %s: %s", path, e)
+        logger.error("Failed to read multimodal file %s: %s", path, e)
         return None
+    
+    # For audio: convert to OpenAI-compatible format if needed
+    if content_type == "audio":
+        source_format = path.suffix.lstrip(".").lower() or mime_type.split("/")[-1]
+        file_bytes, mime_type = _convert_audio_for_openai(file_bytes, source_format)
+    
+    # Base64 encode
+    data = base64.b64encode(file_bytes).decode("utf-8")
     
     logger.debug(
         "Encoded multimodal content: %s (%s, %.1f MB)",
@@ -145,7 +212,8 @@ def encode_multimodal_item(
 def create_injection_message_content(
     tool_name: str,
     tool_call_id: Optional[str],
-    encoded_items: List[EncodedMultimodalContent]
+    encoded_items: List[EncodedMultimodalContent],
+    supports_audio: bool = False
 ) -> List[Dict[str, Any]]:
     """Create content array for injected user message (OpenAI format).
     
@@ -157,6 +225,7 @@ def create_injection_message_content(
         tool_name: Name of the tool that generated the content
         tool_call_id: Optional call ID for traceability
         encoded_items: List of encoded multimodal items
+        supports_audio: Whether the model supports audio input (gpt-4o-audio-preview)
     
     Returns:
         List of content items for ChatMessage.content
@@ -183,15 +252,22 @@ def create_injection_message_content(
                 }
             })
         elif item.type == "audio":
-            # OpenAI audio input format
-            audio_format = _get_audio_format(item.mime_type)
-            content.append({
-                "type": "input_audio",
-                "input_audio": {
-                    "data": item.data,
-                    "format": audio_format
-                }
-            })
+            if supports_audio:
+                # OpenAI audio input format - only for audio-capable models
+                audio_format = _get_audio_format(item.mime_type)
+                content.append({
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": item.data,
+                        "format": audio_format
+                    }
+                })
+            else:
+                # Model doesn't support audio - add as text note
+                content.append({
+                    "type": "text",
+                    "text": f"\n[Audio file: {item.description or 'attached'} - audio input not supported by this model]"
+                })
         # Video: Most providers don't support video yet, add as text note
         elif item.type == "video":
             content.append({
@@ -232,15 +308,20 @@ def create_gemini_parts(
 
 
 def _get_audio_format(mime_type: str) -> str:
-    """Get OpenAI audio format from MIME type."""
+    """Get OpenAI audio format from MIME type.
+    
+    Note: After encoding, unsupported formats (FLAC, OGG) have already
+    been converted to MP3, so mime_type should be audio/mpeg.
+    """
     mime_to_format = {
         "audio/wav": "wav",
         "audio/x-wav": "wav",
         "audio/mp3": "mp3",
         "audio/mpeg": "mp3",
-        "audio/flac": "flac",
-        "audio/ogg": "ogg",
-        "audio/webm": "webm",
+        # These should not appear after conversion, but map to mp3 as fallback
+        "audio/flac": "mp3",
+        "audio/ogg": "mp3",
+        "audio/webm": "mp3",
     }
     return mime_to_format.get(mime_type.lower(), "wav")
 
@@ -262,7 +343,8 @@ def should_inject_multimodal(provider: str) -> bool:
 def create_multimodal_injection(
     tool_msg: Any,
     supports_vision: bool,
-    model_name: str = "unknown"
+    model_name: str = "unknown",
+    supports_audio: bool = False
 ) -> Optional[Dict[str, Any]]:
     """Create injected user message for multimodal tool content (OpenAI-compatible format).
     
@@ -278,6 +360,7 @@ def create_multimodal_injection(
         tool_msg: ChatMessage with role='tool' and multimodal_content
         supports_vision: Whether the model supports vision/image_input
         model_name: Model name for logging
+        supports_audio: Whether the model supports audio input (e.g., gpt-4o-audio-preview)
     
     Returns:
         dict for user message or None if no content to inject
@@ -401,7 +484,8 @@ def create_multimodal_injection(
                 injection_content = create_injection_message_content(
                     tool_name=tool_name if not text_notes else None,  # Don't repeat tool name
                     tool_call_id=tool_call_id,
-                    encoded_items=encoded_items
+                    encoded_items=encoded_items,
+                    supports_audio=supports_audio
                 )
                 content.extend(injection_content)
             
@@ -525,7 +609,8 @@ def check_vision_support(capabilities: Any) -> bool:
 def create_multimodal_injection_from_dict(
     tool_msg_dict: Dict[str, Any],
     supports_vision: bool,
-    model_name: str = "unknown"
+    model_name: str = "unknown",
+    supports_audio: bool = False
 ) -> Optional[Dict[str, Any]]:
     """Create injected user message from a serialized tool message dict.
     
@@ -536,6 +621,7 @@ def create_multimodal_injection_from_dict(
         tool_msg_dict: Dict with role='tool', content, and optionally multimodal_content
         supports_vision: Whether the model supports vision/image_input
         model_name: Model name for logging
+        supports_audio: Whether the model supports audio input (e.g., gpt-4o-audio-preview)
     
     Returns:
         dict for user message or None if no content to inject
@@ -588,7 +674,8 @@ def create_multimodal_injection_from_dict(
         content = create_injection_message_content(
             tool_name=tool_name,
             tool_call_id=tool_call_id,
-            encoded_items=encoded_items
+            encoded_items=encoded_items,
+            supports_audio=supports_audio
         )
         
         return {"role": "user", "content": content}
