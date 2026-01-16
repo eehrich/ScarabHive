@@ -166,10 +166,10 @@ llm_system:
     # ---------------------------------------------------------------------------
     # ANTHROPIC CLAUDE MODELS (Sync/Streaming)
     # ---------------------------------------------------------------------------
-    # Claude Sonnet 4 - Balanced model for most tasks
-    claude-sonnet-4:
+    # Claude Sonnet 4.5 - Smart model for complex agents and coding
+    claude-sonnet-4-5:
       provider: anthropic
-      model: claude-sonnet-4-20250514
+      model: claude-sonnet-4-5-20250929
       api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 180
@@ -185,10 +185,10 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Sonnet 4 with Extended Thinking
-    claude-sonnet-4-thinking:
+    # Claude Sonnet 4.5 with Extended Thinking
+    claude-sonnet-4-5-thinking:
       provider: anthropic
-      model: claude-sonnet-4-20250514
+      model: claude-sonnet-4-5-20250929
       api_key: "***REMOVED***"      
       context_window: 200000
       request_timeout: 300
@@ -205,10 +205,10 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Opus 4 - Most capable model
-    claude-opus-4:
+    # Claude Opus 4.5 - Premium model with maximum intelligence
+    claude-opus-4-5:
       provider: anthropic
-      model: claude-opus-4-20250514
+      model: claude-opus-4-5-20251101
       api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 300
@@ -224,10 +224,10 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Opus 4 with Extended Thinking
-    claude-opus-4-thinking:
+    # Claude Opus 4.5 with Extended Thinking
+    claude-opus-4-5-thinking:
       provider: anthropic
-      model: claude-opus-4-20250514
+      model: claude-opus-4-5-20251101
       api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 600
@@ -244,20 +244,20 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Haiku 3.5 - Fast and cost-effective
-    claude-haiku-3-5:
+    # Claude Haiku 4.5 - Fastest model with near-frontier intelligence
+    claude-haiku-4-5:
       provider: anthropic
-      model: claude-3-5-haiku-20241022
+      model: claude-haiku-4-5-20251001
       api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 120
-      max_tokens: 4096
+      max_tokens: 8192
       include_thinking: false
       enable_prompt_caching: true
       capabilities:
         tools: true
         function_calling: true
-        image_input: false
+        image_input: true
         streaming: true
         json_mode: true
         supported_api_types: [chat_completions]
@@ -266,11 +266,13 @@ llm_system:
     # ---------------------------------------------------------------------------
     # ANTHROPIC BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
-    claude-sonnet-4-batch:
+    # ANTHROPIC BATCH MODELS (provider: batch)
+    # ---------------------------------------------------------------------------
+    claude-sonnet-4-5-batch:
       provider: batch
       batch_provider: anthropic
-      model: claude-sonnet-4-20250514
-      #api_key: ANTHROPIC_API_KEY
+      model: claude-sonnet-4-5-20250929
+      api_key: "***REMOVED***"
       context_window: 200000
       max_tokens: 8192
       capabilities:
@@ -280,10 +282,10 @@ llm_system:
         streaming: false
         json_mode: true
 
-    claude-opus-4-batch:
+    claude-opus-4-5-batch:
       provider: batch
       batch_provider: anthropic
-      model: claude-opus-4-20250514
+      model: claude-opus-4-5-20251101
       api_key: "***REMOVED***"
       context_window: 200000
       max_tokens: 16384
@@ -294,17 +296,17 @@ llm_system:
         streaming: false
         json_mode: true
 
-    claude-haiku-3-5-batch:
+    claude-haiku-4-5-batch:
       provider: batch
       batch_provider: anthropic
-      model: claude-3-5-haiku-20241022
+      model: claude-haiku-4-5-20251001
       api_key: "***REMOVED***"
       context_window: 200000
-      max_tokens: 4096
+      max_tokens: 8192
       capabilities:
         tools: true
         function_calling: true
-        image_input: false
+        image_input: true
         streaming: false
         json_mode: true
 
@@ -685,6 +687,37 @@ llm_system:
     gpt-nano:
       model_ref: gpt-5-nano
       description: "OpenAI nano model for fast tasks"
+      max_steps: 500
+
+    # Claude 4.5 profiles
+    claude-sonnet:
+      model_ref: claude-sonnet-4-5
+      description: "Claude Sonnet 4.5 - Smart model for complex agents and coding"
+      max_steps: 500
+    
+    claude-sonnet-batch:
+      model_ref: claude-sonnet-4-5-batch
+      description: "Claude Sonnet 4.5 (batch)"
+      max_steps: 500
+
+    claude-opus:
+      model_ref: claude-opus-4-5
+      description: "Claude Opus 4.5 - Premium model with maximum intelligence"
+      max_steps: 500
+    
+    claude-opus-batch:
+      model_ref: claude-opus-4-5-batch
+      description: "Claude Opus 4.5 (batch)"
+      max_steps: 500
+
+    claude-haiku:
+      model_ref: claude-haiku-4-5
+      description: "Claude Haiku 4.5 - Fastest model with near-frontier intelligence"
+      max_steps: 500
+    
+    claude-haiku-batch:
+      model_ref: claude-haiku-4-5-batch
+      description: "Claude Haiku 4.5 (batch)"
       max_steps: 500
 
     local:
