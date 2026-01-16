@@ -1257,10 +1257,38 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             raise
 
         except Exception as e:
-            # Job failed - remove from memory, status persisted to DB
+            # Job failed - update status and remove from memory
             logger.exception(f"Async execution failed for {instance_id}: {e}")
+            
+            # CRITICAL: Update status to "failed" BEFORE removing from memory
+            # This ensures wait() sees the correct status
             async with self._async_jobs_lock:
-                self._async_jobs.pop(instance_id, None)
+                if instance_id in self._async_jobs:
+                    self._async_jobs[instance_id]["status"] = "failed"
+                    self._async_jobs[instance_id]["error"] = str(e)
+                    self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+                    # Keep in memory briefly so wait() can see the failed status
+                    # It will be removed after poll
+                    self._async_jobs[instance_id]["_awaiting_poll"] = True
+            
+            # Also persist failed status to DB
+            try:
+                registry = self._extract_registry(params)
+                session_service = self._extract_session_service(params)
+                manager = self._get_manager(session_service, registry)
+                parent_session_id = params.get("_session_id")
+                
+                if parent_session_id:
+                    await manager.update_sub_session_metadata(
+                        parent_session_id=parent_session_id,
+                        sub_session_id=instance_id,
+                        status="failed",
+                        completed_at=datetime.now(UTC).isoformat(),
+                        error=str(e)
+                    )
+                    logger.info(f"Persisted failed status for {instance_id} in DB after exception")
+            except Exception as persist_error:
+                logger.warning(f"Failed to persist failed status for {instance_id}: {persist_error}")
 
     async def _handle_poll(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'poll' - check status of running sub-agent without blocking."""
