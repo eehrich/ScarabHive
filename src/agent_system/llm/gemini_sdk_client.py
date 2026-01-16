@@ -135,7 +135,12 @@ class GeminiSDKClient(LLMClient):
             sdk_parts = []
             for part_dict in parts_list:
                 if "text" in part_dict:
-                    sdk_parts.append(types.Part(text=part_dict["text"]))
+                    text_val = part_dict["text"]
+                    # Skip empty or None text parts - they cause 400 INVALID_ARGUMENT
+                    if text_val is None or text_val == "":
+                        logger.debug("[GeminiSDK] Skipping empty text part")
+                        continue
+                    sdk_parts.append(types.Part(text=text_val))
                 
                 elif "functionCall" in part_dict:
                     fc = part_dict["functionCall"]
@@ -299,7 +304,18 @@ class GeminiSDKClient(LLMClient):
         try:
             stream = await stream_coro
         except Exception as e:
-            logger.error(f"[GeminiSDK] Error awaiting stream_coro: {type(e).__name__}: {e}")
+            # Log detailed error info for debugging 400 Bad Request errors
+            error_type = type(e).__name__
+            error_str = str(e)
+            logger.error(f"[GeminiSDK] Error awaiting stream_coro: {error_type}: {error_str}")
+            
+            # Check for common 400 Bad Request causes
+            if "400" in error_str or "INVALID_ARGUMENT" in error_str:
+                logger.error("[GeminiSDK] 400 INVALID_ARGUMENT - Common causes:")
+                logger.error("  - Empty content parts in message")
+                logger.error("  - Invalid inline_data (wrong mime_type or corrupted base64)")
+                logger.error("  - Invalid tool schema (unsupported JSON schema features)")
+                logger.error("  - Mismatched function_call/function_response pairs")
             raise
         
         # Use a queue to decouple reading from yielding
@@ -465,6 +481,24 @@ class GeminiSDKClient(LLMClient):
                 logger.debug(f"[GeminiSDK] Contents count: {len(contents)}")
                 logger.debug(f"[GeminiSDK] Has system instruction: {system_instruction is not None}")
                 logger.debug(f"[GeminiSDK] Has tools: {sdk_tools is not None}")
+                
+                # Log content summary for debugging 400 errors
+                for i, content in enumerate(contents):
+                    role = content.role
+                    parts_summary = []
+                    for p in content.parts:
+                        if hasattr(p, 'text') and p.text:
+                            parts_summary.append(f"text({len(p.text)} chars)")
+                        elif hasattr(p, 'function_call') and p.function_call:
+                            parts_summary.append(f"function_call({p.function_call.name})")
+                        elif hasattr(p, 'function_response') and p.function_response:
+                            parts_summary.append(f"function_response({p.function_response.name})")
+                        elif hasattr(p, 'inline_data') and p.inline_data:
+                            data_len = len(p.inline_data.data) if p.inline_data.data else 0
+                            parts_summary.append(f"inline_data({p.inline_data.mime_type}, {data_len} bytes)")
+                        else:
+                            parts_summary.append("empty_part")
+                    logger.debug(f"[GeminiSDK] Content[{i}] role={role} parts=[{', '.join(parts_summary)}]")
                 
                 # Use cancellable stream wrapper for cancellation support
                 stream_coro = self._client.aio.models.generate_content_stream(
