@@ -68,7 +68,7 @@ def _convert_audio_to_input_audio(item: Dict[str, Any]) -> Dict[str, Any]:
         return item
     
     # Fallback: return original (may not work)
-    logger.warning(f"Could not convert audio content, returning as-is")
+    logger.warning("Could not convert audio content, returning as-is")
     return item
 
 
