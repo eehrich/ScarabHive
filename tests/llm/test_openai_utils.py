@@ -66,16 +66,52 @@ class TestNormalizeContentItem:
         assert result["image_url"] == {"url": "data:image/png;base64,abc123"}
 
     def test_audio_returns_none(self):
-        """Audio items return None (filtered out)."""
+        """Audio items return None (filtered out) by default."""
         item = {"type": "audio", "audio": {"data": "base64data"}}
         result = openai_utils.normalize_content_item(item)
         assert result is None
 
     def test_video_returns_none(self):
-        """Video items return None (filtered out)."""
+        """Video items return None (filtered out) by default."""
         item = {"type": "video", "video": {"url": "http://example.com/v.mp4"}}
         result = openai_utils.normalize_content_item(item)
         assert result is None
+
+    def test_audio_allowed_when_flag_set(self):
+        """Audio items are converted to input_audio format when allow_audio=True."""
+        item = {"type": "audio", "audio_url": "data:audio/mp3;base64,base64data"}
+        result = openai_utils.normalize_content_item(item, allow_audio=True)
+        # Should be converted to input_audio format
+        assert result["type"] == "input_audio"
+        assert result["input_audio"]["data"] == "base64data"
+        assert result["input_audio"]["format"] == "mp3"
+
+    def test_video_allowed_when_flag_set(self):
+        """Video items are kept when allow_video=True."""
+        item = {"type": "video", "video": {"url": "http://example.com/v.mp4"}}
+        result = openai_utils.normalize_content_item(item, allow_video=True)
+        assert result == item
+
+    def test_input_audio_allowed_when_flag_set(self):
+        """input_audio type is also kept when allow_audio=True (already correct format)."""
+        item = {"type": "input_audio", "input_audio": {"data": "base64data", "format": "mp3"}}
+        result = openai_utils.normalize_content_item(item, allow_audio=True)
+        assert result == item
+
+    def test_audio_conversion_wav_format(self):
+        """Audio items with wav format are converted correctly."""
+        item = {"type": "audio", "audio_url": "data:audio/wav;base64,wavdata123"}
+        result = openai_utils.normalize_content_item(item, allow_audio=True)
+        assert result["type"] == "input_audio"
+        assert result["input_audio"]["data"] == "wavdata123"
+        assert result["input_audio"]["format"] == "wav"
+
+    def test_audio_conversion_mpeg_to_mp3(self):
+        """Audio mpeg format is normalized to mp3."""
+        item = {"type": "audio", "audio_url": "data:audio/mpeg;base64,mpegdata"}
+        result = openai_utils.normalize_content_item(item, allow_audio=True)
+        assert result["type"] == "input_audio"
+        assert result["input_audio"]["format"] == "mp3"
 
     def test_unknown_type_passthrough(self):
         """Unknown types pass through unchanged."""
@@ -88,7 +124,7 @@ class TestNormalizeContentList:
     """Test normalize_content_list function."""
 
     def test_filters_audio_and_video(self):
-        """Audio and video items are filtered out."""
+        """Audio and video items are filtered out by default."""
         content = [
             {"type": "text", "text": "Hello"},
             {"type": "audio", "audio": {"data": "base64"}},
@@ -98,8 +134,34 @@ class TestNormalizeContentList:
         result = openai_utils.normalize_content_list(content)
         
         assert len(result) == 2
+
+    def test_keeps_audio_when_allowed(self):
+        """Audio items are converted to input_audio format when allow_audio=True."""
+        content = [
+            {"type": "text", "text": "Hello"},
+            {"type": "audio", "audio_url": "data:audio/mp3;base64,audiodata"},
+            {"type": "text", "text": "World"},
+        ]
+        result = openai_utils.normalize_content_list(content, allow_audio=True)
+        
+        assert len(result) == 3
+        # Audio should be converted to input_audio format
+        assert result[1]["type"] == "input_audio"
+        assert result[1]["input_audio"]["data"] == "audiodata"
+        assert result[1]["input_audio"]["format"] == "mp3"
+
+    def test_keeps_video_when_allowed(self):
+        """Video items are kept when allow_video=True."""
+        content = [
+            {"type": "text", "text": "Hello"},
+            {"type": "video", "video": {"url": "http://v.mp4"}},
+        ]
+        result = openai_utils.normalize_content_list(content, allow_video=True)
+        
+        assert len(result) == 2
+        assert result[0]["type"] == "text"
         assert result[0]["text"] == "Hello"
-        assert result[1]["text"] == "World"
+        assert result[1]["type"] == "video"
 
     def test_converts_text_files(self):
         """text_file items are converted."""

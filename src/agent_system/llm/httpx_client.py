@@ -164,6 +164,7 @@ class HTTPXOpenAIClient(LLMClient):
         """Filter and normalize content for OpenAI API.
         
         Uses shared openai_utils for consistent normalization across all OpenAI clients.
+        Respects model capabilities - if model supports audio/video, keeps that content.
         
         Args:
             content: Message content (str, list, or dict)
@@ -171,7 +172,18 @@ class HTTPXOpenAIClient(LLMClient):
         Returns:
             Normalized content for OpenAI API
         """
-        return openai_utils.normalize_message_content(content)
+        # Check capabilities to determine what to allow
+        allow_audio = False
+        allow_video = False
+        if self.capabilities:
+            allow_audio = getattr(self.capabilities, 'audio_input', False)
+            allow_video = getattr(self.capabilities, 'video_input', False)
+        
+        return openai_utils.normalize_message_content(
+            content,
+            allow_audio=allow_audio,
+            allow_video=allow_video
+        )
 
     async def chat(
         self,

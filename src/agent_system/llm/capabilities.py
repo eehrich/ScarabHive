@@ -129,14 +129,63 @@ class ModelCapabilities(BaseModel):
 
 
 def load_capabilities_from_config(config_path: Optional[str | Path] = None) -> dict[str, ModelCapabilities]:
-    """Load model capabilities from configuration file.
+    """Load model capabilities from configuration file(s).
+    
+    Loads capabilities from all included config files (llm.yaml, llm_openrouter.yaml, etc.)
+    by using the merged configuration system.
     
     Args:
-        config_path: Path to llm.yaml config file. If None, tries default locations.
+        config_path: Optional explicit path to a single config file. If None, 
+                     loads from the global merged configuration.
     
     Returns:
         Dictionary mapping model names to their capabilities
     """
+    capabilities_map = {}
+    
+    # First, try to get from global merged config (preferred method)
+    try:
+        from agent_system.config import load_settings
+        config = load_settings()
+        
+        if config and hasattr(config, 'llm_system') and config.llm_system:
+            models = config.llm_system.models or {}
+            
+            for model_name, model_config in models.items():
+                # Extract capabilities from model config
+                caps_data = {}
+                if hasattr(model_config, 'capabilities') and model_config.capabilities:
+                    caps_obj = model_config.capabilities
+                    # Convert Pydantic model to dict
+                    for field in ['tools', 'function_calling', 'streaming', 'json_mode',
+                                  'image_input', 'audio_input', 'video_input', 'multimodal']:
+                        if hasattr(caps_obj, field):
+                            value = getattr(caps_obj, field)
+                            if value is not None:
+                                # Map 'multimodal' to individual capabilities
+                                if field == 'multimodal' and value:
+                                    caps_data['image_input'] = True
+                                    caps_data['audio_input'] = True
+                                    caps_data['video_input'] = True
+                                else:
+                                    caps_data[field] = value
+                
+                # Convert to ModelCapabilities instance
+                capabilities = ModelCapabilities(**caps_data)
+                capabilities_map[model_name] = capabilities
+                
+                # Also register by the actual model string (e.g., "gpt-5" from model: gpt-5)
+                actual_model = model_config.model if hasattr(model_config, 'model') else None
+                if actual_model and actual_model != model_name:
+                    capabilities_map[actual_model] = capabilities
+            
+            logger.info("Loaded capabilities for %d models from merged config", len(capabilities_map))
+            return capabilities_map
+            
+    except Exception as e:
+        logger.debug("Could not load from merged config (%s), falling back to file loading", e)
+    
+    # Fallback: Load directly from YAML files
     if config_path is None:
         # Try default locations
         possible_paths = [
@@ -168,6 +217,13 @@ def load_capabilities_from_config(config_path: Optional[str | Path] = None) -> d
         for model_name, model_config in models.items():
             # Extract capabilities from model config
             caps_data = model_config.get('capabilities', {})
+            
+            # Handle 'multimodal' shorthand
+            if caps_data.get('multimodal'):
+                caps_data['image_input'] = True
+                caps_data['audio_input'] = True
+                caps_data['video_input'] = True
+                del caps_data['multimodal']  # Remove before passing to ModelCapabilities
             
             # Convert to ModelCapabilities instance
             capabilities = ModelCapabilities(**caps_data)

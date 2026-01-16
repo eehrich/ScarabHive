@@ -641,8 +641,8 @@ class TestMultimodalTokenEstimation:
         fake_audio.write_bytes(b"x" * 163840)  # Exactly 16KB * 10 = 10s
         
         tokens = estimate_file_tokens(fake_audio, file_type='audio')
-        # Fallback: 163840 / 16384 = 10 seconds × 32 tokens/s = 320 tokens
-        assert tokens == 320
+        # Fallback: 163840 / 16384 = 10 seconds × 41 tokens/s = 410 tokens
+        assert tokens == 410
 
     def test_estimate_inline_data_tokens_with_file_path(self, tmp_path):
         """Test that estimate_inline_data_tokens works with file path items."""
@@ -658,8 +658,8 @@ class TestMultimodalTokenEstimation:
         }
         
         tokens = estimate_inline_data_tokens(item)
-        # Fallback: 163840 / 16384 = 10 seconds × 32 tokens/s = 320 tokens
-        assert tokens == 320
+        # Fallback: 163840 / 16384 = 10 seconds × 41 tokens/s = 410 tokens
+        assert tokens == 410
 
     def test_estimate_inline_data_tokens_with_image_path(self, tmp_path):
         """Test that estimate_inline_data_tokens works with image file paths."""
@@ -710,9 +710,9 @@ class TestMultimodalTokenEstimation:
         # - 4 (base overhead)
         # - ~8 (tool call id overhead)
         # - ~30 (content text tokens)
-        # - 320 (audio file: 10 seconds × 32 tokens/s)
-        # Total: ~362 tokens
-        assert tokens > 300  # Main contribution is the audio file
+        # - 410 (audio file: 10 seconds × 41 tokens/s)
+        # Total: ~452 tokens
+        assert tokens > 400  # Main contribution is the audio file
         assert tokens < 500  # Reasonable upper bound
 
     def test_estimate_tokens_multiple_multimodal_items(self, tmp_path):
@@ -740,9 +740,9 @@ class TestMultimodalTokenEstimation:
         
         tokens = estimate_token_count([msg])
         
-        # 5s × 32 = 160 tokens + 10s × 32 = 320 tokens = 480 + overhead ~40 = ~520
-        assert tokens > 450
-        assert tokens < 600
+        # 5s × 41 = 205 tokens + 10s × 41 = 410 tokens = 615 + overhead ~24 = ~639
+        assert tokens > 600
+        assert tokens < 700
 
 
 class TestMediaDurationCache:
@@ -851,7 +851,7 @@ class TestMediaDurationCache:
         second_time = t4 - t3
         
         # Same result
-        assert tokens1 == tokens2 == 320
+        assert tokens1 == tokens2 == 410
         
         # Cache should have entry
         assert _duration_cache.stats()["size"] >= 1
@@ -891,9 +891,9 @@ class TestEstimateTokenCountDictSupport:
         
         tokens = estimate_token_count([msg_dict])
         
-        # Should include audio tokens: 10s × 32 = 320 + overhead
-        assert tokens > 300
-        assert tokens < 400
+        # Should include audio tokens: 10s × 41 = 410 + overhead ~24 = 434
+        assert tokens > 400
+        assert tokens < 450
     
     def test_estimate_token_count_dict_equals_chatmessage(self, tmp_path):
         """Test that dict and ChatMessage produce same token count."""

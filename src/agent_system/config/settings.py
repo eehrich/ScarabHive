@@ -124,10 +124,18 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     logger.debug(f"Loaded included config: {inc_path.name}")
                     
                     # Merge based on included file structure
+                    # Deep merge llm_system to allow multiple files to contribute models/profiles
                     if "llm_system" in part:
-                        data["llm_system"] = part["llm_system"]
+                        if "llm_system" in data:
+                            data["llm_system"] = deep_merge(data["llm_system"], part["llm_system"])
+                        else:
+                            data["llm_system"] = part["llm_system"]
+                        # Log models being added
+                        if "models" in part.get("llm_system", {}):
+                            model_names = list(part["llm_system"]["models"].keys())
+                            logger.debug(f"Added LLM models from {inc_path.name}: {model_names}")
                     elif inc.endswith("llm.yaml"):
-                        # If llm.yaml contains the configuration directly
+                        # If llm.yaml contains the configuration directly (legacy format)
                         data["llm_system"] = part
                     
                     # New split structure (Epic 0044)

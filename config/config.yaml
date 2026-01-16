@@ -9,6 +9,7 @@ description: "Scarab Flexible AI Agent System with plugin support"
 # all included configs
 includes:
   - llm.yaml
+  - llm_openrouter.yaml
   - plugins.yaml
   - mcp_servers.yaml
   - mcp_server_mode.yaml

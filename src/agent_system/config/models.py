@@ -8,7 +8,7 @@ for LLM and MCP configurations.
 from __future__ import annotations
 
 import re
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional, Dict, List, Any, Union
 
 
@@ -31,6 +31,7 @@ class ModelCapabilitiesConfig(BaseModel):
     image_input: bool = False
     audio_input: bool = False
     video_input: bool = False
+    multimodal: bool = False  # Shorthand: sets image_input, audio_input, video_input
     streaming: bool = True
     json_mode: bool = False
 
@@ -58,6 +59,15 @@ class ModelCapabilitiesConfig(BaseModel):
     # Provider-specific features
     supports_files_api: bool = False
     supports_file_uploads: bool = False
+
+    @model_validator(mode='after')
+    def expand_multimodal(self) -> 'ModelCapabilitiesConfig':
+        """If multimodal=True, set image/audio/video_input to True."""
+        if self.multimodal:
+            self.image_input = True
+            self.audio_input = True
+            self.video_input = True
+        return self
 
 
 class BatchProviderConfig(BaseModel):

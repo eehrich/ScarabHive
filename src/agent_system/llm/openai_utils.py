@@ -8,7 +8,8 @@ OpenAI Chat Completions API only accepts specific content types:
 - {"type": "image_url", "image_url": {"url": "...", "detail": "..."}}
 
 Extra fields (like 'name' from ImageContent) will cause API errors.
-Audio and video content types are not supported.
+Audio and video content types are not supported by standard OpenAI,
+but may be supported when routing to other providers (e.g., OpenRouter -> Gemini).
 """
 
 from __future__ import annotations
@@ -19,21 +20,93 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def normalize_content_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _convert_audio_to_input_audio(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert audio content to OpenRouter input_audio format.
+    
+    OpenRouter/Gemini expects:
+        {"type": "input_audio", "input_audio": {"data": "base64...", "format": "mp3"}}
+    
+    Our AudioContent has:
+        {"type": "audio", "audio_url": "data:audio/mp3;base64,XXXXX", ...}
+    
+    Args:
+        item: Audio content item with audio_url
+        
+    Returns:
+        Converted input_audio format item
+    """
+    audio_url = item.get("audio_url", "")
+    
+    # Handle data URL format: data:audio/mp3;base64,XXXXX
+    if audio_url and audio_url.startswith("data:"):
+        try:
+            # Parse: data:audio/mp3;base64,XXXXX
+            header, base64_data = audio_url.split(",", 1)
+            # Extract mime type: audio/mp3 from data:audio/mp3;base64
+            mime_part = header.replace("data:", "").split(";")[0]
+            # Get format: mp3 from audio/mp3
+            audio_format = mime_part.split("/")[-1] if "/" in mime_part else "wav"
+            
+            # Normalize format names
+            format_map = {"mpeg": "mp3", "x-wav": "wav", "wave": "wav"}
+            audio_format = format_map.get(audio_format, audio_format)
+            
+            logger.debug(f"Converted audio to input_audio format: {audio_format}")
+            return {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": base64_data,
+                    "format": audio_format
+                }
+            }
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Failed to parse audio_url: {e}")
+            # Fall through to return original item
+    
+    # If already in input_audio format, return as-is
+    if item.get("type") == "input_audio":
+        return item
+    
+    # Fallback: return original (may not work)
+    logger.warning(f"Could not convert audio content, returning as-is")
+    return item
+
+
+def normalize_content_item(
+    item: Dict[str, Any],
+    allow_audio: bool = False,
+    allow_video: bool = False
+) -> Optional[Dict[str, Any]]:
     """Normalize a single content item for OpenAI API.
     
     Args:
         item: Content item dict with 'type' field
+        allow_audio: If True, keep audio content (for Gemini via OpenRouter)
+        allow_video: If True, keep video content (for Gemini via OpenRouter)
         
     Returns:
         Normalized item dict, or None if item should be skipped
     """
     item_type = item.get("type", "")
     
-    # Skip audio/video - not supported by Chat Completions API
-    if item_type in ("audio", "input_audio", "video"):
-        logger.debug(f"Filtering {item_type} content - not supported by OpenAI Chat Completions API")
-        return None
+    # Handle audio content based on capability
+    if item_type in ("audio", "input_audio"):
+        if allow_audio:
+            # Convert to input_audio format for OpenRouter/Gemini
+            logger.debug(f"Converting {item_type} content to input_audio format")
+            return _convert_audio_to_input_audio(item)
+        else:
+            logger.debug(f"Filtering {item_type} content - not supported by OpenAI Chat Completions API")
+            return None
+    
+    # Handle video content based on capability
+    if item_type == "video":
+        if allow_video:
+            logger.debug(f"Keeping {item_type} content - model supports video input")
+            return item
+        else:
+            logger.debug(f"Filtering {item_type} content - not supported by OpenAI Chat Completions API")
+            return None
     
     # Convert text_file to regular text with filename header
     if item_type == "text_file":
@@ -61,11 +134,17 @@ def normalize_content_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return item
 
 
-def normalize_content_list(content: List[Any]) -> List[Dict[str, Any]]:
+def normalize_content_list(
+    content: List[Any],
+    allow_audio: bool = False,
+    allow_video: bool = False
+) -> List[Dict[str, Any]]:
     """Normalize a list of content items for OpenAI API.
     
     Args:
         content: List of content items (dicts or strings)
+        allow_audio: If True, keep audio content
+        allow_video: If True, keep video content
         
     Returns:
         List of normalized content items
@@ -73,7 +152,7 @@ def normalize_content_list(content: List[Any]) -> List[Dict[str, Any]]:
     result = []
     for item in content:
         if isinstance(item, dict):
-            normalized = normalize_content_item(item)
+            normalized = normalize_content_item(item, allow_audio=allow_audio, allow_video=allow_video)
             if normalized is not None:
                 result.append(normalized)
         elif isinstance(item, str):
@@ -84,13 +163,19 @@ def normalize_content_list(content: List[Any]) -> List[Dict[str, Any]]:
     return result
 
 
-def normalize_message_content(content: Any) -> Any:
+def normalize_message_content(
+    content: Any,
+    allow_audio: bool = False,
+    allow_video: bool = False
+) -> Any:
     """Normalize message content for OpenAI API.
     
     Handles both string content and list content.
     
     Args:
         content: Message content (str, list, or other)
+        allow_audio: If True, keep audio content (for Gemini via OpenRouter)
+        allow_video: If True, keep video content (for Gemini via OpenRouter)
         
     Returns:
         Normalized content - string, list of dicts, or empty string
@@ -99,7 +184,7 @@ def normalize_message_content(content: Any) -> Any:
         return content
     
     if isinstance(content, list):
-        normalized = normalize_content_list(content)
+        normalized = normalize_content_list(content, allow_audio=allow_audio, allow_video=allow_video)
         if not normalized:
             return ""
         # If only one text item, simplify to string

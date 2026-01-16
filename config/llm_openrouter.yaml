@@ -1,0 +1,125 @@
+# =============================================================================
+# OPENROUTER LLM MODELS
+# =============================================================================
+# OpenRouter provides unified access to 400+ AI models with higher rate limits
+# and automatic fallback/load balancing across providers.
+#
+# Get your API key from: https://openrouter.ai/keys
+# View pricing & models: https://openrouter.ai/models
+# Docs: https://openrouter.ai/docs
+#
+# Benefits:
+# - Higher rate limits than direct API access (especially for Gemini Tier 1)
+# - Automatic fallback when providers are down
+# - Single API for multiple providers
+# - OpenAI-compatible API (use openai_httpx provider)
+#
+# Rate Limits:
+# - Free tier: 20 requests/minute
+# - With $10+ credit: 1000 free-tier requests/day
+# =============================================================================
+
+llm_system:
+  models:
+    # ---------------------------------------------------------------------------
+    # GOOGLE GEMINI MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+    
+    openrouter-gemini-3-flash:
+      provider: openai_httpx
+      model: google/gemini-3-flash-preview
+      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000  # 1M token context
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
+        multimodal: true  # Native image/audio/video processing
+
+      # Notes:
+      # - Fast and cost-effective thinking model
+      # - Optimized for agentic workflows, multi-turn chat, coding
+      # - Native audio/video/PDF processing without transcription
+      # - Higher rate limits than direct Google API at Tier 1
+      # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
+
+    openrouter-gemini-3-pro:
+      provider: openai_httpx
+      model: google/gemini-3-pro
+      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000  # 1M token context
+      request_timeout: 300
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
+        multimodal: true  # Native image/audio/video processing
+
+      # Notes:
+      # - Google's flagship frontier model
+      # - Best-in-class multimodal reasoning (text, image, video, audio, code)
+      # - Premium quality for complex reasoning tasks
+      # - Higher rate limits than direct Google API at Tier 1
+      # - Pricing: ~$2 input / ~$12 output per 1M tokens
+
+    openrouter-gemini-2.5-flash:
+      provider: openai_httpx
+      model: google/gemini-2.5-flash
+      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000  # 1M token context
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
+        multimodal: true  # Native image/audio/video processing
+
+      # Notes:
+      # - Previous generation Flash model
+      # - Still excellent for most tasks at lower cost than 3.0
+      # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
+
+    openrouter-gemini-2.5-pro:
+      provider: openai_httpx
+      model: google/gemini-2.5-pro
+      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000  # 1M token context
+      request_timeout: 300
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
+        multimodal: true  # Native image/audio/video processing
+
+      # Notes:
+      # - Previous generation Pro model
+      # - Still very capable for complex reasoning
+      # - Pricing: ~$1.25 input / ~$10 output per 1M tokens
+
+  # =============================================================================
+  # PROFILES for easy access
+  # =============================================================================
+  profiles:
+    or-gemini-3-flash:
+      model_ref: openrouter-gemini-3-flash
+      description: "OpenRouter Gemini 3 Flash - Fast with audio/video support"
+      max_steps: 500
+
+    or-gemini-3-pro:
+      model_ref: openrouter-gemini-3-pro
+      description: "OpenRouter Gemini 3 Pro - Best quality with audio/video support"
+      max_steps: 500
+    
+    or-gemini-2.5-flash:
+      model_ref: openrouter-gemini-2.5-flash
+      description: "OpenRouter Gemini 2.5 Flash - Good quality at lower cost"
+      max_steps: 500
