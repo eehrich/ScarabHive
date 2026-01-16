@@ -534,7 +534,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
                                 local_path = self.output_dir / local_filename
                                 local_path.parent.mkdir(parents=True, exist_ok=True)
                                 local_path.write_bytes(file_data)
-                                file_record["local_path"] = str(local_path)
+                                # Return filename only (relative to output_dir) for LLM/audio_ops compatibility
+                                file_record["local_path"] = local_filename
+                                # Store full path for multimodal content encoding
+                                file_record["full_path"] = str(local_path)
                             except Exception as e:
                                 logger.error("Failed to download %s: %s", file_info["filename"], e)
                                 file_record["download_error"] = str(e)
@@ -570,8 +573,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
                                 local_path = self.output_dir / text_filename
                                 local_path.parent.mkdir(parents=True, exist_ok=True)
                                 local_path.write_text(text_content, encoding="utf-8")
-                                text_record["local_path"] = str(local_path)
+                                # Return filename only (relative to output_dir) for LLM compatibility
+                                text_record["local_path"] = text_filename
                                 text_record["filename"] = text_filename
+                                # Store full path for multimodal content encoding
+                                text_record["full_path"] = str(local_path)
                             except Exception as e:
                                 logger.error("Failed to save text output: %s", e)
                                 text_record["save_error"] = str(e)
@@ -590,8 +596,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
                             local_path = self.output_dir / text_filename
                             local_path.parent.mkdir(parents=True, exist_ok=True)
                             local_path.write_text(text_data, encoding="utf-8")
-                            text_record["local_path"] = str(local_path)
+                            # Return filename only (relative to output_dir) for LLM compatibility
+                            text_record["local_path"] = text_filename
                             text_record["filename"] = text_filename
+                            # Store full path for multimodal content encoding
+                            text_record["full_path"] = str(local_path)
                         except Exception as e:
                             logger.error("Failed to save text output: %s", e)
                             text_record["save_error"] = str(e)
@@ -652,21 +661,23 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         for output_type, content_type in type_mapping.items():
             for file_record in outputs.get(output_type, []):
-                local_path = file_record.get("local_path")
-                if local_path:
+                # Use full_path for multimodal encoding (needs actual file system path)
+                full_path = file_record.get("full_path")
+                if full_path:
                     filename = file_record.get("filename", "")
                     mime_type = self._guess_mime_type(filename, content_type)
                     
                     multimodal.append({
                         "type": content_type,
-                        "path": local_path,
+                        "path": full_path,
                         "mime_type": mime_type,
                         "description": f"Generated {content_type}: {filename}"
                     })
         
         # Add text outputs - include content directly for LLM
         for text_record in outputs.get("text", []):
-            local_path = text_record.get("local_path")
+            # Use full_path for multimodal encoding (needs actual file system path)
+            full_path = text_record.get("full_path")
             content = text_record.get("content", "")
             filename = text_record.get("filename", f"text_{text_record.get('node_id', 'unknown')}.txt")
             
@@ -676,8 +687,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 "description": f"Generated text: {filename}",
                 "content": content,  # Include text content directly
             }
-            if local_path:
-                text_item["path"] = local_path
+            if full_path:
+                text_item["path"] = full_path
             
             multimodal.append(text_item)
         

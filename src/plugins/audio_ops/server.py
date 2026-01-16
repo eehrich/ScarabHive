@@ -76,8 +76,41 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 details={"reason": "empty_filename"}
             )
         
+        # Normalize path separators
+        filename = filename.replace("\\", "/")
+        
+        # If filename contains the storage path, strip it to get just the filename
+        # This handles cases where ComfyUI returns full paths like "data/writer/audio/temp/file.flac"
+        storage_str = str(self.storage_path).replace("\\", "/")
+        if filename.startswith(storage_str + "/"):
+            filename = filename[len(storage_str) + 1:]
+        elif filename.startswith(storage_str):
+            filename = filename[len(storage_str):]
+            if filename.startswith("/"):
+                filename = filename[1:]
+        
+        # If it's still a path (contains /), extract just the filename for safety
+        # This handles edge cases where paths don't match exactly
+        if "/" in filename:
+            # Check if the path starts with our storage path components
+            filename_path = Path(filename)
+            storage_parts = self.storage_path.parts
+            filename_parts = filename_path.parts
+            
+            # Find where the actual filename starts (after storage path overlap)
+            overlap_len = 0
+            for i, part in enumerate(filename_parts):
+                if i < len(storage_parts) and part == storage_parts[i]:
+                    overlap_len = i + 1
+                elif i < len(storage_parts):
+                    break
+            
+            if overlap_len > 0:
+                # Strip the overlapping storage path parts
+                filename = str(Path(*filename_parts[overlap_len:]))
+        
         # Prevent path traversal
-        if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
+        if ".." in filename:
             raise AudioOpsError(
                 f"Invalid filename: {filename}. Path traversal not allowed.",
                 error_type="SecurityError",

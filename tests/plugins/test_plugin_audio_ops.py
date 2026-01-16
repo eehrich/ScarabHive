@@ -13,7 +13,7 @@ import warnings
 import pytest
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 if TYPE_CHECKING:
     from plugins.audio_ops.server import AudioOpsServer
@@ -140,6 +140,55 @@ class TestPathValidation:
         
         assert result["status"] == "error"
         assert result["error_type"] == "FileNotFoundError"
+    
+    @pytest.mark.asyncio
+    async def test_path_with_storage_prefix_normalized(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path, temp_storage: Path
+    ) -> None:
+        """Paths containing the storage path prefix should be normalized to just filename.
+        
+        This handles the case where ComfyUI returns full paths like 'data/audio/temp/file.wav'
+        and audio_ops needs to strip the storage path prefix.
+        """
+        # Create full path string as ComfyUI would return it
+        full_path = f"{temp_storage}/{sample_wav.name}"
+        
+        result = await server.info({
+            "file": full_path,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["format"] == "wav"
+    
+    @pytest.mark.asyncio
+    async def test_path_with_windows_separators_normalized(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path, temp_storage: Path
+    ) -> None:
+        """Windows-style paths should be normalized to forward slashes."""
+        # Create Windows-style path string
+        full_path = f"{temp_storage}\\{sample_wav.name}".replace("/", "\\")
+        
+        result = await server.info({
+            "file": full_path,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["format"] == "wav"
+    
+    @pytest.mark.asyncio
+    async def test_filename_only_still_works(
+        self, server: "AudioOpsServer", mock_status: MagicMock, sample_wav: Path
+    ) -> None:
+        """Just the filename (without path) should still work."""
+        result = await server.info({
+            "file": sample_wav.name,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["format"] == "wav"
 
 
 class TestFormatValidation:

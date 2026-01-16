@@ -105,6 +105,9 @@ tools:
             description: >
               For operation='load': Filename to search for in the output directory.
               The plugin will search for this file and load it for analysis.
+        required:
+          - operation
+        additionalProperties: false
 
 # Configuration schema
 config:
@@ -150,10 +153,6 @@ config:
       items:
         type: object
 
-tools:
-  required:
-    - operation
-  additionalProperties: false
 
 # Web UI configuration for ComfyUI Monitor
 web_ui:

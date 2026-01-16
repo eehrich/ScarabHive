@@ -995,23 +995,28 @@ class TestComfyUIServer:
         text_path = tmp_path / "test_text.txt"
         text_path.write_text("Test content")
         
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"fake png")
+        
         outputs = {
-            "images": [{"filename": "test.png", "local_path": str(tmp_path / "test.png")}],
+            "images": [{
+                "filename": "test.png",
+                "local_path": "test.png",  # Filename only (for LLM compatibility)
+                "full_path": str(image_path)  # Full path (for multimodal encoding)
+            }],
             "audio": [],
             "video": [],
             "text": [
                 {
                     "content": "Generated story text",
-                    "local_path": str(text_path),
+                    "local_path": "test_text.txt",  # Filename only
+                    "full_path": str(text_path),  # Full path for multimodal encoding
                     "filename": "test_text.txt",
                     "node_id": "node1"
                 }
             ],
             "other": []
         }
-        
-        # Create fake image file for the test
-        (tmp_path / "test.png").write_bytes(b"fake png")
         
         multimodal = server._build_multimodal_content(outputs)
         
