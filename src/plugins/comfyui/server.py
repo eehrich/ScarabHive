@@ -993,6 +993,21 @@ class ComfyUIServer(SchemaBasedMCPServer):
             if server_status.get("status") == "online":
                 queue_data = await self.client.get_queue()
                 self.job_tracker.sync_with_queue(queue_data)
+                
+                # Check live status for all active jobs and update DB
+                active_jobs = self.job_tracker.get_active_jobs()
+                for job in active_jobs:
+                    prompt_id = job.get("prompt_id")
+                    if prompt_id:
+                        live = await self.client.get_status(prompt_id)
+                        live_status = live.get("status", "unknown")
+                        db_status = job.get("status")
+                        # Update DB if status changed (e.g. queued/running -> completed)
+                        if live_status != db_status and live_status in ["completed", "failed"]:
+                            error_msg = live.get("error") if live_status == "failed" else None
+                            if isinstance(error_msg, list):
+                                error_msg = str(error_msg)
+                            self.job_tracker.update_status(prompt_id, live_status, error_msg)
             
             active = self.job_tracker.get_active_jobs()
             recent = self.job_tracker.get_recent_completed(limit=10)
