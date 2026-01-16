@@ -376,6 +376,29 @@ class LogViewerWebEndpoints(PluginWebInterface):
             'type': 'raw'
         }
 
+    def _sort_by_timestamp(self, parsed_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Sort parsed log lines by timestamp in chronological order.
+        
+        This is needed when reading from multiple rotation files to ensure
+        entries are displayed in proper time order.
+        
+        Args:
+            parsed_lines: List of parsed log entries with 'timestamp' field
+            
+        Returns:
+            Sorted list of entries (oldest first)
+        """
+        def get_sort_key(entry: Dict[str, Any]) -> str:
+            # Get timestamp, defaulting to empty string for entries without timestamp
+            timestamp = entry.get('timestamp', '')
+            if timestamp:
+                # Normalize timestamp format for proper sorting
+                # Format: "2025-09-25 00:23:32,790" -> sortable string
+                return timestamp.replace(',', '.')
+            return ''  # Entries without timestamp go to beginning
+        
+        return sorted(parsed_lines, key=get_sort_key)
+
     def get_web_router(self) -> APIRouter:
         """Get the FastAPI router for this plugin's web endpoints."""
         from agent_system.plugins.schema_router import create_schema_router
@@ -531,6 +554,10 @@ class LogViewerWebEndpoints(PluginWebInterface):
                         parsed_line['full_content'] = entry['full_content']
                         parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
                         parsed_lines.append(parsed_line)
+                
+                # Sort by timestamp to ensure chronological order
+                # (important when reading from multiple rotation files)
+                parsed_lines = self._sort_by_timestamp(parsed_lines)
                 
                 # Take only the last N entries
                 parsed_lines = parsed_lines[-lines:]

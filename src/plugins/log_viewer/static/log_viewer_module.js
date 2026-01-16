@@ -373,6 +373,9 @@ window.AgentSystem.log_viewer = {
       logContainer.innerHTML = '';
     }
 
+    // Show loading indicator
+    this.showLoading('Loading log file...');
+
     // Start new polling
     this.startStreaming(filename);
 
@@ -382,6 +385,11 @@ window.AgentSystem.log_viewer = {
 
   async loadInitialLogContent(filename, isRefresh = false) {
     if (!filename) return;
+
+    // Show loading for initial load (not refresh which is quick)
+    if (!isRefresh) {
+      this.showLoading('Loading log entries...');
+    }
 
     try {
       // Always respect user's line limit selection
@@ -425,6 +433,9 @@ window.AgentSystem.log_viewer = {
     } catch (error) {
       console.error('Failed to load initial log content:', error);
       this.showError(`Failed to load ${filename}: ${error.message}`);
+    } finally {
+      // Always hide loading indicator
+      this.hideLoading();
     }
   },
 
@@ -902,6 +913,36 @@ window.AgentSystem.log_viewer = {
       logContainer.appendChild(errorDiv);
     }
     this.updateStatus(message);
+  },
+
+  showLoading(message = 'Loading...') {
+    const viewerContainer = this.rootElement.querySelector('.log-viewer-container');
+    if (!viewerContainer) return;
+
+    // Remove existing loading overlay if any
+    this.hideLoading();
+
+    // Create loading overlay
+    const overlay = document.createElement('div');
+    overlay.className = 'log-loading-overlay';
+    overlay.innerHTML = `
+      <div class="log-loading-spinner"></div>
+      <div class="log-loading-text">${message}</div>
+    `;
+
+    // Make container relative for absolute positioning of overlay
+    viewerContainer.style.position = 'relative';
+    viewerContainer.appendChild(overlay);
+  },
+
+  hideLoading() {
+    const viewerContainer = this.rootElement.querySelector('.log-viewer-container');
+    if (!viewerContainer) return;
+
+    const overlay = viewerContainer.querySelector('.log-loading-overlay');
+    if (overlay) {
+      overlay.remove();
+    }
   },
 
   destroy() {
