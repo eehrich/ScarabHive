@@ -100,6 +100,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         Marks stale jobs (queued/running in DB but not in ComfyUI) as failed.
         This handles the case where the API server was restarted.
+        
+        Note: We check history before marking as failed to avoid race conditions
+        where a job finished between queue removal and history addition.
         """
         if self._startup_sync_done:
             return
@@ -109,13 +112,62 @@ class ComfyUIServer(SchemaBasedMCPServer):
             server_status = await self.client.ping()
             if server_status.get("status") == "online":
                 queue_data = await self.client.get_queue()
-                updated = self.job_tracker.sync_with_queue(queue_data)
+                updated = await self._sync_stale_jobs_with_history(queue_data)
                 if updated > 0:
-                    logger.info("Startup sync: marked %d stale jobs as failed", updated)
+                    logger.info("Startup sync: updated %d stale jobs", updated)
             else:
                 logger.debug("ComfyUI server not online, skipping startup sync")
         except Exception as e:
             logger.debug("Failed to sync jobs on startup: %s", e)
+    
+    async def _sync_stale_jobs_with_history(self, queue_data: dict[str, Any]) -> int:
+        """Sync stale jobs by checking history before marking as failed.
+        
+        This handles the race condition where a job finishes and is removed
+        from the queue but not yet visible in history polling.
+        
+        Args:
+            queue_data: Queue data from ComfyUI API
+            
+        Returns:
+            Number of jobs updated
+        """
+        stale_ids = self.job_tracker.get_stale_job_ids(queue_data)
+        
+        if not stale_ids:
+            return 0
+        
+        updated = 0
+        for prompt_id in stale_ids:
+            # Check if job is in history (completed or failed)
+            try:
+                history = await self.client.get_history(prompt_id)
+                if prompt_id in history:
+                    # Job completed - check for errors
+                    job_data = history[prompt_id]
+                    status_data = job_data.get("status", {})
+                    if status_data.get("status_str") == "error" or "exception_message" in job_data:
+                        error_msg = job_data.get("exception_message") or status_data.get("exception_message", "Unknown error")
+                        self.job_tracker.update_status(prompt_id, "failed", error_msg)
+                        logger.debug("Job %s marked as failed (from history)", prompt_id)
+                    else:
+                        self.job_tracker.update_status(prompt_id, "completed")
+                        logger.debug("Job %s marked as completed (from history)", prompt_id)
+                    updated += 1
+                else:
+                    # Not in queue AND not in history - truly lost
+                    self.job_tracker.update_status(
+                        prompt_id, "failed", "Job lost (server restart or queue cleared)"
+                    )
+                    logger.debug("Job %s marked as failed (not in queue or history)", prompt_id)
+                    updated += 1
+            except Exception as e:
+                logger.debug("Failed to check history for job %s: %s", prompt_id, e)
+                # On error, mark as failed
+                self.job_tracker.update_status(prompt_id, "failed", f"Failed to check status: {e}")
+                updated += 1
+        
+        return updated
     
     # =========================================================================
     # MCP Tool: workflow
@@ -989,10 +1041,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
             """Get all tracked jobs."""
             server_status = await self.client.ping()
             
-            # Sync DB with live queue to clean up stale jobs
+            # Sync DB with live queue and history to update stale jobs
             if server_status.get("status") == "online":
                 queue_data = await self.client.get_queue()
-                self.job_tracker.sync_with_queue(queue_data)
+                # Use history-aware sync to avoid race conditions
+                await self._sync_stale_jobs_with_history(queue_data)
                 
                 # Check live status for all active jobs and update DB
                 active_jobs = self.job_tracker.get_active_jobs()

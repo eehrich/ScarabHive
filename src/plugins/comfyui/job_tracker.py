@@ -321,17 +321,18 @@ class ComfyUIJobTracker:
             logger.info("Cleaned up %d old jobs", deleted)
         return deleted
     
-    def sync_with_queue(self, queue_data: dict[str, Any]) -> int:
-        """Sync database state with live ComfyUI queue.
+    def get_stale_job_ids(self, queue_data: dict[str, Any]) -> set[str]:
+        """Find jobs that are active in DB but not in ComfyUI queue.
         
-        Updates stale "queued" or "running" jobs that are no longer
-        in the ComfyUI queue (e.g., after server restart).
+        This returns the IDs but does NOT update them - the caller should
+        check the ComfyUI history before marking jobs as failed (to handle
+        the race condition where a job finishes between queue and history).
         
         Args:
             queue_data: Queue data from ComfyUI API containing queue_pending and queue_running
             
         Returns:
-            Number of jobs updated
+            Set of prompt IDs that are stale (in DB but not in queue)
         """
         # Extract prompt IDs from queue
         queue_pending = queue_data.get("queue_pending", [])
@@ -359,10 +360,28 @@ class ComfyUIJobTracker:
             )
             db_active_ids = {row[0] for row in cursor.fetchall()}
             
-            stale_ids = db_active_ids - live_prompt_ids
+            return db_active_ids - live_prompt_ids
+    
+    def sync_with_queue(self, queue_data: dict[str, Any]) -> int:
+        """Sync database state with live ComfyUI queue.
+        
+        Updates stale "queued" or "running" jobs that are no longer
+        in the ComfyUI queue (e.g., after server restart).
+        
+        DEPRECATED: Use get_stale_job_ids() + mark_job_failed() instead
+        to properly check history before marking as failed.
+        
+        Args:
+            queue_data: Queue data from ComfyUI API containing queue_pending and queue_running
             
-            if stale_ids:
-                # Mark stale jobs as failed (server was restarted or job lost)
+        Returns:
+            Number of jobs updated
+        """
+        stale_ids = self.get_stale_job_ids(queue_data)
+        
+        if stale_ids:
+            # Mark stale jobs as failed (server was restarted or job lost)
+            with sqlite3.connect(self.db_path) as conn:
                 placeholders = ",".join("?" * len(stale_ids))
                 conn.execute(
                     f"""
@@ -375,9 +394,9 @@ class ComfyUIJobTracker:
                     (datetime.now(timezone.utc).isoformat(), *stale_ids)
                 )
                 conn.commit()
-                
-                logger.info("Marked %d stale jobs as failed", len(stale_ids))
-                return len(stale_ids)
+            
+            logger.info("Marked %d stale jobs as failed", len(stale_ids))
+            return len(stale_ids)
         
         return 0
     
