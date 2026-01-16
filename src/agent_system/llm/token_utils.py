@@ -1,13 +1,366 @@
 """Token estimation utilities for LLM interactions."""
 
+import logging
 import re
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from threading import Lock
 from typing import List, Union, Any
 from .models import ChatMessage
 
 
-# Constants for multimodal token estimation
-TOKENS_PER_IMAGE = 1000  # Approximate tokens for an embedded image
-TOKENS_PER_AUDIO_SECOND = 25  # Approximate tokens per second of audio
+logger = logging.getLogger(__name__)
+
+# Constants for multimodal token estimation (based on Gemini API documentation)
+# https://ai.google.dev/gemini-api/docs/tokens
+TOKENS_PER_IMAGE = 258  # Gemini: images ≤384px = 258 tokens, larger = 258 per 768x768 tile
+TOKENS_PER_AUDIO_SECOND = 32  # Gemini: audio = 32 tokens/second
+TOKENS_PER_VIDEO_SECOND = 263  # Gemini: video = 263 tokens/second
+# Base64-encoded data: ~4 characters per 3 bytes, ~4 chars per token → ~1 token per byte
+TOKENS_PER_BASE64_CHAR = 0.25  # 4 base64 chars ≈ 1 token
+# File path estimation for images (base64 fallback): bytes * 0.33
+TOKENS_PER_FILE_BYTE = 0.33
+
+# Audio file extensions
+AUDIO_EXTENSIONS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.aiff', '.opus'}
+VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
+
+# =============================================================================
+# Media Duration Cache (to avoid re-reading files repeatedly)
+# =============================================================================
+
+@dataclass
+class _CacheEntry:
+    """Cache entry for media duration."""
+    duration: float | None
+    mtime: float  # File modification time for invalidation
+    timestamp: float  # When this entry was created
+
+
+class _MediaDurationCache:
+    """Thread-safe LRU cache for media file durations with TTL.
+    
+    Uses file path + modification time as cache key to auto-invalidate
+    when files change. Implements TTL and max size to prevent memory leaks.
+    """
+    
+    def __init__(self, max_size: int = 1000, ttl_seconds: float = 3600.0):
+        """Initialize cache.
+        
+        Args:
+            max_size: Maximum number of entries (default 1000)
+            ttl_seconds: Time-to-live in seconds (default 1 hour)
+        """
+        self._cache: dict[str, _CacheEntry] = {}
+        self._lock = Lock()
+        self._max_size = max_size
+        self._ttl = ttl_seconds
+        self._access_order: list[str] = []  # For LRU eviction
+    
+    def get(self, path: str, mtime: float) -> float | None | type[_CacheEntry]:
+        """Get cached duration if valid.
+        
+        Returns:
+            - float: Cached duration in seconds
+            - None: Cached "no duration available" result
+            - _CacheEntry class (sentinel): Cache miss, needs computation
+        """
+        with self._lock:
+            entry = self._cache.get(path)
+            if entry is None:
+                return _CacheEntry  # Cache miss
+            
+            now = time.time()
+            
+            # Check TTL
+            if now - entry.timestamp > self._ttl:
+                del self._cache[path]
+                if path in self._access_order:
+                    self._access_order.remove(path)
+                return _CacheEntry  # Expired
+            
+            # Check if file was modified
+            if entry.mtime != mtime:
+                del self._cache[path]
+                if path in self._access_order:
+                    self._access_order.remove(path)
+                return _CacheEntry  # File changed
+            
+            # Update access order for LRU
+            if path in self._access_order:
+                self._access_order.remove(path)
+            self._access_order.append(path)
+            
+            return entry.duration
+    
+    def set(self, path: str, mtime: float, duration: float | None) -> None:
+        """Store duration in cache."""
+        with self._lock:
+            # Evict oldest entries if at capacity
+            while len(self._cache) >= self._max_size and self._access_order:
+                oldest = self._access_order.pop(0)
+                self._cache.pop(oldest, None)
+            
+            self._cache[path] = _CacheEntry(
+                duration=duration,
+                mtime=mtime,
+                timestamp=time.time()
+            )
+            
+            if path in self._access_order:
+                self._access_order.remove(path)
+            self._access_order.append(path)
+    
+    def clear(self) -> None:
+        """Clear all cached entries."""
+        with self._lock:
+            self._cache.clear()
+            self._access_order.clear()
+    
+    def stats(self) -> dict[str, Any]:
+        """Get cache statistics."""
+        with self._lock:
+            return {
+                "size": len(self._cache),
+                "max_size": self._max_size,
+                "ttl_seconds": self._ttl
+            }
+
+
+# Global cache instance
+_duration_cache = _MediaDurationCache(max_size=1000, ttl_seconds=3600.0)
+
+
+def _get_audio_duration_seconds(path: Path) -> float | None:
+    """Get audio duration in seconds using pydub.
+    
+    Results are cached for 1 hour to avoid repeatedly loading audio files.
+    Falls back to None if pydub is not available or file cannot be read.
+    """
+    path_str = str(path)
+    
+    # Get file mtime for cache validation
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    
+    # Check cache
+    cached = _duration_cache.get(path_str, mtime)
+    if cached is not _CacheEntry:
+        return cached
+    
+    # Cache miss - compute duration
+    duration: float | None = None
+    try:
+        from pydub import AudioSegment
+        audio = AudioSegment.from_file(str(path))
+        duration = len(audio) / 1000.0  # pydub returns milliseconds
+    except Exception as e:
+        logger.debug(f"Could not get audio duration for {path}: {e}")
+        duration = None
+    
+    # Store in cache (including None results)
+    _duration_cache.set(path_str, mtime, duration)
+    return duration
+
+
+def _get_video_duration_seconds(path: Path) -> float | None:
+    """Get video duration in seconds using ffprobe or fallback.
+    
+    Results are cached for 1 hour. Falls back to None if video cannot be analyzed.
+    """
+    path_str = str(path)
+    
+    # Get file mtime for cache validation
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    
+    # Check cache
+    cached = _duration_cache.get(path_str, mtime)
+    if cached is not _CacheEntry:
+        return cached
+    
+    # Cache miss - compute duration
+    duration: float | None = None
+    try:
+        import subprocess
+        import json
+        # Try ffprobe first (most reliable)
+        result = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json', 
+             '-show_format', str(path)],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            duration = float(data.get('format', {}).get('duration', 0))
+            if duration <= 0:
+                duration = None
+    except Exception as e:
+        logger.debug(f"ffprobe failed for {path}: {e}")
+        duration = None
+    
+    # Store in cache
+    _duration_cache.set(path_str, mtime, duration)
+    return duration
+
+
+def estimate_file_tokens(path: Union[str, Path], file_type: str | None = None) -> int:
+    """Estimate tokens for a media file sent to LLM.
+    
+    Uses duration-based estimation for audio/video (per Gemini API docs):
+    - Audio: 32 tokens per second
+    - Video: 263 tokens per second
+    - Images: 258 tokens (small) or 258 per 768x768 tile (large)
+    
+    Falls back to size-based estimation for images or if duration cannot be read.
+    
+    Args:
+        path: Path to the file
+        file_type: Optional type hint ('audio', 'video', 'image')
+        
+    Returns:
+        Estimated token count, or 0 if file doesn't exist or can't be read
+    """
+    try:
+        file_path = Path(path)
+        if not file_path.exists():
+            return 0
+        
+        suffix = file_path.suffix.lower()
+        
+        # Determine file type from extension or hint
+        is_audio = file_type == 'audio' or suffix in AUDIO_EXTENSIONS
+        is_video = file_type == 'video' or suffix in VIDEO_EXTENSIONS
+        
+        if is_audio:
+            duration = _get_audio_duration_seconds(file_path)
+            if duration is not None:
+                tokens = int(duration * TOKENS_PER_AUDIO_SECOND)
+                logger.debug(f"Estimated {tokens:,} tokens for audio {file_path} ({duration:.1f}s)")
+                return tokens
+            # Fallback to rough estimate: ~16KB per second for typical audio
+            file_size = file_path.stat().st_size
+            estimated_seconds = file_size / (16 * 1024)
+            tokens = int(estimated_seconds * TOKENS_PER_AUDIO_SECOND)
+            logger.debug(f"Estimated {tokens:,} tokens for audio {file_path} (fallback from {file_size:,} bytes)")
+            return tokens
+            
+        elif is_video:
+            duration = _get_video_duration_seconds(file_path)
+            if duration is not None:
+                tokens = int(duration * TOKENS_PER_VIDEO_SECOND)
+                logger.debug(f"Estimated {tokens:,} tokens for video {file_path} ({duration:.1f}s)")
+                return tokens
+            # Fallback: ~100KB per second for typical video
+            file_size = file_path.stat().st_size
+            estimated_seconds = file_size / (100 * 1024)
+            tokens = int(estimated_seconds * TOKENS_PER_VIDEO_SECOND)
+            logger.debug(f"Estimated {tokens:,} tokens for video {file_path} (fallback)")
+            return tokens
+        
+        else:
+            # Image or unknown: use size-based estimation
+            file_size = file_path.stat().st_size
+            # For images, estimate tiles: small images = 258, larger = more tiles
+            # Rough heuristic: files >100KB likely need multiple tiles
+            if file_size < 100 * 1024:
+                tokens = TOKENS_PER_IMAGE
+            else:
+                # Estimate number of 768x768 tiles (each ~300KB for typical JPEG)
+                estimated_tiles = max(1, file_size // (300 * 1024))
+                tokens = estimated_tiles * TOKENS_PER_IMAGE
+            logger.debug(f"Estimated {tokens:,} tokens for image {file_path} ({file_size:,} bytes)")
+            return tokens
+            
+    except Exception as e:
+        logger.debug(f"Could not estimate tokens for file {path}: {e}")
+    return 0
+
+
+def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
+    """Estimate tokens for inline base64-encoded data in multimodal content.
+    
+    Gemini and other LLMs accept inline_data with base64-encoded images/audio.
+    These contribute significantly to token counts.
+    
+    Also handles MultimodalToolContent with file paths (the actual base64
+    encoding happens at LLM call time, but we estimate from file size).
+    
+    Args:
+        item: Content item (dict or pydantic model) with potential inline data
+        
+    Returns:
+        Estimated token count for the inline data, or 0 if no inline data
+    """
+    data_str = None
+    
+    if isinstance(item, dict):
+        # Skip compacted items - they won't be encoded at LLM call time
+        if item.get('_compacted'):
+            return 0
+        
+        # Check various inline data formats
+        # Format 1: {"type": "image", "source": {"type": "base64", "data": "..."}}
+        source = item.get('source', {})
+        if isinstance(source, dict) and source.get('type') == 'base64':
+            data_str = source.get('data', '')
+            if data_str:
+                return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
+        
+        # Format 2: {"type": "audio", "audio_url": "data:audio/wav;base64,..."}
+        audio_url = item.get('audio_url', '')
+        if isinstance(audio_url, str) and ';base64,' in audio_url:
+            data_str = audio_url.split(';base64,', 1)[1]
+            if data_str:
+                return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
+        
+        # Format 3: {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        image_url = item.get('image_url', {})
+        if isinstance(image_url, dict):
+            url = image_url.get('url', '')
+            if isinstance(url, str) and ';base64,' in url:
+                data_str = url.split(';base64,', 1)[1]
+                if data_str:
+                    return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
+        
+        # Format 4: Direct inline_data (Gemini native format after conversion)
+        inline_data = item.get('inline_data', {})
+        if isinstance(inline_data, dict):
+            data_str = inline_data.get('data', '')
+            # If data is bytes, estimate from length
+            if isinstance(data_str, bytes):
+                return len(data_str) // 3  # ~3 bytes per token for binary data
+            elif data_str:
+                return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
+        
+        # Format 5: MultimodalToolContent with file path (converted to base64 at LLM call)
+        # {"type": "audio"|"image"|"video", "path": "/path/to/file", "mime_type": "..."}
+        file_path = item.get('path', '')
+        item_type = item.get('type', '')
+        if file_path and item_type in ('audio', 'image', 'video'):
+            return estimate_file_tokens(file_path, file_type=item_type)
+    
+    elif hasattr(item, 'source'):
+        # Pydantic model with source attribute
+        source = getattr(item, 'source', None)
+        if source and hasattr(source, 'type') and getattr(source, 'type') == 'base64':
+            data_str = getattr(source, 'data', '')
+            if data_str and isinstance(data_str, str):
+                return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
+    
+    elif hasattr(item, 'path'):
+        # Pydantic model with path attribute (MultimodalToolContent)
+        file_path = getattr(item, 'path', '')
+        item_type = getattr(item, 'type', '')
+        if file_path and item_type in ('audio', 'image', 'video'):
+            return estimate_file_tokens(file_path, file_type=item_type)
+    
+    return 0
 
 
 def extract_text_from_content(content: Union[str, List[Any], Any]) -> str:
@@ -58,15 +411,16 @@ def extract_text_from_content(content: Union[str, List[Any], Any]) -> str:
 
 
 def count_multimodal_items(content: Union[str, List[Any], Any]) -> dict:
-    """Count multimodal items in content.
+    """Count multimodal items in content and estimate their token contribution.
     
     Args:
         content: Message content
         
     Returns:
-        Dict with counts: {'images': N, 'audio': N, 'video': N}
+        Dict with counts and token estimates:
+        {'images': N, 'audio': N, 'video': N, 'inline_data_tokens': N}
     """
-    counts = {'images': 0, 'audio': 0, 'video': 0}
+    counts = {'images': 0, 'audio': 0, 'video': 0, 'inline_data_tokens': 0}
     
     if not isinstance(content, list):
         return counts
@@ -78,7 +432,13 @@ def count_multimodal_items(content: Union[str, List[Any], Any]) -> dict:
             item_type = getattr(item, 'type', '')
         else:
             continue
-            
+        
+        # Check for inline data tokens first (this is the big one!)
+        inline_tokens = estimate_inline_data_tokens(item)
+        if inline_tokens > 0:
+            counts['inline_data_tokens'] += inline_tokens
+        
+        # Count item types (only for fallback when no inline data)
         if item_type in ('image', 'image_url'):
             counts['images'] += 1
         elif item_type == 'audio':
@@ -93,9 +453,10 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
     """Enhanced token count estimation with improved accuracy for different content types.
 
     Supports multimodal content (images, audio, video) in addition to text.
+    Accepts both ChatMessage objects and dict messages for flexibility.
 
     Args:
-        messages: List of chat messages to estimate tokens for
+        messages: List of chat messages (ChatMessage or dict) to estimate tokens for
 
     Returns:
         Estimated total token count
@@ -104,27 +465,63 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
 
     for msg in messages:
         msg_tokens = 0
+        
+        # Handle both ChatMessage objects and dicts
+        if isinstance(msg, dict):
+            msg_content = msg.get('content')
+            msg_multimodal = msg.get('multimodal_content')
+            msg_tool_calls = msg.get('tool_calls')
+            msg_tool_call_id = msg.get('tool_call_id')
+        else:
+            msg_content = msg.content
+            msg_multimodal = getattr(msg, 'multimodal_content', None)
+            msg_tool_calls = getattr(msg, 'tool_calls', None)
+            msg_tool_call_id = getattr(msg, 'tool_call_id', None)
 
         # Base overhead for message structure (role, formatting, etc.)
         msg_tokens += 4  # Base message overhead
 
         # Count content tokens with content-type aware ratios
-        if msg.content:
+        if msg_content:
             # Extract text content (handles multimodal lists)
-            text_content = extract_text_from_content(msg.content)
+            text_content = extract_text_from_content(msg_content)
             msg_tokens += estimate_content_tokens(text_content)
             
             # Add tokens for multimodal items (images, audio, video)
-            multimodal_counts = count_multimodal_items(msg.content)
-            msg_tokens += multimodal_counts['images'] * TOKENS_PER_IMAGE
-            # Audio tokens estimated at ~25 tokens/second, assume ~10 seconds average
-            msg_tokens += multimodal_counts['audio'] * (TOKENS_PER_AUDIO_SECOND * 10)
-            # Video similar to audio but larger
-            msg_tokens += multimodal_counts['video'] * (TOKENS_PER_AUDIO_SECOND * 30)
+            multimodal_counts = count_multimodal_items(msg_content)
+            
+            # PRIORITY: Use actual inline_data tokens if available (much more accurate!)
+            if multimodal_counts['inline_data_tokens'] > 0:
+                msg_tokens += multimodal_counts['inline_data_tokens']
+            else:
+                # Fallback to rough estimates only when no inline data detected
+                msg_tokens += multimodal_counts['images'] * TOKENS_PER_IMAGE
+                # Audio tokens estimated at ~25 tokens/second, assume ~10 seconds average
+                msg_tokens += multimodal_counts['audio'] * (TOKENS_PER_AUDIO_SECOND * 10)
+                # Video similar to audio but larger
+                msg_tokens += multimodal_counts['video'] * (TOKENS_PER_AUDIO_SECOND * 30)
+
+        # Count multimodal_content from tool responses (MultimodalToolContent with file paths)
+        # This is crucial! Files are encoded to base64 at LLM call time, but we need to count them NOW
+        if msg_multimodal:
+            for mm_item in msg_multimodal:
+                item_tokens = estimate_inline_data_tokens(mm_item)
+                if item_tokens > 0:
+                    msg_tokens += item_tokens
+                    logger.debug(f"Counted {item_tokens:,} tokens for multimodal_content item")
+                else:
+                    # Fallback for items without detectable file/data
+                    item_type = getattr(mm_item, 'type', '') if hasattr(mm_item, 'type') else mm_item.get('type', '')
+                    if item_type == 'image':
+                        msg_tokens += TOKENS_PER_IMAGE
+                    elif item_type == 'audio':
+                        msg_tokens += TOKENS_PER_AUDIO_SECOND * 10
+                    elif item_type == 'video':
+                        msg_tokens += TOKENS_PER_AUDIO_SECOND * 30
 
         # Count tool calls with detailed breakdown
-        if hasattr(msg, 'tool_calls') and msg.tool_calls:
-            for tc in msg.tool_calls:
+        if msg_tool_calls:
+            for tc in msg_tool_calls:
                 # Tool call overhead (id, type, function wrapper)
                 msg_tokens += 10
 
@@ -139,11 +536,11 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
                     msg_tokens += estimate_json_tokens(args_str)
 
         # Count tool results (these can be the biggest consumers)
-        if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+        if msg_tool_call_id:
             # Tool call ID overhead
             msg_tokens += 8
             # Tool result content - extract text for multimodal
-            content = extract_text_from_content(msg.content) if msg.content else ""
+            content = extract_text_from_content(msg_content) if msg_content else ""
             if content:
                 msg_tokens += estimate_tool_result_tokens(content)
 

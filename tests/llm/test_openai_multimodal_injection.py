@@ -113,9 +113,16 @@ class TestOpenAIMultimodalInjection:
         
         injection = openai_client._create_multimodal_injection(tool_msg)
         
-        # Should return None since file doesn't exist (and there's no valid content to inject)
-        # With vision support, it tries to load the file but fails
-        assert injection is None
+        # Should return an error message since file doesn't exist
+        # This provides feedback to the LLM about the missing file
+        assert injection is not None
+        assert injection["role"] == "user"
+        content = injection["content"]
+        assert isinstance(content, list)
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert "file not found" in content[0]["text"].lower()
+        assert "/nonexistent/image.png" in content[0]["text"]
     
     def test_create_multimodal_injection_text_fallback_no_vision(self, openai_client_no_vision, tmp_path: Path):
         """Test text fallback when model doesn't support vision."""

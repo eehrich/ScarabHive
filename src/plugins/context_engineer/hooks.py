@@ -502,7 +502,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             "store_fact": self._handle_store_fact,
             "get_variable": self._handle_get_variable,
             "get_tool_result": self._handle_get_tool_result,
-            "stats": self._handle_stats
+            "stats": self._handle_stats,
+            "restore_multimodal": self._handle_restore_multimodal
         }
     
     async def _handle_recall(
@@ -858,6 +859,103 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "stored_at": entry.timestamp.isoformat(),
                 "warning": "Full content returned - consider using preview/chunk/search to save tokens"
             }
+    
+    async def _handle_restore_multimodal(
+        self,
+        path: str,
+        session_id: str = "default"
+    ) -> dict[str, Any]:
+        """Handle restore_multimodal tool - reload compacted audio/image/video.
+        
+        This tool allows the LLM to restore previously compacted multimodal
+        content back into the conversation. The file will be marked for
+        re-injection on the next LLM call.
+        
+        Args:
+            path: Full file path of the multimodal content to restore
+            session_id: Session ID
+            
+        Returns:
+            Status and file info, or error if file not found
+        """
+        from pathlib import Path
+        
+        file_path = Path(path)
+        
+        # Validate file exists
+        if not file_path.exists():
+            return {
+                "status": "error",
+                "error": f"File not found: {path}",
+                "hint": "The file may have been moved, deleted, or the path is incorrect."
+            }
+        
+        # Get file info
+        stat = file_path.stat()
+        size_bytes = stat.st_size
+        size_mb = size_bytes / (1024 * 1024)
+        
+        # Estimate token cost
+        # Base64 encoding adds ~33% overhead, then ~4 chars per token
+        estimated_tokens = int(size_bytes * 0.33)
+        
+        # Determine type from extension
+        suffix = file_path.suffix.lower()
+        if suffix in ('.wav', '.mp3', '.ogg', '.flac', '.m4a', '.aac'):
+            content_type = "audio"
+            mime_type = {
+                '.wav': 'audio/wav',
+                '.mp3': 'audio/mpeg',
+                '.ogg': 'audio/ogg',
+                '.flac': 'audio/flac',
+                '.m4a': 'audio/mp4',
+                '.aac': 'audio/aac'
+            }.get(suffix, 'audio/wav')
+        elif suffix in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'):
+            content_type = "image"
+            mime_type = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp'
+            }.get(suffix, 'image/png')
+        elif suffix in ('.mp4', '.webm', '.avi', '.mov'):
+            content_type = "video"
+            mime_type = {
+                '.mp4': 'video/mp4',
+                '.webm': 'video/webm',
+                '.avi': 'video/avi',
+                '.mov': 'video/quicktime'
+            }.get(suffix, 'video/mp4')
+        else:
+            return {
+                "status": "error",
+                "error": f"Unsupported file type: {suffix}",
+                "hint": "Supported types: audio (wav, mp3, ogg, flac, m4a, aac), image (png, jpg, gif, webp, bmp), video (mp4, webm, avi, mov)"
+            }
+        
+        # Return multimodal content for injection
+        # The _multimodal_content key will be picked up by tool execution
+        return {
+            "status": "success",
+            "message": f"File will be loaded in the next response. Estimated cost: ~{estimated_tokens:,} tokens",
+            "file_info": {
+                "path": str(file_path),
+                "name": file_path.name,
+                "type": content_type,
+                "mime_type": mime_type,
+                "size_mb": round(size_mb, 2),
+                "estimated_tokens": estimated_tokens
+            },
+            "_multimodal_content": [{
+                "type": content_type,
+                "path": str(file_path),
+                "mime_type": mime_type,
+                "description": f"Restored {content_type}: {file_path.name}"
+            }]
+        }
     
     async def _handle_stats(
         self,

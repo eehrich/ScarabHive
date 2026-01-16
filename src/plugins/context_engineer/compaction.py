@@ -7,6 +7,7 @@ Layers (in order of application):
 1. **Reversible Compaction** - Operations that can be fully undone:
    - Store tool outputs with references
    - Create variables for large content blocks
+   - Replace large audio/image inline data with references
    
 2. **Semi-Reversible Compaction** - Operations partially recoverable:
    - Archive old messages with summaries
@@ -27,7 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_system.llm.token_utils import estimate_content_tokens
+from agent_system.llm.token_utils import estimate_content_tokens, estimate_inline_data_tokens
 
 from .archival_memory import ArchivalMemory
 from .core_memory import CoreMemory
@@ -239,14 +240,19 @@ class LayeredCompactionStrategy:
         content: list,
         result: CompactionResult
     ) -> list:
-        """Compact multimodal content by replacing large text_file items with variables.
+        """Compact multimodal content by replacing large items with variables/references.
+        
+        Handles:
+        - text_file items: Replace large content with $VAR_N references
+        - audio items: Replace large base64 data with [Audio removed] placeholder
+        - image items: Replace large base64 data with [Image removed] placeholder
         
         Args:
-            content: Multimodal content list (text, image, text_file, etc.)
+            content: Multimodal content list (text, image, text_file, audio, etc.)
             result: CompactionResult to update tokens_saved/variables_created
             
         Returns:
-            Compacted content list with text_file content replaced by $VAR_N references
+            Compacted content list with large items replaced
         """
         compacted = []
         
@@ -257,7 +263,7 @@ class LayeredCompactionStrategy:
                 
             item_type = item.get("type", "")
             
-            # Only compact text_file items - leave images/audio/video alone
+            # Compact text_file items - replace with variable reference
             if item_type == "text_file":
                 file_content = item.get("content", "")
                 file_name = item.get("name") or "file"
@@ -283,11 +289,131 @@ class LayeredCompactionStrategy:
                             f"Compacted text_file '{file_name}' ({token_count} tokens) → {var_name}"
                         )
                         continue
+            
+            # Compact audio items - remove large base64 inline data
+            # NOTE: Audio data cannot be retrieved later (unlike text tool results).
+            # The LLM should extract and store important information as text via store_fact
+            # before audio is compacted.
+            elif item_type == "audio":
+                inline_tokens = estimate_inline_data_tokens(item)
+                if inline_tokens >= self.config.tool_result_min_size:
+                    # Get audio metadata if available
+                    source = item.get("source", {})
+                    media_type = source.get("media_type", "audio") if isinstance(source, dict) else "audio"
+                    
+                    # Replace with placeholder - audio CANNOT be recovered
+                    compacted.append({
+                        "type": "text",
+                        "text": f"[Audio removed - {inline_tokens:,} tokens. Type: {media_type}. "
+                                f"NOTE: Audio data is NOT recoverable. If you needed information from this audio, "
+                                f"use store_fact to save key findings before context compaction.]"
+                    })
+                    result.tokens_saved += inline_tokens
+                    logger.debug(f"Removed audio inline data: {inline_tokens:,} tokens saved")
+                    continue
+            
+            # Compact image items - remove large base64 inline data  
+            # NOTE: Image data cannot be retrieved later (unlike text tool results).
+            elif item_type in ("image", "image_url"):
+                inline_tokens = estimate_inline_data_tokens(item)
+                if inline_tokens >= self.config.tool_result_min_size:
+                    # Get image metadata if available
+                    source = item.get("source", {})
+                    image_url = item.get("image_url", {})
+                    media_type = "image"
+                    if isinstance(source, dict):
+                        media_type = source.get("media_type", "image")
+                    elif isinstance(image_url, dict):
+                        url = image_url.get("url", "")
+                        if "data:" in url and ";" in url:
+                            media_type = url.split(";")[0].replace("data:", "")
+                    
+                    # Replace with placeholder - image CANNOT be recovered
+                    compacted.append({
+                        "type": "text", 
+                        "text": f"[Image removed - {inline_tokens:,} tokens. Type: {media_type}. "
+                                f"NOTE: Image data is NOT recoverable. If you needed information from this image, "
+                                f"use store_fact to save key observations before context compaction.]"
+                    })
+                    result.tokens_saved += inline_tokens
+                    logger.debug(f"Removed image inline data: {inline_tokens:,} tokens saved")
+                    continue
                 
-            # Keep item as-is (including small text_files)
+            # Keep item as-is (including small items and non-compactable types)
             compacted.append(item)
         
         return compacted
+    
+    async def _compact_multimodal_content_items(
+        self,
+        mm_content: list,
+        result: CompactionResult
+    ) -> tuple[list, int]:
+        """Compact multimodal_content items (file paths) by storing reference and removing from context.
+        
+        This handles MultimodalToolContent objects that reference files which will be
+        base64-encoded at LLM call time. We compact by:
+        1. Keeping the path for potential restoration
+        2. Adding a _compacted flag so LLM clients skip encoding
+        3. Updating description to explain how to restore
+        
+        Args:
+            mm_content: List of MultimodalToolContent dicts with path, type, mime_type
+            result: CompactionResult for tracking
+            
+        Returns:
+            Tuple of (compacted list, tokens saved)
+        """
+        compacted = []
+        tokens_saved = 0
+        
+        for item in mm_content:
+            if not isinstance(item, dict):
+                compacted.append(item)
+                continue
+            
+            item_type = item.get("type", "")
+            file_path = item.get("path", "")
+            
+            # Skip already compacted items
+            if item.get("_compacted"):
+                compacted.append(item)
+                continue
+            
+            if not file_path:
+                compacted.append(item)
+                continue
+            
+            # Estimate tokens from file size
+            inline_tokens = estimate_inline_data_tokens(item)
+            
+            if inline_tokens >= self.config.tool_result_min_size:
+                # Compact large audio/image/video files - but KEEP the path for restoration!
+                mime_type = item.get("mime_type", item_type)
+                original_description = item.get("description", "")
+                
+                # Create compacted placeholder - keeps path for restoration
+                placeholder = {
+                    "type": item_type,
+                    "path": file_path,  # KEEP the path for restoration
+                    "mime_type": mime_type,
+                    "_compacted": True,  # Flag for LLM clients to skip encoding
+                    "_original_tokens": inline_tokens,
+                    "_original_description": original_description,
+                    "description": (
+                        f"[{item_type.title()} compacted - {inline_tokens:,} tokens saved. "
+                        f"Use restore_multimodal(path=\"{file_path}\") to reload into context.]"
+                    )
+                }
+                compacted.append(placeholder)
+                tokens_saved += inline_tokens
+                logger.info(f"Compacted {item_type} file: {inline_tokens:,} tokens saved (path: {file_path})")
+                    
+            else:
+                # Small enough to keep
+                compacted.append(item)
+        
+        return compacted, tokens_saved
     
     async def _apply_layer1(self, result: CompactionResult) -> None:
         """Layer 1: Reversible compaction.
@@ -306,6 +432,15 @@ class LayeredCompactionStrategy:
         
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
+            
+            # Process multimodal_content from ANY message (file paths that will be base64-encoded)
+            # This is crucial for tool responses with audio/image files
+            mm_content = msg.get("multimodal_content")
+            if mm_content and isinstance(mm_content, list):
+                compacted_mm, mm_tokens_saved = await self._compact_multimodal_content_items(mm_content, result)
+                if mm_tokens_saved > 0:
+                    messages[i] = {**msg, "multimodal_content": compacted_mm}
+                    result.tokens_saved += mm_tokens_saved
             
             # Process tool results
             if msg.get("role") == "tool":
@@ -556,7 +691,10 @@ class LayeredCompactionStrategy:
             logger.debug(f"Cleaned up {removed} unreferenced variables")
     
     def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
-        """Estimate total tokens in messages."""
+        """Estimate total tokens in messages including multimodal inline data.
+        
+        Skips items marked as _compacted since they won't be encoded at LLM call time.
+        """
         total = 0
         for msg in messages:
             content = msg.get("content", "")
@@ -564,8 +702,28 @@ class LayeredCompactionStrategy:
                 total += estimate_content_tokens(content)
             elif isinstance(content, list):
                 for part in content:
-                    if isinstance(part, dict) and "text" in part:
-                        total += estimate_content_tokens(part["text"])
+                    if isinstance(part, dict):
+                        # Count text content
+                        if "text" in part:
+                            total += estimate_content_tokens(part["text"])
+                        # Count inline data tokens (audio, images, etc.)
+                        inline_tokens = estimate_inline_data_tokens(part)
+                        if inline_tokens > 0:
+                            total += inline_tokens
+            
+            # Count multimodal_content from tool responses (file paths that will be base64-encoded)
+            # SKIP items marked as _compacted - they won't be encoded at LLM call time
+            mm_content = msg.get("multimodal_content")
+            if mm_content and isinstance(mm_content, list):
+                for mm_item in mm_content:
+                    if isinstance(mm_item, dict):
+                        # Skip compacted items - they're not sent to LLM
+                        if mm_item.get("_compacted"):
+                            continue
+                        item_tokens = estimate_inline_data_tokens(mm_item)
+                        if item_tokens > 0:
+                            total += item_tokens
+                            logger.debug(f"Counted {item_tokens:,} tokens for multimodal_content file")
             
             # Add overhead for role and structure
             total += 4  # Role tokens + message structure

@@ -689,6 +689,198 @@ class TestLayeredCompactionStrategy:
         # Variable should be created for the text_file in tool response
         assert result.variables_created >= 1
 
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_removes_large_audio(self, strategy_components):
+        """Test that large audio inline data is removed during compaction."""
+        strategy = strategy_components["strategy"]
+        strategy.config.tool_result_min_size = 100  # Lower threshold for test
+        
+        # Large audio base64 data (~4000 chars = 1000 tokens)
+        large_audio_base64 = "A" * 4000
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Analyze this audio:"},
+                {"type": "audio", "source": {"type": "base64", "media_type": "audio/wav", "data": large_audio_base64}}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=2000, force=True)
+        
+        # Audio should be removed and replaced with placeholder
+        compacted_content = result.modified_messages[0]["content"]
+        audio_items = [i for i in compacted_content if i.get("type") == "audio"]
+        assert len(audio_items) == 0  # Audio removed
+        
+        # Should have placeholder text instead
+        text_items = [i for i in compacted_content if i.get("type") == "text"]
+        assert len(text_items) == 2  # Original text + placeholder
+        
+        # Verify placeholder mentions token savings and non-recoverable notice
+        placeholders = [t for t in text_items if "Audio removed" in t.get("text", "")]
+        assert len(placeholders) == 1
+        assert "tokens" in placeholders[0]["text"]
+        assert "NOT recoverable" in placeholders[0]["text"]
+        
+        # Verify tokens were saved
+        assert result.tokens_saved > 500  # Removed ~1000 token audio
+
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_preserves_small_audio(self, strategy_components):
+        """Test that small audio inline data is preserved."""
+        strategy = strategy_components["strategy"]
+        strategy.config.tool_result_min_size = 5000  # High threshold
+        
+        # Small audio base64 data (100 chars = 25 tokens)
+        small_audio_base64 = "B" * 100
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Analyze:"},
+                {"type": "audio", "source": {"type": "base64", "data": small_audio_base64}}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=600, force=True)
+        
+        # Audio should be preserved (below threshold)
+        compacted_content = result.modified_messages[0]["content"]
+        audio_items = [i for i in compacted_content if i.get("type") == "audio"]
+        assert len(audio_items) == 1
+
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_removes_large_image(self, strategy_components):
+        """Test that large image inline data is removed during compaction."""
+        strategy = strategy_components["strategy"]
+        strategy.config.tool_result_min_size = 100  # Lower threshold for test
+        
+        # Large image base64 data (~4000 chars = 1000 tokens)
+        large_image_base64 = "C" * 4000
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "What's in this image?"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": large_image_base64}}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=2000, force=True)
+        
+        # Image should be removed and replaced with placeholder
+        compacted_content = result.modified_messages[0]["content"]
+        image_items = [i for i in compacted_content if i.get("type") == "image"]
+        assert len(image_items) == 0  # Image removed
+        
+        # Should have placeholder text
+        placeholders = [t for t in compacted_content if isinstance(t, dict) and "Image removed" in t.get("text", "")]
+        assert len(placeholders) == 1
+        assert "NOT recoverable" in placeholders[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_estimate_messages_tokens_includes_inline_data(self, strategy_components):
+        """Test that _estimate_messages_tokens counts inline data tokens."""
+        strategy = strategy_components["strategy"]
+        
+        # Create message with large base64 audio (4000 chars = ~1000 tokens)
+        large_audio_base64 = "D" * 4000
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Hello"},  # ~1 token
+                {"type": "audio", "source": {"type": "base64", "data": large_audio_base64}}  # ~1000 tokens
+            ]}
+        ]
+        
+        tokens = strategy._estimate_messages_tokens(messages)
+        
+        # Should be text tokens + inline data tokens + overhead
+        # ~1 (text) + ~1000 (audio) + 4 (overhead) = ~1005
+        assert tokens > 900  # Should include inline data
+
+    @pytest.mark.asyncio
+    async def test_compact_multimodal_content_with_file_paths(self, strategy_components, tmp_path):
+        """Test that multimodal_content with file paths is compacted but path is preserved."""
+        strategy = strategy_components["strategy"]
+        strategy.config.tool_result_min_size = 100  # Lower threshold
+        
+        # Create a large audio file (100KB = ~33,000 tokens)
+        audio_file = tmp_path / "test_audio.wav"
+        audio_file.write_bytes(b"x" * 100_000)
+        original_path = str(audio_file)
+        
+        # Message with multimodal_content attribute (tool response format)
+        messages = [
+            {"role": "user", "content": "Analyze this audio"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_123", "function": {"name": "load_audio"}}
+            ]},
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "name": "load_audio",
+                "content": '{"status": "success"}',
+                "multimodal_content": [
+                    {
+                        "type": "audio",
+                        "path": original_path,
+                        "mime_type": "audio/wav",
+                        "description": "Test audio file"
+                    }
+                ]
+            }
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=35000, force=True)
+        
+        # multimodal_content should be compacted with _compacted flag
+        tool_msg = result.modified_messages[2]
+        mm_content = tool_msg.get("multimodal_content", [])
+        
+        assert len(mm_content) == 1
+        # Path should be PRESERVED for restoration
+        assert mm_content[0]["path"] == original_path
+        # Should have _compacted flag
+        assert mm_content[0].get("_compacted") is True
+        # Description should mention compaction and restoration
+        assert "compacted" in mm_content[0]["description"].lower()
+        assert "restore_multimodal" in mm_content[0]["description"]
+        
+        # Should have saved significant tokens (~33K)
+        assert result.tokens_saved > 30_000
+
+    @pytest.mark.asyncio
+    async def test_estimate_messages_tokens_includes_multimodal_content_files(self, strategy_components, tmp_path):
+        """Test that _estimate_messages_tokens counts multimodal_content file paths."""
+        strategy = strategy_components["strategy"]
+        
+        # Create a fake audio file - 163840 bytes = 10 seconds at 16KB/s fallback
+        # This gives: 10s × 32 tokens/s = 320 tokens
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"x" * 163840)
+        
+        messages = [
+            {
+                "role": "tool",
+                "tool_call_id": "call_456",
+                "name": "audio_ops",
+                "content": '{"status": "success"}',
+                "multimodal_content": [
+                    {
+                        "type": "audio",
+                        "path": str(audio_file),
+                        "mime_type": "audio/wav"
+                    }
+                ]
+            }
+        ]
+        
+        tokens = strategy._estimate_messages_tokens(messages)
+        
+        # Should include: content text (~10) + multimodal file (~320) + overhead
+        # With new duration-based estimation: 10s audio = 320 tokens
+        assert tokens > 300  # Main contribution is the audio file
+        assert tokens < 500  # Should be reasonable, not millions
+
 
 # =============================================================================
 # Integration Tests

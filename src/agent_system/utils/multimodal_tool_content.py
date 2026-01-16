@@ -56,6 +56,15 @@ class EncodedMultimodalContent:
     description: Optional[str] = None
 
 
+@dataclass
+class MultimodalError:
+    """Error information for multimodal content that couldn't be encoded."""
+    type: str  # "image", "audio", "video"
+    path: str
+    error: str  # Human-readable error message
+    is_compacted: bool = False  # True if this was compacted by context engineer
+
+
 def encode_multimodal_item(
     item: "MultimodalToolContent | Dict[str, Any]",
     max_size_mb: Optional[float] = None
@@ -67,8 +76,13 @@ def encode_multimodal_item(
         max_size_mb: Maximum file size in MB (default: type-specific limits)
     
     Returns:
-        EncodedMultimodalContent or None if encoding fails
+        EncodedMultimodalContent or None if encoding fails/skipped
     """
+    # Check if item was compacted by context engineer - skip encoding
+    if isinstance(item, dict) and item.get("_compacted"):
+        logger.debug("Skipping compacted multimodal item: %s", item.get("description", ""))
+        return None
+    
     # Handle both Pydantic model and dict
     if hasattr(item, "path"):
         path = Path(item.path)
@@ -248,6 +262,11 @@ def create_multimodal_injection(
     This is the central function used by OpenAI, HTTPX, and Anthropic clients
     to handle multimodal content in tool responses.
     
+    Handles:
+    - Normal items: Encode to base64 and inject
+    - Compacted items (_compacted=True): Inject text description only (no encoding)
+    - Missing files: Inject error message explaining file not found
+    
     Args:
         tool_msg: ChatMessage with role='tool' and multimodal_content
         supports_vision: Whether the model supports vision/image_input
@@ -263,27 +282,62 @@ def create_multimodal_injection(
     tool_name = getattr(tool_msg, 'name', None) or 'tool'
     tool_call_id = getattr(tool_msg, 'tool_call_id', None)
     
-    if not supports_vision:
-        # Model doesn't support vision - inject text note about available content
-        logger.debug(
-            "Model %s doesn't support vision - injecting text note instead of multimodal",
-            model_name
-        )
-        items_info = []
-        for item in multimodal_content:
-            item_type = getattr(item, 'type', None) or (item.get('type') if isinstance(item, dict) else 'unknown')
-            desc = getattr(item, 'description', None) or (item.get('description') if isinstance(item, dict) else None)
-            path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
+    # Collect info about all items (for both vision and non-vision models)
+    items_info = []
+    compacted_items = []
+    error_items = []
+    
+    for item in multimodal_content:
+        item_type = getattr(item, 'type', None) or (item.get('type') if isinstance(item, dict) else 'unknown')
+        desc = getattr(item, 'description', None) or (item.get('description') if isinstance(item, dict) else None)
+        path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
+        is_compacted = (item.get('_compacted') if isinstance(item, dict) else False)
+        
+        if is_compacted:
+            # Item was compacted by context engineer - show description with restore instructions
+            compacted_items.append({
+                'type': item_type,
+                'path': path,
+                'description': desc
+            })
+        elif path and not Path(path).exists():
+            # File doesn't exist - this is an error!
+            error_items.append({
+                'type': item_type,
+                'path': path,
+                'error': f"File not found: {path}"
+            })
+        else:
+            # Normal item
             if desc:
                 items_info.append(f"- {item_type}: {desc}")
             elif path:
                 items_info.append(f"- {item_type}: {path}")
             else:
                 items_info.append(f"- {item_type}")
-        
+    
+    if not supports_vision:
+        # Model doesn't support vision - inject text note about available content
+        logger.debug(
+            "Model %s doesn't support vision - injecting text note instead of multimodal",
+            model_name
+        )
         text_content = f"📎 [TOOL OUTPUT: {tool_name}]\n"
         text_content += f"Generated {len(multimodal_content)} multimodal item(s):\n"
         text_content += "\n".join(items_info)
+        
+        # Add compacted items info
+        if compacted_items:
+            text_content += "\n\n📦 Compacted items (use restore_multimodal to reload):\n"
+            for item in compacted_items:
+                text_content += f"- {item['type']}: {item['description']}\n"
+        
+        # Add error items info
+        if error_items:
+            text_content += "\n\n⚠️ Missing files:\n"
+            for item in error_items:
+                text_content += f"- {item['type']}: {item['error']}\n"
+        
         text_content += "\n\n⚠️ Note: The current model does not support vision/multimodal input. "
         text_content += "The generated content is available at the file paths above but cannot be displayed to you."
         
@@ -292,21 +346,51 @@ def create_multimodal_injection(
     # Model supports vision - encode and inject images
     try:
         encoded_items = []
+        text_notes = []  # Additional text notes for compacted/error items
+        
         for item in multimodal_content:
+            is_compacted = (item.get('_compacted') if isinstance(item, dict) else False)
+            path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
+            
+            if is_compacted:
+                # Don't try to encode - just add text note
+                desc = item.get('description') if isinstance(item, dict) else getattr(item, 'description', None)
+                text_notes.append(f"📦 {desc}")
+                continue
+            
+            if path and not Path(path).exists():
+                # File doesn't exist - add error note
+                item_type = item.get('type') if isinstance(item, dict) else getattr(item, 'type', 'unknown')
+                text_notes.append(f"⚠️ {item_type} file not found: {path}")
+                continue
+            
             encoded = encode_multimodal_item(item)
             if encoded:
                 encoded_items.append(encoded)
         
-        if not encoded_items:
-            return None
+        # If we have some encoded items OR some notes to show
+        if encoded_items or text_notes:
+            content = []
+            
+            # Add any error/compacted notes first
+            if text_notes:
+                content.append({
+                    "type": "text",
+                    "text": f"📎 [TOOL OUTPUT: {tool_name}]\n" + "\n".join(text_notes)
+                })
+            
+            # Add encoded multimodal content
+            if encoded_items:
+                injection_content = create_injection_message_content(
+                    tool_name=tool_name if not text_notes else None,  # Don't repeat tool name
+                    tool_call_id=tool_call_id,
+                    encoded_items=encoded_items
+                )
+                content.extend(injection_content)
+            
+            return {"role": "user", "content": content}
         
-        content = create_injection_message_content(
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            encoded_items=encoded_items
-        )
-        
-        return {"role": "user", "content": content}
+        return None
         
     except Exception as e:
         logger.warning("Failed to create multimodal injection: %s", e)

@@ -48,6 +48,52 @@ def _patch_session_manager():
 # Apply the patch
 _patch_session_manager()
 
+
+# Configure logging for tests: use NullHandler to prevent file I/O
+# This ensures tests don't write to production logs (logs/api.log)
+def _configure_test_logging():
+    """Configure logging to suppress file output during tests.
+    
+    This prevents test runs from writing to production log files like logs/api.log.
+    pytest's caplog fixture will still capture logs for assertions.
+    """
+    import logging
+    
+    # Set environment variable to indicate test mode
+    os.environ["AGENT_SYSTEM_TEST_MODE"] = "1"
+    
+    # Get root logger and remove any existing handlers
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        try:
+            # Only remove file handlers to preserve pytest's capturing
+            if isinstance(handler, (logging.FileHandler, logging.handlers.RotatingFileHandler)):
+                root.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
+    # Set default level to allow caplog to capture all levels
+    root.setLevel(logging.DEBUG)
+    
+    # Add NullHandler to prevent "No handler found" warnings
+    if not any(isinstance(h, logging.NullHandler) for h in root.handlers):
+        root.addHandler(logging.NullHandler())
+    
+    # Suppress specific noisy loggers during tests
+    for logger_name in ['httpcore', 'httpx', 'asyncio', 'urllib3', 'filelock']:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+# Import logging.handlers for RotatingFileHandler check
+import logging.handlers
+
+# Apply test logging configuration early
+_configure_test_logging()
+
+
 # Ensure any subprocess.Popen calls that open text streams default to UTF-8
 # to avoid UnicodeDecodeError in the subprocess reader threads on Windows
 # where the locale encoding can be cp1252. We wrap Popen early so it affects
@@ -508,6 +554,20 @@ def mock_mcp_config():
 
 def _reset_all_global_state():
     """Helper function to reset all known global state."""
+    # Reset logging: remove file handlers added during test
+    try:
+        import logging
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            if isinstance(handler, (logging.FileHandler, logging.handlers.RotatingFileHandler)):
+                try:
+                    root.removeHandler(handler)
+                    handler.close()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    
     # Reset auth database
     try:
         from agent_system.auth import database as auth_db_module

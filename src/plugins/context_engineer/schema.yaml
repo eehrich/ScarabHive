@@ -214,6 +214,32 @@ tools:
         properties: {}
         additionalProperties: false
 
+  - type: function
+    function:
+      name: "{{ name }}_restore_multimodal"
+      description: |
+        Restore a compacted audio/image/video file back into the conversation context.
+        
+        When large multimodal files are compacted to save tokens, they can be
+        restored using this tool. The file will be reloaded and sent to the LLM
+        in the next turn.
+        
+        Use this when:
+        - You need to re-analyze a previously compacted audio/image/video
+        - The compaction message says "use restore_multimodal(path=...)"
+        
+        Returns info about the file to be restored. The actual content will
+        appear in your next response from the multimodal injection.
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "Full file path of the multimodal content to restore (from the compaction message)"
+        required:
+          - path
+        additionalProperties: false
+
 # Web UI configuration
 web_ui:
   # Header button configuration

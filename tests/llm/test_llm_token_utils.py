@@ -6,6 +6,7 @@ from agent_system.llm.token_utils import (
     estimate_content_tokens,
     estimate_json_tokens,
     estimate_tool_result_tokens,
+    estimate_inline_data_tokens,
     is_code_content,
     is_structured_data,
 )
@@ -457,9 +458,11 @@ class TestMultimodalTokenEstimation:
 
     def test_estimate_tokens_multimodal_message(self):
         """Test token estimation for multimodal ChatMessage."""
+        # Use actual base64 data (4000 chars = 1000 tokens)
+        base64_data = "A" * 4000
         multimodal_content = [
             {"type": "text", "text": "What is in this image?"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64_data}}
         ]
         msg = ChatMessage(role="user", content=multimodal_content)
         tokens = estimate_token_count([msg])
@@ -467,9 +470,9 @@ class TestMultimodalTokenEstimation:
         # Should include:
         # - Base overhead: 4
         # - Text tokens: "What is in this image?" ~ 6 words * 1.3 = 7.8 -> 7
-        # - Image tokens: 1000 (TOKENS_PER_IMAGE)
-        # Total: 4 + 7 + 1000 = 1011
-        assert tokens > 1000  # At least the image token estimate
+        # - Image inline data tokens: 4000 * 0.25 = 1000
+        # Total: 4 + 7 + 1000 = ~1011
+        assert tokens > 1000  # At least the image inline data estimate
 
     def test_estimate_tokens_multimodal_with_audio(self):
         """Test token estimation for multimodal message with audio."""
@@ -517,6 +520,423 @@ class TestMultimodalTokenEstimation:
         # File content = ~10-15 words of code
         # Total should be meaningful
         assert tokens > 15  # At least overhead + reasonable word count
+
+    def test_estimate_inline_data_tokens_base64_source(self):
+        """Test token estimation for inline base64 data in source format."""
+        from agent_system.llm.token_utils import estimate_inline_data_tokens
+        
+        # Simulating ~1KB of base64 data (1000 chars)
+        base64_data = "A" * 1000
+        item = {"type": "image", "source": {"type": "base64", "data": base64_data}}
+        
+        tokens = estimate_inline_data_tokens(item)
+        # 1000 chars * 0.25 = 250 tokens
+        assert tokens == 250
+
+    def test_estimate_inline_data_tokens_audio_url(self):
+        """Test token estimation for inline base64 data in audio_url format."""
+        from agent_system.llm.token_utils import estimate_inline_data_tokens
+        
+        # Simulating audio data URL with ~2KB of base64
+        base64_data = "B" * 2000
+        item = {"type": "audio", "audio_url": f"data:audio/wav;base64,{base64_data}"}
+        
+        tokens = estimate_inline_data_tokens(item)
+        # 2000 chars * 0.25 = 500 tokens
+        assert tokens == 500
+
+    def test_estimate_inline_data_tokens_image_url(self):
+        """Test token estimation for inline base64 data in image_url format."""
+        from agent_system.llm.token_utils import estimate_inline_data_tokens
+        
+        # Simulating image data URL with ~4KB of base64
+        base64_data = "C" * 4000
+        item = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_data}"}}
+        
+        tokens = estimate_inline_data_tokens(item)
+        # 4000 chars * 0.25 = 1000 tokens
+        assert tokens == 1000
+
+    def test_estimate_inline_data_tokens_no_inline_data(self):
+        """Test that items without inline data return 0."""
+        from agent_system.llm.token_utils import estimate_inline_data_tokens
+        
+        # Regular URL (not base64)
+        item = {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+        assert estimate_inline_data_tokens(item) == 0
+        
+        # Text content
+        item = {"type": "text", "text": "Hello world"}
+        assert estimate_inline_data_tokens(item) == 0
+
+    def test_count_multimodal_items_with_inline_data_tokens(self):
+        """Test that count_multimodal_items returns inline_data_tokens."""
+        from agent_system.llm.token_utils import count_multimodal_items
+        
+        # ~4KB of base64 data
+        base64_data = "D" * 4000
+        content = [
+            {"type": "text", "text": "Describe this image"},
+            {"type": "image", "source": {"type": "base64", "data": base64_data}}
+        ]
+        
+        counts = count_multimodal_items(content)
+        assert counts['images'] == 1
+        assert counts['inline_data_tokens'] == 1000  # 4000 * 0.25
+
+    def test_estimate_tokens_uses_inline_data_over_fallback(self):
+        """Test that token estimation uses actual inline data size over fallback estimates."""
+        # Large base64 data: ~40KB = 40,000 chars = 10,000 tokens
+        base64_data = "E" * 40000
+        multimodal_content = [
+            {"type": "text", "text": "Analyze this audio"},
+            {"type": "audio", "source": {"type": "base64", "data": base64_data}}
+        ]
+        msg = ChatMessage(role="user", content=multimodal_content)
+        tokens = estimate_token_count([msg])
+        
+        # Should use inline_data_tokens (10,000) instead of fallback (250)
+        # Total: 4 (overhead) + ~5 (text) + 10,000 (inline data) = ~10,009
+        assert tokens > 5000  # Much higher than the 250 fallback
+
+    def test_estimate_file_tokens(self, tmp_path):
+        """Test that estimate_file_tokens calculates tokens correctly for different file types."""
+        from agent_system.llm.token_utils import estimate_file_tokens
+        
+        # Test image file (uses size-based estimation: small images = 258 tokens)
+        test_image = tmp_path / "test_image.png"
+        test_image.write_bytes(b"x" * 50_000)  # 50KB < 100KB threshold
+        
+        tokens = estimate_file_tokens(test_image)
+        # Small image (< 100KB) = 258 tokens (single tile)
+        assert tokens == 258
+
+    def test_estimate_file_tokens_large_image(self, tmp_path):
+        """Test that large images get multiple tile estimation."""
+        from agent_system.llm.token_utils import estimate_file_tokens
+        
+        # Create a 700KB image file (should estimate 2 tiles)
+        # 700KB / 300KB per tile = 2.3 → 2 tiles × 258 = 516 tokens
+        test_image = tmp_path / "large_image.jpg"
+        test_image.write_bytes(b"x" * 700_000)
+        
+        tokens = estimate_file_tokens(test_image)
+        # 700000 // 307200 = 2 tiles × 258 = 516 tokens
+        assert tokens == 516
+
+    def test_estimate_file_tokens_nonexistent_file(self):
+        """Test that estimate_file_tokens returns 0 for nonexistent files."""
+        from agent_system.llm.token_utils import estimate_file_tokens
+        
+        tokens = estimate_file_tokens("/nonexistent/path/file.wav")
+        assert tokens == 0
+
+    def test_estimate_file_tokens_audio_fallback(self, tmp_path):
+        """Test audio token estimation with size-based fallback (when pydub can't read)."""
+        from agent_system.llm.token_utils import estimate_file_tokens
+        
+        # Create a fake audio file that pydub can't read
+        # Using 163840 bytes = exactly 10s at 16KB/s (16384 bytes/s)
+        fake_audio = tmp_path / "fake.wav"
+        fake_audio.write_bytes(b"x" * 163840)  # Exactly 16KB * 10 = 10s
+        
+        tokens = estimate_file_tokens(fake_audio, file_type='audio')
+        # Fallback: 163840 / 16384 = 10 seconds × 32 tokens/s = 320 tokens
+        assert tokens == 320
+
+    def test_estimate_inline_data_tokens_with_file_path(self, tmp_path):
+        """Test that estimate_inline_data_tokens works with file path items."""
+        # Create a fake audio file - exact 163840 bytes = 10s at 16KB/s
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"x" * 163840)
+        
+        # MultimodalToolContent dict format
+        item = {
+            "type": "audio",
+            "path": str(audio_file),
+            "mime_type": "audio/wav"
+        }
+        
+        tokens = estimate_inline_data_tokens(item)
+        # Fallback: 163840 / 16384 = 10 seconds × 32 tokens/s = 320 tokens
+        assert tokens == 320
+
+    def test_estimate_inline_data_tokens_with_image_path(self, tmp_path):
+        """Test that estimate_inline_data_tokens works with image file paths."""
+        # Create a 200KB image file
+        image_file = tmp_path / "image.png"
+        image_file.write_bytes(b"x" * 200_000)
+        
+        item = {
+            "type": "image",
+            "path": str(image_file),
+            "mime_type": "image/png"
+        }
+        
+        tokens = estimate_inline_data_tokens(item)
+        # 200KB > 100KB threshold, so estimate tiles
+        # 200KB / 300KB per tile = ~0.67 → 1 tile minimum = 258 tokens
+        assert tokens == 258
+
+    def test_estimate_tokens_multimodal_content_with_file_paths(self, tmp_path):
+        """Test that estimate_token_count counts multimodal_content with file paths."""
+        from agent_system.llm.models import MultimodalToolContent
+        
+        # Create a fake audio file - with size-based fallback estimation
+        # 163840 bytes = 10 seconds at 16KB/s fallback rate
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"x" * 163840)
+        
+        # Create message with multimodal_content (tool response format)
+        multimodal = [
+            MultimodalToolContent(
+                type="audio",
+                path=str(audio_file),
+                mime_type="audio/wav",
+                description="Test audio"
+            )
+        ]
+        
+        msg = ChatMessage(
+            role="tool",
+            tool_call_id="test-id",
+            content='{"status": "success"}',
+            multimodal_content=multimodal
+        )
+        
+        tokens = estimate_token_count([msg])
+        
+        # Should include:
+        # - 4 (base overhead)
+        # - ~8 (tool call id overhead)
+        # - ~30 (content text tokens)
+        # - 320 (audio file: 10 seconds × 32 tokens/s)
+        # Total: ~362 tokens
+        assert tokens > 300  # Main contribution is the audio file
+        assert tokens < 500  # Reasonable upper bound
+
+    def test_estimate_tokens_multiple_multimodal_items(self, tmp_path):
+        """Test counting multiple multimodal items in one message."""
+        from agent_system.llm.models import MultimodalToolContent
+        
+        # Create two audio files with exact sizes for 5s and 10s respectively
+        audio1 = tmp_path / "audio1.wav"
+        audio1.write_bytes(b"x" * 81920)  # 5 seconds at 16KB/s
+        
+        audio2 = tmp_path / "audio2.wav"
+        audio2.write_bytes(b"x" * 163840)  # 10 seconds at 16KB/s
+        
+        multimodal = [
+            MultimodalToolContent(type="audio", path=str(audio1), mime_type="audio/wav"),
+            MultimodalToolContent(type="audio", path=str(audio2), mime_type="audio/wav"),
+        ]
+        
+        msg = ChatMessage(
+            role="tool",
+            tool_call_id="test-id",
+            content='{"status": "success"}',
+            multimodal_content=multimodal
+        )
+        
+        tokens = estimate_token_count([msg])
+        
+        # 5s × 32 = 160 tokens + 10s × 32 = 320 tokens = 480 + overhead ~40 = ~520
+        assert tokens > 450
+        assert tokens < 600
+
+
+class TestMediaDurationCache:
+    """Tests for the media duration cache."""
+    
+    def test_cache_hit_returns_cached_value(self, tmp_path):
+        """Test that cache returns cached duration on hit."""
+        from agent_system.llm.token_utils import _duration_cache, _CacheEntry
+        import time
+        
+        # Clear cache first
+        _duration_cache.clear()
+        
+        test_file = tmp_path / "test.wav"
+        test_file.write_bytes(b"x" * 1000)
+        mtime = test_file.stat().st_mtime
+        
+        # Cache miss initially
+        result = _duration_cache.get(str(test_file), mtime)
+        assert result is _CacheEntry  # Sentinel for cache miss
+        
+        # Set value
+        _duration_cache.set(str(test_file), mtime, 10.5)
+        
+        # Cache hit
+        result = _duration_cache.get(str(test_file), mtime)
+        assert result == 10.5
+    
+    def test_cache_invalidates_on_mtime_change(self, tmp_path):
+        """Test that cache invalidates when file modification time changes."""
+        from agent_system.llm.token_utils import _duration_cache, _CacheEntry
+        
+        _duration_cache.clear()
+        
+        test_file = tmp_path / "test.wav"
+        test_file.write_bytes(b"x" * 1000)
+        old_mtime = test_file.stat().st_mtime
+        
+        # Cache a value
+        _duration_cache.set(str(test_file), old_mtime, 10.5)
+        
+        # Should hit with same mtime
+        assert _duration_cache.get(str(test_file), old_mtime) == 10.5
+        
+        # Should miss with different mtime (file changed)
+        new_mtime = old_mtime + 1.0
+        assert _duration_cache.get(str(test_file), new_mtime) is _CacheEntry
+    
+    def test_cache_evicts_oldest_on_capacity(self):
+        """Test that cache evicts oldest entries when at capacity."""
+        from agent_system.llm.token_utils import _MediaDurationCache, _CacheEntry
+        
+        # Create small cache
+        cache = _MediaDurationCache(max_size=3, ttl_seconds=3600)
+        
+        # Fill cache
+        cache.set("/file1", 1.0, 10.0)
+        cache.set("/file2", 1.0, 20.0)
+        cache.set("/file3", 1.0, 30.0)
+        
+        assert cache.stats()["size"] == 3
+        
+        # Add one more - should evict oldest (file1)
+        cache.set("/file4", 1.0, 40.0)
+        
+        assert cache.stats()["size"] == 3
+        assert cache.get("/file1", 1.0) is _CacheEntry  # Evicted
+        assert cache.get("/file4", 1.0) == 40.0  # New entry present
+    
+    def test_cache_caches_none_values(self, tmp_path):
+        """Test that cache stores None values (for files that can't be read)."""
+        from agent_system.llm.token_utils import _duration_cache, _CacheEntry
+        
+        _duration_cache.clear()
+        
+        # Cache a None value (simulates failed read)
+        _duration_cache.set("/nonexistent/file.wav", 0.0, None)
+        
+        # Should return None (not miss)
+        result = _duration_cache.get("/nonexistent/file.wav", 0.0)
+        assert result is None  # None is a valid cached value
+    
+    def test_estimate_file_tokens_uses_cache(self, tmp_path):
+        """Test that estimate_file_tokens uses the cache for repeated calls."""
+        from agent_system.llm.token_utils import (
+            _duration_cache, estimate_file_tokens
+        )
+        import time
+        
+        _duration_cache.clear()
+        
+        # Create a fake audio file (pydub can't read it, falls back)
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"x" * 163840)  # 10s at 16KB/s fallback
+        
+        # First call - populates cache
+        t1 = time.perf_counter()
+        tokens1 = estimate_file_tokens(audio_file, file_type='audio')
+        t2 = time.perf_counter()
+        first_time = t2 - t1
+        
+        # Second call - should use cache
+        t3 = time.perf_counter()
+        tokens2 = estimate_file_tokens(audio_file, file_type='audio')
+        t4 = time.perf_counter()
+        second_time = t4 - t3
+        
+        # Same result
+        assert tokens1 == tokens2 == 320
+        
+        # Cache should have entry
+        assert _duration_cache.stats()["size"] >= 1
+
+
+class TestEstimateTokenCountDictSupport:
+    """Tests for estimate_token_count with dict messages (not just ChatMessage)."""
+    
+    def test_estimate_token_count_with_dict_messages(self):
+        """Test that estimate_token_count works with dict messages."""
+        msg_dict = {
+            'role': 'user',
+            'content': 'Hello, how are you?'
+        }
+        
+        tokens = estimate_token_count([msg_dict])
+        
+        # Should estimate tokens without error
+        # 4 (overhead) + ~5 (text) = ~9
+        assert tokens > 0
+        assert tokens < 20
+    
+    def test_estimate_token_count_dict_with_multimodal_content(self, tmp_path):
+        """Test that estimate_token_count counts multimodal_content in dict messages."""
+        # Create a fake audio file
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"x" * 163840)  # 10s at 16KB/s
+        
+        msg_dict = {
+            'role': 'tool',
+            'tool_call_id': 'call_123',
+            'content': '{"status": "success"}',
+            'multimodal_content': [
+                {'type': 'audio', 'path': str(audio_file), 'mime_type': 'audio/wav'}
+            ]
+        }
+        
+        tokens = estimate_token_count([msg_dict])
+        
+        # Should include audio tokens: 10s × 32 = 320 + overhead
+        assert tokens > 300
+        assert tokens < 400
+    
+    def test_estimate_token_count_dict_equals_chatmessage(self, tmp_path):
+        """Test that dict and ChatMessage produce same token count."""
+        from agent_system.llm.models import ChatMessage
+        
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"x" * 163840)
+        
+        msg_dict = {
+            'role': 'tool',
+            'tool_call_id': 'call_123',
+            'content': '{"status": "success"}',
+            'multimodal_content': [
+                {'type': 'audio', 'path': str(audio_file), 'mime_type': 'audio/wav'}
+            ]
+        }
+        
+        msg_cm = ChatMessage(
+            role='tool',
+            tool_call_id='call_123',
+            content='{"status": "success"}',
+            multimodal_content=[
+                {'type': 'audio', 'path': str(audio_file), 'mime_type': 'audio/wav'}
+            ]
+        )
+        
+        tokens_dict = estimate_token_count([msg_dict])
+        tokens_cm = estimate_token_count([msg_cm])
+        
+        assert tokens_dict == tokens_cm
+    
+    def test_estimate_token_count_mixed_messages(self, tmp_path):
+        """Test that estimate_token_count works with mixed dict and ChatMessage."""
+        from agent_system.llm.models import ChatMessage
+        
+        msg1 = ChatMessage(role='user', content='Hello')
+        msg2 = {'role': 'assistant', 'content': 'Hi there!'}
+        msg3 = ChatMessage(role='user', content='How are you?')
+        
+        tokens = estimate_token_count([msg1, msg2, msg3])
+        
+        # Should work with mixed types
+        assert tokens > 10
 
 
 if __name__ == "__main__":
