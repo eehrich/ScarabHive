@@ -144,6 +144,7 @@ web_ui:
   panel:
     enabled: true
     panel_id: "{{ name }}"
+    panel_group: "comfyui"
     title: "ComfyUI Monitor"
     endpoint: "/plugins/{{ name }}/"
     type: "iframe"

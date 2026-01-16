@@ -976,8 +976,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 request=request,
                 name="monitor.html",
                 context={
-                    "plugin_name": "comfyui",
-                    "title": "ComfyUI Job Monitor",
+                    "plugin_name": self.name,
+                    "title": f"ComfyUI Monitor - {self.name}",
                     "host": self.host,
                     "port": self.port
                 }
