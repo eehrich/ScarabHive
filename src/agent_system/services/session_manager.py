@@ -339,7 +339,7 @@ class SessionManager:
         return await asyncio.to_thread(read_index)
 
     async def _write_index_async(self, user_id: str, index_data: Dict[str, Dict[str, Any]]) -> None:
-        """Write session index file atomically.
+        """Write session index file atomically with retry on Windows file lock conflicts.
         
         Args:
             user_id: User identifier
@@ -348,19 +348,8 @@ class SessionManager:
         index_path = self._get_index_path(user_id)
         index_path.parent.mkdir(parents=True, exist_ok=True)
         
-        def write_index():
-            # Atomic write: write to temp file, then rename
-            temp_path = index_path.with_suffix('.tmp')
-            try:
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    json.dump(index_data, f, indent=2, ensure_ascii=False)
-                temp_path.replace(index_path)
-            except Exception as e:
-                if temp_path.exists():
-                    temp_path.unlink()
-                raise e
-        
-        await asyncio.to_thread(write_index)
+        # Reuse the robust atomic write method that handles Windows file locks
+        await self._atomic_write_async(index_path, index_data)
 
     async def _rebuild_index(self, user_id: str) -> Dict[str, Dict[str, Any]]:
         """Rebuild index from session files.
