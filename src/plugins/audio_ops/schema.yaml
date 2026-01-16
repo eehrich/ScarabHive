@@ -70,6 +70,31 @@ tools:
 
   - type: function
     function:
+      name: "{{ name }}_create"
+      description: "Create a silent audio file with specified duration."
+      parameters:
+        type: object
+        properties:
+          dest_file:
+            type: string
+            description: "Destination filename with extension (e.g., 'silence.wav')"
+          duration_ms:
+            type: integer
+            description: "Duration in milliseconds (1000ms = 1 second)"
+          sample_rate:
+            type: integer
+            enum: [8000, 16000, 22050, 44100, 48000, 96000]
+            description: "Sample rate in Hz. Common values: 8000, 16000, 22050, 44100 (CD quality), 48000, 96000. Default: 44100"
+          channels:
+            type: integer
+            enum: [1, 2]
+            description: "Number of channels: 1 (mono) or 2 (stereo). Default: 2"
+        required:
+          - dest_file
+          - duration_ms
+
+  - type: function
+    function:
       name: "{{ name }}_list"
       description: "List audio files in storage directory."
       parameters:
@@ -99,3 +124,110 @@ tools:
             description: "End position in seconds (optional, default: full duration)"
         required:
           - file
+
+  - type: function
+    function:
+      name: "{{ name }}_mix"
+      description: |
+        Mix two audio files together with configurable balance.
+        
+        Option 1 - Static mix_factor:
+        - 0.0 = 100% file1, 0% file2
+        - 0.5 = 50% file1, 50% file2 (equal mix, default)
+        - 1.0 = 0% file1, 100% file2
+        
+        Option 2 - Dynamic envelope (array of time/factor points):
+        - Define a curve for how the mix changes over time
+        - Example: [{"time": 0, "factor": 0}, {"time": 5, "factor": 1}]
+          This fades from file1 to file2 over 5 seconds
+        - Linear interpolation between points
+        
+        Use mix_factor OR envelope, not both.
+        If files differ in length, the shorter one is padded with silence.
+      parameters:
+        type: object
+        properties:
+          file1:
+            type: string
+            description: "First audio filename (FLAC/MP3/WAV)"
+          file2:
+            type: string
+            description: "Second audio filename (FLAC/MP3/WAV)"
+          dest_file:
+            type: string
+            description: "Output filename with extension"
+          mix_factor:
+            type: number
+            description: "Static balance between files (0.0-1.0). Default: 0.5. Cannot be used with envelope."
+          envelope:
+            type: array
+            description: "Dynamic mix curve as list of {time, factor} points. Cannot be used with mix_factor."
+            items:
+              type: object
+              properties:
+                time:
+                  type: number
+                  description: "Time position in seconds"
+                factor:
+                  type: number
+                  description: "Mix factor at this time (0.0-1.0)"
+              required:
+                - time
+                - factor
+        required:
+          - file1
+          - file2
+          - dest_file
+
+  - type: function
+    function:
+      name: "{{ name }}_volume"
+      description: |
+        Adjust volume of an audio file with static gain or dynamic envelope.
+        
+        Option 1 - Static gain_db (decibels):
+        - Positive values increase volume (+6 dB ≈ double loudness)
+        - Negative values decrease volume (-6 dB ≈ half loudness)
+        - 0 = no change
+        
+        Option 2 - Dynamic envelope (array of time/gain_db points):
+        - Define volume automation over time
+        - Example: [{"time": 0, "gain_db": 0}, {"time": 2, "gain_db": -20}]
+          This fades out over 2 seconds
+        - Linear interpolation between points
+        
+        Use gain_db OR envelope, not both.
+        Optional: normalize=true to normalize to 0 dB peak after processing.
+      parameters:
+        type: object
+        properties:
+          source_file:
+            type: string
+            description: "Input audio filename (FLAC/MP3/WAV)"
+          dest_file:
+            type: string
+            description: "Output filename with extension"
+          gain_db:
+            type: number
+            description: "Static volume adjustment in decibels (-60 to +24). Cannot be used with envelope."
+          envelope:
+            type: array
+            description: "Dynamic volume curve as list of {time, gain_db} points. Cannot be used with gain_db."
+            items:
+              type: object
+              properties:
+                time:
+                  type: number
+                  description: "Time position in seconds"
+                gain_db:
+                  type: number
+                  description: "Volume adjustment at this time in decibels (-60 to +24)"
+              required:
+                - time
+                - gain_db
+          normalize:
+            type: boolean
+            description: "If true, normalize output to 0 dB peak. Default: false"
+        required:
+          - source_file
+          - dest_file

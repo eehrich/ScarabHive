@@ -1,6 +1,6 @@
 name: audio_ops
-description: Audio file manipulation - cut, copy segments from FLAC, MP3, WAV files
-version: 1.0.0
+description: Audio file manipulation - cut, merge, mix, and copy segments from FLAC, MP3, WAV files
+version: 1.1.0
 author: AgentSystem
 entrypoint: server:PLUGIN_FACTORY
 type:

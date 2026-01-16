@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -512,6 +513,151 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "error_type": type(e).__name__
             }
     
+    async def create(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create a silent audio file with specified duration.
+        
+        Args:
+            params: Tool parameters:
+                - dest_file: Destination filename with extension
+                - duration_ms: Duration in milliseconds
+                - sample_rate: Sample rate in Hz (default: 44100)
+                - channels: Number of channels (1=mono, 2=stereo, default: 2)
+            
+        Returns:
+            Dict with operation result
+        """
+        status = params.get("_status")
+        
+        try:
+            from pydub import AudioSegment
+            
+            dest_file = params.get("dest_file")
+            duration_ms = params.get("duration_ms")
+            sample_rate = params.get("sample_rate", 44100)
+            channels = params.get("channels", 2)
+            
+            # Validate required parameters
+            if not dest_file:
+                raise AudioOpsError("dest_file is required", "ValidationError")
+            if duration_ms is None:
+                raise AudioOpsError("duration_ms is required", "ValidationError")
+            
+            # Validate duration
+            try:
+                duration_ms = int(duration_ms)
+            except (ValueError, TypeError):
+                raise AudioOpsError(
+                    f"duration_ms must be an integer, got: {type(duration_ms).__name__}",
+                    error_type="ValidationError",
+                    details={"duration_ms": duration_ms}
+                )
+            
+            if duration_ms <= 0:
+                raise AudioOpsError(
+                    f"duration_ms must be positive, got: {duration_ms}",
+                    error_type="ValidationError",
+                    details={"duration_ms": duration_ms}
+                )
+            
+            # Validate sample_rate
+            try:
+                sample_rate = int(sample_rate)
+            except (ValueError, TypeError):
+                raise AudioOpsError(
+                    f"sample_rate must be an integer, got: {type(sample_rate).__name__}",
+                    error_type="ValidationError",
+                    details={"sample_rate": sample_rate}
+                )
+            
+            if sample_rate not in (8000, 16000, 22050, 44100, 48000, 96000):
+                raise AudioOpsError(
+                    f"Invalid sample_rate: {sample_rate}. Common values: 8000, 16000, 22050, 44100, 48000, 96000",
+                    error_type="ValidationError",
+                    details={"sample_rate": sample_rate}
+                )
+            
+            # Validate channels
+            try:
+                channels = int(channels)
+            except (ValueError, TypeError):
+                raise AudioOpsError(
+                    f"channels must be an integer, got: {type(channels).__name__}",
+                    error_type="ValidationError",
+                    details={"channels": channels}
+                )
+            
+            if channels not in (1, 2):
+                raise AudioOpsError(
+                    f"Invalid channels: {channels}. Must be 1 (mono) or 2 (stereo)",
+                    error_type="ValidationError",
+                    details={"channels": channels}
+                )
+            
+            # Validate destination path and format
+            dest_path = self._validate_path(dest_file)
+            dest_format = self._validate_format(dest_path)
+            
+            if status:
+                await status.progress(f"Creating {duration_ms}ms silent audio ({channels}ch @ {sample_rate}Hz)")
+            
+            # Create silent audio
+            silent_audio = AudioSegment.silent(
+                duration=duration_ms,
+                frame_rate=sample_rate
+            )
+            
+            # Set channel count
+            if channels == 1:
+                silent_audio = silent_audio.set_channels(1)
+            else:
+                silent_audio = silent_audio.set_channels(2)
+            
+            # Export
+            silent_audio.export(str(dest_path), format=dest_format)
+            
+            duration_sec = duration_ms / 1000.0
+            
+            if status:
+                await status.end(
+                    f"Created {dest_file} ({duration_sec:.2f}s) - {channels}ch @ {sample_rate}Hz",
+                    meta={
+                        "file": dest_file,
+                        "duration_seconds": duration_sec,
+                        "format": dest_format,
+                        "channels": channels,
+                        "sample_rate": sample_rate
+                    }
+                )
+            
+            return {
+                "status": "success",
+                "destination": dest_file,
+                "duration_seconds": round(duration_sec, 2),
+                "duration_ms": duration_ms,
+                "format": dest_format,
+                "channels": channels,
+                "sample_rate": sample_rate
+            }
+            
+        except AudioOpsError as e:
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type,
+                "details": e.details
+            }
+        except Exception as e:
+            logger.error(f"Unexpected error in create: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+    
     async def list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List audio files in storage directory.
         
@@ -731,6 +877,722 @@ class AudioOpsServer(SchemaBasedMCPServer):
             ".aac": "audio/aac",
         }
         return mime_map.get(ext, "audio/unknown")
+
+    async def mix(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Mix two audio files together with a configurable factor or envelope.
+        
+        The mix_factor controls the volume balance (static):
+        - 0.0 = 100% file1, 0% file2
+        - 0.5 = 50% file1, 50% file2 (equal mix)
+        - 1.0 = 0% file1, 100% file2
+        
+        Alternatively, use envelope for dynamic mixing over time:
+        - List of {"time": <seconds>, "factor": <0.0-1.0>} points
+        - Linear interpolation between points
+        - First point should be at time=0, values before are clamped
+        - Values after last point use the last point's factor
+        
+        If files have different durations, the shorter file is padded with silence.
+        
+        Args:
+            params: Tool parameters:
+                - file1: First audio filename
+                - file2: Second audio filename
+                - dest_file: Output filename
+                - mix_factor: Static balance between files (0.0-1.0, default: 0.5)
+                - envelope: List of {time, factor} points for dynamic mixing
+            
+        Returns:
+            Dict with operation result
+        """
+        status = params.get("_status")
+        
+        try:
+            file1 = params.get("file1")
+            file2 = params.get("file2")
+            dest_file = params.get("dest_file")
+            mix_factor = params.get("mix_factor")
+            envelope = params.get("envelope")
+            
+            # Validate required parameters
+            if not file1:
+                raise AudioOpsError("file1 is required", "ValidationError")
+            if not file2:
+                raise AudioOpsError("file2 is required", "ValidationError")
+            if not dest_file:
+                raise AudioOpsError("dest_file is required", "ValidationError")
+            
+            # Validate mix_factor OR envelope (not both)
+            use_envelope = envelope is not None
+            
+            if use_envelope and mix_factor is not None:
+                raise AudioOpsError(
+                    "Cannot specify both mix_factor and envelope. Use one or the other.",
+                    error_type="ValidationError",
+                    details={"mix_factor": mix_factor, "envelope": "provided"}
+                )
+            
+            # Type-checked variables for later use
+            validated_envelope: builtins.list[dict[str, float]] | None = None
+            validated_factor: float = 0.5
+            
+            if use_envelope:
+                # Validate envelope
+                validated_envelope = self._validate_envelope(envelope)
+            else:
+                # Use static mix_factor (default 0.5)
+                if mix_factor is None:
+                    validated_factor = 0.5
+                else:
+                    try:
+                        validated_factor = float(mix_factor)
+                    except (ValueError, TypeError):
+                        raise AudioOpsError(
+                            "mix_factor must be a number",
+                            error_type="ValidationError",
+                            details={"mix_factor": mix_factor}
+                        )
+                
+                if not 0.0 <= validated_factor <= 1.0:
+                    raise AudioOpsError(
+                        f"mix_factor must be between 0.0 and 1.0, got {validated_factor}",
+                        error_type="ValidationError",
+                        details={"mix_factor": validated_factor}
+                    )
+            
+            # Validate paths
+            file1_path = self._validate_path(file1)
+            file2_path = self._validate_path(file2)
+            dest_path = self._validate_path(dest_file)
+            
+            if not file1_path.exists():
+                raise AudioOpsError(
+                    f"File not found: {file1}",
+                    error_type="FileNotFoundError",
+                    details={"file": file1}
+                )
+            if not file2_path.exists():
+                raise AudioOpsError(
+                    f"File not found: {file2}",
+                    error_type="FileNotFoundError",
+                    details={"file": file2}
+                )
+            
+            # Validate destination format
+            dest_format = self._validate_format(dest_path)
+            
+            if status:
+                await status.progress(f"Loading audio files: {file1}, {file2}")
+            
+            # Load both audio files
+            audio1 = self._load_audio(file1_path)
+            audio2 = self._load_audio(file2_path)
+            
+            duration1_sec = len(audio1) / 1000.0
+            duration2_sec = len(audio2) / 1000.0
+            
+            # Normalize lengths by padding the shorter one with silence
+            from pydub import AudioSegment
+            if len(audio1) < len(audio2):
+                padding = AudioSegment.silent(
+                    duration=len(audio2) - len(audio1),
+                    frame_rate=audio1.frame_rate
+                )
+                audio1 = audio1 + padding
+            elif len(audio2) < len(audio1):
+                padding = AudioSegment.silent(
+                    duration=len(audio1) - len(audio2),
+                    frame_rate=audio2.frame_rate
+                )
+                audio2 = audio2 + padding
+            
+            total_duration_ms = len(audio1)
+            
+            if use_envelope and validated_envelope is not None:
+                if status:
+                    await status.progress(f"Mixing with {len(validated_envelope)}-point envelope")
+                mixed_result = self._mix_with_envelope(audio1, audio2, validated_envelope, total_duration_ms)
+            else:
+                if status:
+                    await status.progress(f"Mixing with factor {validated_factor}")
+                mixed_result = self._mix_with_factor(audio1, audio2, validated_factor)
+            
+            # Export
+            mixed_result.export(str(dest_path), format=dest_format)
+            
+            result_duration = len(mixed_result) / 1000.0
+            
+            # Build response
+            response: dict[str, Any] = {
+                "status": "success",
+                "file1": file1,
+                "file2": file2,
+                "destination": dest_file,
+                "file1_duration_seconds": round(duration1_sec, 2),
+                "file2_duration_seconds": round(duration2_sec, 2),
+                "result_duration_seconds": round(result_duration, 2),
+                "format": dest_format
+            }
+            
+            if use_envelope and validated_envelope is not None:
+                response["envelope"] = validated_envelope
+                response["envelope_points"] = len(validated_envelope)
+            else:
+                response["mix_factor"] = validated_factor
+            
+            if status:
+                mode_desc = f"{len(validated_envelope)}-point envelope" if (use_envelope and validated_envelope) else f"factor {validated_factor}"
+                await status.end(
+                    f"Created {dest_file} ({result_duration:.2f}s) - mixed with {mode_desc}",
+                    meta={
+                        "file1": file1,
+                        "file2": file2,
+                        "destination": dest_file,
+                        "duration": result_duration
+                    }
+                )
+            
+            return response
+            
+        except AudioOpsError as e:
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type,
+                "details": e.details
+            }
+        except Exception as e:
+            logger.error(f"Unexpected error in mix: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+    
+    def _validate_envelope(self, envelope: Any) -> builtins.list[dict[str, float]]:
+        """Validate and normalize envelope parameter.
+        
+        Args:
+            envelope: List of {time, factor} points
+            
+        Returns:
+            Validated and sorted envelope list
+            
+        Raises:
+            AudioOpsError: If envelope is invalid
+        """
+        if not isinstance(envelope, builtins.list):
+            raise AudioOpsError(
+                "envelope must be a list of {time, factor} points",
+                error_type="ValidationError",
+                details={"envelope_type": type(envelope).__name__}
+            )
+        
+        if len(envelope) < 2:
+            raise AudioOpsError(
+                "envelope must have at least 2 points",
+                error_type="ValidationError",
+                details={"point_count": len(envelope)}
+            )
+        
+        validated = []
+        for i, point in enumerate(envelope):
+            if not isinstance(point, dict):
+                raise AudioOpsError(
+                    f"envelope point {i} must be an object with 'time' and 'factor'",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point_type": type(point).__name__}
+                )
+            
+            if "time" not in point:
+                raise AudioOpsError(
+                    f"envelope point {i} missing 'time' property",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point": point}
+                )
+            
+            if "factor" not in point:
+                raise AudioOpsError(
+                    f"envelope point {i} missing 'factor' property",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point": point}
+                )
+            
+            try:
+                time_val = float(point["time"])
+                factor_val = float(point["factor"])
+            except (ValueError, TypeError) as e:
+                raise AudioOpsError(
+                    f"envelope point {i}: time and factor must be numbers",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point": point, "error": str(e)}
+                )
+            
+            if time_val < 0:
+                raise AudioOpsError(
+                    f"envelope point {i}: time cannot be negative ({time_val})",
+                    error_type="ValidationError",
+                    details={"point_index": i, "time": time_val}
+                )
+            
+            if not 0.0 <= factor_val <= 1.0:
+                raise AudioOpsError(
+                    f"envelope point {i}: factor must be 0.0-1.0, got {factor_val}",
+                    error_type="ValidationError",
+                    details={"point_index": i, "factor": factor_val}
+                )
+            
+            validated.append({"time": time_val, "factor": factor_val})
+        
+        # Sort by time
+        validated.sort(key=lambda p: p["time"])
+        
+        return validated
+    
+    def _interpolate_factor(self, envelope: builtins.list[dict[str, float]], time_sec: float) -> float:
+        """Get interpolated mix factor at a given time.
+        
+        Args:
+            envelope: Sorted list of {time, factor} points
+            time_sec: Time position in seconds
+            
+        Returns:
+            Interpolated factor value (0.0-1.0)
+        """
+        # Before first point: use first point's factor
+        if time_sec <= envelope[0]["time"]:
+            return envelope[0]["factor"]
+        
+        # After last point: use last point's factor
+        if time_sec >= envelope[-1]["time"]:
+            return envelope[-1]["factor"]
+        
+        # Find surrounding points and interpolate
+        for i in range(len(envelope) - 1):
+            p1 = envelope[i]
+            p2 = envelope[i + 1]
+            
+            if p1["time"] <= time_sec <= p2["time"]:
+                # Linear interpolation
+                if p2["time"] == p1["time"]:
+                    return p1["factor"]
+                
+                t = (time_sec - p1["time"]) / (p2["time"] - p1["time"])
+                return p1["factor"] + t * (p2["factor"] - p1["factor"])
+        
+        # Fallback (shouldn't reach here)
+        return envelope[-1]["factor"]
+    
+    def _mix_with_factor(self, audio1, audio2, mix_factor: float):
+        """Mix two audio segments with a static factor.
+        
+        Args:
+            audio1: First AudioSegment
+            audio2: Second AudioSegment
+            mix_factor: Balance (0.0=file1 only, 1.0=file2 only)
+            
+        Returns:
+            Mixed AudioSegment
+        """
+        import math
+        
+        vol1 = 1.0 - mix_factor
+        vol2 = mix_factor
+        
+        # Apply volume adjustments (dB)
+        # For vol=0, we effectively mute by applying -120dB
+        if vol1 > 0:
+            db1 = 20 * math.log10(vol1)
+            audio1 = audio1 + db1
+        else:
+            audio1 = audio1 - 120  # Effectively mute
+        
+        if vol2 > 0:
+            db2 = 20 * math.log10(vol2)
+            audio2 = audio2 + db2
+        else:
+            audio2 = audio2 - 120  # Effectively mute
+        
+        # Overlay (mix) the two audio tracks
+        return audio1.overlay(audio2)
+    
+    def _mix_with_envelope(self, audio1, audio2, envelope: builtins.list[dict[str, float]], total_ms: int):
+        """Mix two audio segments with a dynamic envelope.
+        
+        Processes audio in small chunks, applying interpolated mix factor.
+        
+        Args:
+            audio1: First AudioSegment
+            audio2: Second AudioSegment  
+            envelope: List of {time, factor} points
+            total_ms: Total duration in milliseconds
+            
+        Returns:
+            Mixed AudioSegment
+        """
+        from pydub import AudioSegment
+        import math
+        
+        # Process in 10ms chunks for smooth transitions
+        chunk_ms = 10
+        result = AudioSegment.empty()
+        
+        for pos_ms in range(0, total_ms, chunk_ms):
+            # Get chunk end (don't exceed total)
+            end_ms = min(pos_ms + chunk_ms, total_ms)
+            
+            # Get factor at midpoint of chunk
+            mid_sec = (pos_ms + end_ms) / 2 / 1000.0
+            factor = self._interpolate_factor(envelope, mid_sec)
+            
+            # Extract chunks
+            chunk1 = audio1[pos_ms:end_ms]
+            chunk2 = audio2[pos_ms:end_ms]
+            
+            # Apply volume based on factor
+            vol1 = 1.0 - factor
+            vol2 = factor
+            
+            if vol1 > 0:
+                db1 = 20 * math.log10(vol1)
+                chunk1 = chunk1 + db1
+            else:
+                chunk1 = chunk1 - 120
+            
+            if vol2 > 0:
+                db2 = 20 * math.log10(vol2)
+                chunk2 = chunk2 + db2
+            else:
+                chunk2 = chunk2 - 120
+            
+            # Mix chunks and append
+            mixed_chunk = chunk1.overlay(chunk2)
+            result += mixed_chunk
+        
+        return result
+
+    async def volume(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Adjust volume of an audio file with static gain or dynamic envelope.
+        
+        Option 1 - Static gain_db:
+        - Positive values increase volume (e.g., +6 dB doubles perceived loudness)
+        - Negative values decrease volume (e.g., -6 dB halves perceived loudness)
+        - 0 = no change
+        
+        Option 2 - Dynamic envelope:
+        - List of {"time": <seconds>, "gain_db": <decibels>} points
+        - Linear interpolation between points
+        - First point should be at time=0
+        
+        Args:
+            params: Tool parameters:
+                - source_file: Input audio filename
+                - dest_file: Output filename
+                - gain_db: Static volume adjustment in decibels
+                - envelope: List of {time, gain_db} points for dynamic volume
+                - normalize: If true, normalize to 0 dB peak after processing
+            
+        Returns:
+            Dict with operation result
+        """
+        status = params.get("_status")
+        
+        try:
+            source_file = params.get("source_file")
+            dest_file = params.get("dest_file")
+            gain_db = params.get("gain_db")
+            envelope = params.get("envelope")
+            normalize = params.get("normalize", False)
+            
+            # Validate required parameters
+            if not source_file:
+                raise AudioOpsError("source_file is required", "ValidationError")
+            if not dest_file:
+                raise AudioOpsError("dest_file is required", "ValidationError")
+            
+            # Validate gain_db OR envelope (not both)
+            use_envelope = envelope is not None
+            
+            if use_envelope and gain_db is not None:
+                raise AudioOpsError(
+                    "Cannot specify both gain_db and envelope. Use one or the other.",
+                    error_type="ValidationError",
+                    details={"gain_db": gain_db, "envelope": "provided"}
+                )
+            
+            # Type-checked variables
+            validated_envelope: builtins.list[dict[str, float]] | None = None
+            validated_gain: float = 0.0
+            
+            if use_envelope:
+                validated_envelope = self._validate_volume_envelope(envelope)
+            else:
+                # Use static gain_db (default 0.0 = no change)
+                if gain_db is None:
+                    raise AudioOpsError(
+                        "Either gain_db or envelope must be provided",
+                        error_type="ValidationError"
+                    )
+                try:
+                    validated_gain = float(gain_db)
+                except (ValueError, TypeError):
+                    raise AudioOpsError(
+                        "gain_db must be a number",
+                        error_type="ValidationError",
+                        details={"gain_db": gain_db}
+                    )
+                
+                # Reasonable range check (-60 dB to +24 dB)
+                if not -60.0 <= validated_gain <= 24.0:
+                    raise AudioOpsError(
+                        f"gain_db should be between -60 and +24 dB, got {validated_gain}",
+                        error_type="ValidationError",
+                        details={"gain_db": validated_gain}
+                    )
+            
+            # Validate paths
+            source_path = self._validate_path(source_file)
+            dest_path = self._validate_path(dest_file)
+            
+            if not source_path.exists():
+                raise AudioOpsError(
+                    f"File not found: {source_file}",
+                    error_type="FileNotFoundError",
+                    details={"file": source_file}
+                )
+            
+            # Validate destination format
+            dest_format = self._validate_format(dest_path)
+            
+            if status:
+                await status.progress(f"Loading: {source_file}")
+            
+            # Load audio
+            audio = self._load_audio(source_path)
+            
+            if use_envelope and validated_envelope is not None:
+                if status:
+                    await status.progress(f"Applying {len(validated_envelope)}-point volume envelope")
+                result = self._apply_volume_envelope(audio, validated_envelope)
+            else:
+                if status:
+                    await status.progress(f"Applying {validated_gain:+.1f} dB gain")
+                result = audio + validated_gain
+            
+            # Optional normalization
+            if normalize:
+                if status:
+                    await status.progress("Normalizing to 0 dB peak")
+                # Calculate peak and adjust
+                peak_amplitude = result.max_dBFS
+                if peak_amplitude < 0:
+                    result = result - peak_amplitude  # Boost to 0 dB peak
+            
+            # Export
+            result.export(str(dest_path), format=dest_format)
+            
+            result_duration = len(result) / 1000.0
+            
+            # Build response
+            response: dict[str, Any] = {
+                "status": "success",
+                "source": source_file,
+                "destination": dest_file,
+                "duration_seconds": round(result_duration, 2),
+                "format": dest_format,
+                "normalized": normalize
+            }
+            
+            if use_envelope and validated_envelope is not None:
+                response["envelope"] = validated_envelope
+                response["envelope_points"] = len(validated_envelope)
+            else:
+                response["gain_db"] = validated_gain
+            
+            if status:
+                mode_desc = f"{len(validated_envelope)}-point envelope" if (use_envelope and validated_envelope) else f"{validated_gain:+.1f} dB"
+                await status.end(
+                    f"Created {dest_file} - volume adjusted by {mode_desc}",
+                    meta={
+                        "source": source_file,
+                        "destination": dest_file,
+                        "duration": result_duration
+                    }
+                )
+            
+            return response
+            
+        except AudioOpsError as e:
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type,
+                "details": e.details
+            }
+        except Exception as e:
+            logger.error(f"Unexpected error in volume: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+    
+    def _validate_volume_envelope(self, envelope: Any) -> builtins.list[dict[str, float]]:
+        """Validate and normalize volume envelope parameter.
+        
+        Args:
+            envelope: List of {time, gain_db} points
+            
+        Returns:
+            Validated and sorted envelope list
+            
+        Raises:
+            AudioOpsError: If envelope is invalid
+        """
+        if not isinstance(envelope, builtins.list):
+            raise AudioOpsError(
+                "envelope must be a list of {time, gain_db} points",
+                error_type="ValidationError",
+                details={"envelope_type": type(envelope).__name__}
+            )
+        
+        if len(envelope) < 2:
+            raise AudioOpsError(
+                "envelope must have at least 2 points",
+                error_type="ValidationError",
+                details={"point_count": len(envelope)}
+            )
+        
+        validated = []
+        for i, point in enumerate(envelope):
+            if not isinstance(point, dict):
+                raise AudioOpsError(
+                    f"envelope point {i} must be an object with 'time' and 'gain_db'",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point_type": type(point).__name__}
+                )
+            
+            if "time" not in point:
+                raise AudioOpsError(
+                    f"envelope point {i} missing 'time' property",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point": point}
+                )
+            
+            if "gain_db" not in point:
+                raise AudioOpsError(
+                    f"envelope point {i} missing 'gain_db' property",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point": point}
+                )
+            
+            try:
+                time_val = float(point["time"])
+                gain_val = float(point["gain_db"])
+            except (ValueError, TypeError) as e:
+                raise AudioOpsError(
+                    f"envelope point {i}: time and gain_db must be numbers",
+                    error_type="ValidationError",
+                    details={"point_index": i, "point": point, "error": str(e)}
+                )
+            
+            if time_val < 0:
+                raise AudioOpsError(
+                    f"envelope point {i}: time cannot be negative ({time_val})",
+                    error_type="ValidationError",
+                    details={"point_index": i, "time": time_val}
+                )
+            
+            # Reasonable gain range
+            if not -60.0 <= gain_val <= 24.0:
+                raise AudioOpsError(
+                    f"envelope point {i}: gain_db should be -60 to +24, got {gain_val}",
+                    error_type="ValidationError",
+                    details={"point_index": i, "gain_db": gain_val}
+                )
+            
+            validated.append({"time": time_val, "gain_db": gain_val})
+        
+        # Sort by time
+        validated.sort(key=lambda p: p["time"])
+        
+        return validated
+    
+    def _interpolate_gain(self, envelope: builtins.list[dict[str, float]], time_sec: float) -> float:
+        """Get interpolated gain at a given time.
+        
+        Args:
+            envelope: Sorted list of {time, gain_db} points
+            time_sec: Time position in seconds
+            
+        Returns:
+            Interpolated gain value in dB
+        """
+        # Before first point: use first point's gain
+        if time_sec <= envelope[0]["time"]:
+            return envelope[0]["gain_db"]
+        
+        # After last point: use last point's gain
+        if time_sec >= envelope[-1]["time"]:
+            return envelope[-1]["gain_db"]
+        
+        # Find surrounding points and interpolate
+        for i in range(len(envelope) - 1):
+            p1 = envelope[i]
+            p2 = envelope[i + 1]
+            
+            if p1["time"] <= time_sec <= p2["time"]:
+                # Linear interpolation
+                if p2["time"] == p1["time"]:
+                    return p1["gain_db"]
+                
+                t = (time_sec - p1["time"]) / (p2["time"] - p1["time"])
+                return p1["gain_db"] + t * (p2["gain_db"] - p1["gain_db"])
+        
+        # Fallback
+        return envelope[-1]["gain_db"]
+    
+    def _apply_volume_envelope(self, audio, envelope: builtins.list[dict[str, float]]):
+        """Apply dynamic volume envelope to audio.
+        
+        Processes audio in small chunks, applying interpolated gain.
+        
+        Args:
+            audio: AudioSegment
+            envelope: List of {time, gain_db} points
+            
+        Returns:
+            Processed AudioSegment
+        """
+        from pydub import AudioSegment
+        
+        total_ms = len(audio)
+        # Process in 10ms chunks for smooth transitions
+        chunk_ms = 10
+        result = AudioSegment.empty()
+        
+        for pos_ms in range(0, total_ms, chunk_ms):
+            end_ms = min(pos_ms + chunk_ms, total_ms)
+            
+            # Get gain at midpoint of chunk
+            mid_sec = (pos_ms + end_ms) / 2 / 1000.0
+            gain = self._interpolate_gain(envelope, mid_sec)
+            
+            # Extract chunk and apply gain
+            chunk = audio[pos_ms:end_ms]
+            chunk = chunk + gain
+            
+            result += chunk
+        
+        return result
 
 
 # Plugin factory for dynamic loading
