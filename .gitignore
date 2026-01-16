@@ -13,6 +13,12 @@ logs/
 *.log
 *.db
 .tmp
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.aac
 .journal
 .cache/
 tmp_backlog.md
