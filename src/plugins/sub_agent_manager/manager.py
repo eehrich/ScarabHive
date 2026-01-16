@@ -52,6 +52,10 @@ class SubAgentManager:
         self.max_nesting_depth = max_nesting_depth
         self.max_sub_agents_per_type = max_sub_agents_per_type
         self.max_sub_agents_per_session = max_sub_agents_per_session
+        
+        # Activity update tracking: only save when activity actually changes
+        # to avoid excessive session saves during streaming
+        self._last_activity: dict[str, str | None] = {}  # sub_session_id -> last activity
 
         logger.info(
             f"SubAgentManager initialized ("
@@ -349,15 +353,33 @@ class SubAgentManager:
         self,
         parent_session_id: str,
         sub_session_id: str,
-        activity: str | None
+        activity: str | None,
+        force: bool = False
     ) -> None:
         """Update current activity status for sub-agent (for live status display).
+        
+        Only saves when activity actually changes to avoid excessive session saves
+        during streaming (e.g., repeated "Thinking..." events).
 
         Args:
             parent_session_id: Parent session ID
             sub_session_id: Sub-session ID
-            activity: Activity description (e.g., "Thinking...", "Running tool: writer_search") or None to clear
+            activity: Activity description (e.g., "Thinking...", "Running tool: xyz") or None to clear
+            force: If True, always save even if activity unchanged
         """
+        last_activity = self._last_activity.get(sub_session_id)
+        
+        # Skip if activity hasn't changed (unless forced)
+        if not force and activity == last_activity:
+            return
+        
+        # Activity changed - update tracking and persist
+        self._last_activity[sub_session_id] = activity
+        
+        # Clean up tracking when activity is cleared (session ended)
+        if activity is None:
+            self._last_activity.pop(sub_session_id, None)
+        
         await self.update_sub_session_metadata(
             parent_session_id=parent_session_id,
             sub_session_id=sub_session_id,
