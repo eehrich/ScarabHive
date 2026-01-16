@@ -191,10 +191,11 @@ Response:
 {
   "operation": "wait_for_completion",
   "prompt_id": "abc123-def456",
-  "timeout": 300,        // optional, default: 300s
   "poll_interval": 2     // optional, default: 2s
 }
 ```
+
+**Note**: Timeout is configured via plugin config (`timeout_seconds`), not per-request.
 
 Response (success):
 ```json
@@ -402,11 +403,10 @@ execute_result = await agent.call_tool("comfyui_workflow", {
 })
 job_id = execute_result["job_id"]
 
-# 2. Wait for completion (internal polling)
+# 2. Wait for completion (internal polling, timeout from plugin config)
 wait_result = await agent.call_tool("comfyui_workflow", {
     "operation": "wait_for_completion",
-    "prompt_id": job_id,
-    "timeout": 300
+    "prompt_id": job_id
 })
 
 # 3. Get result
@@ -421,11 +421,10 @@ result = await agent.call_tool("comfyui_workflow", {
 Use `wait_for_completion` for clean, synchronous execution:
 
 ```python
-# Execute and wait in one step
+# Execute and wait in one step (timeout from plugin config)
 result = await agent.call_tool("comfyui_workflow", {
     "operation": "wait_for_completion",
     "prompt_id": job_id,
-    "timeout": 300,
     "poll_interval": 2
 })
 

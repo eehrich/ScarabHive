@@ -62,7 +62,7 @@ class FileOpsServer(SchemaBasedMCPServer):
         # Read-only mode flag
         self.read_only = getattr(mcp_config, "read_only", False)
         if self.read_only:
-            logger.info(f"FileOperationsServer running in READ-ONLY mode")
+            logger.info("FileOperationsServer running in READ-ONLY mode")
         
         # Get file reading limits from config
         max_unpaginated_kb = getattr(mcp_config, "max_unpaginated_file_size_kb", 100)

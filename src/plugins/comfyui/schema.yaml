@@ -31,7 +31,7 @@ tools:
               - status: Get the current status of a job
               - result: Retrieve output files from completed job
               - load: Load previously generated media for LLM analysis (view existing outputs)
-              - wait_for_completion: Wait synchronously until a job completes (with timeout)
+              - wait_for_completion: Wait synchronously until a job completes 
               - server_status: Check ComfyUI server connectivity
               - queue: View pending and running jobs
               - cancel: Cancel a job by prompt_id
@@ -56,13 +56,6 @@ tools:
             description: >
               The job ID returned from a previous 'execute' operation.
               Required for operations: status, result, cancel, wait_for_completion.
-          
-          timeout:
-            type: integer
-            default: 300
-            description: >
-              Maximum time in seconds to wait for job completion (for operation='wait_for_completion').
-              Default: 300 seconds (5 minutes).
           
           poll_interval:
             type: integer

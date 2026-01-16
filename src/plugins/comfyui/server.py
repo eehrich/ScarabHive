@@ -830,7 +830,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if not prompt_id:
             return {"error": "prompt_id is required"}
         
-        timeout = params.get("timeout", 300)  # Default 5 minutes
+        # Timeout only from plugin config, not from tool params
+        timeout = self.timeout
         poll_interval = params.get("poll_interval", 2)  # Default 2 seconds
         include_content = params.get("include_content", False)
         

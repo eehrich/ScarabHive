@@ -657,6 +657,8 @@ class TestComfyUIServer:
         """Test wait_for_completion operation with timeout."""
         from plugins.comfyui.server import ComfyUIServer
         
+        # Set short timeout via config
+        mock_mcp_config.timeout_seconds = 1
         server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
         
         # Mock client to always return pending status
@@ -672,7 +674,6 @@ class TestComfyUIServer:
         result = await server.workflow({
             "operation": "wait_for_completion",
             "prompt_id": "test-id",
-            "timeout": 1,  # Short timeout
             "poll_interval": 0.1,
             "_status": mock_status
         })
@@ -708,7 +709,6 @@ class TestComfyUIServer:
         result = await server.workflow({
             "operation": "wait_for_completion",
             "prompt_id": "test-id",
-            "timeout": 10,
             "poll_interval": 0.1,
             "_status": mock_status
         })
