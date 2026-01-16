@@ -105,10 +105,55 @@ tools:
             description: >
               For operation='load': Filename to search for in the output directory.
               The plugin will search for this file and load it for analysis.
-        
-        required:
-          - operation
-        additionalProperties: false
+
+# Configuration schema
+config:
+  type: object
+  properties:
+    host:
+      type: string
+      description: ComfyUI server hostname
+      default: "127.0.0.1"
+    
+    port:
+      type: integer
+      description: ComfyUI server port
+      default: 8188
+    
+    timeout_seconds:
+      type: integer
+      description: Timeout for ComfyUI operations (seconds)
+      default: 300
+    
+    output_dir:
+      type: string
+      description: Directory where ComfyUI outputs are saved
+      default: "data/comfyui/outputs"
+    
+    workflow_files_dir:
+      type: string
+      description: Directory containing workflow JSON files
+      default: "config/comfyui_workflows"
+    
+    cleanup_age_hours:
+      type: integer
+      description: >
+        Automatically delete output files older than this many hours.
+        Set to 0 to disable automatic cleanup.
+        Cleanup runs on plugin startup and after each job completion.
+      default: 48
+      minimum: 0
+    
+    workflows:
+      type: array
+      description: List of available workflow configurations
+      items:
+        type: object
+
+tools:
+  required:
+    - operation
+  additionalProperties: false
 
 # Web UI configuration for ComfyUI Monitor
 web_ui:

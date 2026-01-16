@@ -148,6 +148,7 @@ plugins:
       timeout_seconds: 300
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
+      cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
       workflows:
         - id: stable_audio
           name: "Stable Audio Generation"

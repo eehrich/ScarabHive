@@ -1026,3 +1026,297 @@ class TestComfyUIServer:
         assert text_items[0]["content"] == "Generated story text"
         assert text_items[0]["mime_type"] == "text/plain"
         assert text_items[0]["path"] == str(text_path)
+
+
+# =============================================================================
+# Cleanup Tests
+# =============================================================================
+
+class TestComfyUICleanup:
+    """Tests for ComfyUI automatic file cleanup."""
+    
+    @pytest.mark.asyncio
+    async def test_cleanup_disabled_when_zero(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        temp_output_dir: Path
+    ) -> None:
+        """Test that cleanup is disabled when cleanup_age_hours is 0."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        # Create some old files
+        old_file = temp_output_dir / "old_file.png"
+        old_file.write_text("old content")
+        
+        # Set file modification time to 72 hours ago
+        import time
+        old_time = time.time() - (72 * 3600)
+        import os
+        os.utime(old_file, (old_time, old_time))
+        
+        # Set cleanup to 0 (disabled) and configure output_dir
+        mock_mcp_config.cleanup_age_hours = 0
+        mock_mcp_config.output_dir = str(temp_output_dir)
+        
+        _ = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Wait a bit for startup cleanup (should not run)
+        import asyncio
+        await asyncio.sleep(0.1)
+        
+        # File should still exist
+        assert old_file.exists()
+    
+    @pytest.mark.asyncio
+    async def test_cleanup_old_files(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        temp_output_dir: Path
+    ) -> None:
+        """Test that old files are cleaned up."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        # Create old and new files
+        old_file = temp_output_dir / "old_file.png"
+        old_file.write_text("old content")
+        
+        new_file = temp_output_dir / "new_file.png"
+        new_file.write_text("new content")
+        
+        # Set old file modification time to 72 hours ago
+        import time
+        import os
+        old_time = time.time() - (72 * 3600)
+        os.utime(old_file, (old_time, old_time))
+        
+        # Set cleanup to 48 hours and configure output_dir
+        mock_mcp_config.cleanup_age_hours = 48
+        mock_mcp_config.output_dir = str(temp_output_dir)
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Manually trigger cleanup
+        await server._cleanup_old_files()
+        
+        # Old file should be deleted, new file should remain
+        assert not old_file.exists()
+        assert new_file.exists()
+    
+    @pytest.mark.asyncio
+    async def test_cleanup_respects_age_threshold(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        temp_output_dir: Path
+    ) -> None:
+        """Test that cleanup respects the age threshold."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        # Create files at different ages
+        very_old_file = temp_output_dir / "very_old.png"
+        very_old_file.write_text("very old")
+        
+        borderline_file = temp_output_dir / "borderline.png"
+        borderline_file.write_text("borderline")
+        
+        recent_file = temp_output_dir / "recent.png"
+        recent_file.write_text("recent")
+        
+        import time
+        import os
+        
+        # Very old: 100 hours ago
+        os.utime(very_old_file, (time.time() - 100*3600, time.time() - 100*3600))
+        
+        # Borderline: 47 hours ago (just under threshold)
+        os.utime(borderline_file, (time.time() - 47*3600, time.time() - 47*3600))
+        
+        # Recent: 1 hour ago
+        os.utime(recent_file, (time.time() - 3600, time.time() - 3600))
+        
+        # Set cleanup to 48 hours and configure output_dir
+        mock_mcp_config.cleanup_age_hours = 48
+        mock_mcp_config.output_dir = str(temp_output_dir)
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        await server._cleanup_old_files()
+        
+        # Very old should be deleted, borderline and recent should remain
+        assert not very_old_file.exists()
+        assert borderline_file.exists()
+        assert recent_file.exists()
+    
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_subdirectories(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        temp_output_dir: Path
+    ) -> None:
+        """Test that cleanup handles subdirectories correctly."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        # Create subdirectory structure
+        subdir = temp_output_dir / "subdir"
+        subdir.mkdir()
+        
+        old_in_subdir = subdir / "old_file.png"
+        old_in_subdir.write_text("old in subdir")
+        
+        old_in_root = temp_output_dir / "old_root.png"
+        old_in_root.write_text("old in root")
+        
+        # Set both files to 72 hours ago
+        import time
+        import os
+        old_time = time.time() - (72 * 3600)
+        os.utime(old_in_subdir, (old_time, old_time))
+        os.utime(old_in_root, (old_time, old_time))
+        
+        # Set cleanup to 48 hours and configure output_dir
+        mock_mcp_config.cleanup_age_hours = 48
+        mock_mcp_config.output_dir = str(temp_output_dir)
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        await server._cleanup_old_files()
+        
+        # Both files should be deleted
+        assert not old_in_subdir.exists()
+        assert not old_in_root.exists()
+    
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_errors_gracefully(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        temp_output_dir: Path
+    ) -> None:
+        """Test that cleanup handles errors gracefully."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        # Create a file
+        old_file = temp_output_dir / "old_file.png"
+        old_file.write_text("old content")
+        
+        import time
+        import os
+        old_time = time.time() - (72 * 3600)
+        os.utime(old_file, (old_time, old_time))
+        
+        mock_mcp_config.cleanup_age_hours = 48
+        mock_mcp_config.output_dir = str(temp_output_dir)
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Mock Path.unlink to raise an error
+        with patch.object(Path, 'unlink', side_effect=PermissionError("Access denied")):
+            # Should not raise exception
+            await server._cleanup_old_files()
+        
+        # File should still exist (deletion failed)
+        assert old_file.exists()
+    
+    @pytest.mark.asyncio
+    async def test_cleanup_after_job_completion(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        temp_output_dir: Path,
+        tmp_path: Path
+    ) -> None:
+        """Test that cleanup is triggered after job completion."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        # Create an old file
+        old_file = temp_output_dir / "old_file.png"
+        old_file.write_text("old content")
+        
+        import time
+        import os
+        old_time = time.time() - (72 * 3600)
+        os.utime(old_file, (old_time, old_time))
+        
+        mock_mcp_config.cleanup_age_hours = 48
+        mock_mcp_config.output_dir = str(temp_output_dir)
+        
+        # Create workflow file
+        workflow_dir = tmp_path / "workflows"
+        workflow_dir.mkdir(parents=True, exist_ok=True)
+        workflow_file = workflow_dir / "test_workflow.json"
+        workflow_file.write_text('{"3": {"inputs": {}}}')
+        
+        # Configure workflow_files_dir and update config to have the test workflow
+        mock_mcp_config.workflow_files_dir = str(workflow_dir)
+        mock_mcp_config.workflows = [{
+            "id": "test_workflow",
+            "name": "Test Workflow",
+            "description": "Test",
+            "category": "test",
+            "workflow_file": "test_workflow.json",
+            "parameters": [{"name": "prompt", "type": "string", "required": True, "node_id": "3", "field": "inputs.text"}]
+        }]
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Mock client and tracker
+        server.client.queue_workflow = AsyncMock(return_value="test-prompt-id")
+        server.client.get_status = AsyncMock(return_value={
+            "status": "completed",
+            "outputs": {}
+        })
+        
+        # Execute workflow
+        await server.workflow({
+            "operation": "execute",
+            "workflow_id": "test_workflow",
+            "parameters": {"prompt": "test"}
+        })
+        
+        # Wait for completion
+        await server.workflow({
+            "operation": "wait_for_completion",
+            "prompt_id": "test-prompt-id",
+            "poll_interval": 0.1
+        })
+        
+        # Old file should be deleted after job completion
+        assert not old_file.exists()
+    
+    @pytest.mark.asyncio
+    async def test_cleanup_with_2hour_threshold(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        temp_output_dir: Path
+    ) -> None:
+        """Test cleanup with 2-hour threshold (for writer_tts_comfyui)."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        # Create files at different ages
+        old_file = temp_output_dir / "old_tts.wav"
+        old_file.write_text("old tts")
+        
+        recent_file = temp_output_dir / "recent_tts.wav"
+        recent_file.write_text("recent tts")
+        
+        import time
+        import os
+        
+        # Old: 3 hours ago
+        os.utime(old_file, (time.time() - 3*3600, time.time() - 3*3600))
+        
+        # Recent: 1 hour ago
+        os.utime(recent_file, (time.time() - 3600, time.time() - 3600))
+        
+        # Set cleanup to 2 hours (writer_tts_comfyui config) and configure output_dir
+        mock_mcp_config.cleanup_age_hours = 2
+        mock_mcp_config.output_dir = str(temp_output_dir)
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        await server._cleanup_old_files()
+        
+        # Old file should be deleted, recent should remain
+        assert not old_file.exists()
+        assert recent_file.exists()

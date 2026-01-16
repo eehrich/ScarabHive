@@ -59,6 +59,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
         self.output_dir = Path(getattr(mcp_config, 'output_dir', "data/comfyui/outputs"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.cleanup_age_hours = int(getattr(mcp_config, 'cleanup_age_hours', 48))
         
         # Parse workflow configurations
         self.workflows: dict[str, dict[str, Any]] = {}
@@ -89,6 +90,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Flag for lazy startup sync (will run on first tool call)
         self._startup_sync_done = False
+        
+        # Start cleanup task in background
+        if self.cleanup_age_hours > 0:
+            asyncio.create_task(self._cleanup_old_files())
         
         logger.info(
             "ComfyUI plugin initialized: %s:%s with %d workflows",
@@ -168,6 +173,43 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 updated += 1
         
         return updated
+    
+    async def _cleanup_old_files(self) -> int:
+        """Delete output files older than cleanup_age_hours.
+        
+        Returns:
+            Number of files deleted
+        """
+        if self.cleanup_age_hours <= 0:
+            return 0
+        
+        import time
+        
+        cutoff_time = time.time() - (self.cleanup_age_hours * 3600)
+        deleted_count = 0
+        
+        try:
+            # Recursively scan output directory
+            for file_path in self.output_dir.rglob('*'):
+                if not file_path.is_file():
+                    continue
+                
+                # Check file age
+                file_mtime = file_path.stat().st_mtime
+                if file_mtime < cutoff_time:
+                    try:
+                        file_path.unlink()
+                        deleted_count += 1
+                        logger.debug(f"Deleted old file: {file_path.name} (age: {(time.time() - file_mtime) / 3600:.1f}h)")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete {file_path}: {e}")
+            
+            if deleted_count > 0:
+                logger.info(f"Cleanup: Deleted {deleted_count} files older than {self.cleanup_age_hours}h")
+        except Exception as e:
+            logger.error(f"Failed to cleanup old files: {e}")
+        
+        return deleted_count
     
     # =========================================================================
     # MCP Tool: workflow
@@ -558,6 +600,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Update tracker
         self.job_tracker.update_status(prompt_id, "completed")
+        
+        # Cleanup old files after job completion
+        if self.cleanup_age_hours > 0:
+            asyncio.create_task(self._cleanup_old_files())
         
         # Store output paths
         output_paths = {
