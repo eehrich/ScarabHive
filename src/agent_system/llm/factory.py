@@ -134,6 +134,9 @@ def create_llm_from_profile(
     
     if llm_kwargs.get("thinking_budget") is not None:
         make_kwargs["thinking_budget"] = llm_kwargs.get("thinking_budget")
+
+    if llm_kwargs.get("modalities") is not None:
+        make_kwargs["modalities"] = llm_kwargs.get("modalities")
     
     # Create the underlying LLM client
     underlying_client = make_llm(
@@ -242,6 +245,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.thinking_budget is not None:
         llm_kwargs["thinking_budget"] = model_config.thinking_budget
 
+    if model_config.modalities is not None:
+        llm_kwargs["modalities"] = model_config.modalities
+
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)
     httpx_timeouts = None
     if model_config.httpx_timeouts:
@@ -322,6 +328,9 @@ class LLMFactory:
 
         if llm_kwargs.get("include_thoughts") is not None:
             make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
+
+        if llm_kwargs.get("modalities") is not None:
+            make_kwargs["modalities"] = llm_kwargs.get("modalities")
 
         # Create the underlying LLM client
         underlying_client = make_llm(

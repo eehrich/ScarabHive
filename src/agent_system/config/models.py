@@ -107,6 +107,7 @@ class LLMModelConfig(BaseModel):
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
     thinking_budget: Optional[int] = None  # Token budget for thinking process (Gemini 2.5+, default: 8192)
+    modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
     
     # Batch provider (only for provider="batch")
     batch_provider: Optional[Literal["gemini", "openai", "anthropic"]] = None  # Which batch API to use

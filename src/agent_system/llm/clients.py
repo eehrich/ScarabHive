@@ -21,7 +21,7 @@ from .anthropic_client import AnthropicAsyncClient  # type: ignore
 from ..config.models import ModelCapabilitiesConfig
 
 
-def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None) -> LLMClient:
+def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -130,6 +130,11 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 parallel_tool_calls=parallel_tool_calls
             )
         else:
+            # Build default_extra dict for additional parameters
+            default_extra: dict[str, Any] = {}
+            if modalities:
+                default_extra["modalities"] = modalities
+            
             return OpenAIAsyncClient(
                 model=model,
                 api_key=api_key,
@@ -137,7 +142,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 timeout=float(request_timeout) if request_timeout else None,
                 verify=ssl_verify,
                 context_window=context_window,
-                capabilities=capabilities
+                capabilities=capabilities,
+                default_extra=default_extra if default_extra else None
             )
 
     if provider == "ollama":

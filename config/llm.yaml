@@ -170,7 +170,7 @@ llm_system:
     claude-sonnet-4:
       provider: anthropic
       model: claude-sonnet-4-20250514
-      api_key: ANTHROPIC_API_KEY
+      api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 180
       max_tokens: 8192
@@ -189,7 +189,7 @@ llm_system:
     claude-sonnet-4-thinking:
       provider: anthropic
       model: claude-sonnet-4-20250514
-      #api_key: ANTHROPIC_API_KEY
+      api_key: "***REMOVED***"      
       context_window: 200000
       request_timeout: 300
       max_tokens: 16384
@@ -209,7 +209,7 @@ llm_system:
     claude-opus-4:
       provider: anthropic
       model: claude-opus-4-20250514
-      #api_key: ANTHROPIC_API_KEY
+      api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 300
       max_tokens: 16384
@@ -228,7 +228,7 @@ llm_system:
     claude-opus-4-thinking:
       provider: anthropic
       model: claude-opus-4-20250514
-      #api_key: ANTHROPIC_API_KEY
+      api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 600
       max_tokens: 32768
@@ -248,7 +248,7 @@ llm_system:
     claude-haiku-3-5:
       provider: anthropic
       model: claude-3-5-haiku-20241022
-      #api_key: ANTHROPIC_API_KEY
+      api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 120
       max_tokens: 4096
@@ -284,7 +284,7 @@ llm_system:
       provider: batch
       batch_provider: anthropic
       model: claude-opus-4-20250514
-      #api_key: ANTHROPIC_API_KEY
+      api_key: "***REMOVED***"
       context_window: 200000
       max_tokens: 16384
       capabilities:
@@ -298,7 +298,7 @@ llm_system:
       provider: batch
       batch_provider: anthropic
       model: claude-3-5-haiku-20241022
-      #api_key: ANTHROPIC_API_KEY
+      api_key: "***REMOVED***"
       context_window: 200000
       max_tokens: 4096
       capabilities:
@@ -521,8 +521,10 @@ llm_system:
       provider: openai
       model: gpt-audio
       api_key: ***REMOVED***
-      context_window: 100000
+      context_window: 128000
       request_timeout: 240
+      # Audio models require modalities - must include "audio" if input has no audio
+      modalities: ["text", "audio"]
       capabilities:
         tools: true
         function_calling: true
@@ -684,7 +686,7 @@ llm_system:
       model_ref: gpt-5-nano
       description: "OpenAI nano model for fast tasks"
       max_steps: 500
-      
+
     local:
       model_ref: ollama-gpt-oss-20b
       description: "Local model for privacy and offline usage"
