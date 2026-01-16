@@ -56,6 +56,7 @@ class HTTPXOpenAIClient(LLMClient):
         context_window: Optional[int] = None,
         capabilities: Optional[dict] = None,
         parallel_tool_calls: bool = True,
+        max_tokens: Optional[int] = None,
         **extra_params
     ):
         # LLMClient doesn't have __init__, so no super() call needed
@@ -69,6 +70,7 @@ class HTTPXOpenAIClient(LLMClient):
         self.retry_backoff = retry_backoff
         self.verify = verify
         self.parallel_tool_calls = parallel_tool_calls
+        self.max_tokens = max_tokens  # Limit output tokens (None = provider default)
         self.extra_params = extra_params
         self.capabilities = capabilities or {}
         self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
@@ -328,6 +330,10 @@ class HTTPXOpenAIClient(LLMClient):
             **self.extra_params
         }
 
+        # Add max_tokens if configured (limits output length)
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
+
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -470,6 +476,10 @@ class HTTPXOpenAIClient(LLMClient):
             "stream_options": {"include_usage": True},  # Request usage stats in stream
             **self.extra_params
         }
+
+        # Add max_tokens if configured (limits output length)
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
 
         if tools:
             payload["tools"] = tools

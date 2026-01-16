@@ -74,6 +74,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             parallel_tool_calls=parallel_tool_calls,
             include_thoughts=include_thoughts,
             thinking_budget=thinking_budget,
+            max_tokens=max_tokens,
         )
     
     if provider == "gemini_sdk":
@@ -127,7 +128,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 verify=ssl_verify,
                 context_window=context_window,
                 capabilities=capabilities,
-                parallel_tool_calls=parallel_tool_calls
+                parallel_tool_calls=parallel_tool_calls,
+                max_tokens=max_tokens
             )
         else:
             # Build default_extra dict for additional parameters

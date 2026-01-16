@@ -22,7 +22,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, max_tokens: Optional[int] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -96,6 +96,7 @@ class OpenAIAsyncClient(LLMClient):
         self.api_key = api_key  # Store for Realtime API
         self.provider = "openai"
         self.context_window = context_window
+        self.max_tokens = max_tokens  # Limit output tokens (None = provider default)
         self._default_extra = default_extra or {}
         self._timeout = timeout
         self.capabilities = capabilities  # Pydantic model or None
@@ -138,6 +139,11 @@ class OpenAIAsyncClient(LLMClient):
             
             opts = {"model": self.model, "messages": serialized}
             opts.update(self._default_extra)
+            
+            # Add max_tokens if configured
+            if self.max_tokens:
+                opts["max_tokens"] = self.max_tokens
+                
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff
             resp = None
@@ -373,6 +379,11 @@ class OpenAIAsyncClient(LLMClient):
                 opts["tool_choice"] = "auto"
 
             opts.update(self._default_extra)
+            
+            # Add max_tokens if configured
+            if self.max_tokens:
+                opts["max_tokens"] = self.max_tokens
+                
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff
             resp = None
@@ -746,6 +757,10 @@ class OpenAIAsyncClient(LLMClient):
                     opts["tools"] = tools
                     opts["tool_choice"] = "auto"
                 opts.update(self._default_extra)
+                
+                # Add max_tokens if configured
+                if self.max_tokens:
+                    opts["max_tokens"] = self.max_tokens
 
                 # Accumulated state
                 accumulated_content = []

@@ -40,6 +40,7 @@ class GeminiClient(LLMClient):
         parallel_tool_calls: bool = True,
         include_thoughts: bool | None = None,
         thinking_budget: int | None = None,
+        max_tokens: int | None = None,
         **extra_params
     ):
         self.model = model
@@ -50,6 +51,7 @@ class GeminiClient(LLMClient):
         self.request_timeout = request_timeout
         self.max_retries = max_retries
         self.parallel_tool_calls = parallel_tool_calls
+        self.max_tokens = max_tokens  # Limit output tokens (None = provider default)
         self.extra_params = extra_params
         
         # Store include_thoughts in extra_params for consistency
@@ -115,6 +117,9 @@ class GeminiClient(LLMClient):
             "topP": self.extra_params.get("top_p", 0.95),
             "topK": self.extra_params.get("top_k", 40),
         }
+        
+        if self.max_tokens is not None:
+            generation_config["maxOutputTokens"] = self.max_tokens
 
         # Optional: enable Gemini "thought summaries" in responses.
         # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
@@ -527,6 +532,9 @@ class GeminiClient(LLMClient):
             "topP": self.extra_params.get("top_p", 0.95),
             "topK": self.extra_params.get("top_k", 40),
         }
+        
+        if self.max_tokens is not None:
+            generation_config["maxOutputTokens"] = self.max_tokens
 
         # Optional: enable Gemini "thought summaries" in responses.
         # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
