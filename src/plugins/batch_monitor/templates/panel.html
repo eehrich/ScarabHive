@@ -291,6 +291,12 @@
             font-size: 12px;
         }
         
+        .token-count {
+            color: #ce93d8;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        
         .queue-info {
             color: #858585;
             font-size: 12px;
@@ -525,6 +531,7 @@
                         }
                         
                         const elapsed = formatDuration(job.elapsed_seconds);
+                        const tokens = formatTokens(job.estimated_input_tokens);
                         
                         rows += `
                             <tr>
@@ -532,6 +539,7 @@
                                 <td><span class="job-id">${escapeHtml(job.job_id)}</span></td>
                                 <td><span class="queue-status-badge ${jobStatusClass}">${jobStatusIcon} ${job.status}</span></td>
                                 <td><span class="progress-text">${progress}</span></td>
+                                <td><span class="token-count">${tokens}</span></td>
                                 <td><span class="elapsed-time">${elapsed}</span></td>
                             </tr>
                         `;
@@ -539,19 +547,29 @@
                     
                     // Also show pending requests row if there are any (requests waiting to be batched)
                     if (queue.pending_requests > 0) {
+                        const pendingTokens = formatTokens(queue.pending_estimated_tokens);
                         rows += `
                             <tr>
                                 <td><span class="queue-key">${escapeHtml(queue.queue_key)}</span></td>
                                 <td><span class="queue-info">—</span></td>
                                 <td><span class="queue-status-badge status-pending">◐ pending</span></td>
-                                <td colspan="2"><span class="queue-info">${queue.pending_requests} pending (batching in ~${collectionWindow}s)</span></td>
+                                <td><span class="queue-info">${queue.pending_requests} pending</span></td>
+                                <td><span class="token-count">${pendingTokens}</span></td>
+                                <td><span class="queue-info">~${collectionWindow}s</span></td>
                             </tr>
                         `;
                     }
                 } else {
                     // Queue with no active jobs
+                    const pendingTokens = formatTokens(queue.pending_estimated_tokens);
                     const info = queue.pending_requests > 0
-                        ? `<span class="queue-info">${queue.pending_requests} pending (batching in ~${collectionWindow}s)</span>`
+                        ? `<span class="queue-info">${queue.pending_requests} pending</span>`
+                        : `<span class="queue-info">—</span>`;
+                    const tokenInfo = queue.pending_requests > 0
+                        ? `<span class="token-count">${pendingTokens}</span>`
+                        : `<span class="queue-info">—</span>`;
+                    const timeInfo = queue.pending_requests > 0
+                        ? `<span class="queue-info">~${collectionWindow}s</span>`
                         : `<span class="queue-info">—</span>`;
                     
                     rows += `
@@ -559,7 +577,9 @@
                             <td><span class="queue-key">${escapeHtml(queue.queue_key)}</span></td>
                             <td><span class="queue-info">—</span></td>
                             <td><span class="queue-status-badge ${statusClass}">${statusIcon} ${queue.status}</span></td>
-                            <td colspan="2">${info}</td>
+                            <td>${info}</td>
+                            <td>${tokenInfo}</td>
+                            <td>${timeInfo}</td>
                         </tr>
                     `;
                 }
@@ -574,6 +594,7 @@
                                 <th>Job ID</th>
                                 <th>Status</th>
                                 <th>Progress</th>
+                                <th>Input Tokens</th>
                                 <th>Time</th>
                             </tr>
                         </thead>
@@ -613,6 +634,13 @@
             const hours = Math.floor(seconds / 3600);
             const mins = Math.floor((seconds % 3600) / 60);
             return `${hours}h ${mins}m`;
+        }
+        
+        function formatTokens(tokens) {
+            if (tokens === null || tokens === undefined || tokens === 0) return '—';
+            if (tokens < 1000) return tokens.toLocaleString();
+            if (tokens < 1000000) return `${(tokens / 1000).toFixed(1)}K`;
+            return `${(tokens / 1000000).toFixed(2)}M`;
         }
         
         function escapeHtml(unsafe) {

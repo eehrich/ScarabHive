@@ -167,6 +167,7 @@ class BatchMonitorWebFactory:
                         "failed_count": job.failed_count,
                         "submitted_at": job.submitted_at.isoformat() if job.submitted_at else None,
                         "elapsed_seconds": elapsed_seconds,
+                        "estimated_input_tokens": job.estimated_input_tokens,
                     })
             
             # Also include recently completed jobs (finished within retention period)
@@ -188,6 +189,7 @@ class BatchMonitorWebFactory:
                                 "failed_count": job.failed_count,
                                 "submitted_at": job.submitted_at.isoformat() if job.submitted_at else None,
                                 "elapsed_seconds": elapsed_seconds,
+                                "estimated_input_tokens": job.estimated_input_tokens,
                             })
             
             # Determine queue status from jobs
@@ -203,11 +205,17 @@ class BatchMonitorWebFactory:
             else:
                 queue_status = "idle"
             
+            # Estimate tokens for pending requests (not yet batched)
+            pending_estimated_tokens = sum(
+                req.estimate_input_tokens() for req in pending_requests
+            )
+            
             queue_data = {
                 "queue_key": queue_key,
                 "provider": provider,
                 "model": model,
                 "pending_requests": len(pending_requests),
+                "pending_estimated_tokens": pending_estimated_tokens,
                 "status": queue_status,
                 "active_jobs": active_jobs,
                 # Keep backward compat: active_job = first job or None

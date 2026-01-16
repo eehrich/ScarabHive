@@ -76,7 +76,7 @@ def mock_batch_manager() -> MagicMock:
     - _poll_interval: float - seconds between polling
     - _metrics: BatchMetrics - cumulative metrics
     """
-    from agent_system.llm.batch.models import BatchMetrics
+    from agent_system.llm.batch.models import BatchMetrics, BatchRequest
     
     manager = MagicMock()
     manager._collection_window = 60.0
@@ -84,9 +84,22 @@ def mock_batch_manager() -> MagicMock:
     
     # _queues contains only pending requests (List[BatchRequest])
     # Empty for gemini, 2 pending for openai
+    # Use actual BatchRequest objects so estimate_input_tokens() works
+    pending_req1 = BatchRequest(
+        request_id="pending1",
+        custom_id="pending_custom1",
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "test message 1"}],
+    )
+    pending_req2 = BatchRequest(
+        request_id="pending2",
+        custom_id="pending_custom2",
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "test message 2"}],
+    )
     manager._queues = {
         "gemini:gemini-2.5-flash": [],  # Empty list - will be filtered out
-        "openai:gpt-4o": [MagicMock(), MagicMock()],  # 2 pending - will show
+        "openai:gpt-4o": [pending_req1, pending_req2],  # 2 pending - will show
     }
     
     # No active jobs initially

@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from agent_system.llm.token_utils import estimate_token_count
+
 
 def _utc_now() -> datetime:
     """Return timezone-aware UTC datetime."""
@@ -67,6 +69,38 @@ class BatchRequest:
     def __post_init__(self):
         if not self.custom_id:
             self.custom_id = self.request_id
+    
+    def estimate_input_tokens(self) -> int:
+        """Estimate the input token count for this request.
+        
+        Returns:
+            Estimated number of input tokens (messages + tools)
+        """
+        total = 0
+        
+        # Estimate tokens for messages
+        if self.messages:
+            total += estimate_token_count(self.messages)
+        
+        # Add tokens for tools (roughly estimate based on JSON structure)
+        if self.tools:
+            # Each tool definition is roughly 50-200 tokens depending on schema
+            for tool in self.tools:
+                # Rough estimation: tool name + description + parameters
+                tool_tokens = 20  # Base overhead
+                if "function" in tool:
+                    func = tool["function"]
+                    tool_tokens += len(func.get("name", "")) // 4
+                    tool_tokens += len(func.get("description", "")) // 4
+                    # Parameters schema is typically verbose JSON
+                    params = func.get("parameters", {})
+                    if params:
+                        import json
+                        params_str = json.dumps(params)
+                        tool_tokens += len(params_str) // 4
+                total += tool_tokens
+        
+        return total
 
 
 @dataclass
@@ -120,6 +154,15 @@ class BatchJob:
     @property
     def request_count(self) -> int:
         return len(self.requests)
+    
+    @property
+    def estimated_input_tokens(self) -> int:
+        """Estimate total input tokens across all requests in this batch.
+        
+        Returns:
+            Total estimated input tokens
+        """
+        return sum(req.estimate_input_tokens() for req in self.requests)
     
     @property
     def is_terminal(self) -> bool:
