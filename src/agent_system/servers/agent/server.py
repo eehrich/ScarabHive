@@ -135,9 +135,11 @@ class Agent(MCPServer):
         self.timeouts = self.agent_config.timeouts if self.agent_config else None
         
         # Track active fallback LLM (persistent across requests)
-        # When quota is exhausted, we switch to fallback and stay there
+        # When rate limit/quota is exhausted, we switch to fallback and stay there
+        # until fallback_recovery_seconds has elapsed, then we try original again
         self._active_fallback_llm: Optional[Any] = None
         self._active_fallback_profile: Optional[str] = None
+        self._fallback_activated_at: Optional[float] = None  # Timestamp when fallback was activated
 
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
@@ -461,7 +463,7 @@ class Agent(MCPServer):
         """Reset persistent fallback LLM to use original LLM again.
         
         Call this when you want to try the original (e.g., batch) LLM again
-        after quota was exhausted and fallback was activated.
+        after rate limit/quota was exhausted and fallback was activated.
         """
         if self._active_fallback_llm is not None:
             logger.info(
@@ -470,9 +472,41 @@ class Agent(MCPServer):
             )
             self._active_fallback_llm = None
             self._active_fallback_profile = None
+            self._fallback_activated_at = None
             # Restore original profile info
             if self.llm_profile_info and ":fallback" in self.llm_profile_info:
                 self.llm_profile_info = self.llm_profile_info.replace(":fallback", "")
+    
+    def _check_fallback_recovery(self) -> bool:
+        """Check if fallback recovery period has elapsed and reset if so.
+        
+        Returns:
+            True if fallback was reset (should try original LLM)
+            False if still in fallback mode
+        """
+        if self._active_fallback_llm is None or self._fallback_activated_at is None:
+            return False
+        
+        recovery_seconds = 3600  # Default 1 hour
+        if self.agent_config:
+            recovery_seconds = self.agent_config.fallback_recovery_seconds
+        
+        import time
+        elapsed = time.time() - self._fallback_activated_at
+        if elapsed >= recovery_seconds:
+            logger.info(
+                f"[{self.name}] Fallback recovery period ({recovery_seconds}s) elapsed. "
+                f"Trying original LLM again after {int(elapsed)}s in fallback mode."
+            )
+            self.reset_fallback()
+            return True
+        
+        remaining = int(recovery_seconds - elapsed)
+        logger.debug(
+            f"[{self.name}] Still in fallback mode. "
+            f"Recovery in {remaining}s (elapsed: {int(elapsed)}s)"
+        )
+        return False
 
     async def append_user_message(self, request_id: str, content: str) -> bool:
         """
@@ -1391,7 +1425,11 @@ class Agent(MCPServer):
 
             # LLM call with streaming support and fallback handling
             llm_out = None
-            # Check if we have an active persistent fallback (from previous quota exhaustion)
+            
+            # Check if fallback recovery period has elapsed - try original LLM again
+            self._check_fallback_recovery()
+            
+            # Check if we have an active persistent fallback (from previous rate limit/quota exhaustion)
             if self._active_fallback_llm is not None:
                 logger.info(f"[{self.name}] Using persistent fallback LLM: {self._active_fallback_profile}")
                 current_llm = self._active_fallback_llm
@@ -1461,18 +1499,27 @@ class Agent(MCPServer):
                             # Update profile info for status display
                             self.llm_profile_info = f"{fallback_profile}:fallback"
                             
-                            # If quota exhausted, make fallback PERSISTENT
-                            if is_quota_exhausted:
-                                self._active_fallback_llm = fallback_llm
-                                self._active_fallback_profile = fallback_profile
-                                logger.info(
-                                    f"[{self.name}] Quota exhausted - fallback to {fallback_profile} "
-                                    f"is now PERSISTENT for all future requests"
-                                )
-                                await status_worker.progress(
-                                    f"Switched to {fallback_profile} permanently (quota exhausted)",
-                                    meta={"step": step + 1, "fallback": fallback_profile, "persistent": True}
-                                )
+                            # Make fallback PERSISTENT for both rate limit and quota exhausted
+                            # Rate limit: temporary, will try original again after recovery period
+                            # Quota exhausted: permanent until recovery period (usually longer)
+                            import time
+                            self._active_fallback_llm = fallback_llm
+                            self._active_fallback_profile = fallback_profile
+                            self._fallback_activated_at = time.time()
+                            
+                            recovery_seconds = 3600  # Default
+                            if self.agent_config:
+                                recovery_seconds = self.agent_config.fallback_recovery_seconds
+                            
+                            reason = "quota exhausted" if is_quota_exhausted else "rate limit hit"
+                            logger.info(
+                                f"[{self.name}] {reason.title()} - fallback to {fallback_profile} "
+                                f"is now PERSISTENT. Will try original again in {recovery_seconds}s"
+                            )
+                            await status_worker.progress(
+                                f"Switched to {fallback_profile} ({reason}, retry in {recovery_seconds//60}min)",
+                                meta={"step": step + 1, "fallback": fallback_profile, "persistent": True, "recovery_seconds": recovery_seconds}
+                            )
                             
                             continue  # Retry with fallback
                         else:

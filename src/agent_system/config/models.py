@@ -182,6 +182,7 @@ class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, first is default, others are available options
     llm_profile_fallbacks: Optional[List[str]] = None  # Fallback profiles on rate limit/errors (tried in order)
+    fallback_recovery_seconds: int = 3600  # Seconds before trying original LLM again after rate limit (default: 1 hour)
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning (default: 20, used if not set in config)
     tools: ToolConfig = Field(default_factory=ToolConfig)
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)

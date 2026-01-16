@@ -1,5 +1,6 @@
 """Test Agent LLM profile fallback behavior."""
 import pytest
+import time
 from unittest.mock import MagicMock, patch
 
 from agent_system.servers.agent.server import Agent
@@ -154,3 +155,173 @@ def test_agent_create_fallback_llm_failure(system_config_with_profiles, agent_co
         result = agent._create_fallback_llm("nonexistent")
         
         assert result is None
+
+
+def test_agent_config_fallback_recovery_seconds_default():
+    """Test default fallback_recovery_seconds value."""
+    config = AgentConfig(llm_profile="gemini")
+    assert config.fallback_recovery_seconds == 3600  # 1 hour default
+
+
+def test_agent_config_fallback_recovery_seconds_custom():
+    """Test custom fallback_recovery_seconds value."""
+    config = AgentConfig(llm_profile="gemini", fallback_recovery_seconds=1800)
+    assert config.fallback_recovery_seconds == 1800  # 30 minutes
+
+
+def test_agent_reset_fallback(system_config_with_profiles, agent_config_with_fallbacks):
+    """Test Agent.reset_fallback() method."""
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config_with_fallbacks
+    )
+    registry = MCPRegistry()
+    mock_llm = MagicMock()
+    
+    agent = Agent(
+        "test_agent",
+        system_config_with_profiles,
+        mcp_config,
+        registry,
+        llm=mock_llm
+    )
+    
+    # Set fallback state
+    mock_fallback_llm = MagicMock()
+    agent._active_fallback_llm = mock_fallback_llm
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time()
+    agent.llm_profile_info = "gemini:fallback"
+    
+    # Reset
+    agent.reset_fallback()
+    
+    # Verify reset
+    assert agent._active_fallback_llm is None
+    assert agent._active_fallback_profile is None
+    assert agent._fallback_activated_at is None
+    assert agent.llm_profile_info == "gemini"  # :fallback suffix removed
+
+
+def test_agent_check_fallback_recovery_no_fallback(system_config_with_profiles, agent_config_with_fallbacks):
+    """Test _check_fallback_recovery returns False when no fallback active."""
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config_with_fallbacks
+    )
+    registry = MCPRegistry()
+    mock_llm = MagicMock()
+    
+    agent = Agent(
+        "test_agent",
+        system_config_with_profiles,
+        mcp_config,
+        registry,
+        llm=mock_llm
+    )
+    
+    # No fallback active
+    result = agent._check_fallback_recovery()
+    assert result is False
+
+
+def test_agent_check_fallback_recovery_not_elapsed(system_config_with_profiles):
+    """Test _check_fallback_recovery returns False when recovery period not elapsed."""
+    agent_config = AgentConfig(
+        llm_profile="gemini",
+        llm_profile_fallbacks=["openai"],
+        fallback_recovery_seconds=60  # 1 minute
+    )
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config
+    )
+    registry = MCPRegistry()
+    mock_llm = MagicMock()
+    
+    agent = Agent(
+        "test_agent",
+        system_config_with_profiles,
+        mcp_config,
+        registry,
+        llm=mock_llm
+    )
+    
+    # Set fallback state just activated
+    mock_fallback_llm = MagicMock()
+    agent._active_fallback_llm = mock_fallback_llm
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time()  # Just now
+    
+    # Check recovery - should be False (not enough time elapsed)
+    result = agent._check_fallback_recovery()
+    assert result is False
+    assert agent._active_fallback_llm is not None  # Still in fallback
+
+
+def test_agent_check_fallback_recovery_elapsed(system_config_with_profiles):
+    """Test _check_fallback_recovery returns True and resets when recovery period elapsed."""
+    agent_config = AgentConfig(
+        llm_profile="gemini",
+        llm_profile_fallbacks=["openai"],
+        fallback_recovery_seconds=1  # 1 second for testing
+    )
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config
+    )
+    registry = MCPRegistry()
+    mock_llm = MagicMock()
+    
+    agent = Agent(
+        "test_agent",
+        system_config_with_profiles,
+        mcp_config,
+        registry,
+        llm=mock_llm
+    )
+    
+    # Set fallback state activated 2 seconds ago
+    mock_fallback_llm = MagicMock()
+    agent._active_fallback_llm = mock_fallback_llm
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time() - 2  # 2 seconds ago
+    agent.llm_profile_info = "gemini:fallback"
+    
+    # Check recovery - should be True (enough time elapsed)
+    result = agent._check_fallback_recovery()
+    assert result is True
+    
+    # Verify reset occurred
+    assert agent._active_fallback_llm is None
+    assert agent._active_fallback_profile is None
+    assert agent._fallback_activated_at is None
+    assert agent.llm_profile_info == "gemini"
+
+
+def test_agent_fallback_state_initialization(system_config_with_profiles, agent_config_with_fallbacks):
+    """Test that fallback state is properly initialized on agent creation."""
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config_with_fallbacks
+    )
+    registry = MCPRegistry()
+    mock_llm = MagicMock()
+    
+    agent = Agent(
+        "test_agent",
+        system_config_with_profiles,
+        mcp_config,
+        registry,
+        llm=mock_llm
+    )
+    
+    # Verify initial state
+    assert agent._active_fallback_llm is None
+    assert agent._active_fallback_profile is None
+    assert agent._fallback_activated_at is None

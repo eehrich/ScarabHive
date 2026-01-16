@@ -112,6 +112,7 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 |-------|------|----------|---------|-------------|
 | `llm_profile` | string | Yes | - | LLM profile from `config/llm.yaml` |
 | `llm_profile_fallbacks` | list[string] | No | [] | Fallback profiles on rate limit/quota errors |
+| `fallback_recovery_seconds` | integer | No | 3600 | Seconds before retrying original LLM after fallback (1 hour default) |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
@@ -133,18 +134,36 @@ my_agent:
     llm_profile_fallbacks:             # Tried in order on rate limit
       - "openai"                       # First fallback
       - "anthropic"                    # Second fallback
+    fallback_recovery_seconds: 1800    # Try primary again after 30min (default: 3600)
 ```
 
 **Behavior:**
 1. Agent tries primary `llm_profile` first
-2. On `LLMRateLimitError` or `LLMQuotaExhaustedError`, tries next fallback
-3. If all fallbacks exhausted, raises the original error
-4. Status events show which profile is active
+2. On `LLMRateLimitError` or `LLMQuotaExhaustedError`, tries next fallback profile
+3. Fallback becomes **persistent** - all subsequent requests use fallback LLM
+4. After `fallback_recovery_seconds` elapsed, agent tries original profile again
+5. If recovery succeeds, switches back to primary profile
+6. If recovery fails, re-activates fallback for another recovery period
+7. If all fallbacks exhausted, raises the original error
+
+**Automatic Recovery:**
+- **Default:** Retries original profile after 1 hour (3600 seconds)
+- **Configurable:** Set `fallback_recovery_seconds` to custom value
+- **Use Cases:**
+  - Rate limits (TPM/RPM/RPD) - temporary, recovers automatically
+  - Quota exhausted - persistent until daily/monthly reset
+  - API outages - retries when service restored
+
+**Status Updates:**
+- Shows active profile: `gemini:fallback`, `openai:fallback`
+- Recovery info: `"Switched to openai (rate limit hit, retry in 60min)"`
+- Auto-recovery: `"Fallback recovery period elapsed. Trying original LLM again."`
 
 **Use Cases:**
 - Gemini free tier (250 requests/day) → OpenAI fallback
 - Primary API down → Secondary provider
 - Cost optimization (cheaper primary, expensive fallback)
+- Rate limit management (temporary TPM/RPM limits)
 
 ### Tools Configuration
 
