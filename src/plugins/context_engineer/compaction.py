@@ -376,7 +376,7 @@ class LayeredCompactionStrategy:
             file_path = item.get("path", "")
             
             # Skip already compacted items
-            if item.get("_compacted"):
+            if item.get("compacted"):
                 compacted.append(item)
                 continue
             
@@ -393,13 +393,14 @@ class LayeredCompactionStrategy:
                 original_description = item.get("description", "")
                 
                 # Create compacted placeholder - keeps path for restoration
+                # Use non-underscore field names for Pydantic model compatibility
                 placeholder = {
                     "type": item_type,
                     "path": file_path,  # KEEP the path for restoration
                     "mime_type": mime_type,
-                    "_compacted": True,  # Flag for LLM clients to skip encoding
-                    "_original_tokens": inline_tokens,
-                    "_original_description": original_description,
+                    "compacted": True,  # Flag for LLM clients to skip encoding
+                    "original_tokens": inline_tokens,
+                    "original_description": original_description,
                     "description": (
                         f"[{item_type.title()} compacted - {inline_tokens:,} tokens saved. "
                         f"Use restore_multimodal(path=\"{file_path}\") to reload into context.]"

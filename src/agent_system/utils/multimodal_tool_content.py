@@ -79,8 +79,15 @@ def encode_multimodal_item(
         EncodedMultimodalContent or None if encoding fails/skipped
     """
     # Check if item was compacted by context engineer - skip encoding
-    if isinstance(item, dict) and item.get("_compacted"):
-        logger.debug("Skipping compacted multimodal item: %s", item.get("description", ""))
+    is_compacted: bool = False
+    if isinstance(item, dict):
+        is_compacted = bool(item.get("compacted"))
+    elif hasattr(item, "compacted"):
+        is_compacted = bool(item.compacted)
+    
+    if is_compacted:
+        logger.debug("Skipping compacted multimodal item: %s", 
+                    getattr(item, "description", None) or (item.get("description") if isinstance(item, dict) else ""))
         return None
     
     # Handle both Pydantic model and dict
@@ -291,7 +298,12 @@ def create_multimodal_injection(
         item_type = getattr(item, 'type', None) or (item.get('type') if isinstance(item, dict) else 'unknown')
         desc = getattr(item, 'description', None) or (item.get('description') if isinstance(item, dict) else None)
         path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
-        is_compacted = (item.get('_compacted') if isinstance(item, dict) else False)
+        # Check 'compacted' field (Pydantic model or dict)
+        is_compacted = (
+            getattr(item, 'compacted', False) if hasattr(item, 'compacted')
+            else item.get('compacted') if isinstance(item, dict)
+            else False
+        )
         
         if is_compacted:
             # Item was compacted by context engineer - show description with restore instructions
@@ -349,7 +361,12 @@ def create_multimodal_injection(
         text_notes = []  # Additional text notes for compacted/error items
         
         for item in multimodal_content:
-            is_compacted = (item.get('_compacted') if isinstance(item, dict) else False)
+            # Check 'compacted' field (Pydantic model or dict)
+            is_compacted = (
+                getattr(item, 'compacted', False) if hasattr(item, 'compacted')
+                else item.get('compacted') if isinstance(item, dict)
+                else False
+            )
             path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
             
             if is_compacted:

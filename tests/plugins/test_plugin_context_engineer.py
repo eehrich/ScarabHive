@@ -832,15 +832,15 @@ class TestLayeredCompactionStrategy:
         
         result = await strategy.compact(messages, current_tokens=35000, force=True)
         
-        # multimodal_content should be compacted with _compacted flag
+        # multimodal_content should be compacted with 'compacted' flag
         tool_msg = result.modified_messages[2]
         mm_content = tool_msg.get("multimodal_content", [])
         
         assert len(mm_content) == 1
         # Path should be PRESERVED for restoration
         assert mm_content[0]["path"] == original_path
-        # Should have _compacted flag
-        assert mm_content[0].get("_compacted") is True
+        # Should have 'compacted' flag (new Pydantic-compatible field name)
+        assert mm_content[0].get("compacted") is True
         # Description should mention compaction and restoration
         assert "compacted" in mm_content[0]["description"].lower()
         assert "restore_multimodal" in mm_content[0]["description"]

@@ -102,11 +102,20 @@ class MultimodalToolContent(BaseModel):
     by LLM clients according to their capabilities:
     - Gemini: Native multimodal tool response
     - OpenAI/Anthropic: Injected as synthetic user message
+    
+    Compaction support:
+    - compacted: If True, LLM clients should skip encoding (data was removed)
+    - original_tokens: Token count before compaction (for stats/restore)
+    - original_description: Original description before compaction
     """
     type: str  # "image", "audio", "video"
     path: str  # Local file path to the content
     mime_type: str  # e.g., "image/png", "audio/wav"
     description: Optional[str] = None  # Optional description for context
+    # Compaction fields - set by context_engineer when large content is compacted
+    compacted: bool = False  # If True, skip encoding - content was compacted
+    original_tokens: Optional[int] = None  # Token count before compaction
+    original_description: Optional[str] = None  # Original description
 
 
 # Union type for all content types

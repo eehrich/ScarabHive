@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Constants for multimodal token estimation (based on Gemini API documentation)
 # https://ai.google.dev/gemini-api/docs/tokens
 TOKENS_PER_IMAGE = 258  # Gemini: images ≤384px = 258 tokens, larger = 258 per 768x768 tile
-TOKENS_PER_AUDIO_SECOND = 32  # Gemini: audio = 32 tokens/second
+TOKENS_PER_AUDIO_SECOND = 41  # Gemini: audio = 32 tokens/second, increased by ~30% for accuracy
 TOKENS_PER_VIDEO_SECOND = 263  # Gemini: video = 263 tokens/second
 # Base64-encoded data: ~4 characters per 3 bytes, ~4 chars per token → ~1 token per byte
 TOKENS_PER_BASE64_CHAR = 0.25  # 4 base64 chars ≈ 1 token
@@ -213,7 +213,7 @@ def estimate_file_tokens(path: Union[str, Path], file_type: str | None = None) -
     """Estimate tokens for a media file sent to LLM.
     
     Uses duration-based estimation for audio/video (per Gemini API docs):
-    - Audio: 32 tokens per second
+    - Audio: 41 tokens per second (32 base + ~30% buffer)
     - Video: 263 tokens per second
     - Images: 258 tokens (small) or 258 per 768x768 tile (large)
     
@@ -301,7 +301,7 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
     
     if isinstance(item, dict):
         # Skip compacted items - they won't be encoded at LLM call time
-        if item.get('_compacted'):
+        if item.get('compacted'):
             return 0
         
         # Check various inline data formats
@@ -355,6 +355,9 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
     
     elif hasattr(item, 'path'):
         # Pydantic model with path attribute (MultimodalToolContent)
+        # Skip compacted items - they won't be encoded at LLM call time
+        if hasattr(item, 'compacted') and item.compacted:
+            return 0
         file_path = getattr(item, 'path', '')
         item_type = getattr(item, 'type', '')
         if file_path and item_type in ('audio', 'image', 'video'):

@@ -105,6 +105,42 @@ class TestEncodeMultimodalItem:
         
         assert result is not None
         assert result.description == "Pydantic model test"
+    
+    def test_encode_compacted_pydantic_model_returns_none(self, tmp_path: Path):
+        """Test encoding returns None for compacted Pydantic model items."""
+        from agent_system.llm.models import MultimodalToolContent
+        
+        audio_path = tmp_path / "test.wav"
+        audio_path.write_bytes(b"fake audio data" * 1000)
+        
+        item = MultimodalToolContent(
+            type="audio",
+            path=str(audio_path),
+            mime_type="audio/wav",
+            description="[Audio compacted - 5,000 tokens saved]",
+            compacted=True,
+            original_tokens=5000
+        )
+        
+        result = encode_multimodal_item(item)
+        
+        # Should return None for compacted items
+        assert result is None
+    
+    def test_encode_compacted_dict_returns_none(self, tmp_path: Path):
+        """Test encoding returns None for compacted dict items."""
+        audio_path = tmp_path / "test.wav"
+        audio_path.write_bytes(b"fake audio data" * 1000)
+        
+        # Test with 'compacted' field
+        item = {
+            "type": "audio",
+            "path": str(audio_path),
+            "mime_type": "audio/wav",
+            "compacted": True,
+            "description": "[Audio compacted]"
+        }
+        assert encode_multimodal_item(item) is None
 
 
 class TestCreateInjectionMessageContent:
