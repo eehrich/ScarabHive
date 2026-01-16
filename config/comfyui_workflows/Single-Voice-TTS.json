@@ -1,1 +1,114 @@
-{"id":"e3401ab7-d930-4e0e-bbea-e11aa75051f2","revision":0,"last_node_id":21,"last_link_id":17,"nodes":[{"id":12,"type":"Note","pos":[481.4167798105657,4256.547293529048],"size":[281.1940489981723,263.0760602113487],"flags":{},"order":0,"mode":0,"inputs":[],"outputs":[],"properties":{},"widgets_values":["Sehr Gute Ergebnisse..\n\ndiffusion: 12\nquant: 8bit/full\ncfg_scale: 2.2\nartention: auto\nchunks: 100\nuse_sampling: false\nvoice_speed_factor: 1\n\ndiffusion: 10 ist auch ok\nvoice_speed_factor 0.98 (0.95 zu langsam)\n\n4Bit ist auch ok\n\nchunksize: ab 200, besonders bei 400 .. text wir immer schneller\n\nInput Voice muss klar und ca 1min sein\n\nLora scheint kein effekt zu haben"],"color":"#432","bgcolor":"#653"},{"id":4,"type":"PrimitiveInt","pos":[-1115.0864615332036,4711.488996066422],"size":[270,82],"flags":{},"order":1,"mode":0,"inputs":[{"localized_name":"value","name":"value","type":"INT","widget":{"name":"value"},"link":null}],"outputs":[{"localized_name":"INT","name":"INT","type":"INT","links":[10]}],"title":"Seed","properties":{"Node name for S&R":"PrimitiveInt"},"widgets_values":[301,"fixed"]},{"id":18,"type":"Note","pos":[-403.8364180794507,4947.7644163548375],"size":[335.63772618787425,148.13940836642269],"flags":{},"order":2,"mode":0,"inputs":[],"outputs":[],"properties":{},"widgets_values":["Lora geht nur bei 1.5B full-precision"],"color":"#432","bgcolor":"#653"},{"id":17,"type":"VibeVoiceLoRANode","pos":[-51.096081254193656,4910.413542594551],"size":[304.33203125,178],"flags":{},"order":3,"mode":0,"inputs":[{"localized_name":"lora_name","name":"lora_name","type":"COMBO","widget":{"name":"lora_name"},"link":null},{"localized_name":"llm_strength","name":"llm_strength","type":"FLOAT","widget":{"name":"llm_strength"},"link":null},{"localized_name":"use_llm","name":"use_llm","type":"BOOLEAN","widget":{"name":"use_llm"},"link":null},{"localized_name":"use_diffusion_head","name":"use_diffusion_head","type":"BOOLEAN","widget":{"name":"use_diffusion_head"},"link":null},{"localized_name":"use_acoustic_connector","name":"use_acoustic_connector","type":"BOOLEAN","widget":{"name":"use_acoustic_connector"},"link":null},{"localized_name":"use_semantic_connector","name":"use_semantic_connector","type":"BOOLEAN","widget":{"name":"use_semantic_connector"},"link":null}],"outputs":[{"localized_name":"lora","name":"lora","type":"LORA_CONFIG","links":[]}],"properties":{"Node name for S&R":"VibeVoiceLoRANode"},"widgets_values":["Elise",1,true,true,true,true]},{"id":13,"type":"Note","pos":[770.7694215727385,4257.488883985477],"size":[276.40420043851714,258.41100177866247],"flags":{},"order":4,"mode":0,"inputs":[],"outputs":[],"properties":{},"widgets_values":["Gute Ergebnisse.. 2 kleine Fehler\ndiffusion: 10\nquant: 8bit\ncfg_scale: 2.5\nartention: auto\nchunks: 100"],"color":"#432","bgcolor":"#653"},{"id":5,"type":"PreviewAudio","pos":[617.0336377715149,4110.079550015415],"size":[314.71835648667934,89.04197369638496],"flags":{"collapsed":false},"order":11,"mode":0,"inputs":[{"localized_name":"audio","name":"audio","type":"AUDIO","link":11},{"localized_name":"audioUI","name":"audioUI","type":"AUDIO_UI","widget":{"name":"audioUI"},"link":null}],"outputs":[],"properties":{"Node name for S&R":"PreviewAudio"},"widgets_values":[]},{"id":16,"type":"Note","pos":[-1756.9667429102906,4125.473224999174],"size":[570.5449346157693,785.0423636783853],"flags":{"collapsed":false},"order":5,"mode":0,"inputs":[],"outputs":[],"title":"Example 1","properties":{},"widgets_values":["Der Scheibenwischer kämpfte einen verlorenen Kampf gegen das weiße Chaos. Das rhythmische *Fwump-Fwump* war das einzige Geräusch, das das Brüllen des Windes für Sekundenbruchteile übertönte. Elias umklammerte das Lenkrad so fest, dass seine Knöchel weiß hervortraten. Die Straße war kaum noch als solche zu erkennen; sie war nur noch eine vage Ahnung von Grau inmitten des wirbelnden Schnees, der sich wie ein lebendiges Wesen gegen die Windschutzscheibe presste. Das GPS hatte schon vor zwanzig Minuten den Geist aufgegeben und zeigte nur noch statisches Rauschen, ein elektronisches Schneegestöber, das das echte draußen spiegelte. \"Wenn ich hier liegen bleibe, finden sie mich erst im Frühling. Als Eisskulptur. Ein passendes Ende\", dachte er bitter. Vielleicht war es das, was er suchte. Nicht den Tod, aber die absolute Kälte, die alles betäubt. Ein dunkler Schatten schälte sich aus dem Schneegestöber. Zuerst wirkte es wie ein Felsmassiv, eine Laune der Geologie, doch dann formten sich scharfe Kanten und spitze Giebel. Das Hotel 'Eiserner Adler'. Es thronte auf dem Felsvorsprung wie ein riesiger, steinerner Raubvogel, der bereit war, sich auf seine Beute zu stürzen. Die Architektur war eine krude Mischung aus Belle Époque und brutalem Funktionalismus – als hätte man einen Bunker mit einem Schloss gekreuzt. Es wirkte nicht einladend. Es wirkte hungrig. Elias stoppte den Wagen vor dem massiven Eingangsportal. Der Motor stotterte kurz, bevor er erstarb. Die plötzliche Stille im Inneren des Wagens war fast so bedrohlich wie der Lärm draußen. Der Wind rüttelte am Chassis, als wollte er Einlass fordern. Elias atmete tief durch, die Luft im Wagen war bereits kalt. Er griff nach seiner Tasche auf dem Beifahrersitz, seine Finger streiften das kühle Leder. [pause]\n\nEr stieß die Tür auf. Die Kälte traf ihn wie ein physischer Schlag, ein Hammer aus Eis. Sie war nicht nur kalt; sie war aggressiv. Sie biss sofort durch seinen Wollmantel, kroch unter die Haut und suchte seine Knochen. Der Wind heulte mit einer Stimme, die fast menschlich klang – ein langgezogenes, klagendes Wehklagen, das von den Felswänden widerhallte und ihm eine Gänsehaut über den Rücken jagte. Er hastete die steinerne Treppe hinauf, den Kopf gesenkt, um seine Augen vor den schneidenden Eiskristallen zu schützen. Seine Schuhe rutschten auf den vereisten Stufen. Er erreichte das Portal und drückte sich mit der Schulter gegen die schwere Eichentür. Das Holz war dunkel, fast schwarz, und mit Eisenbeschlägen verstärkt, die wie Klauen aussahen. Sie gab nur widerwillig nach, ächzend unter seinem Gewicht. Mit einem letzten Ruck stolperte er in die Lobby. Die Stille, die ihn empfing, war so abrupt, dass sie fast in den Ohren schmerzte. Der Sturm draußen war nur noch ein gedämpftes Grollen, wie ein wildes Tier, das ausgesperrt wurde. Elias blieb stehen, schwer atmend, und klopfte sich den Schnee von den Schultern. Die Flocken schmolzen sofort und hinterließen dunkle Flecken auf dem teuren Stoff.[pause]\n\nEr blickte auf. Die Lobby war riesig. Eine Kathedrale aus dunklem Holz und verblasstem Samt. Ein gigantischer Kamin dominierte die rechte Wand, doch das Feuer darin brannte nur schwach und spendete kaum Wärme. Der Geruch von altem Staub, kaltem Rauch und etwas anderem – etwas Modrigem, Süßlichem – hing in der Luft. Schatten tanzten in den Ecken, geworfen von flackernden Wandleuchtern, die aussahen, als hätten sie seit Jahrzehnten keine Glühbirnen mehr gesehen.[pause]\n\nElias ließ seinen Blick durch die Halle schweifen. Die Wände waren mit dunklen Paneelen verkleidet, auf denen Jagdszenen abgebildet waren. Die Tiere auf den Bildern wirkten gehetzt, ihre Augen vor Panik weit aufgerissen. In einer dunklen Nische, halb verborgen hinter einer massiven Säule, bemerkte er eine Bewegung. Eine junge Frau in einer Dienstmädchenuniform – viel zu groß für ihre schmächtige Gestalt – drückte sich an die Wand. Das war Greta. Ihre Augen waren weit aufgerissen, fixiert auf Elias, als wäre er ein Geist. Sie hielt ein Bündel schmutziger Handtücher wie einen Schutzschild vor die Brust. Als sich ihre Blicke trafen, zuckte sie zusammen und machte einen Schritt zurück, tiefer in den Schatten hinein. „Greta! Was stehst du da rum wie bestellt und nicht abgeholt?!\", donnerte eine Stimme durch die Halle.[pause]\n\n\nEin Mann löste sich aus den Schatten hinter dem Tresen. Arthur Goldmann. Er trug einen Anzug, der eine Spur zu teuer und eine Nummer zu eng war. Sein Gesicht war gerötet, und Schweißperlen standen auf seiner Stirn, trotz der Kälte im Raum. Greta quiekte leise auf und huschte lautlos durch eine Seitentür davon, wie eine Maus, die der Katze entkommen war. „Herr Thorne! Endlich! Ich dachte schon, der Berg hätte Sie verschluckt!\", rief Arthur mit einer Jovialität, die in der leeren Halle seltsam hohl klang. Er breitete die Arme aus, als wollte er Elias umarmen, ließ sie dann aber fallen. Arthur eilte um den Tresen herum und streckte ihm eine schwitzige Hand entgegen. Elias nahm sie zögernd. Sie war feucht und unangenehm warm, wie rohes Fleisch, das zu lange in der Sonne gelegen hatte. „Der Sturm ist schlimmer als vorhergesagt\", entgegnete Elias und zog seine Hand zurück, widerstand dem Impuls, sie an seinem Mantel abzuwischen. „Ich hätte fast die Einfahrt verpasst. Die Sichtweite ist gleich Null.\" „Ach, Wetterkapriolen! Das ist hier oben normal. Teil des Charmes, nicht wahr? Abgeschiedenheit, Ruhe... Exklusivität!\", Arthur lachte, ein abgehacktes, nervöses Geräusch. Seine Augen wanderten dabei fahrig zur Eingangstür, als würde er erwarten, dass noch jemand – oder etwas – hereinkam. „Karl! Karl, wo steckst du schon wieder? Wir haben einen Gast!\"[pause]\n\n\nEine schwere Eisentür hinter dem Tresen öffnete sich quietschend. Ein hagerer Mann trat heraus. Karl Menter, der Hausmeister. Er trug einen grauen Overall, der mit Ölflecken übersät war. Sein Gesicht war wie aus Stein gemeißelt, tiefgründige Falten zogen sich durch die ledrige Haut. Er sagte kein Wort, nickte Elias nur knapp zu – eine Geste, die eher wie eine Drohung wirkte als wie eine Begrüßung. „Nimm dem Herrn die Tasche ab, Karl! Zimmer 304!\", befahl Arthur. Karl schlurfte auf Elias zu, griff nach der Reisetasche und hievte sie sich wortlos über die Schulter, als wöge sie nichts. Elias spürte einen unangenehmen Luftzug, als der Mann an ihm vorbeiging – ein Geruch nach feuchter Erde und altem Metall.[pause]\n\n\n„Es ist... beeindruckend\", sagte Elias, um die Stille zu füllen, während er Karl nachsah. „Aber der Renovierungsbedarf ist offensichtlich. Die Bausubstanz wirkt angegriffen.\" Arthur winkte ab, eine fahrige Geste. Er tupfte sich mit einem Taschentuch über die Stirn. „Kleinigkeiten, Herr Thorne. Kosmetik! Das Fundament ist solide. Deutscher Stahlbeton und Fels. Das hier wird eine Goldgrube. Ein Wellness-Tempel für die Elite. Und Sie werden mir helfen, das Juwel zu schleifen.\"[pause]\n"],"color":"#432","bgcolor":"#653"},{"id":2,"type":"LoadAudio","pos":[-1099.1461364138586,3841.8830897871435],"size":[270,136],"flags":{},"order":6,"mode":0,"inputs":[{"localized_name":"audio","name":"audio","type":"COMBO","widget":{"name":"audio"},"link":null},{"localized_name":"audioUI","name":"audioUI","type":"AUDIO_UI","widget":{"name":"audioUI"},"link":null},{"localized_name":"upload","name":"upload","type":"AUDIOUPLOAD","widget":{"name":"upload"},"link":null}],"outputs":[{"localized_name":"AUDIO","name":"AUDIO","type":"AUDIO","links":[12]}],"title":"Speaker_Audio_File","properties":{"Node name for S&R":"LoadAudio"},"widgets_values":["de-benjamin-werner.wav",null,null]},{"id":1,"type":"PrimitiveStringMultiline","pos":[-1116.323020804012,4129.904742978083],"size":[610.6899289666005,523.5065626209483],"flags":{},"order":7,"mode":0,"inputs":[{"localized_name":"value","name":"value","type":"STRING","widget":{"name":"value"},"link":null}],"outputs":[{"localized_name":"STRING","name":"STRING","type":"STRING","links":[9]}],"title":"InputText","properties":{"Node name for S&R":"PrimitiveStringMultiline"},"widgets_values":["Das ist ein Startext, um die Anzahl der Tokens zu erhöhen.\n\n\"Karl! Karl, wo steckst du schon wieder? Wir haben einen Gast!\".\n\nDas ist ein Endtext, um die Anzahl der Tokens zu erhöhen.\n"]},{"id":20,"type":"PrimitiveInt","pos":[-1115.3871130428097,4846.735905348497],"size":[270,82],"flags":{},"order":8,"mode":0,"inputs":[{"localized_name":"value","name":"value","type":"INT","widget":{"name":"value"},"link":null}],"outputs":[{"localized_name":"INT","name":"INT","type":"INT","links":[16]}],"title":"Chunksize","properties":{"Node name for S&R":"PrimitiveInt"},"widgets_values":[200,"fixed"]},{"id":11,"type":"VibeVoiceSingleSpeakerNode","pos":[-14.170274471846989,4106.5537347146055],"size":[400,420],"flags":{},"order":10,"mode":0,"inputs":[{"localized_name":"voice_to_clone","name":"voice_to_clone","shape":7,"type":"AUDIO","link":12},{"localized_name":"lora","name":"lora","shape":7,"type":"LORA_CONFIG","link":null},{"localized_name":"text","name":"text","type":"STRING","widget":{"name":"text"},"link":9},{"localized_name":"model","name":"model","type":"COMBO","widget":{"name":"model"},"link":null},{"localized_name":"attention_type","name":"attention_type","type":"COMBO","widget":{"name":"attention_type"},"link":null},{"localized_name":"quantize_llm","name":"quantize_llm","type":"COMBO","widget":{"name":"quantize_llm"},"link":null},{"localized_name":"free_memory_after_generate","name":"free_memory_after_generate","type":"BOOLEAN","widget":{"name":"free_memory_after_generate"},"link":null},{"localized_name":"diffusion_steps","name":"diffusion_steps","type":"INT","widget":{"name":"diffusion_steps"},"link":null},{"localized_name":"seed","name":"seed","type":"INT","widget":{"name":"seed"},"link":10},{"localized_name":"cfg_scale","name":"cfg_scale","type":"FLOAT","widget":{"name":"cfg_scale"},"link":null},{"localized_name":"use_sampling","name":"use_sampling","type":"BOOLEAN","widget":{"name":"use_sampling"},"link":null},{"localized_name":"temperature","name":"temperature","shape":7,"type":"FLOAT","widget":{"name":"temperature"},"link":null},{"localized_name":"top_p","name":"top_p","shape":7,"type":"FLOAT","widget":{"name":"top_p"},"link":null},{"localized_name":"max_words_per_chunk","name":"max_words_per_chunk","shape":7,"type":"INT","widget":{"name":"max_words_per_chunk"},"link":16},{"localized_name":"voice_speed_factor","name":"voice_speed_factor","shape":7,"type":"FLOAT","widget":{"name":"voice_speed_factor"},"link":null}],"outputs":[{"localized_name":"audio","name":"audio","type":"AUDIO","links":[11,17]}],"properties":{"Node name for S&R":"VibeVoiceSingleSpeakerNode"},"widgets_values":["","VibeVoice-7B","auto","4bit",true,12,2311841090,"fixed",2.2,false,1.8,0.95,150,1]},{"id":21,"type":"SaveAudio","pos":[624.9509905278994,3932.723114395026],"size":[270,112],"flags":{},"order":9,"mode":0,"inputs":[{"localized_name":"audio","name":"audio","type":"AUDIO","link":17},{"localized_name":"filename_prefix","name":"filename_prefix","type":"STRING","widget":{"name":"filename_prefix"},"link":null},{"localized_name":"audioUI","name":"audioUI","type":"AUDIO_UI","widget":{"name":"audioUI"},"link":null}],"outputs":[],"title":"Save_Audio","properties":{},"widgets_values":["audio/ComfyUI"]}],"links":[[9,1,0,11,2,"STRING"],[10,4,0,11,8,"INT"],[11,11,0,5,0,"AUDIO"],[12,2,0,11,0,"AUDIO"],[16,20,0,11,13,"INT"],[17,11,0,21,0,"AUDIO"]],"groups":[],"config":{},"extra":{"ds":{"scale":1.0834705943388439,"offset":[1583.6922458492334,-3487.856403181578]},"workflowRendererVersion":"LG"},"version":0.4}
+{
+  "1": {
+    "inputs": {
+      "value": "Das ist ein Startext, um die Anzahl der Tokens zu erhöhen.\n\n\"Karl! Karl, wo steckst du schon wieder? Wir haben einen Gast!\".\n\nDas ist ein Endtext, um die Anzahl der Tokens zu erhöhen.\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "InputText"
+    }
+  },
+  "2": {
+    "inputs": {
+      "audio": "de-benjamin-werner.wav",
+      "audioUI": ""
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Speaker_Audio_File"
+    }
+  },
+  "4": {
+    "inputs": {
+      "value": 301
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "5": {
+    "inputs": {
+      "audioUI": "",
+      "audio": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "11": {
+    "inputs": {
+      "text": [
+        "1",
+        0
+      ],
+      "model": "VibeVoice-7B",
+      "attention_type": "auto",
+      "quantize_llm": "4bit",
+      "free_memory_after_generate": true,
+      "diffusion_steps": 12,
+      "seed": [
+        "4",
+        0
+      ],
+      "cfg_scale": 2.2,
+      "use_sampling": false,
+      "temperature": 1.8,
+      "top_p": 0.95,
+      "max_words_per_chunk": [
+        "20",
+        0
+      ],
+      "voice_speed_factor": 1,
+      "voice_to_clone": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "VibeVoiceSingleSpeakerNode",
+    "_meta": {
+      "title": "VibeVoice Single Speaker"
+    }
+  },
+  "17": {
+    "inputs": {
+      "lora_name": "Elise",
+      "llm_strength": 1,
+      "use_llm": true,
+      "use_diffusion_head": true,
+      "use_acoustic_connector": true,
+      "use_semantic_connector": true
+    },
+    "class_type": "VibeVoiceLoRANode",
+    "_meta": {
+      "title": "VibeVoice LoRA"
+    }
+  },
+  "20": {
+    "inputs": {
+      "value": 200
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Chunksize"
+    }
+  },
+  "21": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save_Audio"
+    }
+  }
+}
