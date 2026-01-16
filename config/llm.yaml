@@ -61,6 +61,7 @@ llm_system:
       request_timeout: 240
       include_thoughts: true
       thinking_budget: 1024
+      max_tokens: 8192
       capabilities:
         tools: true
         function_calling: true
@@ -80,6 +81,7 @@ llm_system:
       request_timeout: 240
       include_thoughts: false
       thinking_budget: 1024
+      max_tokens: 8192
       capabilities:
         tools: true
         function_calling: true
@@ -99,6 +101,7 @@ llm_system:
       request_timeout: 240
       include_thoughts: true
       thinking_budget: 4096
+      max_tokens: 8192
       capabilities:
         tools: true
         function_calling: true
@@ -118,6 +121,7 @@ llm_system:
       request_timeout: 240
       include_thoughts: false
       thinking_budget: 4096
+      max_tokens: 8192
       capabilities:
         tools: true
         function_calling: true
@@ -139,6 +143,7 @@ llm_system:
       context_window: 200000
       include_thoughts: false
       thinking_budget: 1024
+      max_tokens: 8192
       capabilities:
         tools: true
         function_calling: true
@@ -155,6 +160,7 @@ llm_system:
       context_window: 200000
       include_thoughts: false
       thinking_budget: 4096
+      max_tokens: 8192
       capabilities:
         tools: true
         function_calling: true
