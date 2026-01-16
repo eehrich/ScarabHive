@@ -350,12 +350,21 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             restoration_context = await strategy.get_restoration_context()
             
             if restoration_context:
-                # Prepend restoration context as system message
+                # Find position after last system message to insert restoration context
+                # This preserves the agent's system prompt while adding our context
+                insert_pos = 0
+                for i, msg in enumerate(new_messages):
+                    msg_role = msg.role if hasattr(msg, 'role') else msg.get('role')
+                    if msg_role == 'system':
+                        insert_pos = i + 1
+                    else:
+                        break  # Stop at first non-system message
+                
                 restoration_msg = ChatMessage(
                     role="system",
                     content=restoration_context
                 )
-                new_messages.insert(0, restoration_msg)
+                new_messages.insert(insert_pos, restoration_msg)
             
             # Build modified context with all fields
             modified_context = HookContext(
