@@ -645,9 +645,14 @@ llm_system:
 
     # Named profiles for specific models
     gemini-flash:
-      model_ref: gemini-3-0-flash
-      description: "Google Gemini Flash (streaming)"
+      model_ref: gemini-3-0-flash-nostream
+      description: "Google Gemini Flash"
       max_steps: 500
+
+    gemini-flash-stream:
+      model_ref: gemini-3-0-flash
+      description: "Google Gemini Flash"
+      max_steps: 500      
       
     gemini-flash-batch:
       model_ref: gemini-3-0-flash-batch
@@ -655,8 +660,13 @@ llm_system:
       max_steps: 500
       
     gemini-pro:
+      model_ref: gemini-3-0-pro-nostream
+      description: "Google Gemini Pro"
+      max_steps: 500
+
+    gemini-pro-stream:
       model_ref: gemini-3-0-pro
-      description: "Google Gemini Pro (streaming)"
+      description: "Google Gemini Pro"
       max_steps: 500
 
     gemini-pro-batch:
