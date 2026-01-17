@@ -584,4 +584,57 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             logger.exception(f"Error in manual compaction: {e}")
             if status:
                 await status.error(str(e))
+            return {"status": "error", "error": str(e)}   
+         
+    async def restore_multimodal(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Restore a compacted audio/image/video file back into context.
+        
+        Tool name: {{ name }}_restore_multimodal → e.g., 'context_engineer_restore_multimodal'
+        
+        Args:
+            params: {
+                "path": Full file path of the multimodal content to restore
+            }
+            
+        Returns:
+            {
+                "status": "success|error",
+                "message": str,
+                "file_info": {...},
+                "_multimodal_content": [...]  # Special key for content injection
+            }
+        """
+        status = params.get("_status")
+        
+        try:
+            path = params.get("path")
+            if not path:
+                error_msg = "Path parameter is required"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+            
+            session_id = params.get("_session_id", "default")
+            
+            if status:
+                await status.progress(f"Restoring multimodal content: {path}")
+            
+            result = await self._hooks_impl._handle_restore_multimodal(
+                path=path,
+                session_id=session_id
+            )
+            
+            if result.get("status") == "success" and status:
+                file_info = result.get("file_info", {})
+                content_type = file_info.get("type", "file")
+                await status.end(f"Restored {content_type}: {file_info.get('name', 'unknown')}")
+            elif result.get("status") == "error" and status:
+                await status.error(result.get("error", "Unknown error"))
+            
+            return result
+            
+        except Exception as e:
+            logger.exception(f"Error in restore_multimodal: {e}")
+            if status:
+                await status.error(str(e))
             return {"status": "error", "error": str(e)}
