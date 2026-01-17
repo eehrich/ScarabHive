@@ -1028,7 +1028,6 @@ class ComfyUIServer(SchemaBasedMCPServer):
         import time
         start_time = time.time()
         first_unknown_time: float | None = None  # Track when we first saw "unknown"
-        last_known_status: str | None = None  # Track last non-unknown status
         
         if status:
             await status.progress(f"Waiting for job {prompt_id} to complete (timeout: {timeout}s)")
@@ -1094,7 +1093,6 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     logger.debug("Job %s found after being unknown for %.1fs", 
                                 prompt_id, time.time() - first_unknown_time)
                 first_unknown_time = None
-                last_known_status = current_status
             
             # Update status message periodically (every 10s)
             if status and int(elapsed) % 10 == 0:
@@ -1281,7 +1279,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
         async def cancel_job(prompt_id: str) -> JSONResponse:
             """Cancel a job."""
             result = await self.client.cancel(prompt_id)
-            self.job_tracker.update_status(prompt_id, "cancelled")
+            # Only update tracker if cancel was successful
+            if result.get("status") in ("cancelled", "already_finished"):
+                self.job_tracker.update_status(prompt_id, "cancelled")
             return JSONResponse(result)
         
         @router.get("/workflows")

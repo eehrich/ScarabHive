@@ -226,14 +226,43 @@ class ComfyUIClient:
             Dict with cancellation result
         """
         try:
+            # First, check the job status to determine the right action
+            status = await self.get_status(prompt_id)
+            job_status = status.get("status", "unknown")
+            
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                # Interrupt current execution
-                await session.post(f"{self.base_url}/interrupt")
-                
-                # Delete from queue
-                data = {"delete": [prompt_id]}
-                async with session.post(f"{self.base_url}/queue", json=data):
-                    return {"status": "cancelled", "prompt_id": prompt_id}
+                if job_status == "running":
+                    # Job is currently running - interrupt it
+                    # Note: /interrupt stops the CURRENT job, so we verify it's ours
+                    logger.info(f"Interrupting running job {prompt_id}")
+                    async with session.post(f"{self.base_url}/interrupt") as resp:
+                        if resp.status != 200:
+                            logger.warning(f"Interrupt returned status {resp.status}")
+                    return {"status": "cancelled", "prompt_id": prompt_id, "was_running": True}
+                    
+                elif job_status in ("pending", "queued"):
+                    # Job is in queue - delete it from queue
+                    # Note: ComfyUI API returns "pending", job_tracker uses "queued"
+                    logger.info(f"Removing pending job {prompt_id} from queue")
+                    data = {"delete": [prompt_id]}
+                    async with session.post(f"{self.base_url}/queue", json=data) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"Queue delete returned status {resp.status}")
+                    return {"status": "cancelled", "prompt_id": prompt_id, "was_pending": True}
+                    
+                elif job_status in ("completed", "failed"):
+                    # Job already finished
+                    return {"status": "already_finished", "prompt_id": prompt_id, "job_status": job_status}
+                    
+                else:
+                    # Unknown status - try both operations
+                    logger.warning(f"Unknown status '{job_status}' for job {prompt_id}, trying both cancel methods")
+                    await session.post(f"{self.base_url}/interrupt")
+                    data = {"delete": [prompt_id]}
+                    async with session.post(f"{self.base_url}/queue", json=data):
+                        pass
+                    return {"status": "cancelled", "prompt_id": prompt_id, "method": "both"}
+                    
         except Exception as e:
             logger.exception("Error cancelling job %s", prompt_id)
             return {"status": "error", "error": str(e)}
