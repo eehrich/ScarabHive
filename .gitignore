@@ -19,6 +19,7 @@ logs/
 *.m4a
 *.ogg
 *.aac
+*_bak*
 .journal
 .cache/
 tmp_backlog.md
