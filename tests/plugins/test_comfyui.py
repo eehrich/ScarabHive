@@ -1377,3 +1377,122 @@ class TestComfyUICleanup:
         # Old file should be deleted, recent should remain
         assert not old_file.exists()
         assert recent_file.exists()
+
+
+# =============================================================================
+# Session Isolation Tests
+# =============================================================================
+
+class TestSessionIsolation:
+    """Tests for session-based directory isolation via {session_id} template."""
+    
+    @pytest.fixture
+    def mock_system_config(self) -> MagicMock:
+        """Create mock system config."""
+        return MagicMock()
+    
+    @pytest.fixture
+    def mock_mcp_config_with_template(self, tmp_path: Path) -> MagicMock:
+        """Create mock MCP config with {session_id} template in output_dir."""
+        config = MagicMock()
+        config.host = "127.0.0.1"
+        config.port = 8188
+        config.timeout_seconds = 30
+        config.cleanup_age_hours = 0  # Disable cleanup for tests
+        # Use {session_id} template
+        config.output_dir = str(tmp_path / "outputs" / "{session_id}")
+        config.workflow_files_dir = str(tmp_path / "workflows")
+        config.workflows = []
+        return config
+    
+    @pytest.fixture
+    def mock_mcp_config_without_template(self, tmp_path: Path) -> MagicMock:
+        """Create mock MCP config without template (traditional static path)."""
+        config = MagicMock()
+        config.host = "127.0.0.1"
+        config.port = 8188
+        config.timeout_seconds = 30
+        config.cleanup_age_hours = 0
+        config.output_dir = str(tmp_path / "outputs")  # No {session_id}
+        config.workflow_files_dir = str(tmp_path / "workflows")
+        config.workflows = []
+        return config
+    
+    def test_resolve_output_dir_with_session_id(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config_with_template: MagicMock,
+        tmp_path: Path
+    ) -> None:
+        """Test that {session_id} is resolved to session-specific directory."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_with_template)
+        
+        # Resolve with session ID
+        resolved = server._resolve_output_dir("session_abc123")
+        
+        expected = tmp_path / "outputs" / "session_abc123"
+        assert resolved == expected
+        assert resolved.exists()  # Directory should be created
+    
+    def test_resolve_output_dir_without_session_id_falls_back(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config_with_template: MagicMock,
+        tmp_path: Path
+    ) -> None:
+        """Test that missing session_id falls back to base path."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_with_template)
+        
+        # Resolve without session ID
+        resolved = server._resolve_output_dir(None)
+        
+        # Should return base path (without {session_id})
+        expected = tmp_path / "outputs"
+        assert resolved == expected
+    
+    def test_resolve_output_dir_no_template(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config_without_template: MagicMock,
+        tmp_path: Path
+    ) -> None:
+        """Test that paths without template are returned unchanged."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_without_template)
+        
+        # Resolve with or without session ID - should be same
+        resolved_with = server._resolve_output_dir("session_abc123")
+        resolved_without = server._resolve_output_dir(None)
+        
+        expected = tmp_path / "outputs"
+        assert resolved_with == expected
+        assert resolved_without == expected
+    
+    def test_multiple_sessions_get_isolated_directories(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config_with_template: MagicMock,
+        tmp_path: Path
+    ) -> None:
+        """Test that different sessions get different directories."""
+        from plugins.comfyui.server import ComfyUIServer
+        
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_with_template)
+        
+        # Two different sessions
+        dir1 = server._resolve_output_dir("session_001")
+        dir2 = server._resolve_output_dir("session_002")
+        
+        # Should be different directories
+        assert dir1 != dir2
+        assert dir1.name == "session_001"
+        assert dir2.name == "session_002"
+        
+        # Both should exist
+        assert dir1.exists()
+        assert dir2.exists()

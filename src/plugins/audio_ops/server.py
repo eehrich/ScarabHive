@@ -51,17 +51,54 @@ class AudioOpsServer(SchemaBasedMCPServer):
         """
         super().__init__(name, system_config, mcp_config)
         
-        # Storage path configuration
-        self.storage_path = Path(getattr(mcp_config, 'storage_path', "data/audio_ops"))
-        self.storage_path.mkdir(parents=True, exist_ok=True)
+        # Storage path configuration - supports {session_id} template for session isolation
+        self._storage_path_template = getattr(mcp_config, 'storage_path', "data/audio_ops")
+        # Base storage path (without session_id substitution) for cleanup and fallback
+        self._storage_path_base = Path(self._storage_path_template.replace("{session_id}", "").rstrip("/\\"))
+        self._storage_path_base.mkdir(parents=True, exist_ok=True)
+        # Legacy: self.storage_path for backward compatibility (uses base path)
+        self.storage_path = self._storage_path_base
         
         logger.info(f"AudioOpsServer initialized: storage_path={self.storage_path}")
     
-    def _validate_path(self, filename: str) -> Path:
+    def _resolve_storage_path(self, session_id: str | None = None) -> Path:
+        """Resolve storage path, substituting {session_id} if present in template.
+        
+        This enables session-based isolation of audio files. When multiple agents
+        run concurrently, each gets its own subdirectory to avoid file conflicts.
+        
+        Args:
+            session_id: Session ID to substitute into the path template.
+                       If None and template contains {session_id}, returns base path.
+        
+        Returns:
+            Resolved Path object with {session_id} substituted if applicable.
+            
+        Example:
+            Template: "data/writer/audio/temp/{session_id}"
+            Session ID: "abc123"
+            Result: Path("data/writer/audio/temp/abc123")
+        """
+        if "{session_id}" not in self._storage_path_template:
+            # No template - return base path
+            return self._storage_path_base
+        
+        if not session_id:
+            # Template exists but no session_id provided - use base path
+            logger.debug("storage_path template contains {session_id} but no session_id provided, using base path")
+            return self._storage_path_base
+        
+        # Substitute session_id into template
+        resolved_path = Path(self._storage_path_template.replace("{session_id}", session_id))
+        resolved_path.mkdir(parents=True, exist_ok=True)
+        return resolved_path
+
+    def _validate_path(self, filename: str, session_id: str | None = None) -> Path:
         """Validate and resolve file path within storage directory.
         
         Args:
             filename: Filename to validate
+            session_id: Optional session ID for session-isolated storage paths
             
         Returns:
             Resolved Path object
@@ -76,25 +113,32 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 details={"reason": "empty_filename"}
             )
         
+        # Resolve effective storage path (with session isolation if configured)
+        effective_storage = self._resolve_storage_path(session_id)
+        
         # Normalize path separators
         filename = filename.replace("\\", "/")
         
         # If filename contains the storage path, strip it to get just the filename
         # This handles cases where ComfyUI returns full paths like "data/writer/audio/temp/file.flac"
-        storage_str = str(self.storage_path).replace("\\", "/")
-        if filename.startswith(storage_str + "/"):
-            filename = filename[len(storage_str) + 1:]
-        elif filename.startswith(storage_str):
-            filename = filename[len(storage_str):]
-            if filename.startswith("/"):
-                filename = filename[1:]
+        # Check both base storage path and effective storage path
+        for storage in [effective_storage, self._storage_path_base]:
+            storage_str = str(storage).replace("\\", "/")
+            if filename.startswith(storage_str + "/"):
+                filename = filename[len(storage_str) + 1:]
+                break
+            elif filename.startswith(storage_str):
+                filename = filename[len(storage_str):]
+                if filename.startswith("/"):
+                    filename = filename[1:]
+                break
         
         # If it's still a path (contains /), extract just the filename for safety
         # This handles edge cases where paths don't match exactly
         if "/" in filename:
             # Check if the path starts with our storage path components
             filename_path = Path(filename)
-            storage_parts = self.storage_path.parts
+            storage_parts = effective_storage.parts
             filename_parts = filename_path.parts
             
             # Find where the actual filename starts (after storage path overlap)
@@ -117,16 +161,16 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 details={"file": filename, "reason": "path_traversal_attempt"}
             )
         
-        resolved = (self.storage_path / filename).resolve()
+        resolved = (effective_storage / filename).resolve()
         
         # Ensure still within storage path
         try:
-            resolved.relative_to(self.storage_path.resolve())
+            resolved.relative_to(effective_storage.resolve())
         except ValueError:
             raise AudioOpsError(
                 f"File must be within storage directory: {filename}",
                 error_type="SecurityError",
-                details={"file": filename, "storage_path": str(self.storage_path)}
+                details={"file": filename, "storage_path": str(effective_storage)}
             )
         
         return resolved
@@ -256,9 +300,10 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     details={"start_time": start_time, "end_time": end_time}
                 )
             
-            # Validate paths
-            source_path = self._validate_path(source_file)
-            dest_path = self._validate_path(dest_file)
+            # Validate paths (with session isolation if configured)
+            session_id = params.get("_session_id")
+            source_path = self._validate_path(source_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id)
             
             # Validate destination format
             dest_format = self._validate_format(dest_path)
@@ -390,8 +435,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     details={"crossfade_ms": crossfade_ms}
                 )
             
-            # Validate destination path and format
-            dest_path = self._validate_path(dest_file)
+            # Validate destination path and format (with session isolation if configured)
+            session_id = params.get("_session_id")
+            dest_path = self._validate_path(dest_file, session_id)
             dest_format = self._validate_format(dest_path)
             
             if status:
@@ -401,7 +447,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             segments = []
             total_source_duration = 0.0
             for i, filename in enumerate(source_files):
-                source_path = self._validate_path(filename)
+                source_path = self._validate_path(filename, session_id)
                 if not source_path.exists():
                     raise AudioOpsError(
                         f"Source file not found: {filename}",
@@ -497,7 +543,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if not filename:
                 raise AudioOpsError("file parameter is required", "ValidationError")
             
-            filepath = self._validate_path(filename)
+            # Validate path (with session isolation if configured)
+            session_id = params.get("_session_id")
+            filepath = self._validate_path(filename, session_id)
             
             if not filepath.exists():
                 raise AudioOpsError(
@@ -626,8 +674,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     details={"channels": channels}
                 )
             
-            # Validate destination path and format
-            dest_path = self._validate_path(dest_file)
+            # Validate destination path and format (with session isolation if configured)
+            session_id = params.get("_session_id")
+            dest_path = self._validate_path(dest_file, session_id)
             dest_format = self._validate_format(dest_path)
             
             if status:
@@ -705,19 +754,23 @@ class AudioOpsServer(SchemaBasedMCPServer):
         try:
             pattern = params.get("pattern")
             
+            # Resolve storage path (with session isolation if configured)
+            session_id = params.get("_session_id")
+            effective_storage = self._resolve_storage_path(session_id)
+            
             if status:
-                await status.progress(f"Scanning: {self.storage_path}")
+                await status.progress(f"Scanning: {effective_storage}")
             
             files = []
             
             if pattern:
                 # Use glob pattern
-                matching_files = list(self.storage_path.glob(pattern))
+                matching_files = list(effective_storage.glob(pattern))
             else:
                 # List all supported audio files
                 matching_files = []
                 for ext in SUPPORTED_FORMATS:
-                    matching_files.extend(self.storage_path.glob(f"*{ext}"))
+                    matching_files.extend(effective_storage.glob(f"*{ext}"))
             
             for filepath in sorted(matching_files):
                 if filepath.is_file() and filepath.suffix.lower() in SUPPORTED_FORMATS:
@@ -742,7 +795,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             return {
                 "status": "success",
-                "storage_path": str(self.storage_path),
+                "storage_path": str(effective_storage),
                 "files": files,
                 "total_count": len(files)
             }
@@ -782,8 +835,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if not filename:
                 raise AudioOpsError("file is required", "ValidationError")
             
-            # Validate path and load audio
-            filepath = self._validate_path(filename)
+            # Validate path and load audio (with session isolation if configured)
+            session_id = params.get("_session_id")
+            filepath = self._validate_path(filename, session_id)
             if not filepath.exists():
                 raise AudioOpsError(
                     f"File not found: {filename}",
@@ -837,9 +891,10 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 segment = audio[start_ms:end_ms]
                 segment_duration = len(segment) / 1000.0
                 
-                # Save segment to temp file for multimodal content
+                # Save segment to temp file for multimodal content (in session-isolated dir)
+                effective_storage = self._resolve_storage_path(session_id)
                 segment_filename = f"_temp_segment_{filepath.stem}.wav"
-                segment_path = self.storage_path / segment_filename
+                segment_path = effective_storage / segment_filename
                 segment.export(str(segment_path), format="wav")
                 output_path = segment_path
                 
@@ -993,10 +1048,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         details={"mix_factor": validated_factor}
                     )
             
-            # Validate paths
-            file1_path = self._validate_path(file1)
-            file2_path = self._validate_path(file2)
-            dest_path = self._validate_path(dest_file)
+            # Validate paths (with session isolation if configured)
+            session_id = params.get("_session_id")
+            file1_path = self._validate_path(file1, session_id)
+            file2_path = self._validate_path(file2, session_id)
+            dest_path = self._validate_path(dest_file, session_id)
             
             if not file1_path.exists():
                 raise AudioOpsError(
@@ -1387,9 +1443,10 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         details={"gain_db": validated_gain}
                     )
             
-            # Validate paths
-            source_path = self._validate_path(source_file)
-            dest_path = self._validate_path(dest_file)
+            # Validate paths (with session isolation if configured)
+            session_id = params.get("_session_id")
+            source_path = self._validate_path(source_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id)
             
             if not source_path.exists():
                 raise AudioOpsError(

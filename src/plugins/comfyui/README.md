@@ -67,6 +67,7 @@ plugins:
       unknown_threshold_seconds: 60  # Fail early if job stays unknown (lost/dropped)
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
+      cleanup_age_hours: 48  # Auto-delete files older than 48 hours
       workflows:
         - id: sd15_txt2img
           name: "SD 1.5 Text-to-Image"
@@ -103,6 +104,28 @@ plugins:
               node_id: "3"
               field: inputs.seed
 ```
+
+### Session-Based Isolation
+
+For multi-agent scenarios where multiple agents may generate files concurrently, use the `{session_id}` template in `output_dir` to isolate outputs per session:
+
+```yaml
+plugins:
+  servers:
+    writer_tts_comfyui:
+      type: comfyui
+      enabled: true
+      # Each session gets its own subdirectory
+      output_dir: "data/writer/audio/temp/{session_id}"
+      # ... rest of config
+```
+
+When `{session_id}` is present in the path:
+- Each agent session gets an isolated directory (e.g., `data/writer/audio/temp/sess_abc123/`)
+- Prevents file conflicts when multiple agents work in parallel
+- If no session_id is available, falls back to the base path (without `{session_id}`)
+
+**Use case**: Audio engineers generating TTS files simultaneously - each gets their own temp directory.
 
 ### Workflow Configuration Fields
 

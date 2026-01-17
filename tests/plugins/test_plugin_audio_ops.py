@@ -2309,3 +2309,151 @@ class TestVolumeEnvelope:
         assert result["envelope"][0]["time"] == 0.0
         assert result["envelope"][1]["time"] == 1.0
         assert result["envelope"][2]["time"] == 2.0
+
+
+# =============================================================================
+# Session Isolation Tests
+# =============================================================================
+
+class TestSessionIsolation:
+    """Tests for session-based directory isolation via {session_id} template."""
+    
+    @pytest.fixture
+    def mock_system_config(self) -> MagicMock:
+        """Mock AgentSystemConfig."""
+        return MagicMock()
+    
+    @pytest.fixture
+    def mock_mcp_config_with_template(self, tmp_path: Path) -> MagicMock:
+        """Mock MCPConfig with {session_id} template in storage_path."""
+        config = MagicMock()
+        # Use {session_id} template
+        config.storage_path = str(tmp_path / "audio" / "{session_id}")
+        return config
+    
+    @pytest.fixture
+    def mock_mcp_config_without_template(self, tmp_path: Path) -> MagicMock:
+        """Mock MCPConfig without template (traditional static path)."""
+        config = MagicMock()
+        config.storage_path = str(tmp_path / "audio")  # No {session_id}
+        return config
+    
+    @pytest.fixture
+    def server_with_template(
+        self, mock_system_config: MagicMock, mock_mcp_config_with_template: MagicMock
+    ) -> "AudioOpsServer":
+        """Create AudioOpsServer with session template."""
+        from plugins.audio_ops.server import AudioOpsServer
+        return AudioOpsServer("audio_ops", mock_system_config, mock_mcp_config_with_template)
+    
+    @pytest.fixture
+    def server_without_template(
+        self, mock_system_config: MagicMock, mock_mcp_config_without_template: MagicMock
+    ) -> "AudioOpsServer":
+        """Create AudioOpsServer without session template."""
+        from plugins.audio_ops.server import AudioOpsServer
+        return AudioOpsServer("audio_ops", mock_system_config, mock_mcp_config_without_template)
+    
+    def test_resolve_storage_path_with_session_id(
+        self, server_with_template: "AudioOpsServer", tmp_path: Path
+    ) -> None:
+        """Test that {session_id} is resolved to session-specific directory."""
+        # Resolve with session ID
+        resolved = server_with_template._resolve_storage_path("session_abc123")
+        
+        expected = tmp_path / "audio" / "session_abc123"
+        assert resolved == expected
+        assert resolved.exists()  # Directory should be created
+    
+    def test_resolve_storage_path_without_session_id_falls_back(
+        self, server_with_template: "AudioOpsServer", tmp_path: Path
+    ) -> None:
+        """Test that missing session_id falls back to base path."""
+        # Resolve without session ID
+        resolved = server_with_template._resolve_storage_path(None)
+        
+        # Should return base path (without {session_id})
+        expected = tmp_path / "audio"
+        assert resolved == expected
+    
+    def test_resolve_storage_path_no_template(
+        self, server_without_template: "AudioOpsServer", tmp_path: Path
+    ) -> None:
+        """Test that paths without template are returned unchanged."""
+        # Resolve with or without session ID - should be same
+        resolved_with = server_without_template._resolve_storage_path("session_abc123")
+        resolved_without = server_without_template._resolve_storage_path(None)
+        
+        expected = tmp_path / "audio"
+        assert resolved_with == expected
+        assert resolved_without == expected
+    
+    def test_multiple_sessions_get_isolated_directories(
+        self, server_with_template: "AudioOpsServer", tmp_path: Path
+    ) -> None:
+        """Test that different sessions get different directories."""
+        # Two different sessions
+        dir1 = server_with_template._resolve_storage_path("session_001")
+        dir2 = server_with_template._resolve_storage_path("session_002")
+        
+        # Should be different directories
+        assert dir1 != dir2
+        assert dir1.name == "session_001"
+        assert dir2.name == "session_002"
+        
+        # Both should exist
+        assert dir1.exists()
+        assert dir2.exists()
+    
+    @pytest.mark.asyncio
+    async def test_validate_path_uses_session_isolation(
+        self, server_with_template: "AudioOpsServer", tmp_path: Path, mock_status: MagicMock
+    ) -> None:
+        """Test that _validate_path uses session-specific directory."""
+        if not HAS_PYDUB:
+            pytest.skip("pydub not available")
+        
+        session_id = "test_session"
+        session_dir = tmp_path / "audio" / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create a test file in the session directory
+        audio = AudioSegment.silent(duration=1000)
+        test_file = session_dir / "test.wav"
+        audio.export(str(test_file), format="wav")
+        
+        # _validate_path should resolve to the session directory
+        resolved = server_with_template._validate_path("test.wav", session_id)
+        assert resolved == test_file
+    
+    @pytest.mark.asyncio
+    async def test_list_uses_session_directory(
+        self, server_with_template: "AudioOpsServer", tmp_path: Path, mock_status: MagicMock
+    ) -> None:
+        """Test that list operation uses session-specific directory."""
+        if not HAS_PYDUB:
+            pytest.skip("pydub not available")
+        
+        # Create files in two different session directories
+        session1_dir = tmp_path / "audio" / "session_001"
+        session2_dir = tmp_path / "audio" / "session_002"
+        session1_dir.mkdir(parents=True, exist_ok=True)
+        session2_dir.mkdir(parents=True, exist_ok=True)
+        
+        audio = AudioSegment.silent(duration=1000)
+        (session1_dir / "file_a.wav").write_bytes(b"fake audio 1")
+        audio.export(str(session1_dir / "session1_file.wav"), format="wav")
+        audio.export(str(session2_dir / "session2_file.wav"), format="wav")
+        
+        # List with session_001 should only see session1's files
+        result = await server_with_template.list({
+            "_session_id": "session_001",
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert str(session1_dir) in result["storage_path"]
+        # Should find session1_file.wav
+        file_names = [f["name"] for f in result["files"]]
+        assert "session1_file.wav" in file_names
+        assert "session2_file.wav" not in file_names

@@ -59,8 +59,14 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
         # Threshold for detecting lost jobs (unknown status) - fail early if job stays unknown
         self.unknown_threshold = getattr(mcp_config, 'unknown_threshold_seconds', 60)
-        self.output_dir = Path(getattr(mcp_config, 'output_dir', "data/comfyui/outputs"))
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Output directory - supports {session_id} template for session isolation
+        self._output_dir_template = getattr(mcp_config, 'output_dir', "data/comfyui/outputs")
+        # Base output dir (without session_id substitution) for cleanup and fallback
+        self._output_dir_base = Path(self._output_dir_template.replace("{session_id}", "").rstrip("/\\"))
+        self._output_dir_base.mkdir(parents=True, exist_ok=True)
+        # Legacy: self.output_dir for backward compatibility (uses base path)
+        self.output_dir = self._output_dir_base
         self.cleanup_age_hours = int(getattr(mcp_config, 'cleanup_age_hours', 48))
         
         # Parse workflow configurations
@@ -102,6 +108,38 @@ class ComfyUIServer(SchemaBasedMCPServer):
             self.host, self.port, len(self.workflows)
         )
     
+    def _resolve_output_dir(self, session_id: str | None = None) -> Path:
+        """Resolve output directory, substituting {session_id} if present in template.
+        
+        This enables session-based isolation of output files. When multiple agents
+        run concurrently, each gets its own subdirectory to avoid file conflicts.
+        
+        Args:
+            session_id: Session ID to substitute into the path template.
+                       If None and template contains {session_id}, returns base path.
+        
+        Returns:
+            Resolved Path object with {session_id} substituted if applicable.
+            
+        Example:
+            Template: "data/writer/audio/temp/{session_id}"
+            Session ID: "abc123"
+            Result: Path("data/writer/audio/temp/abc123")
+        """
+        if "{session_id}" not in self._output_dir_template:
+            # No template - return base path
+            return self._output_dir_base
+        
+        if not session_id:
+            # Template exists but no session_id provided - use base path
+            logger.debug("output_dir template contains {session_id} but no session_id provided, using base path")
+            return self._output_dir_base
+        
+        # Substitute session_id into template
+        resolved_path = Path(self._output_dir_template.replace("{session_id}", session_id))
+        resolved_path.mkdir(parents=True, exist_ok=True)
+        return resolved_path
+
     async def _startup_sync(self) -> None:
         """Sync job tracker with ComfyUI queue on startup.
         
@@ -477,6 +515,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
         include_content = params.get("include_content", False)
         output_prefix = params.get("output_prefix", "comfy")
         
+        # Resolve output directory with session isolation if configured
+        session_id = params.get("_session_id")
+        effective_output_dir = self._resolve_output_dir(session_id)
+        
         if status:
             await status.progress(f"Fetching results for {prompt_id}")
         
@@ -533,7 +575,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
                                     file_info.get("type", "output")
                                 )
                                 local_filename = f"{output_prefix}_{file_info['filename']}"
-                                local_path = self.output_dir / local_filename
+                                local_path = effective_output_dir / local_filename
                                 local_path.parent.mkdir(parents=True, exist_ok=True)
                                 local_path.write_bytes(file_data)
                                 # Return filename only (relative to output_dir) for LLM/audio_ops compatibility
@@ -572,7 +614,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
                             # Save text to file
                             try:
                                 text_filename = f"{output_prefix}_text_{node_id}_{idx}.txt"
-                                local_path = self.output_dir / text_filename
+                                local_path = effective_output_dir / text_filename
                                 local_path.parent.mkdir(parents=True, exist_ok=True)
                                 local_path.write_text(text_content, encoding="utf-8")
                                 # Return filename only (relative to output_dir) for LLM compatibility
@@ -595,7 +637,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     if download:
                         try:
                             text_filename = f"{output_prefix}_text_{node_id}.txt"
-                            local_path = self.output_dir / text_filename
+                            local_path = effective_output_dir / text_filename
                             local_path.parent.mkdir(parents=True, exist_ok=True)
                             local_path.write_text(text_data, encoding="utf-8")
                             # Return filename only (relative to output_dir) for LLM compatibility
@@ -756,6 +798,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
         file_path = params.get("file_path")
         filename = params.get("filename")
         
+        # Resolve output directory with session isolation if configured
+        session_id = params.get("_session_id")
+        effective_output_dir = self._resolve_output_dir(session_id)
+        
         if not any([prompt_id, file_path, filename]):
             return {
                 "error": "One of prompt_id, file_path, or filename is required",
@@ -838,20 +884,20 @@ class ComfyUIServer(SchemaBasedMCPServer):
             if file_path:
                 path_obj = Path(file_path)
                 if not path_obj.is_absolute():
-                    path_obj = self.output_dir / path_obj
+                    path_obj = effective_output_dir / path_obj
             else:
                 # Search by filename
-                path_obj = self.output_dir / filename
+                path_obj = effective_output_dir / filename
                 if not path_obj.exists():
                     # Try to find in subdirectories
-                    matches = list(self.output_dir.rglob(filename))
+                    matches = list(effective_output_dir.rglob(filename))
                     if matches:
                         path_obj = matches[0]
             
             if not path_obj.exists():
                 return {
                     "error": f"File not found: {file_path or filename}",
-                    "searched_in": str(self.output_dir),
+                    "searched_in": str(effective_output_dir),
                     "hint": "Provide a valid file path or use prompt_id to load job outputs"
                 }
             
@@ -1050,7 +1096,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         "prompt_id": prompt_id,
                         "download": True,
                         "include_content": True,
-                        "output_prefix": params.get("output_prefix", "comfy")
+                        "output_prefix": params.get("output_prefix", "comfy"),
+                        "_session_id": params.get("_session_id")  # Pass through session_id for isolation
                     }
                     result = await self._op_result(result_params, None)
                     result["elapsed_seconds"] = elapsed
