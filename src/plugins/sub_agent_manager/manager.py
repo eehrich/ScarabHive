@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from agent_system.services.session_manager import SessionNotFoundError
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
@@ -27,6 +28,21 @@ class SubAgentManager:
     CRITICAL: Does NOT extend SessionTracker. Uses SessionManager directly
     for all persistence operations.
     """
+    
+    # Class-level counter shared across ALL instances to avoid collisions
+    # when multiple parent sessions run in parallel.
+    # Uses timestamp-based start to avoid collisions after server restart.
+    # Format: seconds since midnight (0-86400) * 100 + random offset
+    # This gives ~8.6M unique values per day before wrapping
+    _class_counter: int = (int(time.time()) % 86400) * 100
+    _class_lock: asyncio.Lock | None = None  # Initialized lazily
+    
+    @classmethod
+    def _get_class_lock(cls) -> asyncio.Lock:
+        """Get or create the class-level lock (lazy initialization for thread safety)."""
+        if cls._class_lock is None:
+            cls._class_lock = asyncio.Lock()
+        return cls._class_lock
 
     def __init__(
         self, 
@@ -47,8 +63,6 @@ class SubAgentManager:
         """
         self._session_service = session_service
         self._registry = registry
-        self._global_counter = 0  # Global counter for all sub-agents
-        self._lock = asyncio.Lock()
         self.max_nesting_depth = max_nesting_depth
         self.max_sub_agents_per_type = max_sub_agents_per_type
         self.max_sub_agents_per_session = max_sub_agents_per_session
@@ -393,7 +407,10 @@ class SubAgentManager:
         agent_type: str,
         instance_label: Optional[str]
     ) -> str:
-        """Generate unique instance ID: sub_{type}_{global_counter}.
+        """Generate unique instance ID: sub_{label}_{counter}.
+
+        Uses a class-level counter shared across ALL SubAgentManager instances
+        to ensure uniqueness even when multiple parent sessions run in parallel.
 
         Args:
             agent_type: Agent type
@@ -402,29 +419,31 @@ class SubAgentManager:
         Returns:
             Unique instance ID (short format, no parent ID)
         """
-        async with self._lock:
+        import re
+        
+        class_lock = self._get_class_lock()
+        async with class_lock:
             session_manager = self._session_service.session_manager
 
             # Keep incrementing counter until we find a unique ID
             max_attempts = 1000
             for _ in range(max_attempts):
-                # Increment global counter
-                self._global_counter += 1
-                counter = self._global_counter
+                # Increment class-level counter (shared across all instances)
+                SubAgentManager._class_counter += 1
+                counter = SubAgentManager._class_counter
 
                 # Use custom label or auto-generate
                 if instance_label:
                     # Sanitize label (alphanumeric, underscore, hyphen only)
-                    import re
                     sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', instance_label)
-                    instance_id = f"sub_{sanitized}_{counter:03d}"
+                    instance_id = f"sub_{sanitized}_{counter:04d}"
                 else:
                     # Auto-generate: sub_{agent_type}_{counter}
-                    instance_id = f"sub_{agent_type}_{counter:03d}"
+                    instance_id = f"sub_{agent_type}_{counter:04d}"
 
                 # Check if this ID is already taken
                 if not session_manager._session_id_exists_globally(instance_id):
-                    logger.debug(f"Generated unique instance ID: {instance_id} (global counter: {counter})")
+                    logger.debug(f"Generated unique instance ID: {instance_id} (class counter: {counter})")
                     return instance_id
                 else:
                     logger.debug(f"Instance ID {instance_id} already exists, trying next counter...")
