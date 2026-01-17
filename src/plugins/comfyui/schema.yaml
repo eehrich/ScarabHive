@@ -128,6 +128,17 @@ config:
       description: Timeout for ComfyUI operations (seconds)
       default: 300
     
+    unknown_threshold_seconds:
+      type: integer
+      description: >
+        Fail early if a job stays in "unknown" status for this many seconds.
+        If a job is not found in ComfyUI's queue or history after this threshold,
+        it's considered lost/dropped and marked as failed immediately rather than
+        waiting for the full timeout. This handles cases where jobs are lost due to
+        network issues, server restarts, or queue clearing.
+      default: 60
+      minimum: 1
+    
     output_dir:
       type: string
       description: Directory where ComfyUI outputs are saved

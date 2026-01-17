@@ -64,6 +64,7 @@ plugins:
       host: "127.0.0.1"
       port: 8188
       timeout_seconds: 300
+      unknown_threshold_seconds: 60  # Fail early if job stays unknown (lost/dropped)
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
       workflows:
@@ -196,6 +197,8 @@ Response:
 ```
 
 **Note**: Timeout is configured via plugin config (`timeout_seconds`), not per-request.
+
+**Lost Job Detection**: If a job stays in "unknown" status (not in queue, not in history) for `unknown_threshold_seconds` (default: 60s), it fails immediately rather than waiting for the full timeout. This handles jobs that were lost/dropped by ComfyUI.
 
 Response (success):
 ```json

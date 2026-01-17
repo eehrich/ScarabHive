@@ -719,6 +719,58 @@ class TestComfyUIServer:
         mock_status.error.assert_called_once()
     
     @pytest.mark.asyncio
+    async def test_wait_for_completion_unknown_job_detection(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path
+    ) -> None:
+        """Test wait_for_completion fails early when job stays unknown.
+        
+        If a job is never found in ComfyUI queue or history (unknown status),
+        it should fail after the unknown_threshold rather than waiting for full timeout.
+        This handles cases where the job was lost/dropped.
+        """
+        from plugins.comfyui.server import ComfyUIServer
+        import time
+        
+        # Set a long timeout (30s) but short unknown threshold (2s)
+        mock_mcp_config.timeout_seconds = 30
+        mock_mcp_config.unknown_threshold_seconds = 2  # Fail after 2s of unknown
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        
+        # Mock client to always return unknown status (job never arrived at ComfyUI)
+        server.client.get_status = AsyncMock(return_value={
+            "status": "unknown",
+            "prompt_id": "lost-job-id"
+        })
+        
+        mock_status = MagicMock()
+        mock_status.progress = AsyncMock()
+        mock_status.error = AsyncMock()
+        
+        start_time = time.time()
+        
+        # Run with a short poll interval
+        result = await server.workflow({
+            "operation": "wait_for_completion",
+            "prompt_id": "lost-job-id",
+            "poll_interval": 0.2,  # Fast polling
+            "_status": mock_status
+        })
+        
+        elapsed = time.time() - start_time
+        
+        # Should fail with "unknown" related error
+        assert result["status"] == "failed"
+        assert result["prompt_id"] == "lost-job-id"
+        assert "unknown_duration" in result
+        assert "not found" in result["error"].lower() or "lost" in result["error"].lower()
+        # Should fail around 2 seconds (unknown threshold), not 30 seconds (timeout)
+        assert elapsed < 10, f"Expected early failure around 2s, but took {elapsed}s"
+        mock_status.error.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_inject_value(
         self,
         mock_system_config: MagicMock,

@@ -57,6 +57,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self.host = getattr(mcp_config, 'host', "127.0.0.1")
         self.port = getattr(mcp_config, 'port', 8188)
         self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
+        # Threshold for detecting lost jobs (unknown status) - fail early if job stays unknown
+        self.unknown_threshold = getattr(mcp_config, 'unknown_threshold_seconds', 60)
         self.output_dir = Path(getattr(mcp_config, 'output_dir', "data/comfyui/outputs"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.cleanup_age_hours = int(getattr(mcp_config, 'cleanup_age_hours', 48))
@@ -934,6 +936,12 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         If include_content is True and the job completes successfully, this
         also retrieves outputs and includes multimodal content for LLM analysis.
+        
+        Unknown Job Detection:
+        - If a job stays "unknown" (not in queue, not in history) for 60 seconds,
+          it's considered lost and marked as failed immediately.
+        - This handles cases where ComfyUI didn't receive the job (network issues,
+          dropped connections, etc.)
         """
         prompt_id = params.get("prompt_id")
         if not prompt_id:
@@ -944,8 +952,15 @@ class ComfyUIServer(SchemaBasedMCPServer):
         poll_interval = params.get("poll_interval", 2)  # Default 2 seconds
         include_content = params.get("include_content", False)
         
+        # Unknown status threshold - if job stays unknown for this long, fail early
+        # Jobs should appear in queue within seconds of submission
+        # Configurable via unknown_threshold_seconds in plugin config
+        unknown_threshold = self.unknown_threshold
+        
         import time
         start_time = time.time()
+        first_unknown_time: float | None = None  # Track when we first saw "unknown"
+        last_known_status: str | None = None  # Track last non-unknown status
         
         if status:
             await status.progress(f"Waiting for job {prompt_id} to complete (timeout: {timeout}s)")
@@ -978,12 +993,49 @@ class ComfyUIServer(SchemaBasedMCPServer):
             job_status = await self.client.get_status(prompt_id)
             current_status = job_status.get("status", "unknown")
             
+            # Track unknown status duration
+            if current_status == "unknown":
+                if first_unknown_time is None:
+                    first_unknown_time = time.time()
+                    logger.debug("Job %s first seen as unknown", prompt_id)
+                
+                unknown_duration = time.time() - first_unknown_time
+                
+                # If job has been unknown for too long, it's lost
+                if unknown_duration >= unknown_threshold:
+                    error_msg = (
+                        f"Job not found in ComfyUI queue or history after {int(unknown_duration)}s. "
+                        f"The job may have been lost, rejected, or never received by ComfyUI."
+                    )
+                    if status:
+                        await status.error(f"Job {prompt_id} lost: {error_msg}")
+                    
+                    # Update tracker
+                    self.job_tracker.update_status(prompt_id, "failed", error_msg)
+                    
+                    return {
+                        "status": "failed",
+                        "prompt_id": prompt_id,
+                        "elapsed_seconds": elapsed,
+                        "unknown_duration": unknown_duration,
+                        "error": error_msg
+                    }
+            else:
+                # Job is known (pending/running/completed/failed) - reset unknown timer
+                if first_unknown_time is not None:
+                    logger.debug("Job %s found after being unknown for %.1fs", 
+                                prompt_id, time.time() - first_unknown_time)
+                first_unknown_time = None
+                last_known_status = current_status
+            
             # Update status message periodically (every 10s)
             if status and int(elapsed) % 10 == 0:
-                await status.progress(
-                    f"Job {prompt_id}: {current_status} "
-                    f"(elapsed: {int(elapsed)}s, timeout in: {int(timeout - elapsed)}s)"
-                )
+                status_msg = f"Job {prompt_id}: {current_status}"
+                if current_status == "unknown" and first_unknown_time:
+                    unknown_dur = int(time.time() - first_unknown_time)
+                    status_msg += f" (unknown for {unknown_dur}s/{unknown_threshold}s)"
+                status_msg += f" (elapsed: {int(elapsed)}s, timeout in: {int(timeout - elapsed)}s)"
+                await status.progress(status_msg)
             
             # Check if completed or failed
             if current_status == "completed":

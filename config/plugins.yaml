@@ -146,6 +146,7 @@ plugins:
       host: "192.0.2.125"
       port: 8188
       timeout_seconds: 300
+      unknown_threshold_seconds: 60  # Fail early if job stays unknown for this many seconds (lost/dropped)
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
       cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
