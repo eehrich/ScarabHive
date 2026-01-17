@@ -133,6 +133,16 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     filename = filename[1:]
                 break
         
+        # IMPORTANT: If filename starts with the session_id folder, strip it
+        # This handles cases where the agent passes "session_id/file.flac" but we already
+        # resolved the storage path to include the session_id
+        if session_id and filename.startswith(session_id + "/"):
+            filename = filename[len(session_id) + 1:]
+        elif session_id and filename.startswith(session_id):
+            filename = filename[len(session_id):]
+            if filename.startswith("/"):
+                filename = filename[1:]
+        
         # If it's still a path (contains /), extract just the filename for safety
         # This handles edge cases where paths don't match exactly
         if "/" in filename:
