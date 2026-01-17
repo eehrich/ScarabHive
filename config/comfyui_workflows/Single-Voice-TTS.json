@@ -49,7 +49,7 @@
       "model": "VibeVoice-7B",
       "attention_type": "auto",
       "quantize_llm": "full precision",
-      "free_memory_after_generate": false,
+      "free_memory_after_generate": true,
       "diffusion_steps": 12,
       "seed": [
         "4",
