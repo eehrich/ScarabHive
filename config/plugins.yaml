@@ -388,14 +388,12 @@ plugins:
         # Token limit: Use X% of LLM context window
         max_context_percentage: 0.80  # 80% of context window
         
-        # Message truncation: Max length for individual messages (in chars)
-        max_message_length_chars: 50000
-        
-        # Hard limit - force-truncate even if smart truncation fails
-        hard_max_message_length_chars: 500000  # 500KB absolute max
+        # Message truncation: Max tokens for individual messages
+        max_message_length_tokens: 8000       # Soft limit - triggers smart truncation
+        hard_max_message_length_tokens: 16000 # Hard limit - force-truncate if exceeded
         
         # Smart JSON truncation for tool responses
-        # When tool response JSON exceeds max_message_length_chars,
+        # When tool response JSON exceeds max_message_length_tokens,
         # long strings within the JSON are truncated while keeping structure valid
         max_json_string_length: 50000  # Max chars per string in JSON
         keep_string_end: true  # Keep END of strings (newest data) vs beginning

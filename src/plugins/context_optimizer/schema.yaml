@@ -30,19 +30,19 @@ config:
     minimum: 0.1
     maximum: 1.0
   
-  max_message_length_chars:
+  max_message_length_tokens:
     type: integer
-    default: 50000
-    description: "Maximum length of individual messages in characters"
+    default: 8000
+    description: "Maximum length of individual messages in tokens (soft limit). Triggers optimization for oversized messages."
     minimum: 100
-    maximum: 500000
+    maximum: 100000
   
-  hard_max_message_length_chars:
+  hard_max_message_length_tokens:
     type: integer
-    default: 100000
-    description: "Hard limit - force-truncate messages exceeding this size even if JSON smart-truncation fails"
+    default: 16000
+    description: "Hard limit - force-truncate messages exceeding this token count even if JSON smart-truncation fails"
     minimum: 1000
-    maximum: 1000000
+    maximum: 100000
   
   max_json_string_length:
     type: integer

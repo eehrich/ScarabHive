@@ -20,12 +20,30 @@ Configure in `config/plugins.yaml`:
 context_optimizer:
   enabled: true
   config:
-    max_total_tokens: 8000          # Maximum total tokens for context
-    max_message_length: 10000       # Maximum length for individual messages
+    # Context window management
+    max_context_percentage: 0.80    # Use up to 80% of LLM's context window
+    
+    # Message size limits (token-based for better accuracy)
+    max_message_length_tokens: 8000       # Soft limit - triggers smart truncation
+    hard_max_message_length_tokens: 16000 # Hard limit - force-truncate if exceeded
+    
+    # Smart JSON truncation for tool responses
+    max_json_string_length: 50000   # Max chars per string within JSON
+    keep_string_end: true           # Keep end of strings (newest data)
+    
+    # Message preservation rules
     preserve_system_messages: true  # Always preserve system messages
-    preserve_recent_count: 3        # Number of recent messages to always preserve
-    remove_duplicates: true         # Remove duplicate consecutive messages
+    preserve_last_n_messages: 7     # Always keep last N messages
+    
+    # Remove consecutive duplicate messages
+    remove_duplicates: true
 ```
+
+**Why Token-based?**
+The plugin uses token-based limits for accurate estimation:
+- Base64/binary content (audio, images) compresses efficiently in tokens
+- JSON and code have predictable token-to-char ratios
+- Matches actual LLM processing (LLMs work with tokens, not characters)
 
 ## Hook Points
 
@@ -48,8 +66,12 @@ Optimizes the conversation context before sending to the LLM.
 ## How It Works
 
 1. **Duplicate Removal**: Scans for consecutive messages with identical role and content
-2. **Truncation**: Checks each message length and truncates if exceeding `max_message_length`
-3. **Token Limiting**: Estimates total tokens (1 token ≈ 4 chars) and removes oldest non-system messages if needed
+2. **Smart Truncation**: 
+   - Estimates message tokens using `estimate_content_tokens()`
+   - For JSON tool responses: intelligently truncates long strings while preserving structure
+   - For other messages: simple truncation if exceeding token limits
+   - **Base64/Binary Content**: No warnings for large base64 content (normal for audio/images)
+3. **Token Limiting**: Estimates total tokens and removes oldest non-system messages if exceeding context window percentage
 
 **Preservation Priority:**
 1. System messages (if `preserve_system_messages` is true)

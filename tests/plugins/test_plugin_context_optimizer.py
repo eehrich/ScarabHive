@@ -300,12 +300,13 @@ class TestContextOptimizerToolPairs:
             ChatMessage(role="assistant", content="y" * 60000),  # Very long
         ]
         
-        result = plugin._truncate_messages(messages, max_length=50000)
+        result = plugin._truncate_messages(messages, max_tokens=12500)  # ~50000 chars
         
         # User and assistant should be truncated (simple cut)
-        assert len(result[0].content) <= 50020  # 50000 + '... [truncated]'
+        # With token-based truncation, we estimate ~4 chars per token
+        assert len(result[0].content) <= 50100  # ~12500 tokens * 4 + truncation marker
         assert "[truncated]" in result[0].content
-        assert len(result[2].content) <= 50020
+        assert len(result[2].content) <= 50100
         assert "[truncated]" in result[2].content
         
         # Tool response should be SMART truncated - JSON stays valid
@@ -324,7 +325,7 @@ class TestContextOptimizerToolPairs:
             ChatMessage(role="assistant", content="Normal text " * 10000),  # Not JSON
         ]
         
-        plugin._truncate_messages(messages, max_length=50000)
+        plugin._truncate_messages(messages, max_tokens=12500)  # ~50000 chars
         
         # Should warn about JSON truncation
         assert any("JSON-like content" in record.message for record in caplog.records)
@@ -339,7 +340,7 @@ class TestContextOptimizerToolPairs:
             ChatMessage(role="tool", content='{"huge": "' + "x" * 100000 + '"}', tool_call_id="call_1"),
         ]
         
-        result = plugin._truncate_messages(messages, max_length=50000)
+        result = plugin._truncate_messages(messages, max_tokens=12500)  # ~50000 chars
         
         # Should be reduced via smart truncation
         assert len(result[0].content) < 100000
@@ -406,7 +407,7 @@ class TestContextOptimizerToolPairs:
             ),
         ]
         
-        result = plugin._truncate_messages(messages, max_length=50000)
+        result = plugin._truncate_messages(messages, max_tokens=12500)  # ~50000 chars
         
         # Should be truncated
         original_len = len(messages[0].content)
