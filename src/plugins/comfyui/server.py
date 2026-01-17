@@ -262,7 +262,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
                             dir_path.rmdir()
                             deleted_dirs += 1
                             logger.debug(f"Deleted empty old directory: {dir_path.name} (age: {(time.time() - dir_mtime) / 3600:.1f}h)")
-                except Exception as e:
+                except Exception:
                     # Ignore errors (dir might not be empty anymore, race condition, etc.)
                     pass
             
