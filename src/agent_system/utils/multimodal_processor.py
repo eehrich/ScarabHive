@@ -243,7 +243,7 @@ def encode_audio_to_data_url(
         warn_size_mb: Size threshold for logging warning
         
     Returns:
-        Tuple of (data_url, metadata) where metadata contains format, size_mb
+        Tuple of (data_url, metadata) where metadata contains format, size_mb, duration_seconds
         
     Raises:
         AudioProcessingError: If encoding fails or size exceeds max_size_mb
@@ -264,6 +264,18 @@ def encode_audio_to_data_url(
             f"Audio {file_path} is {size_mb:.1f} MB, may exceed model limits"
         )
     
+    # Get audio duration BEFORE encoding (for accurate token estimation)
+    duration_seconds: float | None = None
+    try:
+        from pydub import AudioSegment
+        audio = AudioSegment.from_file(str(file_path))
+        duration_seconds = len(audio) / 1000.0  # pydub returns milliseconds
+        logger.debug(f"Audio duration: {duration_seconds:.1f}s for {file_path}")
+    except Exception as e:
+        logger.debug(f"Could not get audio duration for {file_path}: {e}")
+        # Fallback: estimate from file size (~16KB per second for typical audio)
+        duration_seconds = size_bytes / (16 * 1024)
+    
     # Read and encode
     try:
         with open(file_path, "rb") as f:
@@ -281,7 +293,8 @@ def encode_audio_to_data_url(
         "format": audio_format,
         "size_mb": size_mb,
         "path": str(file_path),
-        "mime_type": mime_type
+        "mime_type": mime_type,
+        "duration_seconds": duration_seconds,
     }
     
     return data_url, metadata
@@ -467,11 +480,13 @@ def create_multimodal_message_extended(
                     type="audio",
                     audio_url=data_url,
                     media_type=metadata["mime_type"],
-                    name=metadata.get("original_filename") or Path(audio_path).name
+                    name=metadata.get("original_filename") or Path(audio_path).name,
+                    duration_seconds=metadata.get("duration_seconds"),
                 ))
                 logger.debug(
                     f"Attached audio: {metadata['path']} "
-                    f"({metadata['format']}, {metadata['size_mb']:.1f} MB)"
+                    f"({metadata['format']}, {metadata['size_mb']:.1f} MB, "
+                    f"{metadata.get('duration_seconds', 0):.1f}s)"
                 )
             except AudioProcessingError:
                 raise

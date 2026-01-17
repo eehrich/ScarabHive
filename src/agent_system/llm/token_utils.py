@@ -288,6 +288,9 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
     Gemini and other LLMs accept inline_data with base64-encoded images/audio.
     These contribute significantly to token counts.
     
+    For audio: Uses duration_seconds if available (much more accurate than base64 size).
+    Audio is counted at ~41 tokens/second per Gemini API docs.
+    
     Also handles MultimodalToolContent with file paths (the actual base64
     encoding happens at LLM call time, but we estimate from file size).
     
@@ -297,12 +300,18 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
     Returns:
         Estimated token count for the inline data, or 0 if no inline data
     """
-    data_str = None
-    
     if isinstance(item, dict):
         # Skip compacted items - they won't be encoded at LLM call time
         if item.get('compacted'):
             return 0
+        
+        # PRIORITY: Check for duration_seconds first (most accurate for audio)
+        # This is set by encode_audio_to_data_url BEFORE base64 encoding
+        duration = item.get('duration_seconds')
+        if duration is not None and item.get('type') == 'audio':
+            tokens = int(duration * TOKENS_PER_AUDIO_SECOND)
+            logger.debug(f"Audio tokens from duration_seconds: {duration:.1f}s = {tokens:,} tokens")
+            return tokens
         
         # Check various inline data formats
         # Format 1: {"type": "image", "source": {"type": "base64", "data": "..."}}
@@ -313,11 +322,22 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
                 return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
         
         # Format 2: {"type": "audio", "audio_url": "data:audio/wav;base64,..."}
+        # Since we don't have duration_seconds here, fall back to size-based estimation
         audio_url = item.get('audio_url', '')
         if isinstance(audio_url, str) and ';base64,' in audio_url:
             data_str = audio_url.split(';base64,', 1)[1]
             if data_str:
-                return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
+                # Estimate duration from base64 size: decode to bytes, then ~16KB/second
+                import base64
+                try:
+                    raw_bytes = len(base64.b64decode(data_str))
+                    estimated_seconds = raw_bytes / (16 * 1024)
+                    tokens = int(estimated_seconds * TOKENS_PER_AUDIO_SECOND)
+                    logger.debug(f"Audio tokens from size fallback: ~{estimated_seconds:.1f}s = {tokens:,} tokens")
+                    return tokens
+                except Exception:
+                    # Last resort: rough estimate
+                    return int(len(data_str) * 0.01)  # Very rough fallback
         
         # Format 3: {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
         image_url = item.get('image_url', {})
@@ -332,10 +352,24 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
         inline_data = item.get('inline_data', {})
         if isinstance(inline_data, dict):
             data_str = inline_data.get('data', '')
+            mime_type = inline_data.get('mime_type', '')
             # If data is bytes, estimate from length
             if isinstance(data_str, bytes):
+                # Check if audio
+                if mime_type.startswith('audio/'):
+                    estimated_seconds = len(data_str) / (16 * 1024)
+                    return int(estimated_seconds * TOKENS_PER_AUDIO_SECOND)
                 return len(data_str) // 3  # ~3 bytes per token for binary data
             elif data_str:
+                # Check if audio - use duration estimation
+                if mime_type.startswith('audio/'):
+                    import base64
+                    try:
+                        raw_bytes = len(base64.b64decode(data_str))
+                        estimated_seconds = raw_bytes / (16 * 1024)
+                        return int(estimated_seconds * TOKENS_PER_AUDIO_SECOND)
+                    except Exception:
+                        pass
                 return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
         
         # Format 5: MultimodalToolContent with file path (converted to base64 at LLM call)
@@ -345,7 +379,16 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
         if file_path and item_type in ('audio', 'image', 'video'):
             return estimate_file_tokens(file_path, file_type=item_type)
     
-    elif hasattr(item, 'source'):
+    elif hasattr(item, 'duration_seconds') and hasattr(item, 'type'):
+        # Pydantic AudioContent with duration_seconds
+        duration = getattr(item, 'duration_seconds', None)
+        item_type = getattr(item, 'type', '')
+        if duration is not None and item_type == 'audio':
+            tokens = int(duration * TOKENS_PER_AUDIO_SECOND)
+            logger.debug(f"Audio tokens from duration_seconds (pydantic): {duration:.1f}s = {tokens:,} tokens")
+            return tokens
+    
+    if hasattr(item, 'source'):
         # Pydantic model with source attribute
         source = getattr(item, 'source', None)
         if source and hasattr(source, 'type') and getattr(source, 'type') == 'base64':
@@ -353,7 +396,7 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
             if data_str and isinstance(data_str, str):
                 return int(len(data_str) * TOKENS_PER_BASE64_CHAR)
     
-    elif hasattr(item, 'path'):
+    if hasattr(item, 'path'):
         # Pydantic model with path attribute (MultimodalToolContent)
         # Skip compacted items - they won't be encoded at LLM call time
         if hasattr(item, 'compacted') and item.compacted:

@@ -534,16 +534,39 @@ class TestMultimodalTokenEstimation:
         assert tokens == 250
 
     def test_estimate_inline_data_tokens_audio_url(self):
-        """Test token estimation for inline base64 data in audio_url format."""
+        """Test token estimation for inline base64 data in audio_url format.
+        
+        Audio uses duration-based estimation (41 tokens/second) instead of
+        base64 character count. Falls back to bytes-based duration estimation
+        when duration_seconds is not available.
+        """
         from agent_system.llm.token_utils import estimate_inline_data_tokens
         
-        # Simulating audio data URL with ~2KB of base64
+        # Simulating audio data URL with ~2KB of base64 (decodes to ~1500 bytes)
+        # Duration fallback: raw_bytes / 16KB * 41 tokens/s
         base64_data = "B" * 2000
         item = {"type": "audio", "audio_url": f"data:audio/wav;base64,{base64_data}"}
         
         tokens = estimate_inline_data_tokens(item)
-        # 2000 chars * 0.25 = 500 tokens
-        assert tokens == 500
+        # Fallback estimation is much lower than old base64 char count
+        assert tokens < 50  # Much less than old 500 tokens
+        assert tokens >= 1  # But at least some tokens
+        
+    def test_estimate_inline_data_tokens_audio_with_duration(self):
+        """Test token estimation for audio with explicit duration_seconds."""
+        from agent_system.llm.token_utils import estimate_inline_data_tokens, TOKENS_PER_AUDIO_SECOND
+        
+        # Audio item with duration_seconds (set by encode_audio_to_data_url)
+        item = {
+            "type": "audio", 
+            "audio_url": "data:audio/wav;base64,dummydata",
+            "duration_seconds": 45.0  # 45 seconds
+        }
+        
+        tokens = estimate_inline_data_tokens(item)
+        # Should use duration: 45s * 41 tokens/s = 1845 tokens
+        expected = int(45.0 * TOKENS_PER_AUDIO_SECOND)
+        assert tokens == expected
 
     def test_estimate_inline_data_tokens_image_url(self):
         """Test token estimation for inline base64 data in image_url format."""

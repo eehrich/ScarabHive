@@ -74,6 +74,7 @@ class AudioContent(BaseModel):
     audio_url: Optional[str] = None
     media_type: Optional[str] = None  # e.g., "audio/wav", "audio/mp3"
     name: Optional[str] = None  # Original filename
+    duration_seconds: Optional[float] = None  # Audio duration for accurate token estimation
 
 
 class VideoContent(BaseModel):
