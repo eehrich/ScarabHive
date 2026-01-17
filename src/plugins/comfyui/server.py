@@ -1203,20 +1203,29 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 # Use history-aware sync to avoid race conditions
                 await self._sync_stale_jobs_with_history(queue_data)
                 
-                # Check live status for all active jobs and update DB
+                # Check live status for all active jobs IN PARALLEL
                 active_jobs = self.job_tracker.get_active_jobs()
-                for job in active_jobs:
-                    prompt_id = job.get("prompt_id")
-                    if prompt_id:
-                        live = await self.client.get_status(prompt_id)
-                        live_status = live.get("status", "unknown")
-                        db_status = job.get("status")
-                        # Update DB if status changed (e.g. queued/running -> completed)
-                        if live_status != db_status and live_status in ["completed", "failed"]:
-                            error_msg = live.get("error") if live_status == "failed" else None
-                            if isinstance(error_msg, list):
-                                error_msg = str(error_msg)
-                            self.job_tracker.update_status(prompt_id, live_status, error_msg)
+                if active_jobs:
+                    async def check_and_update_job(job: dict) -> None:
+                        """Check live status and update DB if needed."""
+                        prompt_id = job.get("prompt_id")
+                        if not prompt_id:
+                            return
+                        try:
+                            live = await self.client.get_status(prompt_id)
+                            live_status = live.get("status", "unknown")
+                            db_status = job.get("status")
+                            # Update DB if status changed (e.g. queued/running -> completed)
+                            if live_status != db_status and live_status in ["completed", "failed"]:
+                                error_msg = live.get("error") if live_status == "failed" else None
+                                if isinstance(error_msg, list):
+                                    error_msg = str(error_msg)
+                                self.job_tracker.update_status(prompt_id, live_status, error_msg)
+                        except Exception as e:
+                            logger.warning(f"Failed to check status for job {prompt_id}: {e}")
+                    
+                    # Run all status checks in parallel
+                    await asyncio.gather(*[check_and_update_job(job) for job in active_jobs])
             
             active = self.job_tracker.get_active_jobs()
             recent = self.job_tracker.get_recent_completed(limit=10)
