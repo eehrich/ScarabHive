@@ -217,6 +217,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
     async def _cleanup_old_files(self) -> int:
         """Delete output files older than cleanup_age_hours.
         
+        Also removes empty directories that are older than cleanup_age_hours.
+        
         Returns:
             Number of files deleted
         """
@@ -226,10 +228,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
         import time
         
         cutoff_time = time.time() - (self.cleanup_age_hours * 3600)
-        deleted_count = 0
+        deleted_files = 0
+        deleted_dirs = 0
         
         try:
-            # Recursively scan output directory
+            # First pass: Delete old files
             for file_path in self.output_dir.rglob('*'):
                 if not file_path.is_file():
                     continue
@@ -239,17 +242,36 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 if file_mtime < cutoff_time:
                     try:
                         file_path.unlink()
-                        deleted_count += 1
+                        deleted_files += 1
                         logger.debug(f"Deleted old file: {file_path.name} (age: {(time.time() - file_mtime) / 3600:.1f}h)")
                     except Exception as e:
                         logger.warning(f"Failed to delete {file_path}: {e}")
             
-            if deleted_count > 0:
-                logger.info(f"Cleanup: Deleted {deleted_count} files older than {self.cleanup_age_hours}h")
+            # Second pass: Delete empty old directories (bottom-up to handle nested empty dirs)
+            # Sort by depth (deepest first) to delete child dirs before parents
+            all_dirs = [d for d in self.output_dir.rglob('*') if d.is_dir()]
+            all_dirs.sort(key=lambda p: len(p.parts), reverse=True)
+            
+            for dir_path in all_dirs:
+                try:
+                    # Check if directory is empty
+                    if not any(dir_path.iterdir()):
+                        # Check directory age (only delete old empty dirs)
+                        dir_mtime = dir_path.stat().st_mtime
+                        if dir_mtime < cutoff_time:
+                            dir_path.rmdir()
+                            deleted_dirs += 1
+                            logger.debug(f"Deleted empty old directory: {dir_path.name} (age: {(time.time() - dir_mtime) / 3600:.1f}h)")
+                except Exception as e:
+                    # Ignore errors (dir might not be empty anymore, race condition, etc.)
+                    pass
+            
+            if deleted_files > 0 or deleted_dirs > 0:
+                logger.info(f"Cleanup: Deleted {deleted_files} files and {deleted_dirs} empty directories older than {self.cleanup_age_hours}h")
         except Exception as e:
             logger.error(f"Failed to cleanup old files: {e}")
         
-        return deleted_count
+        return deleted_files
     
     # =========================================================================
     # MCP Tool: workflow
