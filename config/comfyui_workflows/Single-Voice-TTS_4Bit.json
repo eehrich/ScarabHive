@@ -1,0 +1,114 @@
+{
+  "1": {
+    "inputs": {
+      "value": "Das ist ein Startext, um die Anzahl der Tokens zu erhöhen.\n\n\"Karl! Karl, wo steckst du schon wieder? Wir haben einen Gast!\".\n\nDas ist ein Endtext, um die Anzahl der Tokens zu erhöhen.\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "InputText"
+    }
+  },
+  "2": {
+    "inputs": {
+      "audio": "de-benjamin-werner.wav",
+      "audioUI": ""
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Speaker_Audio_File"
+    }
+  },
+  "4": {
+    "inputs": {
+      "value": 301
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "5": {
+    "inputs": {
+      "audioUI": "",
+      "audio": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "11": {
+    "inputs": {
+      "text": [
+        "1",
+        0
+      ],
+      "model": "VibeVoice-7B",
+      "attention_type": "auto",
+      "quantize_llm": "4bit",
+      "free_memory_after_generate": true,
+      "diffusion_steps": 12,
+      "seed": [
+        "4",
+        0
+      ],
+      "cfg_scale": 2.2,
+      "use_sampling": false,
+      "temperature": 1.8,
+      "top_p": 0.95,
+      "max_words_per_chunk": [
+        "20",
+        0
+      ],
+      "voice_speed_factor": 1,
+      "voice_to_clone": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "VibeVoiceSingleSpeakerNode",
+    "_meta": {
+      "title": "VibeVoice Single Speaker"
+    }
+  },
+  "17": {
+    "inputs": {
+      "lora_name": "Elise",
+      "llm_strength": 1,
+      "use_llm": true,
+      "use_diffusion_head": true,
+      "use_acoustic_connector": true,
+      "use_semantic_connector": true
+    },
+    "class_type": "VibeVoiceLoRANode",
+    "_meta": {
+      "title": "VibeVoice LoRA"
+    }
+  },
+  "20": {
+    "inputs": {
+      "value": 200
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Chunksize"
+    }
+  },
+  "21": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save_Audio"
+    }
+  }
+}
