@@ -147,6 +147,54 @@ async def test_load_session_permission_denied(session_manager):
 
 
 @pytest.mark.asyncio
+async def test_find_session_owner_with_read_error(session_manager, temp_storage):
+    """Test that _find_session_owner_async returns user_id from directory name when file read fails.
+    
+    This tests the fix for the bug where concurrent access causes Permission Denied errors
+    on Windows, which previously led to false "Session already exists" errors.
+    """
+    from unittest.mock import patch, AsyncMock
+    
+    # Create a session first
+    session = await session_manager.create_session(
+        user_id="user1",
+        title="Test Session"
+    )
+    sid = session["session_id"]
+    
+    # Mock _read_session_file_async to simulate Permission Denied
+    async def mock_read_error(path):
+        raise PermissionError("Permission denied")
+    
+    with patch.object(session_manager, '_read_session_file_async', side_effect=mock_read_error):
+        # _find_session_owner_async should still return the owner from directory name
+        owner = await session_manager._find_session_owner_async(sid)
+        assert owner == "user1", "Should return user_id from directory name when file read fails"
+
+
+@pytest.mark.asyncio
+async def test_find_session_owner_sync_with_read_error(session_manager, temp_storage):
+    """Test sync version also handles read errors correctly."""
+    from unittest.mock import patch
+    
+    # Create a session first
+    session = await session_manager.create_session(
+        user_id="user1",
+        title="Test Session"
+    )
+    sid = session["session_id"]
+    
+    # Mock _read_session_file to simulate Permission Denied
+    def mock_read_error(path):
+        raise PermissionError("Permission denied")
+    
+    with patch.object(session_manager, '_read_session_file', side_effect=mock_read_error):
+        # _find_session_owner should still return the owner from directory name
+        owner = session_manager._find_session_owner(sid)
+        assert owner == "user1", "Should return user_id from directory name when file read fails"
+
+
+@pytest.mark.asyncio
 async def test_save_session_updates_timestamp(session_manager):
     """Test that saving updates the timestamp."""
     session = await session_manager.create_session(user_id="user1")

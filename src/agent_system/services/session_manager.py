@@ -171,8 +171,14 @@ class SessionManager:
                     try:
                         session_data = await self._read_session_file_async(session_file)
                         return session_data.get("user_id")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # If file exists but can't be read (e.g., Windows file lock),
+                        # fall back to directory name as user_id to avoid false "not exists"
+                        logger.debug(
+                            f"Could not read session file {session_file} ({e}), "
+                            f"using directory name as owner: {user_dir.name}"
+                        )
+                        return user_dir.name
         return None
 
     def _find_session_owner(self, session_id: str) -> Optional[str]:
@@ -191,8 +197,14 @@ class SessionManager:
                     try:
                         session_data = self._read_session_file(session_file)
                         return session_data.get("user_id")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # If file exists but can't be read (e.g., Windows file lock),
+                        # fall back to directory name as user_id to avoid false "not exists"
+                        logger.debug(
+                            f"Could not read session file {session_file} ({e}), "
+                            f"using directory name as owner: {user_dir.name}"
+                        )
+                        return user_dir.name
         return None
 
     def _validate_session_data(self, data: Dict[str, Any]) -> None:
