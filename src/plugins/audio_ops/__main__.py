@@ -543,8 +543,8 @@ async def cmd_create(args: argparse.Namespace) -> int:
         print("Error: duration must be positive", file=sys.stderr)
         return 1
     
-    if sample_rate not in (8000, 16000, 22050, 44100, 48000, 96000):
-        print(f"Error: Invalid sample rate: {sample_rate}. Use 8000, 16000, 22050, 44100, 48000, or 96000", file=sys.stderr)
+    if sample_rate not in (8000, 16000, 22050, 24000, 44100, 48000, 96000):
+        print(f"Error: Invalid sample rate: {sample_rate}. Use 8000, 16000, 22050, 24000, 44100, 48000, or 96000", file=sys.stderr)
         return 1
     
     if channels not in (1, 2):

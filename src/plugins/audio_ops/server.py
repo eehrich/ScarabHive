@@ -665,9 +665,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     details={"sample_rate": sample_rate}
                 )
             
-            if sample_rate not in (8000, 16000, 22050, 44100, 48000, 96000):
+            if sample_rate not in (8000, 16000, 22050, 24000, 44100, 48000, 96000):
                 raise AudioOpsError(
-                    f"Invalid sample_rate: {sample_rate}. Common values: 8000, 16000, 22050, 44100, 48000, 96000",
+                    f"Invalid sample_rate: {sample_rate}. Common values: 8000, 16000, 22050, 24000, 44100, 48000, 96000",
                     error_type="ValidationError",
                     details={"sample_rate": sample_rate}
                 )
