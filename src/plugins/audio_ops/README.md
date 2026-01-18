@@ -210,6 +210,109 @@ Returns `_multimodal_content` for LLM audio analysis.
 - Path traversal attempts (e.g., `../`) are blocked
 - Absolute paths outside storage are rejected
 
+## Command-Line Interface
+
+The `audio-ops` CLI provides direct access to audio operations from the terminal.
+
+### Installation
+
+After installing the package, the CLI is available as `audio-ops`:
+
+```bash
+audio-ops --help
+```
+
+### Commands
+
+#### info - Show audio file metadata
+```bash
+audio-ops info song.mp3
+```
+
+#### cut - Extract or remove audio segment
+```bash
+# Extract segment from 10s to 30s
+audio-ops cut input.wav output.wav -s 10 -e 30
+
+# Remove segment (keep rest)
+audio-ops cut input.wav output.wav -s 10 -e 30 -m remove
+```
+
+#### merge - Concatenate multiple audio files
+```bash
+# Basic merge
+audio-ops merge output.mp3 part1.mp3 part2.mp3 part3.mp3
+
+# With crossfade (500ms)
+audio-ops merge output.wav a.wav b.wav --crossfade 500
+```
+
+#### mix - Blend two audio files
+```bash
+# Equal mix (50/50)
+audio-ops mix voice.wav music.wav mixed.wav
+
+# Custom balance: 30% voice, 70% music
+audio-ops mix voice.wav music.wav mixed.wav -f 0.7
+```
+
+Mix factor: 0.0 = 100% file1, 0.5 = equal, 1.0 = 100% file2
+
+#### volume - Adjust audio volume
+```bash
+# Increase volume by 6 dB
+audio-ops volume input.wav louder.wav --gain 6
+
+# Decrease volume by 12 dB
+audio-ops volume input.wav quieter.wav --gain -12
+
+# Normalize to 0 dB peak
+audio-ops volume input.wav normalized.wav --normalize
+
+# Combine: adjust and normalize
+audio-ops volume input.wav output.wav --gain -3 --normalize
+```
+
+#### create - Generate silent audio
+```bash
+# 5 second silence (stereo, 44100 Hz)
+audio-ops create silence.wav -d 5000
+
+# 1 second mono at 48 kHz
+audio-ops create beep.wav -d 1000 -r 48000 -c 1
+```
+
+#### list - Browse audio files
+```bash
+# List all audio files
+audio-ops list
+
+# Filter by pattern
+audio-ops list "*.wav"
+```
+
+#### load - Load audio file (with optional segment)
+```bash
+# Load full file info
+audio-ops load song.mp3
+
+# Load segment (10s to 30s)
+audio-ops load song.mp3 -s 10 -e 30
+```
+
+### Storage Path
+
+The CLI uses the storage path from `config/plugins.yaml`:
+
+```yaml
+plugins:
+  servers:
+    audio_ops:
+      storage_path: "data/audio_ops"
+```
+
+All files are relative to this directory.
+
 ## Integration with ComfyUI
 
 When used with the ComfyUI plugin for TTS generation, configure both plugins to use the same base directory with session isolation:

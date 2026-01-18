@@ -6,7 +6,11 @@ Usage:
     audio-ops cut <src> <dest> -s <sec> -e <sec>       - Extract segment (default)
     audio-ops cut <src> <dest> -s <sec> -e <sec> -m remove  - Remove segment
     audio-ops merge <dest> <file1> <file2> [...]       - Merge files
+    audio-ops mix <file1> <file2> <dest> [-f 0.5]      - Mix two files
+    audio-ops volume <src> <dest> --gain <dB>          - Adjust volume
+    audio-ops create <dest> -d <ms>                    - Create silent audio
     audio-ops list [pattern]                           - List audio files
+    audio-ops load <file>                              - Load/info about file
 """
 from __future__ import annotations
 
@@ -361,6 +365,236 @@ async def cmd_load(args: argparse.Namespace) -> int:
         return 1
 
 
+async def cmd_mix(args: argparse.Namespace) -> int:
+    """Mix two audio files together."""
+    try:
+        from pydub import AudioSegment
+    except ImportError:
+        print("Error: pydub not installed. Run: pip install pydub", file=sys.stderr)
+        return 1
+    
+    storage = get_storage_path()
+    storage.mkdir(parents=True, exist_ok=True)
+    
+    file1_path = storage / args.file1
+    file2_path = storage / args.file2
+    dest_path = storage / args.dest
+    
+    # Validate files exist
+    if not file1_path.exists():
+        print(f"Error: File not found: {file1_path}", file=sys.stderr)
+        return 1
+    if not file2_path.exists():
+        print(f"Error: File not found: {file2_path}", file=sys.stderr)
+        return 1
+    
+    # Validate formats
+    for path in [file1_path, file2_path, dest_path]:
+        ext = path.suffix.lower()
+        if ext not in {".flac", ".mp3", ".wav"}:
+            print(f"Error: Unsupported format: {ext} ({path.name})", file=sys.stderr)
+            return 1
+    
+    mix_factor = args.factor
+    if not 0.0 <= mix_factor <= 1.0:
+        print(f"Error: mix factor must be between 0.0 and 1.0, got {mix_factor}", file=sys.stderr)
+        return 1
+    
+    try:
+        # Load audio files
+        print(f"Loading: {args.file1}")
+        audio1 = AudioSegment.from_file(str(file1_path), format=file1_path.suffix[1:].lower())
+        print(f"Loading: {args.file2}")
+        audio2 = AudioSegment.from_file(str(file2_path), format=file2_path.suffix[1:].lower())
+        
+        print(f"\nMixing with factor {mix_factor:.2f}")
+        print("  (0.0 = 100% file1, 0.5 = equal, 1.0 = 100% file2)")
+        
+        # Match durations by padding shorter with silence
+        if len(audio1) != len(audio2):
+            max_len = max(len(audio1), len(audio2))
+            if len(audio1) < max_len:
+                audio1 += AudioSegment.silent(duration=max_len - len(audio1), frame_rate=audio1.frame_rate)
+            if len(audio2) < max_len:
+                audio2 += AudioSegment.silent(duration=max_len - len(audio2), frame_rate=audio2.frame_rate)
+            print("  Padded shorter file to match duration")
+        
+        # Apply mix factor: result = (1-factor)*audio1 + factor*audio2
+        # In dB: -inf dB = silence, 0 dB = unchanged
+        import math
+        
+        if mix_factor == 0.0:
+            result = audio1
+        elif mix_factor == 1.0:
+            result = audio2
+        else:
+            # Calculate volume adjustments in dB
+            # Linear mix: vol1 = (1 - factor), vol2 = factor
+            vol1 = 1.0 - mix_factor
+            vol2 = mix_factor
+            
+            # Convert to dB (20 * log10(linear))
+            # Avoid log(0) by clamping
+            db1 = 20 * math.log10(max(vol1, 0.001))
+            db2 = 20 * math.log10(max(vol2, 0.001))
+            
+            # Apply volume and overlay
+            adjusted1 = audio1 + db1
+            adjusted2 = audio2 + db2
+            result = adjusted1.overlay(adjusted2)
+        
+        # Export
+        dest_format = dest_path.suffix[1:].lower()
+        result.export(str(dest_path), format=dest_format)
+        
+        result_duration = len(result) / 1000.0
+        print(f"\n✅ Created: {dest_path.name}")
+        print(f"   Duration: {result_duration:.2f}s")
+        print(f"   Mix: {(1-mix_factor)*100:.0f}% {args.file1} + {mix_factor*100:.0f}% {args.file2}")
+        return 0
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+async def cmd_volume(args: argparse.Namespace) -> int:
+    """Adjust volume of an audio file."""
+    try:
+        from pydub import AudioSegment
+    except ImportError:
+        print("Error: pydub not installed. Run: pip install pydub", file=sys.stderr)
+        return 1
+    
+    storage = get_storage_path()
+    storage.mkdir(parents=True, exist_ok=True)
+    
+    source_path = storage / args.source
+    dest_path = storage / args.dest
+    
+    if not source_path.exists():
+        print(f"Error: File not found: {source_path}", file=sys.stderr)
+        return 1
+    
+    # Validate formats
+    for path in [source_path, dest_path]:
+        ext = path.suffix.lower()
+        if ext not in {".flac", ".mp3", ".wav"}:
+            print(f"Error: Unsupported format: {ext} ({path.name})", file=sys.stderr)
+            return 1
+    
+    gain_db = args.gain
+    normalize = args.normalize
+    
+    if gain_db is None and not normalize:
+        print("Error: Either --gain or --normalize must be specified", file=sys.stderr)
+        return 1
+    
+    if gain_db is not None and not -60.0 <= gain_db <= 24.0:
+        print(f"Error: gain should be between -60 and +24 dB, got {gain_db}", file=sys.stderr)
+        return 1
+    
+    try:
+        print(f"Loading: {args.source}")
+        audio = AudioSegment.from_file(str(source_path), format=source_path.suffix[1:].lower())
+        
+        original_peak = audio.max_dBFS
+        result = audio
+        
+        # Apply gain if specified
+        if gain_db is not None:
+            print(f"Applying {gain_db:+.1f} dB gain")
+            result = result + gain_db
+        
+        # Normalize if requested
+        if normalize:
+            peak = result.max_dBFS
+            if peak < 0:
+                normalize_gain = -peak  # Bring peak to 0 dB
+                print(f"Normalizing: {normalize_gain:+.1f} dB (peak was {peak:.1f} dB)")
+                result = result + normalize_gain
+            else:
+                print("Already at or above 0 dB, no normalization needed")
+        
+        # Export
+        dest_format = dest_path.suffix[1:].lower()
+        result.export(str(dest_path), format=dest_format)
+        
+        final_peak = result.max_dBFS
+        duration = len(result) / 1000.0
+        
+        print(f"\n✅ Created: {dest_path.name}")
+        print(f"   Duration: {duration:.2f}s")
+        print(f"   Original peak: {original_peak:.1f} dB")
+        print(f"   Final peak: {final_peak:.1f} dB")
+        return 0
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+async def cmd_create(args: argparse.Namespace) -> int:
+    """Create a silent audio file."""
+    try:
+        from pydub import AudioSegment
+    except ImportError:
+        print("Error: pydub not installed. Run: pip install pydub", file=sys.stderr)
+        return 1
+    
+    storage = get_storage_path()
+    storage.mkdir(parents=True, exist_ok=True)
+    
+    dest_path = storage / args.dest
+    
+    # Validate format
+    ext = dest_path.suffix.lower()
+    if ext not in {".flac", ".mp3", ".wav"}:
+        print(f"Error: Unsupported format: {ext}", file=sys.stderr)
+        return 1
+    
+    duration_ms = args.duration
+    sample_rate = args.sample_rate
+    channels = args.channels
+    
+    if duration_ms <= 0:
+        print("Error: duration must be positive", file=sys.stderr)
+        return 1
+    
+    if sample_rate not in (8000, 16000, 22050, 44100, 48000, 96000):
+        print(f"Error: Invalid sample rate: {sample_rate}. Use 8000, 16000, 22050, 44100, 48000, or 96000", file=sys.stderr)
+        return 1
+    
+    if channels not in (1, 2):
+        print("Error: channels must be 1 (mono) or 2 (stereo)", file=sys.stderr)
+        return 1
+    
+    try:
+        print(f"Creating {duration_ms}ms silent audio ({channels}ch @ {sample_rate}Hz)")
+        
+        # Create silent audio
+        silent = AudioSegment.silent(duration=duration_ms, frame_rate=sample_rate)
+        
+        # Convert to mono if requested
+        if channels == 1:
+            silent = silent.set_channels(1)
+        
+        # Export
+        dest_format = ext[1:]
+        silent.export(str(dest_path), format=dest_format)
+        
+        print(f"\n✅ Created: {dest_path.name}")
+        print(f"   Duration: {duration_ms}ms ({duration_ms/1000:.2f}s)")
+        print(f"   Sample rate: {sample_rate} Hz")
+        print(f"   Channels: {channels} ({'mono' if channels == 1 else 'stereo'})")
+        print(f"   Size: {dest_path.stat().st_size:,} bytes")
+        return 0
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -373,6 +607,10 @@ Examples:
   audio-ops cut input.wav output.wav -s 10 -e 30 -m remove # Remove 10s-30s
   audio-ops merge output.mp3 part1.mp3 part2.mp3 part3.mp3
   audio-ops merge output.wav a.wav b.wav --crossfade 500   # With 500ms crossfade
+  audio-ops mix track.wav bg.wav mixed.wav -f 0.7          # 30% track, 70% bg
+  audio-ops volume input.wav louder.wav --gain 6           # +6 dB (louder)
+  audio-ops volume input.wav normalized.wav --normalize    # Normalize to 0 dB
+  audio-ops create silence.wav -d 5000                     # 5 second silence
   audio-ops load song.mp3                                  # Load full file
   audio-ops load song.mp3 -s 10 -e 30                      # Load segment
   audio-ops list "*.wav"
@@ -401,6 +639,32 @@ Examples:
     merge_parser.add_argument("--crossfade", type=int, default=0, 
                              help="Crossfade duration in milliseconds (default: 0)")
     
+    # mix command
+    mix_parser = subparsers.add_parser("mix", help="Mix two audio files together")
+    mix_parser.add_argument("file1", help="First audio file")
+    mix_parser.add_argument("file2", help="Second audio file")
+    mix_parser.add_argument("dest", help="Output filename")
+    mix_parser.add_argument("-f", "--factor", type=float, default=0.5,
+                           help="Mix factor 0.0-1.0 (0=100%% file1, 0.5=equal, 1=100%% file2). Default: 0.5")
+    
+    # volume command
+    volume_parser = subparsers.add_parser("volume", help="Adjust audio volume")
+    volume_parser.add_argument("source", help="Source audio file")
+    volume_parser.add_argument("dest", help="Destination file")
+    volume_parser.add_argument("-g", "--gain", type=float, help="Volume adjustment in dB (-60 to +24)")
+    volume_parser.add_argument("-n", "--normalize", action="store_true",
+                              help="Normalize to 0 dB peak")
+    
+    # create command
+    create_parser = subparsers.add_parser("create", help="Create silent audio file")
+    create_parser.add_argument("dest", help="Output filename")
+    create_parser.add_argument("-d", "--duration", type=int, required=True,
+                              help="Duration in milliseconds")
+    create_parser.add_argument("-r", "--sample-rate", type=int, default=44100,
+                              help="Sample rate in Hz (default: 44100)")
+    create_parser.add_argument("-c", "--channels", type=int, default=2,
+                              help="Number of channels: 1=mono, 2=stereo (default: 2)")
+    
     # list command
     list_parser = subparsers.add_parser("list", help="List audio files")
     list_parser.add_argument("pattern", nargs="?", help="Glob pattern filter")
@@ -421,6 +685,9 @@ Examples:
         "info": cmd_info,
         "cut": cmd_cut,
         "merge": cmd_merge,
+        "mix": cmd_mix,
+        "volume": cmd_volume,
+        "create": cmd_create,
         "list": cmd_list,
         "load": cmd_load,
     }
