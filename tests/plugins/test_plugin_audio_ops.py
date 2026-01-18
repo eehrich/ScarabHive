@@ -2392,7 +2392,7 @@ class TestSessionIsolation:
         
         expected = tmp_path / "audio" / "session_abc123"
         assert resolved == expected
-        assert resolved.exists()  # Directory should be created
+        # Note: Directory is NOT auto-created anymore (lazy creation on write)
     
     def test_resolve_storage_path_without_session_id_falls_back(
         self, server_with_template: "AudioOpsServer", tmp_path: Path
@@ -2430,9 +2430,8 @@ class TestSessionIsolation:
         assert dir1.name == "session_001"
         assert dir2.name == "session_002"
         
-        # Both should exist
-        assert dir1.exists()
-        assert dir2.exists()
+        # Note: Directories are NOT auto-created anymore (lazy creation on write)
+        # They will be created when _validate_path is called with ensure_parent=True
     
     @pytest.mark.asyncio
     async def test_validate_path_uses_session_isolation(

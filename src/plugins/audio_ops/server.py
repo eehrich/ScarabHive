@@ -55,7 +55,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
         self._storage_path_template = getattr(mcp_config, 'storage_path', "data/audio_ops")
         # Base storage path (without session_id substitution) for cleanup and fallback
         self._storage_path_base = Path(self._storage_path_template.replace("{session_id}", "").rstrip("/\\"))
-        self._storage_path_base.mkdir(parents=True, exist_ok=True)
+        # Don't create directory on init - only when needed for write operations
         # Legacy: self.storage_path for backward compatibility (uses base path)
         self.storage_path = self._storage_path_base
         
@@ -90,15 +90,16 @@ class AudioOpsServer(SchemaBasedMCPServer):
         
         # Substitute session_id into template
         resolved_path = Path(self._storage_path_template.replace("{session_id}", session_id))
-        resolved_path.mkdir(parents=True, exist_ok=True)
+        # Don't create directory here - will be created when needed for write operations
         return resolved_path
 
-    def _validate_path(self, filename: str, session_id: str | None = None) -> Path:
+    def _validate_path(self, filename: str, session_id: str | None = None, ensure_parent: bool = False) -> Path:
         """Validate and resolve file path within storage directory.
         
         Args:
             filename: Filename to validate
             session_id: Optional session ID for session-isolated storage paths
+            ensure_parent: If True, create parent directories (for write operations)
             
         Returns:
             Resolved Path object
@@ -182,6 +183,10 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 error_type="SecurityError",
                 details={"file": filename, "storage_path": str(effective_storage)}
             )
+        
+        # Create parent directories if requested (for write operations)
+        if ensure_parent:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
         
         return resolved
     
@@ -313,7 +318,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             # Validate paths (with session isolation if configured)
             session_id = params.get("_session_id")
             source_path = self._validate_path(source_file, session_id)
-            dest_path = self._validate_path(dest_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
             
             # Validate destination format
             dest_format = self._validate_format(dest_path)
@@ -447,7 +452,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             # Validate destination path and format (with session isolation if configured)
             session_id = params.get("_session_id")
-            dest_path = self._validate_path(dest_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
             dest_format = self._validate_format(dest_path)
             
             if status:
@@ -686,7 +691,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             # Validate destination path and format (with session isolation if configured)
             session_id = params.get("_session_id")
-            dest_path = self._validate_path(dest_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
             dest_format = self._validate_format(dest_path)
             
             if status:
@@ -1062,7 +1067,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             session_id = params.get("_session_id")
             file1_path = self._validate_path(file1, session_id)
             file2_path = self._validate_path(file2, session_id)
-            dest_path = self._validate_path(dest_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
             
             if not file1_path.exists():
                 raise AudioOpsError(
@@ -1460,7 +1465,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             # Validate paths (with session isolation if configured)
             session_id = params.get("_session_id")
             source_path = self._validate_path(source_file, session_id)
-            dest_path = self._validate_path(dest_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
             
             if not source_path.exists():
                 raise AudioOpsError(
@@ -1843,7 +1848,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             # Validate and resolve paths
             source_path = self._validate_path(source_file, session_id)
-            dest_path = self._validate_path(dest_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
             
             if not source_path.exists():
                 raise AudioOpsError(
