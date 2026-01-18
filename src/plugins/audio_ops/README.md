@@ -1,6 +1,6 @@
 # Audio Operations Plugin
 
-MCP plugin for audio file manipulation - cutting, merging, mixing, and analyzing audio files.
+MCP plugin for audio file manipulation - cutting, merging, mixing, analyzing, and optimizing audio files.
 
 ## Features
 
@@ -8,6 +8,8 @@ MCP plugin for audio file manipulation - cutting, merging, mixing, and analyzing
 - **Merge**: Concatenate multiple audio files
 - **Mix**: Blend two audio files with customizable balance
 - **Volume**: Adjust volume with gain or envelope automation
+- **Detect Silence**: Find silent segments in audio files
+- **Compress Silence**: Reduce long silences to save time and space
 - **Info**: Get audio file metadata (duration, sample rate, channels)
 - **List**: Browse available audio files
 - **Load**: Load audio for LLM analysis (multimodal)
@@ -170,6 +172,57 @@ Response:
   "channels": 2,
   "format": "flac",
   "size_bytes": 125000000
+}
+```
+
+### Detect Silence
+
+Find silent segments in audio file:
+
+```json
+{
+  "source_file": "podcast.flac",
+  "threshold_db": -40,
+  "min_duration": 0.3
+}
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "silence_count": 15,
+  "silences": [
+    {"start": 2.87, "end": 3.42, "duration": 0.55},
+    {"start": 9.36, "end": 9.80, "duration": 0.44}
+  ],
+  "threshold_db": -40,
+  "min_duration": 0.3
+}
+```
+
+### Compress Silence
+
+Reduce long silences to maximum duration:
+
+```json
+{
+  "source_file": "interview.flac",
+  "dest_file": "interview_compressed.mp3",
+  "max_silence": 1.0,
+  "threshold_db": -40,
+  "mp3_bitrate": 192
+}
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "compressed_count": 12,
+  "time_saved": 45.3,
+  "original_duration": 3600.0,
+  "new_duration": 3554.7
 }
 ```
 

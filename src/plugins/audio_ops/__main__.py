@@ -9,6 +9,8 @@ Usage:
     audio-ops mix <file1> <file2> <dest> [-f 0.5]      - Mix two files
     audio-ops volume <src> <dest> --gain <dB>          - Adjust volume
     audio-ops create <dest> -d <ms>                    - Create silent audio
+    audio-ops detect-silence <file>                    - Find silent segments
+    audio-ops compress-silence <src> <dest>            - Compress long silences
     audio-ops list [pattern]                           - List audio files
     audio-ops load <file>                              - Load/info about file
 """
@@ -18,6 +20,9 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+
+# Global workdir override (set by CLI --workdir)
+_workdir_override: Path | None = None
 
 
 def get_config() -> dict:
@@ -52,7 +57,10 @@ def get_config() -> dict:
 
 
 def get_storage_path() -> Path:
-    """Get storage path from config."""
+    """Get storage path from config or CLI override."""
+    global _workdir_override
+    if _workdir_override is not None:
+        return _workdir_override
     config = get_config()
     return Path(config.get("storage_path", "data/audio_ops"))
 
@@ -156,7 +164,7 @@ async def cmd_cut(args: argparse.Namespace) -> int:
         result.export(str(dest_path), format=dest_ext[1:])
         
         result_duration = len(result) / 1000.0
-        print(f"✅ Created: {dest_path.name}")
+        print(f"Created: {dest_path.name}")
         print(f"   Mode: {mode}")
         print(f"   Duration: {result_duration:.2f} seconds")
         print(f"   Operation: {operation} from {source_path.name}")
@@ -227,7 +235,7 @@ async def cmd_merge(args: argparse.Namespace) -> int:
         result.export(str(dest_path), format=dest_ext[1:])
         
         result_duration = len(result) / 1000.0
-        print(f"\n✅ Created: {dest_path.name}")
+        print(f"\nCreated: {dest_path.name}")
         print(f"   Files merged: {len(source_files)}")
         print(f"   Total source duration: {total_duration:.2f}s")
         print(f"   Result duration: {result_duration:.2f}s")
@@ -258,14 +266,11 @@ async def cmd_list(args: argparse.Namespace) -> int:
     files: list[Path] = []
     
     if pattern:
-        # Use given pattern (should include extension, e.g., "*.wav")
         files.extend(storage.glob(pattern))
     else:
-        # List all supported audio files
         for ext in [".flac", ".mp3", ".wav"]:
             files.extend(storage.glob(f"*{ext}"))
     
-    # Filter to supported formats and deduplicate
     seen: set[Path] = set()
     audio_files: list[Path] = []
     for f in files:
@@ -322,7 +327,6 @@ async def cmd_load(args: argparse.Namespace) -> int:
         start_time = args.start if args.start is not None else 0.0
         end_time = args.end if args.end is not None else duration
         
-        # Validate
         if start_time < 0:
             print("Error: start time cannot be negative", file=sys.stderr)
             return 1
@@ -333,10 +337,8 @@ async def cmd_load(args: argparse.Namespace) -> int:
             print(f"Error: start time ({start_time}s) exceeds duration ({duration:.2f}s)", file=sys.stderr)
             return 1
         
-        # Clamp end
         end_time = min(end_time, duration)
         
-        # Extract segment if not full file
         is_segment = args.start is not None or args.end is not None
         if is_segment:
             start_ms = int(start_time * 1000)
@@ -344,16 +346,15 @@ async def cmd_load(args: argparse.Namespace) -> int:
             segment = audio[start_ms:end_ms]
             segment_duration = len(segment) / 1000.0
             
-            # Save to temp file
             output_file = storage / f"_temp_segment_{filepath.stem}.wav"
             segment.export(str(output_file), format="wav")
             
-            print(f"✅ Loaded segment from: {args.file}")
+            print(f"Loaded segment from: {args.file}")
             print(f"   Original duration: {duration:.2f}s")
             print(f"   Segment: {start_time:.2f}s to {end_time:.2f}s ({segment_duration:.2f}s)")
             print(f"   Output: {output_file.name}")
         else:
-            print(f"✅ Loaded: {args.file}")
+            print(f"Loaded: {args.file}")
             print(f"   Duration: {duration:.2f}s")
             print(f"   Format: {ext[1:].upper()}")
             print(f"   Size: {filepath.stat().st_size:,} bytes")
@@ -380,7 +381,6 @@ async def cmd_mix(args: argparse.Namespace) -> int:
     file2_path = storage / args.file2
     dest_path = storage / args.dest
     
-    # Validate files exist
     if not file1_path.exists():
         print(f"Error: File not found: {file1_path}", file=sys.stderr)
         return 1
@@ -388,7 +388,6 @@ async def cmd_mix(args: argparse.Namespace) -> int:
         print(f"Error: File not found: {file2_path}", file=sys.stderr)
         return 1
     
-    # Validate formats
     for path in [file1_path, file2_path, dest_path]:
         ext = path.suffix.lower()
         if ext not in {".flac", ".mp3", ".wav"}:
@@ -401,7 +400,6 @@ async def cmd_mix(args: argparse.Namespace) -> int:
         return 1
     
     try:
-        # Load audio files
         print(f"Loading: {args.file1}")
         audio1 = AudioSegment.from_file(str(file1_path), format=file1_path.suffix[1:].lower())
         print(f"Loading: {args.file2}")
@@ -410,7 +408,6 @@ async def cmd_mix(args: argparse.Namespace) -> int:
         print(f"\nMixing with factor {mix_factor:.2f}")
         print("  (0.0 = 100% file1, 0.5 = equal, 1.0 = 100% file2)")
         
-        # Match durations by padding shorter with silence
         if len(audio1) != len(audio2):
             max_len = max(len(audio1), len(audio2))
             if len(audio1) < max_len:
@@ -419,8 +416,6 @@ async def cmd_mix(args: argparse.Namespace) -> int:
                 audio2 += AudioSegment.silent(duration=max_len - len(audio2), frame_rate=audio2.frame_rate)
             print("  Padded shorter file to match duration")
         
-        # Apply mix factor: result = (1-factor)*audio1 + factor*audio2
-        # In dB: -inf dB = silence, 0 dB = unchanged
         import math
         
         if mix_factor == 0.0:
@@ -428,27 +423,19 @@ async def cmd_mix(args: argparse.Namespace) -> int:
         elif mix_factor == 1.0:
             result = audio2
         else:
-            # Calculate volume adjustments in dB
-            # Linear mix: vol1 = (1 - factor), vol2 = factor
             vol1 = 1.0 - mix_factor
             vol2 = mix_factor
-            
-            # Convert to dB (20 * log10(linear))
-            # Avoid log(0) by clamping
             db1 = 20 * math.log10(max(vol1, 0.001))
             db2 = 20 * math.log10(max(vol2, 0.001))
-            
-            # Apply volume and overlay
             adjusted1 = audio1 + db1
             adjusted2 = audio2 + db2
             result = adjusted1.overlay(adjusted2)
         
-        # Export
         dest_format = dest_path.suffix[1:].lower()
         result.export(str(dest_path), format=dest_format)
         
         result_duration = len(result) / 1000.0
-        print(f"\n✅ Created: {dest_path.name}")
+        print(f"\nCreated: {dest_path.name}")
         print(f"   Duration: {result_duration:.2f}s")
         print(f"   Mix: {(1-mix_factor)*100:.0f}% {args.file1} + {mix_factor*100:.0f}% {args.file2}")
         return 0
@@ -476,7 +463,6 @@ async def cmd_volume(args: argparse.Namespace) -> int:
         print(f"Error: File not found: {source_path}", file=sys.stderr)
         return 1
     
-    # Validate formats
     for path in [source_path, dest_path]:
         ext = path.suffix.lower()
         if ext not in {".flac", ".mp3", ".wav"}:
@@ -501,29 +487,26 @@ async def cmd_volume(args: argparse.Namespace) -> int:
         original_peak = audio.max_dBFS
         result = audio
         
-        # Apply gain if specified
         if gain_db is not None:
             print(f"Applying {gain_db:+.1f} dB gain")
             result = result + gain_db
         
-        # Normalize if requested
         if normalize:
             peak = result.max_dBFS
             if peak < 0:
-                normalize_gain = -peak  # Bring peak to 0 dB
+                normalize_gain = -peak
                 print(f"Normalizing: {normalize_gain:+.1f} dB (peak was {peak:.1f} dB)")
                 result = result + normalize_gain
             else:
                 print("Already at or above 0 dB, no normalization needed")
         
-        # Export
         dest_format = dest_path.suffix[1:].lower()
         result.export(str(dest_path), format=dest_format)
         
         final_peak = result.max_dBFS
         duration = len(result) / 1000.0
         
-        print(f"\n✅ Created: {dest_path.name}")
+        print(f"\nCreated: {dest_path.name}")
         print(f"   Duration: {duration:.2f}s")
         print(f"   Original peak: {original_peak:.1f} dB")
         print(f"   Final peak: {final_peak:.1f} dB")
@@ -547,7 +530,6 @@ async def cmd_create(args: argparse.Namespace) -> int:
     
     dest_path = storage / args.dest
     
-    # Validate format
     ext = dest_path.suffix.lower()
     if ext not in {".flac", ".mp3", ".wav"}:
         print(f"Error: Unsupported format: {ext}", file=sys.stderr)
@@ -572,18 +554,15 @@ async def cmd_create(args: argparse.Namespace) -> int:
     try:
         print(f"Creating {duration_ms}ms silent audio ({channels}ch @ {sample_rate}Hz)")
         
-        # Create silent audio
         silent = AudioSegment.silent(duration=duration_ms, frame_rate=sample_rate)
         
-        # Convert to mono if requested
         if channels == 1:
             silent = silent.set_channels(1)
         
-        # Export
         dest_format = ext[1:]
         silent.export(str(dest_path), format=dest_format)
         
-        print(f"\n✅ Created: {dest_path.name}")
+        print(f"\nCreated: {dest_path.name}")
         print(f"   Duration: {duration_ms}ms ({duration_ms/1000:.2f}s)")
         print(f"   Sample rate: {sample_rate} Hz")
         print(f"   Channels: {channels} ({'mono' if channels == 1 else 'stereo'})")
@@ -593,6 +572,235 @@ async def cmd_create(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+async def cmd_detect_silence(args: argparse.Namespace) -> int:
+    """Detect silent segments in audio file."""
+    import subprocess
+    import re
+    import json
+    
+    storage = get_storage_path()
+    filepath = storage / args.file
+    
+    if not filepath.exists():
+        print(f"Error: File not found: {filepath}", file=sys.stderr)
+        return 1
+    
+    threshold_db = args.threshold
+    min_duration = args.min_duration
+    
+    print(f"Detecting silence in: {filepath.name}")
+    print(f"  Threshold: {threshold_db} dB")
+    print(f"  Min duration: {min_duration}s")
+    
+    detect_cmd = [
+        "ffmpeg", "-i", str(filepath),
+        "-af", f"silencedetect=noise={threshold_db}dB:d={min_duration}",
+        "-f", "null", "-"
+    ]
+    
+    result = subprocess.run(detect_cmd, capture_output=True, text=True)
+    
+    silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
+    silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
+    silence_durations = re.findall(r'silence_duration: ([\d.]+)', result.stderr)
+    
+    if not silence_starts:
+        print("\nNo silence segments found.")
+        return 0
+    
+    print(f"\nFound {len(silence_starts)} silence segments:\n")
+    print(f"{'#':<4} {'Start':>10} {'End':>10} {'Duration':>10}")
+    print("-" * 38)
+    
+    total_silence = 0.0
+    for i, start in enumerate(silence_starts):
+        start_sec = float(start)
+        if i < len(silence_ends):
+            end_sec = float(silence_ends[i])
+            duration = float(silence_durations[i]) if i < len(silence_durations) else (end_sec - start_sec)
+        else:
+            probe_cmd = [
+                "ffprobe", "-v", "quiet", "-print_format", "json",
+                "-show_format", str(filepath)
+            ]
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            if probe_result.returncode == 0:
+                probe_data = json.loads(probe_result.stdout)
+                end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
+                duration = end_sec - start_sec
+            else:
+                continue
+        
+        total_silence += duration
+        print(f"{i+1:<4} {start_sec:>10.2f} {end_sec:>10.2f} {duration:>10.2f}")
+    
+    print("-" * 38)
+    print(f"Total silence: {total_silence:.2f}s")
+    
+    if args.json:
+        silences = []
+        for i, start in enumerate(silence_starts):
+            start_sec = float(start)
+            if i < len(silence_ends):
+                end_sec = float(silence_ends[i])
+                duration = float(silence_durations[i]) if i < len(silence_durations) else (end_sec - start_sec)
+                silences.append({"start": start_sec, "end": end_sec, "duration": duration})
+        print("\nJSON:")
+        print(json.dumps(silences, indent=2))
+    
+    return 0
+
+
+async def cmd_compress_silence(args: argparse.Namespace) -> int:
+    """Compress long silences in audio file."""
+    import subprocess
+    import re
+    import json
+    
+    storage = get_storage_path()
+    source_path = storage / args.source
+    dest_path = storage / args.dest
+    
+    if not source_path.exists():
+        print(f"Error: File not found: {source_path}", file=sys.stderr)
+        return 1
+    
+    max_silence = args.max_silence
+    threshold_db = args.threshold
+    mp3_bitrate = args.bitrate
+    
+    print(f"Compressing silence in: {source_path.name}")
+    print(f"  Max silence: {max_silence}s")
+    print(f"  Threshold: {threshold_db} dB")
+    
+    # Step 1: Detect all silences (use low min duration)
+    min_detect_duration = 0.3
+    detect_cmd = [
+        "ffmpeg", "-i", str(source_path),
+        "-af", f"silencedetect=noise={threshold_db}dB:d={min_detect_duration}",
+        "-f", "null", "-"
+    ]
+    
+    result = subprocess.run(detect_cmd, capture_output=True, text=True)
+    
+    silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
+    silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
+    
+    if not silence_starts:
+        print("\nNo silences found, copying file as-is...")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", str(source_path),
+            "-c", "copy", str(dest_path)
+        ], capture_output=True, check=True)
+        print(f"Copied to: {dest_path.name}")
+        return 0
+    
+    # Get total duration
+    probe_cmd = [
+        "ffprobe", "-v", "quiet", "-print_format", "json",
+        "-show_format", str(source_path)
+    ]
+    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+    total_duration = 0.0
+    if probe_result.returncode == 0:
+        probe_data = json.loads(probe_result.stdout)
+        total_duration = float(probe_data.get("format", {}).get("duration", 0))
+    
+    # Filter silences exceeding max_silence
+    silences_to_compress = []
+    for i, start in enumerate(silence_starts):
+        start_sec = float(start)
+        if i < len(silence_ends):
+            end_sec = float(silence_ends[i])
+        else:
+            end_sec = total_duration
+        
+        duration = end_sec - start_sec
+        if duration > max_silence:
+            silences_to_compress.append((start_sec, end_sec, duration))
+    
+    if not silences_to_compress:
+        print(f"\nNo silences exceed {max_silence}s, copying file as-is...")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", str(source_path),
+            "-c", "copy", str(dest_path)
+        ], capture_output=True, check=True)
+        print(f"Copied to: {dest_path.name}")
+        return 0
+    
+    print(f"\nCompressing {len(silences_to_compress)} silence segments...")
+    
+    # Build segments to keep
+    keep_duration = max_silence / 2.0
+    segments = []
+    current_pos = 0.0
+    
+    for start, end, _ in silences_to_compress:
+        seg_end = start + keep_duration
+        if seg_end > current_pos:
+            segments.append((current_pos, seg_end))
+        current_pos = end - keep_duration
+    
+    if current_pos < total_duration:
+        segments.append((current_pos, total_duration))
+    
+    # Build ffmpeg filter
+    filter_parts = []
+    for i, (seg_start, seg_end) in enumerate(segments):
+        if seg_end <= seg_start:
+            continue
+        filter_parts.append(
+            f"[0:a]atrim=start={seg_start:.3f}:end={seg_end:.3f},asetpts=PTS-STARTPTS[s{i}]"
+        )
+    
+    if not filter_parts:
+        print("Error: No valid segments to extract", file=sys.stderr)
+        return 1
+    
+    segment_labels = "".join(f"[s{i}]" for i in range(len(filter_parts)))
+    filter_complex = ";".join(filter_parts) + f";{segment_labels}concat=n={len(filter_parts)}:v=0:a=1[out]"
+    
+    ffmpeg_cmd = [
+        "ffmpeg", "-y", "-i", str(source_path),
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+    ]
+    
+    ext = dest_path.suffix.lower()
+    if ext == '.flac':
+        ffmpeg_cmd.extend(["-c:a", "flac"])
+    else:
+        ffmpeg_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
+    
+    ffmpeg_cmd.append(str(dest_path))
+    
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        print(f"Error: ffmpeg failed: {result.stderr[:500]}", file=sys.stderr)
+        return 1
+    
+    # Get new duration
+    probe_result = subprocess.run([
+        "ffprobe", "-v", "quiet", "-print_format", "json",
+        "-show_format", str(dest_path)
+    ], capture_output=True, text=True)
+    
+    new_duration = 0.0
+    if probe_result.returncode == 0:
+        probe_data = json.loads(probe_result.stdout)
+        new_duration = float(probe_data.get("format", {}).get("duration", 0))
+    
+    time_saved = total_duration - new_duration
+    
+    print(f"\nCompressed: {dest_path.name}")
+    print(f"   Segments compressed: {len(silences_to_compress)}")
+    print(f"   Time saved: {time_saved:.1f}s")
+    print(f"   Duration: {total_duration:.1f}s -> {new_duration:.1f}s")
+    
+    return 0
 
 
 def main() -> int:
@@ -611,11 +819,18 @@ Examples:
   audio-ops volume input.wav louder.wav --gain 6           # +6 dB (louder)
   audio-ops volume input.wav normalized.wav --normalize    # Normalize to 0 dB
   audio-ops create silence.wav -d 5000                     # 5 second silence
+  audio-ops detect-silence podcast.flac                    # Find silent segments
+  audio-ops compress-silence input.flac output.mp3 -m 1.5  # Compress silences >1.5s
   audio-ops load song.mp3                                  # Load full file
   audio-ops load song.mp3 -s 10 -e 30                      # Load segment
   audio-ops list "*.wav"
+  audio-ops -w /path/to/audio info song.mp3  # Use custom workdir
         """
     )
+    
+    # Global options
+    parser.add_argument("-w", "--workdir", type=str, default=None,
+                        help="Working directory for audio files (overrides config)")
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -665,6 +880,27 @@ Examples:
     create_parser.add_argument("-c", "--channels", type=int, default=2,
                               help="Number of channels: 1=mono, 2=stereo (default: 2)")
     
+    # detect-silence command
+    detect_parser = subparsers.add_parser("detect-silence", help="Detect silent segments in audio")
+    detect_parser.add_argument("file", help="Audio file to analyze")
+    detect_parser.add_argument("-t", "--threshold", type=int, default=-40,
+                               help="Silence threshold in dB (default: -40)")
+    detect_parser.add_argument("-d", "--min-duration", type=float, default=0.5,
+                               help="Minimum silence duration in seconds (default: 0.5)")
+    detect_parser.add_argument("--json", action="store_true",
+                               help="Also output results as JSON")
+    
+    # compress-silence command
+    compress_parser = subparsers.add_parser("compress-silence", help="Compress long silences")
+    compress_parser.add_argument("source", help="Source audio file")
+    compress_parser.add_argument("dest", help="Destination file")
+    compress_parser.add_argument("-m", "--max-silence", type=float, default=1.0,
+                                 help="Maximum silence duration in seconds (default: 1.0)")
+    compress_parser.add_argument("-t", "--threshold", type=int, default=-40,
+                                 help="Silence threshold in dB (default: -40)")
+    compress_parser.add_argument("-b", "--bitrate", type=int, default=192,
+                                 help="MP3 bitrate in kbps (default: 192)")
+    
     # list command
     list_parser = subparsers.add_parser("list", help="List audio files")
     list_parser.add_argument("pattern", nargs="?", help="Glob pattern filter")
@@ -677,6 +913,14 @@ Examples:
     
     args = parser.parse_args()
     
+    # Set workdir override if provided
+    global _workdir_override
+    if args.workdir:
+        _workdir_override = Path(args.workdir)
+        if not _workdir_override.exists():
+            print(f"Error: Workdir does not exist: {_workdir_override}", file=sys.stderr)
+            return 1
+    
     if not args.command:
         parser.print_help()
         return 0
@@ -688,6 +932,8 @@ Examples:
         "mix": cmd_mix,
         "volume": cmd_volume,
         "create": cmd_create,
+        "detect-silence": cmd_detect_silence,
+        "compress-silence": cmd_compress_silence,
         "list": cmd_list,
         "load": cmd_load,
     }

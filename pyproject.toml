@@ -82,7 +82,7 @@ mcp-todo-management = "plugins.todo_management.__main__:cli_main"
 mcp-file-ops = "plugins.file_ops.__main__:main"
 mcp-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
 comfyui = "scripts.comfyui:main"
-audio-ops = "scripts.audio_ops:main"
+audio-ops = "plugins.audio_ops.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

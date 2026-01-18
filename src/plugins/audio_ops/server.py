@@ -1709,6 +1709,335 @@ class AudioOpsServer(SchemaBasedMCPServer):
         
         return result
 
+    async def detect_silence(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Detect silent segments in audio file.
+        
+        Uses ffmpeg silencedetect filter to find segments below threshold.
+        
+        Args:
+            params: Tool parameters from LLM
+            
+        Returns:
+            Dict with status and list of silence segments
+        """
+        import subprocess
+        import re
+        import json
+        
+        status = params.get("_status")
+        source_file = params.get("source_file")
+        threshold_db = params.get("threshold_db", -40)
+        min_duration = params.get("min_duration", 0.3)
+        
+        # Session ID for path resolution
+        session_id = params.get("_session_id")
+        
+        try:
+            await status.progress("Detecting silence...")
+            
+            # Validate and resolve path
+            source_path = self._validate_path(source_file, session_id)
+            
+            if not source_path.exists():
+                raise AudioOpsError(
+                    f"Source file not found: {source_file}",
+                    error_type="FileNotFoundError"
+                )
+            
+            # Run ffmpeg silencedetect
+            detect_cmd = [
+                "ffmpeg", "-i", str(source_path),
+                "-af", f"silencedetect=noise={threshold_db}dB:d={min_duration}",
+                "-f", "null", "-"
+            ]
+            
+            result = subprocess.run(detect_cmd, capture_output=True, text=True)
+            
+            # Parse silence_start and silence_end from stderr
+            silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
+            silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
+            silence_durations = re.findall(r'silence_duration: ([\d.]+)', result.stderr)
+            
+            # Build silence list
+            silences = []
+            for i, start in enumerate(silence_starts):
+                start_sec = float(start)
+                if i < len(silence_ends):
+                    end_sec = float(silence_ends[i])
+                    duration = float(silence_durations[i]) if i < len(silence_durations) else (end_sec - start_sec)
+                else:
+                    # Silence extends to end of file
+                    probe_cmd = [
+                        "ffprobe", "-v", "quiet", "-print_format", "json",
+                        "-show_format", str(source_path)
+                    ]
+                    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    if probe_result.returncode == 0:
+                        probe_data = json.loads(probe_result.stdout)
+                        end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
+                        duration = end_sec - start_sec
+                    else:
+                        continue
+                
+                silences.append({
+                    "start": start_sec,
+                    "end": end_sec,
+                    "duration": duration
+                })
+            
+            await status.end(f"Found {len(silences)} silence segments")
+            
+            return {
+                "status": "success",
+                "silence_count": len(silences),
+                "silences": silences,
+                "threshold_db": threshold_db,
+                "min_duration": min_duration,
+                "source_file": source_file
+            }
+            
+        except AudioOpsError as e:
+            await status.end(f"Error: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type
+            }
+        except Exception as e:
+            logger.exception(f"Unexpected error detecting silence in {source_file}")
+            await status.end(f"Error: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": "UnexpectedError"
+            }
+
+    async def compress_silence(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Compress long silences to maximum duration.
+        
+        Finds silence segments exceeding max_duration and trims them,
+        keeping half at start and half at end of each segment.
+        
+        Args:
+            params: Tool parameters from LLM
+            
+        Returns:
+            Dict with status and compression statistics
+        """
+        import subprocess
+        import re
+        import json
+        
+        status = params.get("_status")
+        source_file = params.get("source_file")
+        dest_file = params.get("dest_file")
+        max_silence = params.get("max_silence", 1.0)
+        threshold_db = params.get("threshold_db", -40)
+        mp3_bitrate = params.get("mp3_bitrate", 192)
+        
+        # Session ID for path resolution
+        session_id = params.get("_session_id")
+        
+        try:
+            await status.progress("Analyzing silence...")
+            
+            # Validate and resolve paths
+            source_path = self._validate_path(source_file, session_id)
+            dest_path = self._validate_path(dest_file, session_id)
+            
+            if not source_path.exists():
+                raise AudioOpsError(
+                    f"Source file not found: {source_file}",
+                    error_type="FileNotFoundError"
+                )
+            
+            # Step 1: Detect silences with low threshold to find ALL silences
+            min_detect_duration = 0.3
+            detect_cmd = [
+                "ffmpeg", "-i", str(source_path),
+                "-af", f"silencedetect=noise={threshold_db}dB:d={min_detect_duration}",
+                "-f", "null", "-"
+            ]
+            
+            result = subprocess.run(detect_cmd, capture_output=True, text=True)
+            
+            # Parse silence segments
+            silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
+            silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
+            
+            if not silence_starts:
+                # No silences found, just copy file
+                await status.progress("No silences detected, copying file...")
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", str(source_path),
+                    "-c", "copy", str(dest_path)
+                ], capture_output=True, check=True)
+                
+                await status.end("No silences to compress")
+                return {
+                    "status": "success",
+                    "compressed_count": 0,
+                    "time_saved": 0.0,
+                    "source_file": source_file,
+                    "dest_file": dest_file
+                }
+            
+            # Build list of silence segments exceeding max_silence
+            silences_to_compress = []
+            for i, start in enumerate(silence_starts):
+                start_sec = float(start)
+                if i < len(silence_ends):
+                    end_sec = float(silence_ends[i])
+                else:
+                    # Silence extends to end - get file duration
+                    probe_cmd = [
+                        "ffprobe", "-v", "quiet", "-print_format", "json",
+                        "-show_format", str(source_path)
+                    ]
+                    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    if probe_result.returncode == 0:
+                        probe_data = json.loads(probe_result.stdout)
+                        end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
+                    else:
+                        continue
+                
+                duration = end_sec - start_sec
+                if duration > max_silence:
+                    silences_to_compress.append((start_sec, end_sec, duration))
+            
+            if not silences_to_compress:
+                # No silences exceed threshold, copy file
+                await status.progress("No silences exceed max duration, copying file...")
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", str(source_path),
+                    "-c", "copy", str(dest_path)
+                ], capture_output=True, check=True)
+                
+                await status.end("No silences exceed max duration")
+                return {
+                    "status": "success",
+                    "compressed_count": 0,
+                    "time_saved": 0.0,
+                    "source_file": source_file,
+                    "dest_file": dest_file
+                }
+            
+            await status.progress(f"Compressing {len(silences_to_compress)} silence segments...")
+            
+            # Step 2: Build segments to keep
+            keep_duration = max_silence / 2.0
+            
+            # Get total duration
+            probe_cmd = [
+                "ffprobe", "-v", "quiet", "-print_format", "json",
+                "-show_format", str(source_path)
+            ]
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            total_duration = 0.0
+            if probe_result.returncode == 0:
+                probe_data = json.loads(probe_result.stdout)
+                total_duration = float(probe_data.get("format", {}).get("duration", 0))
+            
+            # Build segments to extract
+            segments = []
+            current_pos = 0.0
+            
+            for start, end, _ in silences_to_compress:
+                seg_end = start + keep_duration
+                if seg_end > current_pos:
+                    segments.append((current_pos, seg_end))
+                current_pos = end - keep_duration
+            
+            # Add final segment
+            if current_pos < total_duration:
+                segments.append((current_pos, total_duration))
+            
+            # Step 3: Build ffmpeg filter
+            filter_parts = []
+            for i, (seg_start, seg_end) in enumerate(segments):
+                if seg_end <= seg_start:
+                    continue
+                filter_parts.append(
+                    f"[0:a]atrim=start={seg_start:.3f}:end={seg_end:.3f},asetpts=PTS-STARTPTS[s{i}]"
+                )
+            
+            if not filter_parts:
+                raise AudioOpsError(
+                    "No valid segments to extract",
+                    error_type="ProcessingError"
+                )
+            
+            # Concat all segments
+            segment_labels = "".join(f"[s{i}]" for i in range(len(filter_parts)))
+            filter_complex = ";".join(filter_parts) + f";{segment_labels}concat=n={len(filter_parts)}:v=0:a=1[out]"
+            
+            # Run ffmpeg
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", str(source_path),
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+            ]
+            
+            # Add codec settings
+            if dest_path.suffix.lower() == '.flac':
+                ffmpeg_cmd.extend(["-c:a", "flac"])
+            else:
+                ffmpeg_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
+            
+            ffmpeg_cmd.append(str(dest_path))
+            
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise AudioOpsError(
+                    f"ffmpeg failed: {result.stderr[:500]}",
+                    error_type="ProcessingError"
+                )
+            
+            # Get new duration
+            probe_result = subprocess.run([
+                "ffprobe", "-v", "quiet", "-print_format", "json",
+                "-show_format", str(dest_path)
+            ], capture_output=True, text=True)
+            
+            new_duration = 0.0
+            if probe_result.returncode == 0:
+                probe_data = json.loads(probe_result.stdout)
+                new_duration = float(probe_data.get("format", {}).get("duration", 0))
+            
+            time_saved = total_duration - new_duration
+            
+            await status.end(
+                f"Compressed {len(silences_to_compress)} silences, saved {time_saved:.1f}s "
+                f"({total_duration:.1f}s -> {new_duration:.1f}s)"
+            )
+            
+            return {
+                "status": "success",
+                "compressed_count": len(silences_to_compress),
+                "time_saved": time_saved,
+                "original_duration": total_duration,
+                "new_duration": new_duration,
+                "source_file": source_file,
+                "dest_file": dest_file
+            }
+            
+        except AudioOpsError as e:
+            await status.end(f"Error: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type
+            }
+        except Exception as e:
+            logger.exception(f"Unexpected error compressing silence in {source_file}")
+            await status.end(f"Error: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": "UnexpectedError"
+            }
+
 
 # Plugin factory for dynamic loading
 PLUGIN_FACTORY = AudioOpsServer
