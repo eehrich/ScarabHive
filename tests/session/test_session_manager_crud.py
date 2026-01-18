@@ -153,7 +153,7 @@ async def test_find_session_owner_with_read_error(session_manager, temp_storage)
     This tests the fix for the bug where concurrent access causes Permission Denied errors
     on Windows, which previously led to false "Session already exists" errors.
     """
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import patch
     
     # Create a session first
     session = await session_manager.create_session(
@@ -377,13 +377,174 @@ async def test_update_session_metadata(session_manager):
     await session_manager.update_session_metadata(
         "user1",
         session["session_id"],
-        tags=["research", "mcp"],
-        custom_field="custom_value"
+        {"tags": ["research", "mcp"], "custom_field": "custom_value"}
     )
     
     loaded = await session_manager.load_session("user1", session["session_id"])
     assert loaded["metadata"]["tags"] == ["research", "mcp"]
     assert loaded["metadata"]["custom_field"] == "custom_value"
+
+
+@pytest.mark.asyncio
+async def test_update_session_metadata_deep_merge_sub_agents(session_manager):
+    """Test that nested dicts like sub_agents are deep-merged, not replaced.
+    
+    This is CRITICAL for sub-agent management where multiple sub-agents
+    may be added to the same parent session concurrently.
+    """
+    session = await session_manager.create_session(user_id="user1")
+    sid = session["session_id"]
+    
+    # Add first sub-agent
+    await session_manager.update_session_metadata(
+        "user1", sid,
+        {"sub_agents": {
+            "sub1": {"agent_type": "analyzer", "status": "active", "created_at": "2025-01-01T00:00:00Z"}
+        }}
+    )
+    
+    # Add second sub-agent - should merge, NOT replace
+    await session_manager.update_session_metadata(
+        "user1", sid,
+        {"sub_agents": {
+            "sub2": {"agent_type": "writer", "status": "active", "created_at": "2025-01-01T00:01:00Z"}
+        }}
+    )
+    
+    loaded = await session_manager.load_session("user1", sid)
+    sub_agents = loaded["metadata"]["sub_agents"]
+    
+    # Both sub-agents must exist
+    assert "sub1" in sub_agents, "First sub-agent was lost during merge!"
+    assert "sub2" in sub_agents, "Second sub-agent was not added!"
+    assert sub_agents["sub1"]["agent_type"] == "analyzer"
+    assert sub_agents["sub2"]["agent_type"] == "writer"
+
+
+@pytest.mark.asyncio
+async def test_update_session_metadata_concurrent_updates(session_manager):
+    """Test that concurrent metadata updates don't cause lost updates.
+    
+    This simulates the real-world scenario where:
+    - Main agent is saving conversation history
+    - Sub-agent manager is updating sub_agents metadata
+    Both happen concurrently to the same parent session.
+    """
+    session = await session_manager.create_session(user_id="user1")
+    sid = session["session_id"]
+    
+    # Simulate concurrent updates from different tasks
+    async def update_sub_agent(name: str, delay: float):
+        await asyncio.sleep(delay)
+        await session_manager.update_session_metadata(
+            "user1", sid,
+            {"sub_agents": {name: {"status": "active", "created_at": f"time_{name}"}}}
+        )
+    
+    async def update_custom_field(field: str, value: str, delay: float):
+        await asyncio.sleep(delay)
+        await session_manager.update_session_metadata(
+            "user1", sid,
+            {field: value}
+        )
+    
+    # Run 5 concurrent updates
+    await asyncio.gather(
+        update_sub_agent("agent_a", 0.0),
+        update_sub_agent("agent_b", 0.01),
+        update_sub_agent("agent_c", 0.02),
+        update_custom_field("priority", "high", 0.005),
+        update_custom_field("category", "research", 0.015),
+    )
+    
+    loaded = await session_manager.load_session("user1", sid)
+    
+    # All updates must be present
+    sub_agents = loaded["metadata"]["sub_agents"]
+    assert "agent_a" in sub_agents, "agent_a lost in concurrent update"
+    assert "agent_b" in sub_agents, "agent_b lost in concurrent update"
+    assert "agent_c" in sub_agents, "agent_c lost in concurrent update"
+    assert loaded["metadata"]["priority"] == "high", "priority lost in concurrent update"
+    assert loaded["metadata"]["category"] == "research", "category lost in concurrent update"
+
+
+@pytest.mark.asyncio
+async def test_update_session_metadata_not_found(session_manager):
+    """Test that updating non-existent session raises SessionNotFoundError."""
+    with pytest.raises(SessionNotFoundError):
+        await session_manager.update_session_metadata(
+            "user1",
+            "nonexistent_session_id",
+            {"tags": ["test"]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_session_metadata_wrong_user_not_found(session_manager):
+    """Test that updating with wrong user_id raises SessionNotFoundError.
+    
+    Sessions are stored under user-specific paths ({user_id}/{session_id}),
+    so accessing with wrong user_id means the path doesn't exist.
+    This is the intended security model - user isolation by directory structure.
+    """
+    session = await session_manager.create_session(user_id="user1")
+    
+    # user2 trying to access user1's session - path won't exist
+    with pytest.raises(SessionNotFoundError):
+        await session_manager.update_session_metadata(
+            "user2",  # Wrong user - path user2/{session_id} doesn't exist
+            session["session_id"],
+            {"tags": ["hacked"]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_session_metadata_preserves_existing_fields(session_manager):
+    """Test that metadata update preserves fields not in the update."""
+    session = await session_manager.create_session(user_id="user1")
+    sid = session["session_id"]
+    
+    # Set initial metadata
+    await session_manager.update_session_metadata(
+        "user1", sid,
+        {"field_a": "value_a", "field_b": "value_b", "nested": {"x": 1, "y": 2}}
+    )
+    
+    # Update only field_a and nested.z
+    await session_manager.update_session_metadata(
+        "user1", sid,
+        {"field_a": "updated_a", "nested": {"z": 3}}
+    )
+    
+    loaded = await session_manager.load_session("user1", sid)
+    
+    # field_a should be updated
+    assert loaded["metadata"]["field_a"] == "updated_a"
+    # field_b should be preserved
+    assert loaded["metadata"]["field_b"] == "value_b"
+    # nested should be deep-merged
+    assert loaded["metadata"]["nested"]["x"] == 1, "nested.x was lost"
+    assert loaded["metadata"]["nested"]["y"] == 2, "nested.y was lost"
+    assert loaded["metadata"]["nested"]["z"] == 3, "nested.z was not added"
+
+
+@pytest.mark.asyncio
+async def test_update_session_metadata_updates_timestamp(session_manager):
+    """Test that metadata update also updates the session timestamp."""
+    session = await session_manager.create_session(user_id="user1")
+    sid = session["session_id"]
+    original_updated_at = session["updated_at"]
+    
+    # Small delay to ensure timestamp difference
+    await asyncio.sleep(0.01)
+    
+    await session_manager.update_session_metadata(
+        "user1", sid,
+        {"tags": ["test"]}
+    )
+    
+    loaded = await session_manager.load_session("user1", sid)
+    assert loaded["updated_at"] > original_updated_at, "Timestamp was not updated"
 
 
 @pytest.mark.asyncio

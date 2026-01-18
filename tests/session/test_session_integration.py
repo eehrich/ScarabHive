@@ -64,7 +64,7 @@ async def test_end_to_end_session_lifecycle(session_manager):
     await session_manager.update_session_metadata(
         "test_user",
         session_id,
-        tags=["important", "test"]
+        {"tags": ["important", "test"]}
     )
     updated = await session_manager.load_session("test_user", session_id)
     assert updated["metadata"]["tags"] == ["important", "test"]
@@ -246,7 +246,7 @@ async def test_metadata_updates(session_manager):
     await session_manager.update_session_metadata(
         "test_user",
         session_id,
-        tags=["work", "important"]
+        {"tags": ["work", "important"]}
     )
     
     loaded = await session_manager.load_session("test_user", session_id)
@@ -256,8 +256,7 @@ async def test_metadata_updates(session_manager):
     await session_manager.update_session_metadata(
         "test_user",
         session_id,
-        custom_field="custom_value",
-        priority="high"
+        {"custom_field": "custom_value", "priority": "high"}
     )
     
     loaded = await session_manager.load_session("test_user", session_id)

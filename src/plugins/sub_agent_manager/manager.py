@@ -257,26 +257,28 @@ class SubAgentManager:
             creator_plugin: Name of the sub_agent_manager plugin that created this sub-agent
         """
         session_manager = self._session_service.session_manager
-        parent_data = await session_manager.load_session(user_id, parent_session_id)
-
-        if "metadata" not in parent_data:
-            parent_data["metadata"] = {}
-        if "sub_agents" not in parent_data["metadata"]:
-            parent_data["metadata"]["sub_agents"] = {}
-
-        parent_data["metadata"]["sub_agents"][sub_session_id] = {
-            "instance_id": sub_session_id,
-            "agent_type": agent_type,
-            "created_at": datetime.now(UTC).isoformat(),
-            "last_used": datetime.now(UTC).isoformat(),
-            "status": "active",
-            "task_summary": task_summary[:100],
-            "depth": child_depth,
-            "message_count": 0,  # Will be updated after first LLM interaction
-            "creator_plugin": creator_plugin  # Track which sub_agent_manager created this
+        
+        # Use atomic metadata update to avoid "lost update" race condition
+        # This only updates metadata.sub_agents, not the whole session
+        sub_agent_info = {
+            sub_session_id: {
+                "instance_id": sub_session_id,
+                "agent_type": agent_type,
+                "created_at": datetime.now(UTC).isoformat(),
+                "last_used": datetime.now(UTC).isoformat(),
+                "status": "active",
+                "task_summary": task_summary[:100],
+                "depth": child_depth,
+                "message_count": 0,  # Will be updated after first LLM interaction
+                "creator_plugin": creator_plugin  # Track which sub_agent_manager created this
+            }
         }
-
-        await session_manager.save_session(parent_data)
+        
+        await session_manager.update_session_metadata(
+            user_id, 
+            parent_session_id, 
+            {"sub_agents": sub_agent_info}
+        )
 
         logger.debug(f"Updated parent {parent_session_id} with sub-agent {sub_session_id} (depth={child_depth})")
 
@@ -344,22 +346,31 @@ class SubAgentManager:
         user_id = self._extract_user_id(parent_session_id)
         session_manager = self._session_service.session_manager
 
-        parent_data = await session_manager.load_session(user_id, parent_session_id)
-
-        if "metadata" not in parent_data:
-            parent_data["metadata"] = {}
-        if "sub_agents" not in parent_data["metadata"]:
-            parent_data["metadata"]["sub_agents"] = {}
-
+        # First check if sub-session exists in parent metadata (via cache if available)
+        try:
+            parent_data = await session_manager.load_session(user_id, parent_session_id)
+        except Exception as e:
+            logger.warning(f"Could not load parent session {parent_session_id}: {e}")
+            return
+            
+        if "metadata" not in parent_data or "sub_agents" not in parent_data.get("metadata", {}):
+            logger.warning(f"Parent session {parent_session_id} has no sub_agents metadata")
+            return
+            
         if sub_session_id not in parent_data["metadata"]["sub_agents"]:
             logger.warning(f"Sub-session {sub_session_id} not found in parent metadata")
             return
 
-        # Update metadata fields
-        for key, value in updates.items():
-            parent_data["metadata"]["sub_agents"][sub_session_id][key] = value
-
-        await session_manager.save_session(parent_data)
+        # Build update for the specific sub-agent
+        current_sub_agent = parent_data["metadata"]["sub_agents"][sub_session_id].copy()
+        current_sub_agent.update(updates)
+        
+        # Use atomic metadata update
+        await session_manager.update_session_metadata(
+            user_id,
+            parent_session_id,
+            {"sub_agents": {sub_session_id: current_sub_agent}}
+        )
 
         logger.debug(f"Updated metadata for sub-session {sub_session_id}: {updates}")
 

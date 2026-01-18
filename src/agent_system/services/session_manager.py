@@ -64,7 +64,25 @@ class SessionManager:
         self._max_cache_size = 200  # Maximum cached sessions to prevent memory leak
         self._lock = asyncio.Lock()
         
+        # Per-session locks to prevent concurrent writes to the same session
+        self._session_locks: Dict[str, asyncio.Lock] = {}
+        self._session_locks_lock = asyncio.Lock()  # Lock for accessing _session_locks dict
+        
         logger.info("SessionManager initialized with storage_path=%s", self.storage_path)
+    
+    async def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Get or create a lock for a specific session.
+        
+        Args:
+            session_id: Session ID to get lock for
+            
+        Returns:
+            asyncio.Lock for this session
+        """
+        async with self._session_locks_lock:
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = asyncio.Lock()
+            return self._session_locks[session_id]
 
     def _sanitize_user_id(self, user_id: str) -> str:
         """Sanitize user_id to prevent directory traversal.
@@ -591,8 +609,9 @@ class SessionManager:
                 logger.debug("Session %s loaded from cache", session_id)
                 return cached_data.copy()
         
-        # Load from disk
-        async with self._lock:
+        # Use per-session lock to prevent reading while another task is writing
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock:
             path = self._get_session_path(user_id, session_id)
             
             if not path.exists():
@@ -638,9 +657,12 @@ class SessionManager:
         """
         self._validate_session_data(session_data)
         
-        async with self._lock:
+        session_id = session_data["session_id"]
+        
+        # Use per-session lock to prevent concurrent writes to the same session
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock:
             user_id = session_data["user_id"]
-            session_id = session_data["session_id"]
             path = self._get_session_path(user_id, session_id)
             
             # Update timestamp
@@ -660,24 +682,83 @@ class SessionManager:
             # Update cache
             self._cache[session_id] = (session_data, time.time())
             
-            # Update index
-            metadata = {
-                "session_id": session_data["session_id"],
-                "user_id": session_data["user_id"],
-                "title": session_data["title"],
-                "created_at": session_data["created_at"],
-                "updated_at": session_data["updated_at"],
-                "agent_name": session_data["agent_name"],
-                "llm_profile": session_data["llm_profile"],
-                "message_count": session_data["metadata"].get("message_count", 0),
-                "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
-                "tags": session_data["metadata"].get("tags", []),
-                "parent_session": session_data.get("parent_session"),
-                "depth": session_data.get("depth", 0)
-            }
-            await self._update_index_entry(user_id, session_id, metadata)
+            # Update index (use global lock for index file)
+            async with self._lock:
+                metadata = {
+                    "session_id": session_data["session_id"],
+                    "user_id": session_data["user_id"],
+                    "title": session_data["title"],
+                    "created_at": session_data["created_at"],
+                    "updated_at": session_data["updated_at"],
+                    "agent_name": session_data["agent_name"],
+                    "llm_profile": session_data["llm_profile"],
+                    "message_count": session_data["metadata"].get("message_count", 0),
+                    "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
+                    "tags": session_data["metadata"].get("tags", []),
+                    "parent_session": session_data.get("parent_session"),
+                    "depth": session_data.get("depth", 0)
+                }
+                await self._update_index_entry(user_id, session_id, metadata)
             
             logger.debug("Saved session %s", session_id)
+
+    async def update_session_metadata(
+        self, 
+        user_id: str, 
+        session_id: str, 
+        metadata_updates: Dict[str, Any]
+    ) -> None:
+        """Atomically update only the metadata field of a session.
+        
+        This method is safe for concurrent access - it loads the current session,
+        merges the metadata updates, and saves back, all under a per-session lock.
+        This prevents "lost update" problems when multiple tasks need to update
+        different metadata fields (e.g., sub_agents, activity).
+        
+        Args:
+            user_id: User identifier
+            session_id: Session identifier
+            metadata_updates: Dict of metadata fields to update (merged with existing)
+        
+        Raises:
+            SessionNotFoundError: If session doesn't exist
+            SessionPermissionError: If user doesn't own the session
+        """
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock:
+            path = self._get_session_path(user_id, session_id)
+            
+            if not path.exists():
+                raise SessionNotFoundError(f"Session {session_id} not found")
+            
+            # Load current session
+            session_data = await self._read_session_file_async(path)
+            
+            # Verify ownership
+            if session_data["user_id"] != user_id:
+                raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
+            
+            # Merge metadata updates (deep merge for nested dicts like sub_agents)
+            if "metadata" not in session_data:
+                session_data["metadata"] = {}
+            
+            for key, value in metadata_updates.items():
+                if isinstance(value, dict) and key in session_data["metadata"] and isinstance(session_data["metadata"][key], dict):
+                    # Deep merge for nested dicts
+                    session_data["metadata"][key].update(value)
+                else:
+                    session_data["metadata"][key] = value
+            
+            # Update timestamp
+            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            
+            # Save back
+            await self._atomic_write_async(path, session_data)
+            
+            # Update cache
+            self._cache[session_id] = (session_data, time.time())
+            
+            logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
 
     async def delete_session(self, user_id: str, session_id: str, create_backup: bool = True) -> None:
         """Delete a session.
@@ -803,29 +884,6 @@ class SessionManager:
         await self.save_session(session_data)
         
         logger.info("Renamed session %s to '%s'", session_id, new_title)
-
-    async def update_session_metadata(
-        self,
-        user_id: str,
-        session_id: str,
-        **metadata: Any
-    ) -> None:
-        """Update session metadata.
-        
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
-            **metadata: Metadata fields to update (e.g., tags=['research', 'mcp'])
-        
-        Raises:
-            SessionNotFoundError: If session doesn't exist
-            SessionPermissionError: If user doesn't own the session
-        """
-        session_data = await self.load_session(user_id, session_id)
-        session_data["metadata"].update(metadata)
-        await self.save_session(session_data)
-        
-        logger.debug("Updated metadata for session %s: %s", session_id, metadata)
 
     def clear_cache(self) -> None:
         """Clear the in-memory session cache."""
