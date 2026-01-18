@@ -325,3 +325,117 @@ def test_agent_fallback_state_initialization(system_config_with_profiles, agent_
     assert agent._active_fallback_llm is None
     assert agent._active_fallback_profile is None
     assert agent._fallback_activated_at is None
+    assert agent._jittered_recovery_seconds is None
+
+
+def test_agent_config_fallback_jitter_default():
+    """Test that fallback_recovery_jitter_percent has correct default."""
+    config = AgentConfig(llm_profile="gemini")
+    assert config.fallback_recovery_jitter_percent == 20.0  # Default 20%
+
+
+def test_agent_config_fallback_jitter_custom():
+    """Test that fallback_recovery_jitter_percent can be customized."""
+    config = AgentConfig(
+        llm_profile="gemini",
+        fallback_recovery_jitter_percent=30.0
+    )
+    assert config.fallback_recovery_jitter_percent == 30.0
+
+
+def test_agent_fallback_recovery_uses_jitter(system_config_with_profiles, agent_config_with_fallbacks):
+    """Test that fallback recovery applies jitter to prevent thundering herd."""
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config_with_fallbacks
+    )
+    registry = MCPRegistry()
+    mock_llm = MagicMock()
+    
+    agent = Agent(
+        "test_agent",
+        system_config_with_profiles,
+        mcp_config,
+        registry,
+        llm=mock_llm
+    )
+    
+    # Activate fallback
+    agent._active_fallback_llm = MagicMock()
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time()
+    
+    # First check should compute jitter
+    agent._check_fallback_recovery()
+    
+    # Verify jitter was computed
+    assert agent._jittered_recovery_seconds is not None
+    
+    # Jitter should be within ±20% of base (3600s)
+    # With 20% jitter: 3600 ± 720 = [2880, 4320]
+    assert 2880 <= agent._jittered_recovery_seconds <= 4320
+
+
+def test_agent_fallback_jitter_varies_between_agents(system_config_with_profiles, agent_config_with_fallbacks):
+    """Test that different agent instances get different jitter values."""
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config_with_fallbacks
+    )
+    registry = MCPRegistry()
+    
+    # Create multiple agents
+    jitter_values = []
+    for i in range(10):
+        agent = Agent(
+            f"test_agent_{i}",
+            system_config_with_profiles,
+            mcp_config,
+            registry,
+            llm=MagicMock()
+        )
+        agent._active_fallback_llm = MagicMock()
+        agent._active_fallback_profile = "openai"
+        agent._fallback_activated_at = time.time()
+        agent._check_fallback_recovery()
+        jitter_values.append(agent._jittered_recovery_seconds)
+    
+    # Should have some variance (not all identical)
+    # With 10 random values, extremely unlikely all are equal
+    unique_values = set(jitter_values)
+    assert len(unique_values) > 1, "Jitter should vary between agents to prevent thundering herd"
+
+
+def test_agent_reset_fallback_clears_jitter(system_config_with_profiles, agent_config_with_fallbacks):
+    """Test that reset_fallback clears the jittered recovery time."""
+    mcp_config = MCPConfig(
+        type="agent",
+        enabled=True,
+        agent_config=agent_config_with_fallbacks
+    )
+    registry = MCPRegistry()
+    mock_llm = MagicMock()
+    
+    agent = Agent(
+        "test_agent",
+        system_config_with_profiles,
+        mcp_config,
+        registry,
+        llm=mock_llm
+    )
+    
+    # Activate fallback and compute jitter
+    agent._active_fallback_llm = MagicMock()
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time()
+    agent._check_fallback_recovery()
+    
+    assert agent._jittered_recovery_seconds is not None
+    
+    # Reset fallback
+    agent.reset_fallback()
+    
+    # Jitter should be cleared
+    assert agent._jittered_recovery_seconds is None

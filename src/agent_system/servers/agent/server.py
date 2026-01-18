@@ -140,6 +140,7 @@ class Agent(MCPServer):
         self._active_fallback_llm: Optional[Any] = None
         self._active_fallback_profile: Optional[str] = None
         self._fallback_activated_at: Optional[float] = None  # Timestamp when fallback was activated
+        self._jittered_recovery_seconds: Optional[float] = None  # Per-instance jittered recovery time
 
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
@@ -473,12 +474,16 @@ class Agent(MCPServer):
             self._active_fallback_llm = None
             self._active_fallback_profile = None
             self._fallback_activated_at = None
+            self._jittered_recovery_seconds = None  # Reset jitter for next fallback
             # Restore original profile info
             if self.llm_profile_info and ":fallback" in self.llm_profile_info:
                 self.llm_profile_info = self.llm_profile_info.replace(":fallback", "")
     
     def _check_fallback_recovery(self) -> bool:
         """Check if fallback recovery period has elapsed and reset if so.
+        
+        Uses a per-instance jittered recovery time to prevent "thundering herd"
+        where all agents try to recover simultaneously after a shared outage.
         
         Returns:
             True if fallback was reset (should try original LLM)
@@ -487,21 +492,35 @@ class Agent(MCPServer):
         if self._active_fallback_llm is None or self._fallback_activated_at is None:
             return False
         
-        recovery_seconds = 3600  # Default 1 hour
-        if self.agent_config:
-            recovery_seconds = self.agent_config.fallback_recovery_seconds
+        # Use cached jittered value, or compute it once per fallback activation
+        if self._jittered_recovery_seconds is None:
+            import random
+            base_seconds = 3600  # Default 1 hour
+            jitter_percent = 20.0  # Default ±20%
+            if self.agent_config:
+                base_seconds = self.agent_config.fallback_recovery_seconds
+                jitter_percent = self.agent_config.fallback_recovery_jitter_percent
+            
+            # Apply random jitter: base ± (base * jitter_percent/100)
+            jitter_range = base_seconds * (jitter_percent / 100.0)
+            jitter = random.uniform(-jitter_range, jitter_range)
+            self._jittered_recovery_seconds = base_seconds + jitter
+            logger.debug(
+                f"[{self.name}] Fallback recovery jitter: base={base_seconds}s, "
+                f"jitter={jitter:+.1f}s, effective={self._jittered_recovery_seconds:.1f}s"
+            )
         
         import time
         elapsed = time.time() - self._fallback_activated_at
-        if elapsed >= recovery_seconds:
+        if elapsed >= self._jittered_recovery_seconds:
             logger.info(
-                f"[{self.name}] Fallback recovery period ({recovery_seconds}s) elapsed. "
+                f"[{self.name}] Fallback recovery period ({self._jittered_recovery_seconds:.0f}s) elapsed. "
                 f"Trying original LLM again after {int(elapsed)}s in fallback mode."
             )
             self.reset_fallback()
             return True
         
-        remaining = int(recovery_seconds - elapsed)
+        remaining = int(self._jittered_recovery_seconds - elapsed)
         logger.debug(
             f"[{self.name}] Still in fallback mode. "
             f"Recovery in {remaining}s (elapsed: {int(elapsed)}s)"
