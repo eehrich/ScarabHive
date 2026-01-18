@@ -2003,7 +2003,7 @@ class TestVolumeTool:
     async def test_volume_missing_gain_and_envelope(
         self, server: "AudioOpsServer", mock_status: MagicMock, temp_storage: Path
     ) -> None:
-        """Must provide either gain_db or envelope."""
+        """Must provide either gain_db, envelope, or normalize."""
         if not HAS_PYDUB:
             pytest.skip("pydub not available")
         
@@ -2019,6 +2019,35 @@ class TestVolumeTool:
         
         assert result["status"] == "error"
         assert result["error_type"] == "ValidationError"
+    
+    @pytest.mark.asyncio
+    async def test_volume_normalize_only(
+        self, server: "AudioOpsServer", mock_status: MagicMock, temp_storage: Path
+    ) -> None:
+        """Normalize without gain_db should work."""
+        if not HAS_PYDUB:
+            pytest.skip("pydub not available")
+        
+        # Create audio with -6 dB peak
+        audio = AudioSegment.silent(duration=1000)
+        audio = audio - 6.0  # Lower by 6 dB
+        filepath = temp_storage / "quiet.wav"
+        audio.export(str(filepath), format="wav")
+        
+        result = await server.volume({
+            "source_file": "quiet.wav",
+            "dest_file": "normalized.wav",
+            "normalize": True,
+            "_status": mock_status,
+        })
+        
+        assert result["status"] == "success"
+        assert result["normalized"] is True
+        assert "gain_db" not in result  # No gain was applied
+        
+        # Verify output file exists
+        output_path = temp_storage / "normalized.wav"
+        assert output_path.exists()
     
     @pytest.mark.asyncio
     async def test_volume_gain_out_of_range_high(

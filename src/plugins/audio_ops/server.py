@@ -1415,12 +1415,20 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             # Validate gain_db OR envelope (not both)
             use_envelope = envelope is not None
+            use_gain = gain_db is not None
             
-            if use_envelope and gain_db is not None:
+            if use_envelope and use_gain:
                 raise AudioOpsError(
                     "Cannot specify both gain_db and envelope. Use one or the other.",
                     error_type="ValidationError",
                     details={"gain_db": gain_db, "envelope": "provided"}
+                )
+            
+            # Allow normalize without gain_db or envelope
+            if not use_envelope and not use_gain and not normalize:
+                raise AudioOpsError(
+                    "Either gain_db, envelope, or normalize must be provided",
+                    error_type="ValidationError"
                 )
             
             # Type-checked variables
@@ -1429,13 +1437,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             if use_envelope:
                 validated_envelope = self._validate_volume_envelope(envelope)
-            else:
-                # Use static gain_db (default 0.0 = no change)
-                if gain_db is None:
-                    raise AudioOpsError(
-                        "Either gain_db or envelope must be provided",
-                        error_type="ValidationError"
-                    )
+            elif use_gain:
+                # Use static gain_db
                 try:
                     validated_gain = float(gain_db)
                 except (ValueError, TypeError):
@@ -1452,6 +1455,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         error_type="ValidationError",
                         details={"gain_db": validated_gain}
                     )
+            # else: Only normalize, no gain adjustment (validated_gain = 0.0)
             
             # Validate paths (with session isolation if configured)
             session_id = params.get("_session_id")
@@ -1478,10 +1482,15 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 if status:
                     await status.progress(f"Applying {len(validated_envelope)}-point volume envelope")
                 result = self._apply_volume_envelope(audio, validated_envelope)
-            else:
+            elif use_gain:
                 if status:
                     await status.progress(f"Applying {validated_gain:+.1f} dB gain")
                 result = audio + validated_gain
+            else:
+                # Only normalize, no gain adjustment
+                if status:
+                    await status.progress("No gain adjustment, only normalization")
+                result = audio
             
             # Optional normalization
             if normalize:
@@ -1510,11 +1519,17 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if use_envelope and validated_envelope is not None:
                 response["envelope"] = validated_envelope
                 response["envelope_points"] = len(validated_envelope)
-            else:
+            elif use_gain:
                 response["gain_db"] = validated_gain
+            # else: only normalize, no gain details to include
             
             if status:
-                mode_desc = f"{len(validated_envelope)}-point envelope" if (use_envelope and validated_envelope) else f"{validated_gain:+.1f} dB"
+                if use_envelope and validated_envelope:
+                    mode_desc = f"{len(validated_envelope)}-point envelope"
+                elif use_gain:
+                    mode_desc = f"{validated_gain:+.1f} dB"
+                else:
+                    mode_desc = "normalization only"
                 await status.end(
                     f"Created {dest_file} - volume adjusted by {mode_desc}",
                     meta={
