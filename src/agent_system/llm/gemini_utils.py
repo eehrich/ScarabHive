@@ -102,11 +102,11 @@ def convert_openai_messages_to_gemini(
                             encoded.type, encoded.mime_type
                         )
             
-            content: dict[str, Any] = {
+            tool_content: dict[str, Any] = {
                 "role": "tool",
                 "parts": parts
             }
-            contents.append(content)  # type: ignore[arg-type]
+            contents.append(tool_content)  # type: ignore[arg-type]
             continue
 
         # Handle assistant with tool_calls
@@ -192,7 +192,71 @@ def convert_openai_messages_to_gemini(
         system_instruction = "\n\n".join(system_instructions)
         logger.debug(f"Final merged system instruction: {len(system_instruction)} chars from {len(system_instructions)} parts")
 
+    # Merge consecutive tool responses into single content blocks.
+    # Gemini requires that when a model makes multiple parallel function calls,
+    # all corresponding function_responses must be in a single role="tool" content block.
+    # If they're separate, Gemini returns 400 INVALID_ARGUMENT with
+    # "Mismatched function_call/function_response pairs".
+    contents = _merge_consecutive_tool_responses(contents)
+
     return system_instruction, contents
+
+
+def _merge_consecutive_tool_responses(
+    contents: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Merge consecutive tool response content blocks into single blocks.
+    
+    Gemini's API requires that when a model makes multiple parallel function calls,
+    all the corresponding function_responses must be in a single Content block
+    with role="tool" and multiple functionResponse parts.
+    
+    Args:
+        contents: List of Gemini content dicts
+    
+    Returns:
+        List with consecutive tool responses merged
+    """
+    if not contents:
+        return contents
+    
+    merged: List[Dict[str, Any]] = []
+    i = 0
+    
+    while i < len(contents):
+        current = contents[i]
+        
+        # Check if this is a tool response
+        if current.get("role") == "tool":
+            # Collect all consecutive tool responses
+            tool_parts: List[Dict[str, Any]] = list(current.get("parts", []))
+            j = i + 1
+            
+            while j < len(contents) and contents[j].get("role") == "tool":
+                # Merge parts from consecutive tool responses
+                tool_parts.extend(contents[j].get("parts", []))
+                j += 1
+            
+            # If we merged multiple tool responses, log it
+            if j > i + 1:
+                logger.debug(
+                    "[Gemini] Merged %d consecutive tool responses into single content block "
+                    "with %d parts",
+                    j - i, len(tool_parts)
+                )
+            
+            # Add merged tool response
+            merged.append({
+                "role": "tool",
+                "parts": tool_parts
+            })
+            i = j
+        else:
+            # Not a tool response, keep as-is
+            merged.append(current)
+            i += 1
+    
+    return merged
 
 
 def _convert_multimodal_content(content_list: List[Any]) -> List[Dict[str, Any]]:

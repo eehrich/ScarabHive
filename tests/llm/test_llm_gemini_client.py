@@ -213,6 +213,97 @@ class TestGeminiClientMessageConversion:
         assert contents[2]["role"] == "tool"
         assert contents[3]["role"] == "model"
 
+    def test_convert_parallel_tool_calls_merged(self, gemini_client):
+        """Test that multiple parallel tool responses are merged into single content block.
+        
+        When a model makes multiple parallel tool calls, Gemini requires all
+        corresponding function_responses to be in a single role="tool" content
+        block. If they're separate, Gemini returns 400 INVALID_ARGUMENT with
+        "Mismatched function_call/function_response pairs".
+        
+        This test verifies that consecutive tool messages are merged.
+        """
+        messages = [
+            ChatMessage(role="user", content="Get weather for Berlin and time for Tokyo"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Berlin"}'
+                        }
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "get_time",
+                            "arguments": '{"city": "Tokyo"}'
+                        }
+                    },
+                    {
+                        "id": "call_3",
+                        "type": "function",
+                        "function": {
+                            "name": "get_currency",
+                            "arguments": '{"from": "EUR", "to": "JPY"}'
+                        }
+                    }
+                ]
+            ),
+            # These separate tool responses should be merged
+            ChatMessage(
+                role="tool",
+                content='{"temp": 22}',
+                tool_call_id="call_1",
+                name="get_weather"
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"time": "15:30"}',
+                tool_call_id="call_2",
+                name="get_time"
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"rate": 162.5}',
+                tool_call_id="call_3",
+                name="get_currency"
+            ),
+            ChatMessage(role="assistant", content="Results: Berlin is 22°C, Tokyo time is 15:30, and 1 EUR = 162.5 JPY.")
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        # Should have: User, Assistant with 3 calls, SINGLE merged tool response, Assistant response
+        assert len(contents) == 4, f"Expected 4 content blocks, got {len(contents)}: {[c.get('role') for c in contents]}"
+        
+        # Verify structure
+        assert contents[0]["role"] == "user"
+        assert contents[1]["role"] == "model"
+        assert contents[2]["role"] == "tool"
+        assert contents[3]["role"] == "model"
+        
+        # Verify the assistant message has 3 function calls
+        assert len(contents[1]["parts"]) == 3
+        assert contents[1]["parts"][0]["functionCall"]["name"] == "get_weather"
+        assert contents[1]["parts"][1]["functionCall"]["name"] == "get_time"
+        assert contents[1]["parts"][2]["functionCall"]["name"] == "get_currency"
+        
+        # CRITICAL: Verify all 3 tool responses are merged into ONE content block
+        tool_response = contents[2]
+        assert len(tool_response["parts"]) == 3, f"Expected 3 merged parts, got {len(tool_response['parts'])}"
+        
+        # Verify each function response is present
+        func_names = [p["functionResponse"]["name"] for p in tool_response["parts"]]
+        assert "get_weather" in func_names
+        assert "get_time" in func_names
+        assert "get_currency" in func_names
+
     def test_convert_tool_calls_with_thought_signature(self, gemini_client):
         """Test that thought signatures are preserved in tool calls (Gemini 3 Pro requirement)."""
         messages = [
