@@ -471,3 +471,91 @@ class TestContextOptimizerToolPairs:
         # Verify config was used (check metadata)
         assert result.metadata['max_percentage'] == 0.90
         assert result.metadata['max_tokens'] == int(10000 * 0.90)  # 90% of context_window
+    
+    def test_looks_like_base64_detection(self, plugin):
+        """Test that base64 strings are correctly identified."""
+        import base64
+        import os
+        
+        # Generate realistic base64 data with good entropy (like audio/image content)
+        # Use random bytes to simulate actual binary data
+        binary_data = os.urandom(1500)  # 1500 random bytes
+        real_base64 = base64.b64encode(binary_data).decode('ascii')
+        
+        # Valid base64 strings with high entropy
+        assert plugin._looks_like_base64(real_base64) is True
+        
+        # Also test with padding
+        padded_base64 = base64.b64encode(b'test data here').decode('ascii')
+        # Short strings (<1000 chars) should return False
+        assert plugin._looks_like_base64(padded_base64) is False
+        
+        # Long base64 string with random data
+        long_base64 = base64.b64encode(os.urandom(1000)).decode('ascii')
+        assert plugin._looks_like_base64(long_base64) is True
+        
+        # Not base64 - regular text
+        regular_text = "This is regular text with spaces and punctuation!"
+        assert plugin._looks_like_base64(regular_text) is False
+        
+        # Not base64 - long regular text
+        long_text = "word " * 500  # 2500 chars but lots of spaces
+        assert plugin._looks_like_base64(long_text) is False
+        
+        # Not base64 - JSON content
+        json_text = '{"key": "value", "another": "data"}' * 100
+        assert plugin._looks_like_base64(json_text) is False
+    
+    def test_smart_truncate_preserves_base64_in_json(self, plugin):
+        """Test that base64 data in JSON tool responses is preserved, not truncated."""
+        import base64
+        import os
+        
+        # Create realistic audio data with good entropy (large base64 blob)
+        audio_binary = os.urandom(10000)  # 10KB random binary
+        base64_audio = base64.b64encode(audio_binary).decode('ascii')
+        
+        # Typical audio_ops tool response structure
+        tool_response = {
+            "status": "success",
+            "audio_data": base64_audio,
+            "metadata": {
+                "format": "wav",
+                "duration": 5.0,
+                "sample_rate": 44100
+            }
+        }
+        
+        # Truncate with a max_string_length smaller than the base64 data
+        result = plugin._smart_truncate_json_strings(
+            tool_response, 
+            max_string_length=5000,  # Base64 is ~13KB, would normally be truncated
+            keep_end=True
+        )
+        
+        # Base64 data should be PRESERVED intact
+        assert result["audio_data"] == base64_audio, "Base64 data should not be truncated"
+        
+        # Regular fields should still be there
+        assert result["status"] == "success"
+        assert result["metadata"]["format"] == "wav"
+    
+    def test_smart_truncate_still_truncates_non_base64_long_strings(self, plugin):
+        """Test that non-base64 long strings are still truncated."""
+        # Large regular text content
+        long_text = "This is some log output. " * 500  # ~12KB
+        
+        data = {
+            "logs": long_text,
+            "status": "done"
+        }
+        
+        result = plugin._smart_truncate_json_strings(
+            data,
+            max_string_length=5000,
+            keep_end=True
+        )
+        
+        # Regular text should be truncated
+        assert len(result["logs"]) < len(long_text)
+        assert "chars removed" in result["logs"]

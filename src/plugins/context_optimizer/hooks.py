@@ -294,6 +294,9 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
     ) -> any:
         """Recursively truncate long strings in JSON data while keeping structure valid.
         
+        Preserves base64-encoded data to avoid corruption (which causes Gemini
+        INVALID_ARGUMENT errors with "corrupted base64").
+        
         Args:
             data: JSON-serializable data (dict, list, str, etc.)
             max_string_length: Max length for string values
@@ -307,6 +310,14 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         elif isinstance(data, list):
             return [self._smart_truncate_json_strings(item, max_string_length, keep_end) for item in data]
         elif isinstance(data, str) and len(data) > max_string_length:
+            # Skip truncation for base64-encoded data - truncating would corrupt it
+            # and cause Gemini INVALID_ARGUMENT errors
+            if self._looks_like_base64(data):
+                logger.debug(
+                    f"[ContextOptimizer] Preserving base64 string ({len(data)} chars) to avoid corruption"
+                )
+                return data
+            
             if keep_end:
                 # Keep the END (newest data usually more important)
                 return f"...[{len(data) - max_string_length} chars removed]..." + data[-max_string_length:]
@@ -315,6 +326,61 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                 return data[:max_string_length] + f"...[{len(data) - max_string_length} chars removed]..."
         else:
             return data
+    
+    def _looks_like_base64(self, data: str) -> bool:
+        """Check if a string looks like base64-encoded binary data.
+        
+        Heuristics:
+        - Long string (>1000 chars)
+        - Mostly alphanumeric + /+=
+        - No spaces or newlines (or very few)
+        - High ratio of valid base64 characters
+        - Has character variety (not just repeated chars like "xxxx...")
+        - Often ends with = or == (padding)
+        """
+        if len(data) < 1000:
+            return False
+        
+        # Sample first 500 chars for efficiency
+        sample = data[:500]
+        
+        # Count valid base64 characters
+        base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+        valid_count = sum(1 for c in sample if c in base64_chars)
+        
+        # If >95% are valid base64 chars and few/no whitespace, might be base64
+        whitespace_count = sum(1 for c in sample if c in ' \n\r\t')
+        
+        ratio = valid_count / len(sample) if sample else 0
+        whitespace_ratio = whitespace_count / len(sample) if sample else 0
+        
+        if ratio <= 0.95 or whitespace_ratio >= 0.02:
+            return False
+        
+        # Additional heuristic: real base64 has good character variety
+        # Repeated chars like "xxxx..." or "aaaa..." are not base64
+        unique_chars = set(sample)
+        char_variety_ratio = len(unique_chars) / len(sample) if sample else 0
+        
+        # Real base64 of binary data typically has >5% unique characters
+        # (since there are ~64 possible chars for real data)
+        # Repeated patterns like "xxxx..." have <1% unique chars
+        if char_variety_ratio < 0.05:
+            return False
+        
+        # Check for base64 padding at end (common for binary data)
+        has_padding = data.rstrip().endswith('=')
+        
+        # Count character class distribution for more confidence
+        # Real base64 from binary data has mixed upper/lower/digits
+        has_upper = any(c.isupper() for c in sample)
+        has_lower = any(c.islower() for c in sample)
+        has_digit = any(c.isdigit() for c in sample)
+        
+        # Real base64 usually has mix of char types, simple text repetition doesn't
+        char_type_count = sum([has_upper, has_lower, has_digit])
+        
+        return char_type_count >= 2 or has_padding
     
     def _truncate_messages(
         self,
