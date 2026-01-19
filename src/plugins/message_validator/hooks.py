@@ -439,13 +439,33 @@ class InternalMessageValidator:
                 if second_msg.tool_calls:
                     merged_tool_calls.extend(second_msg.tool_calls)
                 
-                # Create merged message
+                # Merge reasoning_content (important for Gemini "thinking")
+                first_reasoning = getattr(first_msg, 'reasoning_content', None) or ""
+                second_reasoning = getattr(second_msg, 'reasoning_content', None) or ""
+                merged_reasoning = first_reasoning
+                if second_reasoning:
+                    if merged_reasoning:
+                        merged_reasoning = f"{merged_reasoning}\n\n{second_reasoning}"
+                    else:
+                        merged_reasoning = second_reasoning
+                
+                # Merge multimodal_content: combine both lists
+                merged_multimodal = []
+                if getattr(first_msg, 'multimodal_content', None):
+                    merged_multimodal.extend(first_msg.multimodal_content)
+                if getattr(second_msg, 'multimodal_content', None):
+                    merged_multimodal.extend(second_msg.multimodal_content)
+                
+                # Create merged message preserving all fields
                 repaired[first_idx] = ChatMessage(
                     role="assistant",
                     content=merged_content if merged_content else None,
                     tool_calls=merged_tool_calls if merged_tool_calls else None,
                     name=first_msg.name if hasattr(first_msg, 'name') else None,
-                    timestamp=first_msg.timestamp if hasattr(first_msg, 'timestamp') else None
+                    timestamp=first_msg.timestamp if hasattr(first_msg, 'timestamp') else None,
+                    reasoning_content=merged_reasoning if merged_reasoning else None,
+                    multimodal_content=merged_multimodal if merged_multimodal else None,
+                    content_format=first_msg.content_format or second_msg.content_format
                 )
                 
                 # Mark second message for removal

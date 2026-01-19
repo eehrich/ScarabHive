@@ -285,6 +285,52 @@ class TestMessageSequence:
         assert "First part" in merged_msg.content
         assert "Second part" in merged_msg.content
 
+    def test_consecutive_assistant_messages_preserves_all_fields(self):
+        """Test that merging consecutive assistant messages preserves all fields.
+        
+        This is important for Gemini which uses reasoning_content for "thinking"
+        and other providers that use multimodal_content.
+        """
+        messages = [
+            ChatMessage(role="user", content="Think about this"),
+            ChatMessage(
+                role="assistant",
+                content="First thought",
+                reasoning_content="Internal reasoning part 1",
+                content_format="markdown"
+            ),
+            ChatMessage(
+                role="assistant",
+                content="Second thought",
+                reasoning_content="Internal reasoning part 2",
+            )
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should have detected and repaired the issue
+        assert len(result.issues) == 1
+        assert result.issues[0].type == "consecutive_assistant_messages"
+
+        # Should have merged into 2 messages
+        assert len(result.repaired_messages) == 2
+        
+        merged_msg = result.repaired_messages[1]
+        assert merged_msg.role == "assistant"
+        
+        # Content should be merged
+        assert "First thought" in merged_msg.content
+        assert "Second thought" in merged_msg.content
+        
+        # reasoning_content should be merged
+        assert merged_msg.reasoning_content is not None
+        assert "Internal reasoning part 1" in merged_msg.reasoning_content
+        assert "Internal reasoning part 2" in merged_msg.reasoning_content
+        
+        # content_format should be preserved from first message
+        assert merged_msg.content_format == "markdown"
+
     def test_valid_alternating_sequence(self):
         """Test valid alternating user/assistant sequence."""
         messages = [
