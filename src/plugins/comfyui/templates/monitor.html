@@ -105,10 +105,18 @@
             background: #a1260d;
             padding: 4px 12px;
             font-size: 12px;
+            cursor: pointer;
+            pointer-events: auto;
+            position: relative;
+            z-index: 10;
         }
 
         button.btn-cancel:hover {
             background: #c72e0d;
+        }
+        
+        button.btn-cancel:active {
+            background: #8a1f0a;
         }
 
         .section {
@@ -379,22 +387,27 @@
         }
         
         async function cancelJob(promptId) {
-            if (!confirm('Cancel this job?')) return;
             try {
-                const response = await fetch(`/plugins/${pluginName}/jobs/${promptId}/cancel`, {
-                    method: 'POST'
+                const url = `/plugins/${pluginName}/jobs/${promptId}/cancel`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    credentials: 'include'  // Include auth cookies
                 });
                 if (response.ok) {
                     refreshData();
+                } else {
+                    console.error('❌ Cancel failed with status:', response.status);
                 }
             } catch (error) {
-                console.error('Cancel failed:', error);
+                console.error('💥 Cancel failed with exception:', error);
             }
         }
         
         async function refreshData() {
             try {
-                const response = await fetch(`/plugins/${pluginName}/jobs`);
+                const response = await fetch(`/plugins/${pluginName}/jobs`, {
+                    credentials: 'include'  // Include auth cookies
+                });
                 const data = await response.json();
                 
                 // Update server status
@@ -428,11 +441,13 @@
                             <td>${formatDuration(job.duration_seconds)}</td>
                             <td>
                                 ${['queued', 'running'].includes(job.status) 
-                                    ? `<button class="btn btn-cancel" onclick="cancelJob('${job.prompt_id}')">Cancel</button>` 
+                                    ? `<button type="button" class="btn btn-cancel" data-prompt-id="${job.prompt_id}">Cancel</button>` 
                                     : '-'}
                             </td>
                         </tr>
                     `).join('');
+                    
+
                 } else {
                     activeBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active jobs</td></tr>';
                 }
