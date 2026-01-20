@@ -441,7 +441,7 @@ plugins:
 
     request_logger:
       type: request_logger
-      enabled: true
+      enabled: false
 
     message_validator:
       type: message_validator
