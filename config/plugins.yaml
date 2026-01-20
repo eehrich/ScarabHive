@@ -383,7 +383,7 @@ plugins:
 
     context_optimizer:
       type: context_optimizer
-      enabled: true
+      enabled: false # FIXME: Disabled it for now
       config:
         # Token limit: Use X% of LLM context window
         max_context_percentage: 0.80  # 80% of context window
