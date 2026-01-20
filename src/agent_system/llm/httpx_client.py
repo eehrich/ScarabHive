@@ -327,6 +327,7 @@ class HTTPXOpenAIClient(LLMClient):
             "model": self.model,
             "messages": message_dicts,
             "stream": False,  # ⚡ Disable streaming
+            "usage": {"include": True},  # Request detailed usage (OpenRouter: cached_tokens, cost)
             **self.extra_params
         }
 
@@ -474,6 +475,7 @@ class HTTPXOpenAIClient(LLMClient):
             "messages": message_dicts,
             "stream": True,  # ⚡ Enable streaming
             "stream_options": {"include_usage": True},  # Request usage stats in stream
+            "usage": {"include": True},  # Request detailed usage (OpenRouter: cached_tokens, cost)
             **self.extra_params
         }
 
