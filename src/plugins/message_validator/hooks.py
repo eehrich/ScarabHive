@@ -389,6 +389,11 @@ class InternalMessageValidator:
             elif issue.type == "missing_tool_call_id":
                 remove_indices.add(issue.message_index)
 
+            elif issue.type == "empty_assistant_message":
+                # Remove empty assistant messages - they serve no purpose and can 
+                # confuse the LLM (especially when followed by user "Continue" messages)
+                remove_indices.add(issue.message_index)
+
             elif issue.type == "consecutive_assistant_messages":
                 # Merge second assistant message into first
                 first_idx = issue.message_index

@@ -1684,14 +1684,6 @@ class Agent(MCPServer):
             if content and not tool_calls:
                 yield {"type": "thinking", "content": formatted_content, "content_format": content_format}
 
-            # Persist session after each LLM response to preserve progress on cancellation
-            try:
-                conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
-                logger.debug(f"Persisted session {session_id} after LLM response (step {step}) with {len(conversation_msgs)} messages")
-            except Exception as e:
-                logger.warning(f"Failed to persist session {session_id} after LLM response: {e}", exc_info=True)
-
             # Yield pending status events after LLM response
             for status_event in yield_pending_status_events():
                 yield status_event
@@ -1700,6 +1692,15 @@ class Agent(MCPServer):
             # (before checking tool calls, to catch completely empty responses)
             if not content and not tool_calls:
                 consecutive_empty_responses += 1
+                
+                # Remove the empty assistant message we just added - it serves no purpose
+                # and will just accumulate in the session causing validation issues
+                if messages and messages[-1].role == "assistant" and not messages[-1].content and not messages[-1].tool_calls:
+                    messages.pop()
+                    if context.messages is not messages and context.messages and context.messages[-1].role == "assistant":
+                        context.messages.pop()
+                    logger.debug("Removed empty assistant message from conversation history")
+                
                 if consecutive_empty_responses >= max_consecutive_empty:
                     logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' user message to prompt LLM")
                     # Instead of breaking, inject a "Continue" user message to nudge the LLM
@@ -1718,6 +1719,15 @@ class Agent(MCPServer):
                     continue
             else:
                 consecutive_empty_responses = 0  # Reset counter
+                
+                # Persist session after each valid (non-empty) LLM response to preserve progress on cancellation
+                # NOTE: We only persist non-empty responses to avoid accumulating useless empty messages
+                try:
+                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                    self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
+                    logger.debug(f"Persisted session {session_id} after LLM response (step {step}) with {len(conversation_msgs)} messages")
+                except Exception as e:
+                    logger.warning(f"Failed to persist session {session_id} after LLM response: {e}", exc_info=True)
 
             # Check if we have tool calls to execute
             if tool_calls:
