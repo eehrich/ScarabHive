@@ -412,9 +412,13 @@ class ComfyUIServer(SchemaBasedMCPServer):
         """Execute a workflow."""
         workflow_id = params.get("workflow_id")
         if not workflow_id:
+            if status:
+                await status.error("workflow_id is required")
             return {"error": "workflow_id is required"}
         
         if workflow_id not in self.workflows:
+            if status:
+                await status.error(f"Unknown workflow: {workflow_id}")
             return {
                 "error": f"Unknown workflow: {workflow_id}",
                 "available": list(self.workflows.keys())
@@ -425,6 +429,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Check if workflow file exists
         if not workflow_file.exists():
+            if status:
+                await status.error(f"Workflow file not found: {workflow_file}")
             return {
                 "error": f"Workflow file not found: {workflow_file}",
                 "hint": "Export workflow from ComfyUI using 'Save (API Format)'"
@@ -435,6 +441,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
             with open(workflow_file, "r", encoding="utf-8") as f:
                 workflow_json = json.load(f)
         except Exception as e:
+            if status:
+                await status.error(f"Failed to load workflow: {e}")
             return {"error": f"Failed to load workflow: {e}"}
         
         # Inject parameters
@@ -448,6 +456,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
             if param_name in user_params:
                 value = user_params[param_name]
             elif param_def.get("required"):
+                if status:
+                    await status.error(f"Required parameter missing: {param_name}")
                 return {"error": f"Required parameter missing: {param_name}"}
             else:
                 value = param_def.get("default")
@@ -463,10 +473,14 @@ class ComfyUIServer(SchemaBasedMCPServer):
         queue_result = await self.client.queue_prompt(workflow_json)
         
         if "error" in queue_result:
+            if status:
+                await status.error(f"Failed to queue workflow: {queue_result['error']}")
             return {"error": queue_result["error"]}
         
         prompt_id = queue_result.get("prompt_id")
         if not prompt_id:
+            if status:
+                await status.error("No prompt_id returned from ComfyUI")
             return {"error": "No prompt_id returned from ComfyUI"}
         
         # Register job in tracker
@@ -494,6 +508,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         """Get job status."""
         prompt_id = params.get("prompt_id")
         if not prompt_id:
+            # Note: _op_status is called from workflow() which handles status reporting
+            # for this operation, so no status parameter needed here
             return {"error": "prompt_id is required"}
         
         # Get live status from ComfyUI
@@ -531,6 +547,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         """Get job results."""
         prompt_id = params.get("prompt_id")
         if not prompt_id:
+            if status:
+                await status.error("prompt_id is required")
             return {"error": "prompt_id is required"}
         
         download = params.get("download", True)
@@ -825,6 +843,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         effective_output_dir = self._resolve_output_dir(session_id)
         
         if not any([prompt_id, file_path, filename]):
+            if status:
+                await status.error("One of prompt_id, file_path, or filename is required")
             return {
                 "error": "One of prompt_id, file_path, or filename is required",
                 "hint": "Use prompt_id to load outputs from a job, or file_path/filename to load a specific file"
@@ -840,10 +860,14 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if prompt_id:
             job = self.job_tracker.get_job(prompt_id)
             if not job:
+                if status:
+                    await status.error(f"Job not found: {prompt_id}")
                 return {"error": f"Job not found: {prompt_id}"}
             
             outputs = job.get("outputs", {})
             if not outputs:
+                if status:
+                    await status.error(f"No outputs found for job {prompt_id}")
                 return {
                     "error": f"No outputs found for job {prompt_id}",
                     "hint": "Job may not have completed yet. Use operation='result' first to download outputs."
@@ -963,6 +987,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
             })
         
         if not multimodal:
+            if status:
+                await status.error("No valid media files found to load")
             return {"error": "No valid media files found to load"}
         
         if status:
@@ -1013,6 +1039,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         """
         prompt_id = params.get("prompt_id")
         if not prompt_id:
+            if status:
+                await status.error("prompt_id is required")
             return {"error": "prompt_id is required"}
         
         # Timeout only from plugin config, not from tool params
