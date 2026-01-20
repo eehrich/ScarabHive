@@ -162,9 +162,9 @@ class ToolExecutionManager:
             - {"type": "tool_events", "events": [...]} - Tool execution events
             - {"type": "complete", "messages": [...], "results": [...]} - Final results
         """
-        # Store session_id and user_id for use in tool execution
-        self._current_session_id = session_id
-        self._current_user_id = user_id
+        # NOTE: session_id and user_id are passed as parameters through the call chain
+        # to avoid race conditions when multiple requests share the same ToolExecutionManager.
+        # DO NOT store them as instance variables (self._current_session_id/user_id)!
 
         tool_messages = []
         events_to_yield = []
@@ -238,7 +238,7 @@ class ToolExecutionManager:
                     tool_specific_request_id = None
 
                 task = asyncio.create_task(
-                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id)
+                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id, session_id, user_id)
                 )
                 tasks.append(task)
                 task_tool_info[task] = (tc, tool_name, openai_tool_name)
@@ -335,18 +335,19 @@ class ToolExecutionManager:
         }
 
     async def _execute_single_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 params: Dict[str, Any], step: int, request_id: str | None = None,
+                                 session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a single tool and return the result message, events, and results."""
         # Use cancellation system if request_id is available
         if request_id:
-            return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id)
+            return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
         else:
             # Legacy execution without cancellation - wrap in try/except for robustness
             try:
                 if "." in tool_name:
-                    return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+                    return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
                 else:
-                    return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+                    return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
             except Exception as e:
                 # Handle unknown tool errors gracefully - return error message instead of crashing
                 logger.exception("Tool %s execution failed (legacy path): %s", tool_name, e)
@@ -365,7 +366,8 @@ class ToolExecutionManager:
                 return message, [{"type": "tool_error", "tool": tool_name, "error": str(e)}], []
 
     async def _execute_with_cancellation(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                       params: Dict[str, Any], step: int, request_id: str) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                       params: Dict[str, Any], step: int, request_id: str,
+                                       session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute tool with cancellation support."""
         cancellation_manager = get_cancellation_manager()
 
@@ -399,11 +401,11 @@ class ToolExecutionManager:
             try:
                 if "." in tool_name:
                     task = asyncio.create_task(
-                        self._execute_external_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id)
+                        self._execute_external_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
                     )
                 else:
                     task = asyncio.create_task(
-                        self._execute_plugin_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id)
+                        self._execute_plugin_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
                     )
 
                 # Register task for forced cancellation with tool-specific ID
@@ -461,9 +463,18 @@ class ToolExecutionManager:
         return message, [{"type": event_type, "tool": tool_name, "request_id": request_id}], []
 
     async def _execute_external_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                   params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                   params: Dict[str, Any], step: int, request_id: str | None = None,
+                                   session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute an external MCP tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
+
+        # Inject session context into params for external tools
+        if session_id or user_id:
+            params = params.copy()
+            if session_id:
+                params["_session_id"] = session_id
+            if user_id:
+                params["_user_id"] = user_id
 
         # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
@@ -533,7 +544,8 @@ class ToolExecutionManager:
             return message, events, results
 
     async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 params: Dict[str, Any], step: int, request_id: str | None = None,
+                                 session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a plugin tool (or config agent tool)."""
         # CRITICAL FIX: Check if tool_name exists as a registered server FIRST
         # This prevents prefix-based false positives where "sysadmin_agent_manager"
@@ -598,22 +610,23 @@ class ToolExecutionManager:
         try:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
 
-            # Inject session context from current execution context if available
-            if self._current_session_id or self._current_user_id or request_id or (self._agent and hasattr(self._agent, 'name')) or (self._agent and hasattr(self._agent, 'registry')):
+            # Inject session context from parameters (passed through call chain to avoid race conditions)
+            if session_id or user_id or request_id or (self._agent and hasattr(self._agent, 'name')) or (self._agent and hasattr(self._agent, 'registry')):
                 params = params.copy()  # Don't mutate original
 
-                if self._current_session_id:
-                    params["_session_id"] = self._current_session_id
+                if session_id:
+                    params["_session_id"] = session_id
+                    logger.debug(f"[TOOL_EXEC] Injected _session_id={session_id} into tool params for {openai_tool_name}")
 
-                if self._current_user_id:
-                    params["_user_id"] = self._current_user_id
+                if user_id:
+                    params["_user_id"] = user_id
                     
                     # CRITICAL: Register user_id for this request_id so sub-agents can find it
                     # When a tool spawns a sub-agent (e.g., meta_web_research_agent), the sub-agent
                     # generates a new session and needs to know the user_id
                     if request_id:
                         from agent_system.app import _request_user_map
-                        _request_user_map[request_id] = self._current_user_id
+                        _request_user_map[request_id] = user_id
 
                 if request_id:
                     params["_request_id"] = request_id
