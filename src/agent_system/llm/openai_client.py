@@ -371,7 +371,7 @@ class OpenAIAsyncClient(LLMClient):
             logger.debug("Normalized tool schemas: input=%d, output=%d", len(tools), len(normalized_tools))
         tools = normalized_tools
         try:
-            opts = {"model": self.model, "messages": msgs}
+            opts = {"model": self.model, "messages": msgs, "usage": {"include": True}}
 
             # Only include tools if we have at least one tool (some providers reject empty arrays)
             if tools:
@@ -752,7 +752,7 @@ class OpenAIAsyncClient(LLMClient):
                 raise Exception("Request cancelled by user")
 
             try:
-                opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
+                opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}, "usage": {"include": True}}
                 if tools:
                     opts["tools"] = tools
                     opts["tool_choice"] = "auto"
