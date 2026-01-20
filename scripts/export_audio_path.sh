@@ -28,7 +28,7 @@ echo "  Audio Version ID: $AUDIO_VERSION_ID"
 echo "  Output: $OUTPUT_FILE"
 echo ""
 
-writer-audio export-path \
+.venv/Scripts/writer-audio.exe export-path \
     --audio-version-id "$AUDIO_VERSION_ID" \
     --path-id "$PATH_ID" \
     -o "$OUTPUT_FILE" \
