@@ -335,14 +335,16 @@ class InternalMessageValidator:
         for i, msg in enumerate(messages):
             content = msg.content
 
-            if content is None and not msg.tool_calls and msg.role == "assistant":
-                issues.append(ValidationIssue(
-                    type="empty_assistant_message",
-                    severity="warning",
-                    message_index=i,
-                    description="Assistant message with no content and no tool calls",
-                    details={"role": msg.role}
-                ))
+            # Check for empty assistant messages (None, empty string, or whitespace-only)
+            if msg.role == "assistant" and not msg.tool_calls:
+                if content is None or (isinstance(content, str) and not content.strip()):
+                    issues.append(ValidationIssue(
+                        type="empty_assistant_message",
+                        severity="warning",
+                        message_index=i,
+                        description="Assistant message with no content and no tool calls",
+                        details={"role": msg.role}
+                    ))
 
         return issues
 
