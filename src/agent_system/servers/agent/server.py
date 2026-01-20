@@ -1102,14 +1102,16 @@ class Agent(MCPServer):
                 pass
 
         # Signal completion using status contexts
+        # Note: step is already 1-indexed (extracted from events that use step+1)
         final_msg = "completed" if not results.get('errors') else "completed with errors"
+        step_display = step if step > 0 else 1  # Ensure at least 1 step shown
 
         if results.get('errors'):
             await status_worker.error(final_msg, meta={"summary": results.get('summary')})
-            await status_coordinator.error(f"{final_msg} ({step+1} steps)", meta={"summary": results.get('summary')})
+            await status_coordinator.error(f"{final_msg} ({step_display} steps)", meta={"summary": results.get('summary')})
         else:
             await status_worker.end(final_msg, meta={"summary": results.get('summary')})
-            await status_coordinator.end(f"{final_msg} ({step+1} steps)", meta={"summary": results.get('summary')})
+            await status_coordinator.end(f"{final_msg} ({step_display} steps)", meta={"summary": results.get('summary')})
 
         # Give a small delay to allow final status events to be processed by the forwarding task
         await asyncio.sleep(0.01)
@@ -2123,14 +2125,16 @@ class Agent(MCPServer):
                     if context:
                         messages = context.messages
 
+                    # Track step from events that contain step info
+                    # This ensures we report accurate step count in completion message
+                    if "step" in event:
+                        step = event.get("step", step)
+                    
                     # Capture summary and errors from events
                     if event.get("type") == "final" and "summary" in event:
                         results["summary"] = event["summary"]
                     elif event.get("type") == "error":
                         results.setdefault("errors", []).append(event.get("message", "Unknown error"))
-                    elif event.get("type") == "cancelled":
-                        # Loop was cancelled, update step from event
-                        step = event.get("step", 0) - 1  # Convert to 0-indexed
 
             except Exception as e:
                 logger.exception("Agent execution failed with exception:")
