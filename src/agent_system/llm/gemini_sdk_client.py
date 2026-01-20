@@ -684,16 +684,16 @@ class GeminiSDKClient(LLMClient):
                     f"{len(accumulated_tool_calls)} tool calls"
                 )
                 
-                # Check for MALFORMED_FUNCTION_CALL - auto-retry the FULL request
-                # This happens when Gemini fails to generate a valid function call, often after
-                # producing some text content. We retry the entire request because partial
-                # responses with failed function calls cause the agent to abort.
-                if got_malformed_function_call:
-                    content_info = f"{len(accumulated_content)} content parts" if accumulated_content else "no content"
+                # Check for MALFORMED_FUNCTION_CALL - only retry if we have NO useful output
+                # Gemini sometimes returns MALFORMED_FUNCTION_CALL finish_reason even when
+                # earlier parts contained valid function calls. In that case, we should
+                # use the successfully parsed tool calls rather than retrying.
+                if got_malformed_function_call and not accumulated_tool_calls and not accumulated_content:
+                    # Only retry if we have absolutely nothing to work with
                     if attempt < self.max_retries:
                         wait_time = 1.0 + attempt  # 1s, 2s, 3s
                         logger.warning(
-                            f"[GeminiSDK] MALFORMED_FUNCTION_CALL detected ({content_info}). "
+                            f"[GeminiSDK] MALFORMED_FUNCTION_CALL detected (no content, no tool calls). "
                             f"Retrying full request in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                         )
                         await self._cancellable_sleep(wait_time, cancellation_token)
@@ -708,9 +708,16 @@ class GeminiSDKClient(LLMClient):
                         continue
                     else:
                         logger.error(
-                            f"[GeminiSDK] MALFORMED_FUNCTION_CALL persisted after all retries ({content_info}). "
+                            "[GeminiSDK] MALFORMED_FUNCTION_CALL persisted after all retries (no content). "
                             "This may indicate invalid tool schema or complex function call arguments."
                         )
+                elif got_malformed_function_call:
+                    # We have partial output despite MALFORMED_FUNCTION_CALL - use it
+                    logger.warning(
+                        f"[GeminiSDK] MALFORMED_FUNCTION_CALL finish_reason, but we have "
+                        f"{len(accumulated_tool_calls)} tool calls and {len(accumulated_content)} content parts. "
+                        f"Using the successfully parsed output instead of retrying."
+                    )
                 
                 # Warn if response is completely empty
                 if not accumulated_content and not accumulated_tool_calls:

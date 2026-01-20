@@ -419,11 +419,17 @@ def _convert_multimodal_content(content_list: List[Any]) -> List[Dict[str, Any]]
     return parts
 
 
-def convert_openai_tools_to_gemini(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def convert_openai_tools_to_gemini(
+    tools: List[Dict[str, Any]],
+    flatten_complex_schemas: bool = True,
+) -> List[Dict[str, Any]]:
     """Convert OpenAI tool schema to Gemini function declarations.
     
     Args:
         tools: List of OpenAI tool definitions with type=function
+        flatten_complex_schemas: If True, flatten oneOf/anyOf/allOf constructs.
+            This is required for SDK compatibility to avoid MALFORMED_FUNCTION_CALL errors.
+            Defaults to True for backwards compatibility with SDK usage.
     
     Returns:
         List of Gemini function declaration dicts
@@ -444,7 +450,7 @@ def convert_openai_tools_to_gemini(tools: List[Dict[str, Any]]) -> List[Dict[str
         params = func.get("parameters", {})
         if params:
             # Deep copy to avoid modifying original
-            clean_params = clean_schema_for_gemini(params)
+            clean_params = clean_schema_for_gemini(params, flatten_complex_schemas)
             declaration["parameters"] = clean_params
 
         function_declarations.append(declaration)
@@ -479,22 +485,32 @@ def clean_schema_for_gemini(
     if flatten_complex_schemas:
         exclude_fields.update({"default", "examples", "format", "title"})
     
-    for key, value in schema.items():
-        if key in exclude_fields:
-            continue
-        
-        # Handle schema composition (oneOf/anyOf/allOf)
-        if key in ("oneOf", "anyOf", "allOf"):
+    # First pass: handle oneOf/anyOf/allOf by merging first option into cleaned
+    # This must happen BEFORE processing other keys to ensure merged values are available
+    for key in ("oneOf", "anyOf", "allOf"):
+        if key in schema:
+            value = schema[key]
             if flatten_complex_schemas and isinstance(value, list) and len(value) > 0:
                 # Flatten: use first option and merge into parent
                 first_option = value[0]
                 if isinstance(first_option, dict):
                     for opt_key, opt_value in first_option.items():
-                        if opt_key not in cleaned:
+                        if opt_key not in cleaned and opt_key not in exclude_fields:
                             cleaned[opt_key] = clean_schema_for_gemini(
                                 opt_value, flatten_complex_schemas
                             ) if isinstance(opt_value, dict) else opt_value
-            # If not flattening, just skip these fields
+    
+    # Second pass: process remaining keys
+    for key, value in schema.items():
+        if key in exclude_fields:
+            continue
+        
+        # Skip schema composition keywords (already handled above)
+        if key in ("oneOf", "anyOf", "allOf"):
+            continue
+            
+        # Don't overwrite values that were merged from oneOf/anyOf/allOf
+        if key in cleaned:
             continue
             
         if isinstance(value, dict):
