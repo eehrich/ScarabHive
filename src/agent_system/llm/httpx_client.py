@@ -74,6 +74,10 @@ class HTTPXOpenAIClient(LLMClient):
         self.extra_params = extra_params
         self.capabilities = capabilities or {}
         self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
+        
+        # OpenRouter requires "usage": {"include": true} for detailed usage (cached_tokens, cost)
+        # Other APIs reject this parameter with 400 Bad Request
+        self._is_openrouter = "openrouter.ai" in base_url.lower()
 
         # Validate API type - HTTPX client only supports chat_completions
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
@@ -327,9 +331,12 @@ class HTTPXOpenAIClient(LLMClient):
             "model": self.model,
             "messages": message_dicts,
             "stream": False,  # ⚡ Disable streaming
-            "usage": {"include": True},  # Request detailed usage (OpenRouter: cached_tokens, cost)
             **self.extra_params
         }
+        
+        # OpenRouter: request detailed usage (cached_tokens, cost)
+        if self._is_openrouter:
+            payload["usage"] = {"include": True}
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -475,9 +482,12 @@ class HTTPXOpenAIClient(LLMClient):
             "messages": message_dicts,
             "stream": True,  # ⚡ Enable streaming
             "stream_options": {"include_usage": True},  # Request usage stats in stream
-            "usage": {"include": True},  # Request detailed usage (OpenRouter: cached_tokens, cost)
             **self.extra_params
         }
+        
+        # OpenRouter: request detailed usage (cached_tokens, cost)
+        if self._is_openrouter:
+            payload["usage"] = {"include": True}
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:

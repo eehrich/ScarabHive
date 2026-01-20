@@ -100,6 +100,10 @@ class OpenAIAsyncClient(LLMClient):
         self._default_extra = default_extra or {}
         self._timeout = timeout
         self.capabilities = capabilities  # Pydantic model or None
+        
+        # OpenRouter requires "usage": {"include": true} for detailed usage (cached_tokens, cost)
+        # Other APIs reject this parameter with 400 Bad Request
+        self._is_openrouter = base_url and "openrouter.ai" in base_url.lower() if base_url else False
 
     def _create_multimodal_injection(self, tool_msg: ChatMessage) -> Optional[dict]:
         """Create injected user message for multimodal tool content.
@@ -371,7 +375,11 @@ class OpenAIAsyncClient(LLMClient):
             logger.debug("Normalized tool schemas: input=%d, output=%d", len(tools), len(normalized_tools))
         tools = normalized_tools
         try:
-            opts = {"model": self.model, "messages": msgs, "usage": {"include": True}}
+            opts = {"model": self.model, "messages": msgs}
+            
+            # OpenRouter: request detailed usage (cached_tokens, cost)
+            if self._is_openrouter:
+                opts["usage"] = {"include": True}
 
             # Only include tools if we have at least one tool (some providers reject empty arrays)
             if tools:
@@ -752,7 +760,12 @@ class OpenAIAsyncClient(LLMClient):
                 raise Exception("Request cancelled by user")
 
             try:
-                opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}, "usage": {"include": True}}
+                opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
+                
+                # OpenRouter: request detailed usage (cached_tokens, cost)
+                if self._is_openrouter:
+                    opts["usage"] = {"include": True}
+                    
                 if tools:
                     opts["tools"] = tools
                     opts["tool_choice"] = "auto"
