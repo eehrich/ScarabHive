@@ -218,6 +218,7 @@ class ToolExecutionManager:
             # Store task -> tool_info mapping for error handling
             tasks = []
             task_tool_info: Dict[asyncio.Task, tuple] = {}  # task -> (tc, tool_name, openai_tool_name)
+            task_indices: Dict[asyncio.Task, int] = {}  # task -> original index (for ordering responses)
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
                 # Create tool-specific request_id (same logic as execute_tools)
                 original_request_id = params.get("request_id") or params.get("requestId") or request_id
@@ -242,6 +243,12 @@ class ToolExecutionManager:
                 )
                 tasks.append(task)
                 task_tool_info[task] = (tc, tool_name, openai_tool_name)
+                task_indices[task] = i  # Store original index for ordering
+
+            # Collect results with their original indices for later sorting
+            # IMPORTANT: Gemini API requires function_response parts to be in the same
+            # order as the original function_call parts to avoid MALFORMED_FUNCTION_CALL errors
+            indexed_results: List[tuple[int, ChatMessage, List[Dict], List[Dict]]] = []
 
             # Poll for completion while streaming status events
             # NOTE: No hard iteration limit - tools can run as long as needed
@@ -263,6 +270,7 @@ class ToolExecutionManager:
 
                 # Process completed tasks
                 for task in done:
+                    original_index = task_indices.get(task, 999)  # Default high index if not found
                     try:
                         result = task.result()
                         if isinstance(result, BaseException):
@@ -270,7 +278,8 @@ class ToolExecutionManager:
                             logger.exception("Tool execution failed: %s", result)
                         else:
                             tool_message, events, tool_results = result
-                            tool_messages.append(tool_message)
+                            # Store with original index for later sorting
+                            indexed_results.append((original_index, tool_message, events, tool_results))
                             events_to_yield.extend(events)
                             results_to_add.extend(tool_results)
                     except asyncio.CancelledError:
@@ -280,13 +289,14 @@ class ToolExecutionManager:
                         if task in task_tool_info:
                             tc, tool_name, openai_tool_name = task_tool_info[task]
                             tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
-                            tool_messages.append(ChatMessage(
+                            cancelled_msg = ChatMessage(
                                 role="tool",
                                 tool_call_id=tool_call_id,
                                 name=sanitize_for_llm(openai_tool_name),
                                 content=json.dumps({"error": f"Tool '{tool_name}' was cancelled."}),
                                 timestamp=datetime.now(timezone.utc)
-                            ))
+                            )
+                            indexed_results.append((original_index, cancelled_msg, [], []))
                             events_to_yield.append({"type": "tool_cancelled", "tool": tool_name})
                     except Exception as e:
                         # CRITICAL: Create error response to avoid orphaned tool_calls
@@ -299,14 +309,24 @@ class ToolExecutionManager:
                                 "error": f"Tool '{tool_name}' execution failed: {str(e)}",
                                 "type": type(e).__name__
                             })
-                            tool_messages.append(ChatMessage(
+                            error_msg = ChatMessage(
                                 role="tool",
                                 tool_call_id=tool_call_id,
                                 name=sanitize_for_llm(openai_tool_name),
                                 content=sanitize_json_content(error_content),
                                 timestamp=datetime.now(timezone.utc)
-                            ))
+                            )
+                            indexed_results.append((original_index, error_msg, [], []))
                             events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": str(e)})
+
+            # Sort results by original index and extract messages
+            # CRITICAL: Gemini API requires function_response parts to match the order
+            # of the original function_call parts. Without this sorting, parallel tool
+            # execution can produce responses in completion order (not call order),
+            # causing MALFORMED_FUNCTION_CALL errors.
+            indexed_results.sort(key=lambda x: x[0])
+            for _, msg, _, _ in indexed_results:
+                tool_messages.append(msg)
 
             # Drain any remaining status events after all tools complete
             # This ensures .end() events are not lost due to timing issues
