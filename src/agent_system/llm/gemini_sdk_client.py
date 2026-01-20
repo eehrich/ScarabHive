@@ -37,6 +37,8 @@ from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.gemini_utils import (
     convert_openai_messages_to_gemini,
     convert_openai_tools_to_gemini,
+    extract_available_tool_names,
+    filter_unavailable_tool_calls,
 )
 
 logger = logging.getLogger(__name__)
@@ -430,7 +432,14 @@ class GeminiSDKClient(LLMClient):
         - tool_call_delta: Tool call information
         - final: Final accumulated result
         """
-        system_instruction, contents = self._convert_messages_to_sdk(messages)
+        # Extract available tool names to filter out unavailable tool calls from history
+        # This prevents UNEXPECTED_TOOL_CALL when switching agents
+        available_tool_names = extract_available_tool_names(tools)
+        
+        # Filter messages to remove/convert tool calls for unavailable tools
+        filtered_messages = filter_unavailable_tool_calls(messages, available_tool_names)
+        
+        system_instruction, contents = self._convert_messages_to_sdk(filtered_messages)
         sdk_tools = self._convert_tools_to_sdk(tools)
         
         # Accumulators
@@ -553,8 +562,40 @@ class GeminiSDKClient(LLMClient):
                             ], indent=2, default=str)
                             logger.warning(f"[GeminiSDK] MALFORMED_FUNCTION_CALL detected. Contents sent:\n{contents_json}")
                         
+                        # Detect UNEXPECTED_TOOL_CALL - Gemini tried to call a tool that doesn't exist
+                        # or conversation history contains tool calls/responses that don't match current tools
+                        if 'UNEXPECTED_TOOL_CALL' in finish_reason_str:
+                            # Log contents to help debug what caused this
+                            contents_json = json.dumps([
+                                {
+                                    "role": c.role,
+                                    "parts": [
+                                        {
+                                            "text": (p.text[:100] + "...") if hasattr(p, 'text') and p.text and len(p.text) > 100 else (p.text if hasattr(p, 'text') else None),
+                                            "function_call": {
+                                                "name": p.function_call.name,
+                                                "args": dict(p.function_call.args) if p.function_call.args else {}
+                                            } if hasattr(p, 'function_call') and p.function_call else None,
+                                            "function_response": {
+                                                "name": p.function_response.name if hasattr(p.function_response, 'name') else None,
+                                                "response_type": type(p.function_response.response).__name__ if hasattr(p.function_response, 'response') else None,
+                                                "response_len": len(str(p.function_response.response)) if hasattr(p.function_response, 'response') and p.function_response.response else 0
+                                            } if hasattr(p, 'function_response') and p.function_response else None,
+                                        }
+                                        for p in c.parts
+                                    ]
+                                }
+                                for c in contents
+                            ], indent=2, default=str)
+                            logger.warning(
+                                f"[GeminiSDK] UNEXPECTED_TOOL_CALL detected. This usually means:\n"
+                                f"  1. Gemini tried to call a tool not in the current tool list, OR\n"
+                                f"  2. Conversation history has tool calls/responses that don't match current tools.\n"
+                                f"Contents sent:\n{contents_json}"
+                            )
+                        
                         # Log at WARNING level if there's a message or if it's a problematic finish_reason
-                        if finish_msg or 'MALFORMED' in finish_reason_str or 'ERROR' in finish_reason_str:
+                        if finish_msg or 'MALFORMED' in finish_reason_str or 'ERROR' in finish_reason_str or 'UNEXPECTED' in finish_reason_str:
                             msg = f"[GeminiSDK] finish_reason: {candidate.finish_reason}"
                             if finish_msg:
                                 msg += f", finish_message: {finish_msg}"
@@ -886,7 +927,12 @@ class GeminiSDKClient(LLMClient):
             except Exception as e:
                 logger.debug(f"Failed to report LLM status: {e}")
         
-        system_instruction, contents = self._convert_messages_to_sdk(messages)
+        # Filter unavailable tool calls and convert messages
+        # This prevents UNEXPECTED_TOOL_CALL when switching agents
+        available_tool_names = extract_available_tool_names(tools)
+        filtered_messages = filter_unavailable_tool_calls(messages, available_tool_names)
+        
+        system_instruction, contents = self._convert_messages_to_sdk(filtered_messages)
         sdk_tools = self._convert_tools_to_sdk(tools)
         generation_config = self._build_generation_config(system_instruction, sdk_tools)
         

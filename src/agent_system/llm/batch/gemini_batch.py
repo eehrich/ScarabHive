@@ -34,7 +34,11 @@ from .models import BatchJob, BatchStatus
 from .job_tracker import get_job_tracker
 from ..models import LLMRateLimitError, LLMQuotaExhaustedError
 from ..retry_utils import is_rate_limit_error, parse_retry_delay
-from ..gemini_utils import sanitize_schema_for_gemini
+from ..gemini_utils import (
+    extract_available_tool_names,
+    filter_unavailable_tool_calls_dict,
+    sanitize_schema_for_gemini,
+)
 from typing import Callable, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -214,9 +218,14 @@ class GeminiBatchClient(BatchProviderClient):
         # Each request is a dict with 'contents' key and optional 'config'
         inline_requests = []
         for req in job.requests:
+            # Filter unavailable tool calls from history before conversion
+            # This prevents UNEXPECTED_TOOL_CALL when session has tool calls from other agents
+            available_tool_names = extract_available_tool_names(req.tools) if req.tools else set()
+            filtered_messages = filter_unavailable_tool_calls_dict(req.messages, available_tool_names)
+            
             # Extract system instruction from messages
-            system_instruction = self._extract_system_instruction(req.messages)
-            contents = self._convert_messages_to_contents(req.messages)
+            system_instruction = self._extract_system_instruction(filtered_messages)
+            contents = self._convert_messages_to_contents(filtered_messages)
             
             request_dict: Dict[str, Any] = {
                 'contents': contents,

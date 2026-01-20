@@ -10,6 +10,7 @@ import pytest
 from agent_system.llm.gemini_utils import (
     convert_openai_messages_to_gemini,
     _merge_consecutive_same_role_messages,
+    filter_unavailable_tool_calls,
 )
 from agent_system.llm.models import ChatMessage
 
@@ -329,3 +330,321 @@ class TestEdgeCases:
         assert "Message 1" in text
         assert "Message 2" in text
         assert "Message 3" in text
+
+
+class TestFilterUnavailableToolCalls:
+    """Test filtering of tool calls for unavailable tools (agent switching scenario)."""
+
+    def test_no_filtering_when_all_tools_available(self):
+        """Test that messages are unchanged when all tools are available."""
+        messages = [
+            ChatMessage(role="user", content="Check weather"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "Berlin"}'}
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"temp": 20}',
+                tool_call_id="call_1",
+                name="get_weather"
+            ),
+        ]
+        
+        available_tools = {"get_weather", "get_time"}
+        filtered = filter_unavailable_tool_calls(messages, available_tools)
+        
+        # All messages should remain unchanged
+        assert len(filtered) == 3
+        assert filtered[1].tool_calls is not None
+        assert len(filtered[1].tool_calls) == 1
+
+    def test_filter_unavailable_tool_calls(self):
+        """Test that tool calls for unavailable tools are converted to text."""
+        messages = [
+            ChatMessage(role="user", content="Do stuff"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "comfyui_workflow", "arguments": '{"op": "list"}'}
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"workflows": []}',
+                tool_call_id="call_1",
+                name="comfyui_workflow"
+            ),
+            ChatMessage(role="assistant", content="Here are the workflows."),
+        ]
+        
+        # comfyui_workflow is NOT in available tools (switched agents)
+        available_tools = {"get_weather", "get_time"}
+        filtered = filter_unavailable_tool_calls(messages, available_tools)
+        
+        # Should have 3 messages: user, assistant (with text summary), last assistant
+        # The tool response is removed
+        assert len(filtered) == 3
+        assert filtered[0].role == "user"
+        assert filtered[1].role == "assistant"
+        assert "comfyui_workflow" in filtered[1].content  # Tool call converted to text
+        assert filtered[1].tool_calls is None
+        assert filtered[2].role == "assistant"
+        assert filtered[2].content == "Here are the workflows."
+
+    def test_filter_preserves_available_tool_calls(self):
+        """Test that available tool calls are kept while unavailable are removed."""
+        messages = [
+            ChatMessage(role="user", content="Do multiple things"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{}'}
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "comfyui_workflow", "arguments": '{}'}
+                    }
+                ]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"temp": 20}',
+                tool_call_id="call_1",
+                name="get_weather"
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"workflows": []}',
+                tool_call_id="call_2",
+                name="comfyui_workflow"
+            ),
+        ]
+        
+        available_tools = {"get_weather"}
+        filtered = filter_unavailable_tool_calls(messages, available_tools)
+        
+        # Should have: user, assistant (with only get_weather call + text summary), tool response for get_weather
+        assert len(filtered) == 3
+        
+        # Assistant should have only get_weather tool call
+        assistant_msg = filtered[1]
+        assert assistant_msg.role == "assistant"
+        assert len(assistant_msg.tool_calls) == 1
+        assert assistant_msg.tool_calls[0]["function"]["name"] == "get_weather"
+        
+        # Content should have summary of unavailable tool call
+        assert "comfyui_workflow" in assistant_msg.content
+        
+        # Only get_weather response should remain
+        tool_msg = filtered[2]
+        assert tool_msg.role == "tool"
+        assert tool_msg.tool_call_id == "call_1"
+
+    def test_convert_to_text_summary(self):
+        """Test that unavailable tool calls are converted to readable text."""
+        messages = [
+            ChatMessage(role="user", content="Generate image"),
+            ChatMessage(
+                role="assistant",
+                content="Let me generate that for you.",
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "comfyui_workflow", "arguments": '{"prompt": "cat"}'}
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"image_url": "..."}',
+                tool_call_id="call_1",
+                name="comfyui_workflow"
+            ),
+        ]
+        
+        available_tools = set()  # No tools available
+        filtered = filter_unavailable_tool_calls(messages, available_tools)
+        
+        # Should have 2 messages: user, assistant (with tool call converted to text)
+        # Tool response is removed
+        assert len(filtered) == 2
+        
+        assistant_msg = filtered[1]
+        assert assistant_msg.tool_calls is None  # All tool calls removed
+        # Original content + summary
+        assert "Let me generate that for you." in assistant_msg.content
+        assert "comfyui_workflow" in assistant_msg.content
+        assert '{"prompt": "cat"}' in assistant_msg.content
+
+    def test_empty_available_tools_filters_all(self):
+        """Test that empty available tools removes all tool calls."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "any_tool", "arguments": "{}"}
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                content="result",
+                tool_call_id="call_1",
+                name="any_tool"
+            ),
+        ]
+        
+        filtered = filter_unavailable_tool_calls(messages, set())
+        
+        # Tool call converted to text, tool response removed
+        assert len(filtered) == 2
+        assert filtered[0].role == "user"
+        assert filtered[1].role == "assistant"
+        assert filtered[1].tool_calls is None
+        assert "any_tool" in (filtered[1].content or "")
+
+    def test_no_tool_calls_unchanged(self):
+        """Test that messages without tool calls are unchanged."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content="Hi there!"),
+            ChatMessage(role="user", content="How are you?"),
+        ]
+        
+        filtered = filter_unavailable_tool_calls(messages, {"any_tool"})
+        
+        assert len(filtered) == 3
+        assert filtered[0].content == "Hello"
+        assert filtered[1].content == "Hi there!"
+        assert filtered[2].content == "How are you?"
+
+
+class TestFilterUnavailableToolCallsDict:
+    """Test dict-based filtering for batch processing."""
+
+    def test_no_filtering_when_all_tools_available(self):
+        """Test that dict messages are unchanged when all tools are available."""
+        from agent_system.llm.gemini_utils import filter_unavailable_tool_calls_dict
+        
+        messages = [
+            {"role": "user", "content": "Check weather"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "Berlin"}'}
+                }]
+            },
+            {
+                "role": "tool",
+                "content": '{"temp": 20}',
+                "tool_call_id": "call_1",
+                "name": "get_weather"
+            },
+        ]
+        
+        available_tools = {"get_weather", "get_time"}
+        filtered = filter_unavailable_tool_calls_dict(messages, available_tools)
+        
+        assert len(filtered) == 3
+        assert filtered[1]["tool_calls"] is not None
+        assert len(filtered[1]["tool_calls"]) == 1
+
+    def test_filter_unavailable_tool_calls_dict(self):
+        """Test that unavailable tool calls are converted to text in dict format."""
+        from agent_system.llm.gemini_utils import filter_unavailable_tool_calls_dict
+        
+        messages = [
+            {"role": "user", "content": "Do stuff"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "comfyui_workflow", "arguments": '{"op": "list"}'}
+                }]
+            },
+            {
+                "role": "tool",
+                "content": '{"workflows": []}',
+                "tool_call_id": "call_1",
+                "name": "comfyui_workflow"
+            },
+            {"role": "assistant", "content": "Here are the workflows."},
+        ]
+        
+        available_tools = {"get_weather"}
+        filtered = filter_unavailable_tool_calls_dict(messages, available_tools)
+        
+        # Should have 3 messages: user, assistant (with text summary), last assistant
+        assert len(filtered) == 3
+        assert filtered[0]["role"] == "user"
+        assert filtered[1]["role"] == "assistant"
+        assert "comfyui_workflow" in filtered[1]["content"]
+        assert filtered[1]["tool_calls"] is None
+        assert filtered[2]["content"] == "Here are the workflows."
+
+    def test_empty_available_tools_filters_all_dict(self):
+        """Test that empty available tools removes all tool calls in dict format."""
+        from agent_system.llm.gemini_utils import filter_unavailable_tool_calls_dict
+        
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "any_tool", "arguments": "{}"}
+                }]
+            },
+            {
+                "role": "tool",
+                "content": "result",
+                "tool_call_id": "call_1",
+                "name": "any_tool"
+            },
+        ]
+        
+        filtered = filter_unavailable_tool_calls_dict(messages, set())
+        
+        assert len(filtered) == 2
+        assert filtered[0]["role"] == "user"
+        assert filtered[1]["role"] == "assistant"
+        assert filtered[1]["tool_calls"] is None
+        assert "any_tool" in (filtered[1]["content"] or "")
+
+    def test_no_tool_calls_unchanged_dict(self):
+        """Test that dict messages without tool calls are unchanged."""
+        from agent_system.llm.gemini_utils import filter_unavailable_tool_calls_dict
+        
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+        
+        filtered = filter_unavailable_tool_calls_dict(messages, {"any_tool"})
+        
+        assert len(filtered) == 2
+        assert filtered[0]["content"] == "Hello"
+        assert filtered[1]["content"] == "Hi there!"

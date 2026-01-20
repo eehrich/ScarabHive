@@ -1,7 +1,7 @@
 """Tests for Gemini Client system message merging functionality."""
 import pytest
 
-from agent_system.llm.gemini_client import GeminiClient
+from agent_system.llm.gemini_utils import convert_openai_messages_to_gemini
 from agent_system.llm.models import ChatMessage
 
 
@@ -14,29 +14,17 @@ CRITICAL_INSTRUCTION = (
 )
 
 
-@pytest.fixture
-def gemini_client():
-    """Create a GeminiClient instance for testing."""
-    return GeminiClient(
-        model="gemini-2.0-flash-exp",
-        api_key="test-api-key",
-        base_url="https://generativelanguage.googleapis.com/v1beta",
-        context_window=200000,
-        request_timeout=180
-    )
-
-
 class TestGeminiClientSystemMessageMerging:
     """Test that multiple system messages are correctly merged."""
 
-    def test_single_system_message(self, gemini_client):
+    def test_single_system_message(self):
         """Test that a single system message is handled correctly."""
         messages = [
             ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content="Hello")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction is prepended to prevent MALFORMED_FUNCTION_CALL
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
@@ -44,7 +32,7 @@ class TestGeminiClientSystemMessageMerging:
         assert len(contents) == 1
         assert contents[0]["role"] == "user"
 
-    def test_multiple_system_messages_merged(self, gemini_client):
+    def test_multiple_system_messages_merged(self):
         """Test that multiple system messages are merged with newlines."""
         messages = [
             ChatMessage(role="system", content="You are a helpful assistant."),
@@ -52,7 +40,7 @@ class TestGeminiClientSystemMessageMerging:
             ChatMessage(role="user", content="Hello")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction is prepended, then user system messages follow
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
@@ -61,7 +49,7 @@ class TestGeminiClientSystemMessageMerging:
         assert len(contents) == 1
         assert contents[0]["role"] == "user"
 
-    def test_three_system_messages_merged(self, gemini_client):
+    def test_three_system_messages_merged(self):
         """Test merging three system messages."""
         messages = [
             ChatMessage(role="system", content="First instruction."),
@@ -70,7 +58,7 @@ class TestGeminiClientSystemMessageMerging:
             ChatMessage(role="user", content="Test")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction prepended, then user messages in order
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
@@ -79,7 +67,7 @@ class TestGeminiClientSystemMessageMerging:
         assert "Third instruction." in system_instruction
         assert len(contents) == 1
 
-    def test_empty_system_messages_ignored(self, gemini_client):
+    def test_empty_system_messages_ignored(self):
         """Test that empty system messages are ignored."""
         messages = [
             ChatMessage(role="system", content="You are a helpful assistant."),
@@ -88,13 +76,13 @@ class TestGeminiClientSystemMessageMerging:
             ChatMessage(role="user", content="Hello")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
         assert "You are a helpful assistant." in system_instruction
         assert "You specialize in Python." in system_instruction
 
-    def test_only_empty_system_messages(self, gemini_client):
+    def test_only_empty_system_messages(self):
         """Test that only empty system messages still get CRITICAL instruction."""
         messages = [
             ChatMessage(role="system", content=""),
@@ -102,26 +90,26 @@ class TestGeminiClientSystemMessageMerging:
             ChatMessage(role="user", content="Hello")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # Even with no user system messages, CRITICAL instruction is added
         assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 1
 
-    def test_no_system_messages(self, gemini_client):
+    def test_no_system_messages(self):
         """Test that no system messages still get CRITICAL instruction."""
         messages = [
             ChatMessage(role="user", content="Hello"),
             ChatMessage(role="assistant", content="Hi there!")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction is always added to prevent MALFORMED_FUNCTION_CALL
         assert system_instruction == CRITICAL_INSTRUCTION
         assert len(contents) == 2
 
-    def test_system_messages_with_tool_calls(self, gemini_client):
+    def test_system_messages_with_tool_calls(self):
         """Test that system messages are merged correctly in complex conversations."""
         messages = [
             ChatMessage(role="system", content="Main system prompt."),
@@ -148,7 +136,7 @@ class TestGeminiClientSystemMessageMerging:
             ChatMessage(role="user", content="Continue")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
         assert "Main system prompt." in system_instruction
@@ -156,7 +144,7 @@ class TestGeminiClientSystemMessageMerging:
         # Should have: user, model (with tool call), function response, user
         assert len(contents) == 4
 
-    def test_large_system_messages_preserved(self, gemini_client):
+    def test_large_system_messages_preserved(self):
         """Test that large system messages are fully preserved."""
         large_prompt = "A" * 10000
         context_addition = "B" * 2000
@@ -167,7 +155,7 @@ class TestGeminiClientSystemMessageMerging:
             ChatMessage(role="user", content="Test")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction + user prompts
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
@@ -176,7 +164,7 @@ class TestGeminiClientSystemMessageMerging:
         # Length should be CRITICAL + separator + large + separator + context
         assert len(system_instruction) >= len(CRITICAL_INSTRUCTION) + len(large_prompt) + len(context_addition)
 
-    def test_system_message_order_preserved(self, gemini_client):
+    def test_system_message_order_preserved(self):
         """Test that system messages maintain their order."""
         messages = [
             ChatMessage(role="system", content="First: Be formal."),
@@ -185,7 +173,7 @@ class TestGeminiClientSystemMessageMerging:
             ChatMessage(role="user", content="Test")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
         # Verify user messages follow CRITICAL in order
@@ -193,7 +181,7 @@ class TestGeminiClientSystemMessageMerging:
         assert "Second:" in system_instruction[critical_end:]
         assert "Third: Be helpful." in system_instruction[critical_end:]
 
-    def test_tool_response_uses_correct_role(self, gemini_client):
+    def test_tool_response_uses_correct_role(self):
         """Test that tool responses use role='tool' not 'function'.
         
         CRITICAL: This test verifies the fix for MALFORMED_FUNCTION_CALL errors.
@@ -223,7 +211,7 @@ class TestGeminiClientSystemMessageMerging:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # Find the tool response in contents
         tool_response = None

@@ -1,16 +1,247 @@
 """Shared utilities for Gemini API conversion.
 
-Provides common conversion logic used by both GeminiClient (HTTP-based) 
-and GeminiSDKClient (SDK-based) to convert OpenAI format to Gemini format.
+Provides common conversion logic used by both GeminiClient (HTTP-based),
+GeminiSDKClient (SDK-based), and GeminiBatchClient to convert OpenAI format 
+to Gemini format.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def extract_available_tool_names(tools: List[Dict[str, Any]]) -> Set[str]:
+    """Extract tool names from OpenAI-format tools list.
+    
+    This is used to determine which tools are currently available,
+    so we can filter out tool calls from history that reference
+    tools that are no longer available (e.g., after agent switch).
+    
+    Args:
+        tools: List of OpenAI-format tool dicts with type="function"
+    
+    Returns:
+        Set of tool function names
+    """
+    available = set()
+    for tool in tools:
+        if tool.get("type") == "function":
+            func = tool.get("function", {})
+            if func.get("name"):
+                available.add(func["name"])
+    return available
+
+
+def prepare_messages_for_gemini(
+    messages: List[Any],
+    tools: List[Dict[str, Any]],
+    include_critical_instruction: bool = True
+) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    """Prepare messages for Gemini API: filter unavailable tool calls and convert.
+    
+    This is the main entry point for both streaming and non-streaming requests.
+    It combines filter_unavailable_tool_calls and convert_openai_messages_to_gemini.
+    
+    Args:
+        messages: List of ChatMessage objects
+        tools: List of OpenAI-format tool dicts
+        include_critical_instruction: Whether to prepend critical function calling instruction
+    
+    Returns:
+        (system_instruction, contents) tuple for Gemini API
+    """
+    # Extract available tool names
+    available_tool_names = extract_available_tool_names(tools)
+    
+    # Filter messages to remove/convert tool calls for unavailable tools
+    filtered_messages = filter_unavailable_tool_calls(messages, available_tool_names)
+    
+    # Convert to Gemini format
+    return convert_openai_messages_to_gemini(filtered_messages, include_critical_instruction)
+
+
+def filter_unavailable_tool_calls(
+    messages: List[Any],
+    available_tool_names: Set[str]
+) -> List[Any]:
+    """Filter out tool calls and responses for tools not in available_tool_names.
+    
+    When switching agents, the conversation history may contain tool calls from
+    tools that are no longer available. Gemini will return UNEXPECTED_TOOL_CALL
+    if it sees these in the history. This function converts them to text summaries.
+    
+    Args:
+        messages: List of ChatMessage objects
+        available_tool_names: Set of tool names currently available (can be empty)
+    
+    Returns:
+        Filtered list of ChatMessage objects with unavailable tools converted to text
+    """
+    # Check if any messages have tool calls - if not, no filtering needed
+    has_tool_calls = any(
+        getattr(msg, 'tool_calls', None) or getattr(msg, 'role', None) == 'tool'
+        for msg in messages
+    )
+    if not has_tool_calls:
+        return messages
+    
+    filtered = []
+    # Track tool_call_ids from unavailable tools to also filter their responses
+    unavailable_call_ids: Set[str] = set()
+    
+    for msg in messages:
+        if msg.role == "assistant" and msg.tool_calls:
+            # Check if any tool calls are for unavailable tools
+            available_calls = []
+            unavailable_calls = []
+            
+            for tc in msg.tool_calls:
+                func_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else getattr(tc.function, "name", "")
+                tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                
+                if func_name in available_tool_names:
+                    available_calls.append(tc)
+                else:
+                    unavailable_calls.append(tc)
+                    unavailable_call_ids.add(tc_id)
+            
+            if unavailable_calls:
+                # Convert unavailable tool calls to text summary
+                summaries = []
+                for tc in unavailable_calls:
+                    func_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else getattr(tc.function, "name", "")
+                    func_args = tc.get("function", {}).get("arguments", "{}") if isinstance(tc, dict) else getattr(tc.function, "arguments", "{}")
+                    summaries.append(f"[Previously called {func_name} with args: {func_args}]")
+                
+                logger.debug(
+                    f"[Gemini] Converted {len(unavailable_calls)} unavailable tool calls to text: "
+                    f"{[tc.get('function', {}).get('name') if isinstance(tc, dict) else getattr(tc.function, 'name', '') for tc in unavailable_calls]}"
+                )
+                
+                # Create modified message
+                new_content = msg.content or ""
+                if summaries:
+                    summary_text = "\n".join(summaries)
+                    new_content = f"{new_content}\n{summary_text}" if new_content else summary_text
+                
+                # Create new message with only available tool calls using Pydantic's model_copy
+                new_msg = msg.model_copy(update={
+                    "content": new_content if new_content else None,
+                    "tool_calls": available_calls if available_calls else None
+                })
+                filtered.append(new_msg)
+            else:
+                filtered.append(msg)
+        
+        elif msg.role == "tool":
+            # Check if this is a response to an unavailable tool call
+            tc_id = msg.tool_call_id
+            if tc_id in unavailable_call_ids:
+                # Skip this response - it's orphaned now
+                logger.debug(f"[Gemini] Skipping tool response for unavailable tool (call_id: {tc_id})")
+                continue
+            filtered.append(msg)
+        
+        else:
+            filtered.append(msg)
+    
+    return filtered
+
+
+def filter_unavailable_tool_calls_dict(
+    messages: List[Dict[str, Any]],
+    available_tool_names: Set[str]
+) -> List[Dict[str, Any]]:
+    """Filter out tool calls and responses for tools not in available_tool_names.
+    
+    Dict-based version for batch processing where messages are dicts, not ChatMessage objects.
+    
+    When switching agents, the conversation history may contain tool calls from
+    tools that are no longer available. Gemini will return UNEXPECTED_TOOL_CALL
+    if it sees these in the history. This function converts them to text summaries.
+    
+    Args:
+        messages: List of message dicts (OpenAI format)
+        available_tool_names: Set of tool names currently available (can be empty)
+    
+    Returns:
+        Filtered list of message dicts with unavailable tools converted to text
+    """
+    # Check if any messages have tool calls - if not, no filtering needed
+    has_tool_calls = any(
+        msg.get("tool_calls") or msg.get("role") == "tool"
+        for msg in messages
+    )
+    if not has_tool_calls:
+        return messages
+    
+    filtered: List[Dict[str, Any]] = []
+    # Track tool_call_ids from unavailable tools to also filter their responses
+    unavailable_call_ids: Set[str] = set()
+    
+    for msg in messages:
+        role = msg.get("role")
+        tool_calls = msg.get("tool_calls")
+        
+        if role == "assistant" and tool_calls:
+            # Check if any tool calls are for unavailable tools
+            available_calls = []
+            unavailable_calls = []
+            
+            for tc in tool_calls:
+                func_name = tc.get("function", {}).get("name", "")
+                tc_id = tc.get("id", "")
+                
+                if func_name in available_tool_names:
+                    available_calls.append(tc)
+                else:
+                    unavailable_calls.append(tc)
+                    unavailable_call_ids.add(tc_id)
+            
+            if unavailable_calls:
+                # Convert unavailable tool calls to text summary
+                summaries = []
+                for tc in unavailable_calls:
+                    func_name = tc.get("function", {}).get("name", "")
+                    func_args = tc.get("function", {}).get("arguments", "{}")
+                    summaries.append(f"[Previously called {func_name} with args: {func_args}]")
+                
+                logger.debug(
+                    f"[Gemini] Batch: Converted {len(unavailable_calls)} unavailable tool calls to text: "
+                    f"{[tc.get('function', {}).get('name') for tc in unavailable_calls]}"
+                )
+                
+                # Create modified message dict
+                new_content = msg.get("content", "") or ""
+                if summaries:
+                    summary_text = "\n".join(summaries)
+                    new_content = f"{new_content}\n{summary_text}" if new_content else summary_text
+                
+                # Create new message with only available tool calls
+                new_msg = dict(msg)  # Shallow copy
+                new_msg["content"] = new_content if new_content else None
+                new_msg["tool_calls"] = available_calls if available_calls else None
+                filtered.append(new_msg)
+            else:
+                filtered.append(msg)
+        
+        elif role == "tool":
+            # Check if this is a response to an unavailable tool call
+            tc_id = msg.get("tool_call_id", "")
+            if tc_id in unavailable_call_ids:
+                # Skip this response - it's orphaned now
+                logger.debug(f"[Gemini] Batch: Skipping tool response for unavailable tool (call_id: {tc_id})")
+                continue
+            filtered.append(msg)
+        
+        else:
+            filtered.append(msg)
+    
+    return filtered
 
 
 def convert_openai_messages_to_gemini(

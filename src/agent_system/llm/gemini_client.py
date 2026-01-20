@@ -17,8 +17,8 @@ from .models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError
 from .clients import LLMClient
 from .retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
-    convert_openai_messages_to_gemini,
-    convert_openai_tools_to_gemini
+    convert_openai_tools_to_gemini,
+    prepare_messages_for_gemini,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,14 +83,6 @@ class GeminiClient(LLMClient):
             f"GeminiClient initialized model={model} base_url={base_url} verify={self.verify} include_thoughts={self.extra_params.get('include_thoughts')} thinking_budget={self.extra_params.get('thinking_budget')}"
         )
 
-    def _convert_messages_to_gemini(self, messages: List[ChatMessage]) -> tuple[Optional[str], List[Dict]]:
-        """Convert ChatMessage list to Gemini format. Delegates to shared utility."""
-        return convert_openai_messages_to_gemini(messages)
-
-    def _convert_tools_to_gemini(self, tools: List[Dict]) -> List[Dict]:
-        """Convert OpenAI tool schema to Gemini function declarations. Delegates to shared utility."""
-        return convert_openai_tools_to_gemini(tools)
-
     async def chat_tools_streaming(
         self,
         messages: List[ChatMessage],
@@ -108,7 +100,9 @@ class GeminiClient(LLMClient):
             except Exception as e:
                 logger.debug(f"Failed to report LLM status: {e}")
         
-        system_instruction, contents = convert_openai_messages_to_gemini(messages)
+        # Filter unavailable tool calls and convert messages to Gemini format
+        # This prevents UNEXPECTED_TOOL_CALL when switching agents
+        system_instruction, contents = prepare_messages_for_gemini(messages, tools)
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
@@ -523,8 +517,10 @@ class GeminiClient(LLMClient):
             except Exception as e:
                 logger.debug(f"Failed to report LLM status: {e}")
         
-        system_instruction, contents = self._convert_messages_to_gemini(messages)
-        function_declarations = self._convert_tools_to_gemini(tools)
+        # Filter unavailable tool calls and convert messages to Gemini format
+        # This prevents UNEXPECTED_TOOL_CALL when switching agents
+        system_instruction, contents = prepare_messages_for_gemini(messages, tools)
+        function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
         generation_config: dict = {
