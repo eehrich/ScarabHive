@@ -2036,9 +2036,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         If `session_id` query parameter is provided, append directly to session.
         Body: { "content": "the user message" }
+        
+        Note: When appending to a session (not an active request), the session is
+        persisted to disk automatically.
         """
         logger = logging.getLogger(__name__)
         from fastapi import HTTPException
+        
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        
         try:
             body = await request.json()
         except Exception as e:
@@ -2049,12 +2059,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
+        async def _persist_session(sid: str) -> None:
+            """Helper to persist session to disk after append."""
+            if _session_service:
+                metadata = agent._session_tracker.get_session_metadata(sid)
+                agent_name_for_session = metadata.get("agent_name", agent.name) if metadata else agent.name
+                llm_profile_for_session = metadata.get("llm_profile", agent.agent_config.default_llm_profile) if metadata else agent.agent_config.default_llm_profile
+                await _session_service.save_session(
+                    agent,
+                    user_id,
+                    sid,
+                    agent_name_for_session,
+                    llm_profile_for_session,
+                    was_new_session=False
+                )
+                logger.debug("Session %s persisted to disk after append", sid)
+
         if session_id:
             # Append directly to persisted session using agent method
             logger.debug("Appending to session %s: %.120s", session_id, content)
             success = await agent.append_to_session(session_id, content)
             if not success:
                 raise HTTPException(status_code=404, detail="Session not found")
+            # Persist to disk
+            await _persist_session(session_id)
             return {"status": "appended", "session_id": session_id}
 
         logger.debug("Append request received for request_id=%s: %.120s", request_id, content)
@@ -2068,6 +2096,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
         if appended:
+            # Active request - will be persisted when request completes
             return {"status": "appended", "request_id": request_id}
 
         # If request not found/finished, try to append into the persisted session for this request
@@ -2076,6 +2105,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.debug("Request %s already finished; appending to session %s", request_id, sid)
             success = await agent.append_to_session(sid, content)
             if success:
+                # Persist to disk
+                await _persist_session(sid)
                 return {"status": "appended", "session_id": sid}
 
         raise HTTPException(status_code=404, detail="Request not found or already completed")
@@ -2090,8 +2121,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/sessions/{session_id}/append")
     async def append_to_session_endpoint(session_id: str, request: Request):
-        """Append a user message directly to a session (no active request required)."""
+        """Append a user message directly to a session (no active request required).
+        
+        This endpoint adds a user message to an existing session and persists it to disk.
+        """
         logger = logging.getLogger(__name__)
+        
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        
         try:
             body = await request.json()
             content = body.get('content')
@@ -2100,10 +2141,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
             logger.debug("Session append request for session_id=%s: %.120s", session_id, content)
+            
+            # First, append to in-memory session
             success = await agent.append_to_session(session_id, content)
             if not success:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=404, detail="Session not found")
+
+            # Persist the session to disk
+            if _session_service:
+                # Get session metadata to determine agent_name and llm_profile
+                metadata = agent._session_tracker.get_session_metadata(session_id)
+                agent_name_for_session = metadata.get("agent_name", agent.name) if metadata else agent.name
+                llm_profile_for_session = metadata.get("llm_profile", agent.agent_config.default_llm_profile) if metadata else agent.agent_config.default_llm_profile
+                
+                await _session_service.save_session(
+                    agent,
+                    user_id,
+                    session_id,
+                    agent_name_for_session,
+                    llm_profile_for_session,
+                    was_new_session=False
+                )
+                logger.debug("Session %s persisted to disk after append", session_id)
 
             return {"status": "appended", "session_id": session_id}
         except Exception as e:
