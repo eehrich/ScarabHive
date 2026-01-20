@@ -99,9 +99,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Flag for lazy startup sync (will run on first tool call)
         self._startup_sync_done = False
         
-        # Start cleanup task in background
-        if self.cleanup_age_hours > 0:
-            asyncio.create_task(self._cleanup_old_files())
+        # Flag for cleanup task - will be started lazily when event loop is available
+        self._cleanup_task_started = False
         
         logger.info(
             "ComfyUI plugin initialized: %s:%s with %d workflows",
@@ -148,10 +147,17 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         Note: We check history before marking as failed to avoid race conditions
         where a job finished between queue removal and history addition.
+        
+        Also starts the cleanup task on first call (lazy initialization).
         """
         if self._startup_sync_done:
             return
         self._startup_sync_done = True
+        
+        # Start cleanup task now that we have an event loop
+        if self.cleanup_age_hours > 0 and not self._cleanup_task_started:
+            self._cleanup_task_started = True
+            asyncio.create_task(self._cleanup_old_files())
         
         try:
             server_status = await self.client.ping()
