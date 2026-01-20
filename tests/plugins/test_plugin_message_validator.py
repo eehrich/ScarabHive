@@ -203,6 +203,112 @@ class TestContentStructure:
         empty_assistant_issues = [i for i in result.issues if i.type == "empty_assistant_message"]
         assert len(empty_assistant_issues) == 0
 
+    def test_empty_string_assistant_message(self):
+        """Test detection of empty string assistant message (not just None)."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content=""),
+            ChatMessage(role="user", content="Are you there?")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Empty string should be detected as empty
+        empty_issues = [i for i in result.issues if i.type == "empty_assistant_message"]
+        assert len(empty_issues) == 1
+
+    def test_whitespace_only_assistant_message(self):
+        """Test detection of whitespace-only assistant message."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content="   \n\t  "),
+            ChatMessage(role="user", content="Are you there?")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Whitespace-only should be detected as empty
+        empty_issues = [i for i in result.issues if i.type == "empty_assistant_message"]
+        assert len(empty_issues) == 1
+
+    def test_empty_assistant_message_repaired(self):
+        """Test that empty assistant messages are removed during repair."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content=None),
+            ChatMessage(role="user", content="Are you there?"),
+            ChatMessage(role="assistant", content="Yes, I'm here!")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should have detected empty assistant
+        assert len(result.issues) == 1
+        assert result.issues[0].type == "empty_assistant_message"
+
+        # Repaired messages should have empty assistant removed
+        assert len(result.repaired_messages) == 3
+        roles = [m.role for m in result.repaired_messages]
+        assert roles == ["user", "user", "assistant"]
+        assert result.repaired_messages[2].content == "Yes, I'm here!"
+
+    def test_multiple_empty_assistant_messages_repaired(self):
+        """Test that multiple empty assistant messages are all removed."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content=None),
+            ChatMessage(role="user", content="Still there?"),
+            ChatMessage(role="assistant", content=""),
+            ChatMessage(role="user", content="Hello?"),
+            ChatMessage(role="assistant", content="   "),
+            ChatMessage(role="user", content="Anyone?"),
+            ChatMessage(role="assistant", content="Finally responding!")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect all three empty assistants
+        empty_issues = [i for i in result.issues if i.type == "empty_assistant_message"]
+        assert len(empty_issues) == 3
+
+        # Repaired should have all empty assistants removed
+        assert len(result.repaired_messages) == 5
+        
+        # Check structure: 4 users + 1 assistant with actual content
+        repaired_roles = [m.role for m in result.repaired_messages]
+        assert repaired_roles.count("user") == 4
+        assert repaired_roles.count("assistant") == 1
+        assert result.repaired_messages[-1].content == "Finally responding!"
+
+    def test_empty_assistant_at_end_removed(self):
+        """Test that empty assistant at end of conversation is removed.
+        
+        This is a common scenario where LLM returns empty response and it
+        gets saved to session, then user sends "Continue" message.
+        """
+        messages = [
+            ChatMessage(role="user", content="Do something complex"),
+            ChatMessage(role="assistant", content="Working on it..."),
+            ChatMessage(role="user", content="Continue with your task."),
+            ChatMessage(role="assistant", content=""),  # Empty response saved
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect the empty assistant
+        empty_issues = [i for i in result.issues if i.type == "empty_assistant_message"]
+        assert len(empty_issues) == 1
+
+        # Empty assistant at end should be removed
+        assert len(result.repaired_messages) == 3
+        assert result.repaired_messages[-1].role == "user"
+        assert result.repaired_messages[-1].content == "Continue with your task."
+
     # Note: ChatMessage.content must be Optional[str], not list
     # Content segment tests removed as they test unsupported content types
 

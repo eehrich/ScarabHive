@@ -37,7 +37,6 @@ from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.gemini_utils import (
     convert_openai_messages_to_gemini,
     convert_openai_tools_to_gemini,
-    clean_schema_for_gemini
 )
 
 logger = logging.getLogger(__name__)
@@ -201,9 +200,10 @@ class GeminiSDKClient(LLMClient):
     def _convert_tools_to_sdk(self, tools: List[Dict]) -> Optional[types.Tool]:
         """Convert OpenAI tool schema to SDK Tool format.
         
-        Uses shared conversion logic, then wraps in SDK types.
+        Uses shared conversion logic (which includes schema sanitization),
+        then wraps in SDK types.
         """
-        # Use shared conversion utility
+        # Use shared conversion utility (already sanitizes schemas)
         function_declarations_dicts = convert_openai_tools_to_gemini(tools)
         
         if not function_declarations_dicts:
@@ -211,13 +211,6 @@ class GeminiSDKClient(LLMClient):
         
         # Wrap in SDK types.Tool
         return types.Tool(function_declarations=function_declarations_dicts)
-
-    def _clean_schema_for_sdk(self, schema: Dict) -> Dict:
-        """Clean JSON schema for SDK compatibility.
-        
-        Delegates to shared utility with SDK-specific flattening enabled.
-        """
-        return clean_schema_for_gemini(schema, flatten_complex_schemas=True)
 
     def _build_generation_config(
         self, 
@@ -712,12 +705,45 @@ class GeminiSDKClient(LLMClient):
                             "This may indicate invalid tool schema or complex function call arguments."
                         )
                 elif got_malformed_function_call:
-                    # We have partial output despite MALFORMED_FUNCTION_CALL - use it
-                    logger.warning(
-                        f"[GeminiSDK] MALFORMED_FUNCTION_CALL finish_reason, but we have "
-                        f"{len(accumulated_tool_calls)} tool calls and {len(accumulated_content)} content parts. "
-                        f"Using the successfully parsed output instead of retrying."
-                    )
+                    # Check if tool calls have empty arguments - this indicates a parsing failure
+                    # and we should retry instead of using the malformed output
+                    empty_args_calls = [
+                        tc["function"]["name"] 
+                        for tc in accumulated_tool_calls.values() 
+                        if json.loads(tc["function"]["arguments"]) == {}
+                    ]
+                    
+                    if empty_args_calls and attempt < self.max_retries:
+                        # All or some tool calls have empty args - likely a parsing issue
+                        wait_time = 1.0 + attempt
+                        logger.warning(
+                            f"[GeminiSDK] MALFORMED_FUNCTION_CALL with {len(empty_args_calls)} tool calls "
+                            f"having empty arguments ({empty_args_calls}). "
+                            f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await self._cancellable_sleep(wait_time, cancellation_token)
+                        # Reset ALL accumulators for full retry
+                        accumulated_content = []
+                        accumulated_thoughts = []
+                        accumulated_tool_calls = {}
+                        accumulated_usage = None
+                        first_thought_signature = None
+                        consecutive_thought_only_chunks = 0
+                        continue
+                    elif empty_args_calls:
+                        # Retries exhausted, log error and use what we have
+                        logger.error(
+                            f"[GeminiSDK] MALFORMED_FUNCTION_CALL persisted after retries. "
+                            f"{len(empty_args_calls)} tool calls have empty arguments: {empty_args_calls}. "
+                            f"This may indicate invalid tool schema or complex function call arguments."
+                        )
+                    else:
+                        # We have tool calls with actual arguments despite MALFORMED_FUNCTION_CALL - use them
+                        logger.warning(
+                            f"[GeminiSDK] MALFORMED_FUNCTION_CALL finish_reason, but we have "
+                            f"{len(accumulated_tool_calls)} tool calls and {len(accumulated_content)} content parts. "
+                            f"Using the successfully parsed output instead of retrying."
+                        )
                 
                 # Warn if response is completely empty
                 if not accumulated_content and not accumulated_tool_calls:

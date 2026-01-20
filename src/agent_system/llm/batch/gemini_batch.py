@@ -34,6 +34,7 @@ from .models import BatchJob, BatchStatus
 from .job_tracker import get_job_tracker
 from ..models import LLMRateLimitError, LLMQuotaExhaustedError
 from ..retry_utils import is_rate_limit_error, parse_retry_delay
+from ..gemini_utils import sanitize_schema_for_gemini
 from typing import Callable, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -525,59 +526,6 @@ class GeminiBatchClient(BatchProviderClient):
         
         return contents
     
-    def _sanitize_schema_for_sdk(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Remove JSON Schema keywords not supported by Gemini API.
-        
-        Gemini's Function Declaration schema doesn't support:
-        - oneOf, anyOf, allOf (JSON Schema composition)
-        - $ref (references)
-        - additionalProperties (Gemini uses strict schemas)
-        - default (default values)
-        - examples
-        - $schema, $id (meta keywords)
-        
-        This recursively processes the schema and removes unsupported
-        constructs.
-        """
-        if not isinstance(schema, dict):
-            return schema
-        
-        # Keywords that Gemini doesn't support at all
-        unsupported_keywords = {
-            "oneOf", "anyOf", "allOf", "$ref", 
-            "additionalProperties", "default", "examples",
-            "$schema", "$id", "definitions", "$defs",
-            "patternProperties", "unevaluatedProperties",
-            "if", "then", "else", "not",
-        }
-        
-        result = {}
-        for key, value in schema.items():
-            # Skip completely unsupported keywords
-            if key in unsupported_keywords:
-                # For oneOf/anyOf/allOf, try to merge first option
-                if key in ("oneOf", "anyOf", "allOf"):
-                    if isinstance(value, list) and len(value) > 0:
-                        first_option = value[0]
-                        if isinstance(first_option, dict):
-                            for opt_key, opt_val in first_option.items():
-                                if opt_key not in result and opt_key not in unsupported_keywords:
-                                    result[opt_key] = self._sanitize_schema_for_sdk(opt_val)
-                continue
-            elif key == "properties" and isinstance(value, dict):
-                # Recursively sanitize properties
-                result[key] = {
-                    k: self._sanitize_schema_for_sdk(v) 
-                    for k, v in value.items()
-                }
-            elif key == "items" and isinstance(value, dict):
-                # Recursively sanitize array items
-                result[key] = self._sanitize_schema_for_sdk(value)
-            else:
-                result[key] = value
-        
-        return result
-    
     def _convert_tools_to_sdk(
         self,
         tools: List[Dict[str, Any]],
@@ -585,7 +533,7 @@ class GeminiBatchClient(BatchProviderClient):
         """Convert OpenAI tools to SDK format.
         
         Creates proper types.Tool objects with FunctionDeclaration.
-        Also sanitizes JSON schemas to remove unsupported keywords like 'oneOf'.
+        Uses shared sanitize_schema_for_gemini() to clean schemas.
         """
         function_declarations = []
         
@@ -596,8 +544,8 @@ class GeminiBatchClient(BatchProviderClient):
             func = tool.get("function", {})
             params = func.get("parameters", {})
             
-            # Sanitize schema to remove unsupported keywords like 'oneOf'
-            sanitized_params = self._sanitize_schema_for_sdk(params) if params else None
+            # Sanitize schema using shared function
+            sanitized_params = sanitize_schema_for_gemini(params) if params else None
             
             # Build function declaration with all parameters at once
             declaration = types.FunctionDeclaration(

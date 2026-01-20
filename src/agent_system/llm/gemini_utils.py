@@ -199,6 +199,12 @@ def convert_openai_messages_to_gemini(
     # "Mismatched function_call/function_response pairs".
     contents = _merge_consecutive_tool_responses(contents)
 
+    # Merge consecutive user messages into single content blocks.
+    # Gemini does NOT allow multiple consecutive user messages (unlike OpenAI).
+    # See: https://github.com/google/generative-ai-docs/issues/209
+    # This can happen when auto-injected "Continue" messages accumulate in session history.
+    contents = _merge_consecutive_same_role_messages(contents, "user")
+
     return system_instruction, contents
 
 
@@ -253,6 +259,89 @@ def _merge_consecutive_tool_responses(
             i = j
         else:
             # Not a tool response, keep as-is
+            merged.append(current)
+            i += 1
+    
+    return merged
+
+
+def _merge_consecutive_same_role_messages(
+    contents: List[Dict[str, Any]],
+    role: str
+) -> List[Dict[str, Any]]:
+    """Merge consecutive messages with the same role into single content blocks.
+    
+    Gemini does NOT allow multiple consecutive user messages (unlike OpenAI).
+    This merges them by combining all parts from consecutive messages.
+    
+    Note: Parts are kept in their original order (text interleaved with images/audio).
+    When merging multiple messages, their parts are concatenated in sequence.
+    
+    Args:
+        contents: List of Gemini content dicts
+        role: Role to merge (e.g., "user")
+    
+    Returns:
+        List with consecutive same-role messages merged
+    """
+    if not contents:
+        return contents
+    
+    merged: List[Dict[str, Any]] = []
+    i = 0
+    
+    while i < len(contents):
+        current = contents[i]
+        
+        # Check if this matches the target role
+        if current.get("role") == role:
+            # Collect all consecutive messages with same role
+            j = i + 1
+            while j < len(contents) and contents[j].get("role") == role:
+                j += 1
+            
+            # If only one message, keep as-is (preserves interleaved text/images)
+            if j == i + 1:
+                merged.append(current)
+                i = j
+                continue
+            
+            # Multiple consecutive messages - merge their parts
+            # Each message's parts stay in order, messages concatenated with separator
+            combined_parts: List[Dict[str, Any]] = []
+            
+            for msg_idx in range(i, j):
+                msg_parts = contents[msg_idx].get("parts", [])
+                
+                # Add separator between messages (as text part) if not the first
+                if msg_idx > i and combined_parts:
+                    # Check if last part and first new part are both text - merge them
+                    last_is_text = combined_parts and "text" in combined_parts[-1]
+                    first_is_text = msg_parts and "text" in msg_parts[0]
+                    
+                    if last_is_text and first_is_text:
+                        # Merge text with separator
+                        combined_parts[-1]["text"] += "\n\n" + msg_parts[0]["text"]
+                        msg_parts = msg_parts[1:]  # Skip first part, already merged
+                    elif last_is_text:
+                        # Add separator to last text part
+                        combined_parts[-1]["text"] += "\n\n"
+                
+                combined_parts.extend(msg_parts)
+            
+            logger.debug(
+                "[Gemini] Merged %d consecutive '%s' messages into single content block with %d parts",
+                j - i, role, len(combined_parts)
+            )
+            
+            if combined_parts:
+                merged.append({
+                    "role": role,
+                    "parts": combined_parts
+                })
+            i = j
+        else:
+            # Different role, keep as-is
             merged.append(current)
             i += 1
     
@@ -419,17 +508,13 @@ def _convert_multimodal_content(content_list: List[Any]) -> List[Dict[str, Any]]
     return parts
 
 
-def convert_openai_tools_to_gemini(
-    tools: List[Dict[str, Any]],
-    flatten_complex_schemas: bool = True,
-) -> List[Dict[str, Any]]:
+def convert_openai_tools_to_gemini(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert OpenAI tool schema to Gemini function declarations.
+    
+    Uses sanitize_schema_for_gemini() to clean schemas for Gemini API compatibility.
     
     Args:
         tools: List of OpenAI tool definitions with type=function
-        flatten_complex_schemas: If True, flatten oneOf/anyOf/allOf constructs.
-            This is required for SDK compatibility to avoid MALFORMED_FUNCTION_CALL errors.
-            Defaults to True for backwards compatibility with SDK usage.
     
     Returns:
         List of Gemini function declaration dicts
@@ -446,81 +531,98 @@ def convert_openai_tools_to_gemini(
             "description": func.get("description", ""),
         }
 
-        # Add parameters if present, but clean them for Gemini compatibility
+        # Add parameters if present, sanitize for Gemini compatibility
         params = func.get("parameters", {})
         if params:
-            # Deep copy to avoid modifying original
-            clean_params = clean_schema_for_gemini(params, flatten_complex_schemas)
-            declaration["parameters"] = clean_params
+            declaration["parameters"] = sanitize_schema_for_gemini(params)
 
         function_declarations.append(declaration)
 
     return function_declarations
 
 
-def clean_schema_for_gemini(
-    schema: Dict[str, Any],
-    flatten_complex_schemas: bool = False
-) -> Dict[str, Any]:
-    """Remove fields that Gemini doesn't support from JSON schema.
+def sanitize_schema_for_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove JSON Schema keywords not supported by Gemini API.
+    
+    This is the canonical schema sanitization function used by all Gemini clients
+    (SDK, HTTP, and Batch). It recursively processes schemas to remove unsupported
+    constructs while preserving essential type information.
+    
+    Gemini's Function Declaration schema doesn't support:
+    - oneOf, anyOf, allOf (JSON Schema composition) - flattened to first option
+    - $ref (references)
+    - additionalProperties (Gemini uses strict schemas)
+    - default (default values)
+    - examples
+    - $schema, $id (meta keywords)
+    - definitions, $defs (schema definitions)
+    - patternProperties, unevaluatedProperties
+    - if, then, else, not (conditional schemas)
     
     Args:
-        schema: JSON schema dict to clean
-        flatten_complex_schemas: If True, flatten oneOf/anyOf/allOf constructs
-            (required for SDK compatibility, optional for HTTP API)
-    
+        schema: JSON schema dict to sanitize
+        
     Returns:
-        Cleaned schema dict
+        Sanitized schema dict safe for Gemini API
     """
     if not isinstance(schema, dict):
         return schema
     
-    # Create a copy to avoid modifying original
-    cleaned: Dict[str, Any] = {}
+    # Keywords that Gemini doesn't support at all
+    unsupported_keywords = {
+        "oneOf", "anyOf", "allOf", "$ref", 
+        "additionalProperties", "default", "examples",
+        "$schema", "$id", "definitions", "$defs",
+        "patternProperties", "unevaluatedProperties",
+        "if", "then", "else", "not",
+        "format", "title",  # Also exclude for cleaner schemas
+    }
     
-    # Fields to exclude (Gemini doesn't support these OpenAI-specific fields)
-    exclude_fields = {"additionalProperties", "$schema", "$defs", "definitions"}
+    result: Dict[str, Any] = {}
     
-    # Additional fields for SDK compatibility
-    if flatten_complex_schemas:
-        exclude_fields.update({"default", "examples", "format", "title"})
-    
-    # First pass: handle oneOf/anyOf/allOf by merging first option into cleaned
-    # This must happen BEFORE processing other keys to ensure merged values are available
-    for key in ("oneOf", "anyOf", "allOf"):
-        if key in schema:
-            value = schema[key]
-            if flatten_complex_schemas and isinstance(value, list) and len(value) > 0:
-                # Flatten: use first option and merge into parent
-                first_option = value[0]
-                if isinstance(first_option, dict):
-                    for opt_key, opt_value in first_option.items():
-                        if opt_key not in cleaned and opt_key not in exclude_fields:
-                            cleaned[opt_key] = clean_schema_for_gemini(
-                                opt_value, flatten_complex_schemas
-                            ) if isinstance(opt_value, dict) else opt_value
-    
-    # Second pass: process remaining keys
     for key, value in schema.items():
-        if key in exclude_fields:
+        # Skip completely unsupported keywords
+        if key in unsupported_keywords:
+            # For oneOf/anyOf/allOf, merge first option into result
+            # This preserves 'type' and other essential fields
+            if key in ("oneOf", "anyOf", "allOf"):
+                if isinstance(value, list) and len(value) > 0:
+                    first_option = value[0]
+                    if isinstance(first_option, dict):
+                        for opt_key, opt_val in first_option.items():
+                            if opt_key not in result and opt_key not in unsupported_keywords:
+                                result[opt_key] = sanitize_schema_for_gemini(opt_val)
             continue
-        
-        # Skip schema composition keywords (already handled above)
-        if key in ("oneOf", "anyOf", "allOf"):
-            continue
-            
-        # Don't overwrite values that were merged from oneOf/anyOf/allOf
-        if key in cleaned:
-            continue
-            
-        if isinstance(value, dict):
-            cleaned[key] = clean_schema_for_gemini(value, flatten_complex_schemas)
-        elif isinstance(value, list):
-            cleaned[key] = [
-                clean_schema_for_gemini(item, flatten_complex_schemas) if isinstance(item, dict) else item
-                for item in value
-            ]
+        elif key == "properties" and isinstance(value, dict):
+            # Recursively sanitize each property
+            result[key] = {
+                k: sanitize_schema_for_gemini(v) 
+                for k, v in value.items()
+            }
+        elif key == "items" and isinstance(value, dict):
+            # Recursively sanitize array items schema
+            result[key] = sanitize_schema_for_gemini(value)
         else:
-            cleaned[key] = value
+            result[key] = value
     
-    return cleaned
+    return result
+
+
+# Backwards compatibility alias
+def clean_schema_for_gemini(
+    schema: Dict[str, Any],
+    flatten_complex_schemas: bool = True  # Changed default to True
+) -> Dict[str, Any]:
+    """Remove fields that Gemini doesn't support from JSON schema.
+    
+    DEPRECATED: Use sanitize_schema_for_gemini() instead.
+    This function is kept for backwards compatibility.
+    
+    Args:
+        schema: JSON schema dict to clean
+        flatten_complex_schemas: Ignored, always flattens (for backwards compat)
+    
+    Returns:
+        Cleaned schema dict
+    """
+    return sanitize_schema_for_gemini(schema)
