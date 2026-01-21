@@ -138,6 +138,7 @@ Progressive compression strategy that applies increasingly aggressive techniques
 **Layer 1 (Reversible):**
 - Store tool outputs with compact references
 - Create variables for large content blocks
+- **Media Deduplication** - Auto-detect duplicate media by file hash, compact older duplicates (keep newest)
 
 **Layer 2 (Semi-Reversible):**
 - Archive old messages with summaries
@@ -246,6 +247,13 @@ context_engineer:
     archive_after_turns: 20
     semantic_search: true   # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
     
+    # Media deduplication (new)
+    deduplicate_media: true   # Auto-compact older duplicate media files by hash
+    
+    # Event-based media compaction (new)
+    compact_media_after_user_message: false   # Compact all media when new user message arrives
+    compact_media_after_final_response: false # Compact all media when agent sends final response
+    
     # Memory Management
     session_ttl_seconds: 7200          # Session cleanup TTL (default: 2 hours)
     max_tracked_sessions: 100          # Max sessions before LRU eviction
@@ -260,6 +268,42 @@ Access the context engineering dashboard at `/plugins/context_engineer/panel`:
 - Search archived messages
 - View stored variables
 - See compaction statistics
+
+## Media Management
+
+### Media Deduplication
+
+When the same image, audio, or video file appears multiple times in a conversation, the plugin automatically detects duplicates using file hashes and compacts older occurrences. Only the **newest** version is preserved in full.
+
+```yaml
+# Enable/disable (enabled by default)
+deduplicate_media: true
+```
+
+**How it works:**
+1. Media items are hashed by file path (or inline data hash as fallback)
+2. Duplicates are identified across all messages
+3. Older duplicates are replaced with text placeholders
+4. The newest occurrence is preserved for the LLM
+
+### Event-Based Media Compaction
+
+Optionally compact **all** media when certain events occur:
+
+```yaml
+# Compact all older media when a new user message arrives
+compact_media_after_user_message: false
+
+# Compact all older media when the agent sends a final response
+compact_media_after_final_response: false
+```
+
+This is useful for:
+- Conversations with many images where only the latest matters
+- Saving tokens after the agent has processed media
+- Multi-turn conversations where early media is no longer relevant
+
+**Note:** Media in the most recent message is always preserved.
 
 ## Integration with Other Plugins
 

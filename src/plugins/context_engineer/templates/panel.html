@@ -216,6 +216,11 @@
             color: #ef9a9a;
         }
 
+        .badge-layerB {
+            background: #7b1fa2;
+            color: #e1bee7;
+        }
+
         /* Stats Cards */
         .stats-grid {
             display: grid;
@@ -446,12 +451,13 @@
                             <th>Before</th>
                             <th>After</th>
                             <th>Saved</th>
+                            <th>Media</th>
                             <th>Reduction</th>
                             <th>Layers</th>
                         </tr>
                     </thead>
                     <tbody id="history-body">
-                        <tr><td colspan="8" class="loading"><div class="spinner"></div>Loading...</td></tr>
+                        <tr><td colspan="9" class="loading"><div class="spinner"></div>Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -578,7 +584,12 @@
 
         // Render layer badges
         function renderLayers(layers) {
-            return layers.map(l => `<span class="badge badge-layer${l}">L${l}</span>`).join(' ');
+            return layers.map(l => {
+                if (l === 'B') {
+                    return `<span class="badge badge-layerB" title="Size limit exceeded (20MB)">B</span>`;
+                }
+                return `<span class="badge badge-layer${l}">L${l}</span>`;
+            }).join(' ');
         }
 
         // Load stats
@@ -606,11 +617,24 @@
                 const tbody = document.getElementById('history-body');
                 
                 if (!data.success || !data.events || data.events.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No compaction events yet</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No compaction events yet</td></tr>`;
                     return;
                 }
 
-                tbody.innerHTML = data.events.map(event => `
+                tbody.innerHTML = data.events.map(event => {
+                    // Format media info (count + bytes saved)
+                    const bytesSaved = event.media_bytes_saved || 0;
+                    const mediaCount = (event.media_deduplicated || 0) + (event.media_compacted_after_event || 0);
+                    let mediaInfo = '-';
+                    if (mediaCount > 0) {
+                        if (bytesSaved > 0) {
+                            mediaInfo = `${mediaCount} files (${(bytesSaved / (1024*1024)).toFixed(1)}MB)`;
+                        } else {
+                            mediaInfo = `${mediaCount} files`;
+                        }
+                    }
+                    
+                    return `
                     <tr>
                         <td>${formatTime(event.timestamp)}</td>
                         <td style="color: #4fc3f7">${event.agent_name || '-'}</td>
@@ -618,14 +642,15 @@
                         <td>${formatNumber(event.original_tokens)}</td>
                         <td>${formatNumber(event.final_tokens)}</td>
                         <td style="color: #6ee56e">${formatNumber(event.tokens_saved)}</td>
+                        <td style="color: #ff9800">${mediaInfo}</td>
                         <td>${event.reduction_percent.toFixed(1)}%</td>
                         <td>${renderLayers(event.layers_applied || [])}</td>
                     </tr>
-                `).join('');
+                `}).join('');
             } catch (e) {
                 console.error('Error loading history:', e);
                 document.getElementById('history-body').innerHTML = 
-                    `<tr><td colspan="8" class="empty-state">Error loading history</td></tr>`;
+                    `<tr><td colspan="9" class="empty-state">Error loading history</td></tr>`;
             }
         }
 
@@ -658,6 +683,11 @@
                         <h3>Variables</h3>
                         <div class="value">${formatNumber(variables.total_variables || 0)}</div>
                         <div class="subvalue">${formatNumber(variables.total_tokens || 0)} tokens</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Media Compacted</h3>
+                        <div class="value">${formatNumber((data.media_deduplicated || 0) + (data.media_compacted || 0))}</div>
+                        <div class="subvalue">${formatNumber(data.media_deduplicated || 0)} deduped, ${formatNumber(data.media_compacted || 0)} by event</div>
                     </div>
                     <div class="stat-card">
                         <h3>Core Memory</h3>
