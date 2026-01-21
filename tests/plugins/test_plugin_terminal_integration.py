@@ -1,6 +1,7 @@
 """Integration tests for Terminal plugin persistent sessions and background processes."""
 
 import asyncio
+import os
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,7 +11,14 @@ from agent_system.config import AgentSystemConfig, MCPConfig
 from plugins.terminal.server import TerminalServer
 
 # Use sys.executable to get the correct Python interpreter path
-PYTHON = sys.executable
+# Convert Windows paths to Git Bash compatible format
+_raw_python = sys.executable
+if os.name == 'nt':
+    # Convert C:\path\to\python.exe to /c/path/to/python.exe for Git Bash
+    _raw_python = _raw_python.replace('\\', '/')
+    if len(_raw_python) > 1 and _raw_python[1] == ':':
+        _raw_python = '/' + _raw_python[0].lower() + _raw_python[2:]
+PYTHON = _raw_python
 
 
 @pytest.fixture
@@ -61,9 +69,9 @@ class TestTerminalServerIntegration:
         server = TerminalServer("test", mock_system_config, mock_mcp_config)
         
         try:
-            # Start background process (-u for unbuffered Python output)
+            # Start background process - use double quotes for Windows and longer sleep
             start_result = await server.execute_background({
-                "command": f"{PYTHON} -u -c 'import time; [print(i) for i in range(3)]; time.sleep(0.5)'",
+                "command": f'{PYTHON} -u -c "import time; import sys; [print(i, flush=True) for i in range(3)]; sys.stdout.flush(); time.sleep(2)"',
                 "_status": mock_status
             })
             
@@ -72,22 +80,25 @@ class TestTerminalServerIntegration:
             assert "pid" in start_result
             process_id = start_result["process_id"]
             
-            # Wait a bit for output
-            await asyncio.sleep(0.5)
-            
-            # Get output
-            output_result = await server.get_output({
-                "process_id": process_id,
-                "_status": mock_status
-            })
+            # Wait for output - retry multiple times as background process output may be delayed
+            output_result = None
+            for _ in range(10):
+                await asyncio.sleep(0.2)
+                output_result = await server.get_output({
+                    "process_id": process_id,
+                    "_status": mock_status
+                })
+                if output_result.get("stdout") and any(str(i) in output_result["stdout"] for i in range(3)):
+                    break
             
             assert output_result["status"] == "success"
             assert "is_running" in output_result
             # Output should contain numbers (check that we got at least one digit)
-            assert any(str(i) in output_result["stdout"] for i in range(3))
+            stdout = output_result.get("stdout", "")
+            assert any(str(i) in stdout for i in range(3)), f"Expected digits 0-2 in stdout, got: {stdout}"
             
-            # Wait for process to finish
-            await asyncio.sleep(1.0)
+            # Wait for process to finish (process sleeps for 2 seconds)
+            await asyncio.sleep(2.5)
             
             # Get final output
             final_result = await server.get_output({

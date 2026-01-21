@@ -268,7 +268,9 @@ class TestRotationAPIEndpoints:
         from unittest.mock import MagicMock
         
         log_file = temp_log_dir / "agent.log"
-        log_file.write_text("single file content\n")
+        test_content = "single file content\n"
+        # Use write_bytes to ensure consistent line endings across platforms
+        log_file.write_bytes(test_content.encode("utf-8"))
         
         mock_mcp_config.log_files = [str(log_file)]
         

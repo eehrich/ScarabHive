@@ -4,10 +4,18 @@ Test the unified execute() method with background parameter.
 import pytest
 import asyncio
 import sys
+import os
 from plugins.terminal.server import TerminalServer
 
 # Use sys.executable to get the correct Python interpreter path
-PYTHON = sys.executable
+# Convert Windows paths to Git Bash compatible format
+_raw_python = sys.executable
+if os.name == 'nt':
+    # Convert C:\path\to\python.exe to /c/path/to/python.exe for Git Bash
+    _raw_python = _raw_python.replace('\\', '/')
+    if len(_raw_python) > 1 and _raw_python[1] == ':':
+        _raw_python = '/' + _raw_python[0].lower() + _raw_python[2:]
+PYTHON = _raw_python
 
 
 class TestTerminalExecuteUnified:
@@ -75,9 +83,9 @@ class TestTerminalExecuteUnified:
         server = TerminalServer("test", mock_system_config, mock_mcp_config)
         
         try:
-            # Start background process
+            # Start background process - use double quotes for Windows compatibility and longer sleep
             result = await server.execute({
-                "command": f"{PYTHON} -u -c 'import time; print(\"bg\"); time.sleep(1)'",
+                "command": f'{PYTHON} -u -c "import time; import sys; print(\'bg\', flush=True); sys.stdout.flush(); time.sleep(2)"',
                 "background": True,
                 "_status": mock_status
             })
@@ -86,18 +94,20 @@ class TestTerminalExecuteUnified:
             assert "process_id" in result
             assert "pid" in result
             
-            # Wait for output
-            await asyncio.sleep(0.5)
-            
-            # Get output
-            output = await server.get_output({
-                "process_id": result["process_id"],
-                "_status": mock_status
-            })
+            # Wait for output - retry multiple times as background process output may be delayed
+            output = None
+            for _ in range(10):
+                await asyncio.sleep(0.2)
+                output = await server.get_output({
+                    "process_id": result["process_id"],
+                    "_status": mock_status
+                })
+                if output.get("stdout") and "bg" in output["stdout"]:
+                    break
             
             assert output["status"] == "success"
             # Output should contain "bg"
-            assert "bg" in output["stdout"]
+            assert "bg" in output.get("stdout", ""), f"Expected 'bg' in stdout, got: {output}"
             
             # Kill process
             await server.kill_process({
