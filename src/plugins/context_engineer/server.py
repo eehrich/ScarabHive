@@ -76,6 +76,16 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self.archive_after_turns = int(config_dict.get("archive_after_turns", 10))
         self.enable_semantic_search = bool(config_dict.get("enable_semantic_search", False))
         
+        # Media handling settings
+        self.deduplicate_media = bool(config_dict.get("deduplicate_media", True))
+        self.compact_media_after_user_message = bool(config_dict.get("compact_media_after_user_message", False))
+        self.compact_media_after_final_response = bool(config_dict.get("compact_media_after_final_response", False))
+        
+        # Media store settings
+        self.store_media_before_compaction = bool(config_dict.get("store_media_before_compaction", True))
+        self.media_store_ttl_seconds = int(config_dict.get("media_store_ttl_seconds", 86400 * 7))  # 7 days
+        self.media_store_max_files = int(config_dict.get("media_store_max_files", 500))
+        
         # Web UI history tracking - load from persistent storage
         self.stats_history: list[dict[str, Any]] = []
         self._history_file = Path("data/context_engineer/history.json")
@@ -102,11 +112,19 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl.variable_min_size = self.variable_min_size
         self._hooks_impl.archive_after_turns = self.archive_after_turns
         self._hooks_impl.enable_semantic_search = self.enable_semantic_search
+        self._hooks_impl.deduplicate_media = self.deduplicate_media
+        self._hooks_impl.compact_media_after_user_message = self.compact_media_after_user_message
+        self._hooks_impl.compact_media_after_final_response = self.compact_media_after_final_response
+        self._hooks_impl.store_media_before_compaction = self.store_media_before_compaction
+        self._hooks_impl.media_store_ttl_seconds = self.media_store_ttl_seconds
+        self._hooks_impl.media_store_max_files = self.media_store_max_files
         
         logger.info(
             f"ContextEngineerServer initialized: "
             f"thresholds=L1:{self.layer1_threshold}/L2:{self.layer2_threshold}/"
-            f"L3:{self.layer3_threshold}, target={self.target_tokens}"
+            f"L3:{self.layer3_threshold}, target={self.target_tokens}, "
+            f"compact_media_after_user_message={self.compact_media_after_user_message}, "
+            f"compact_media_after_final_response={self.compact_media_after_final_response}"
         )
     
     def _load_history_sync(self) -> list[dict[str, Any]]:
@@ -181,21 +199,25 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
     # =========================================================================
     
     async def recall(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Search archived conversation history.
+        """Universal recall tool - retrieve any compacted/stored content.
         
         Tool name: {{ name }}_recall → e.g., 'context_engineer_recall'
         
+        Auto-detects query type:
+        - Plain text → archived message search
+        - $VAR_N → variable retrieval
+        - TR_xxx or hash → tool result retrieval  
+        - File path → media restoration
+        
         Args:
             params: {
-                "query": Search query string,
-                "limit": Max results (default 5)
+                "query": Search query, variable name, reference, or file path,
+                "mode": Force specific mode (auto/archive/variable/tool_result/media),
+                "limit": Max results for archive search (default 5)
             }
             
         Returns:
-            {
-                "results": [...],
-                "total_found": int
-            }
+            Type-specific response with content
         """
         status = params.get("_status")
         
@@ -207,20 +229,44 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
             
+            mode = params.get("mode", "auto")
             limit = int(params.get("limit", 5))
             session_id = params.get("_session_id", "default")
             
+            # Detect type for status message
+            if mode == "auto":
+                detected_type = self._hooks_impl._detect_recall_type(query)
+            else:
+                detected_type = mode
+                
             if status:
-                await status.progress(f"Searching archived context for: {query}")
+                type_msgs = {
+                    'archive': f"Searching archived context for: {query}",
+                    'variable': f"Retrieving variable: {query}",
+                    'tool_result': f"Retrieving tool result: {query}",
+                    'media': f"Restoring media: {query}"
+                }
+                await status.progress(type_msgs.get(detected_type, f"Recalling: {query}"))
             
             result = await self._hooks_impl._handle_recall(
                 query=query,
+                mode=mode,
                 limit=limit,
                 session_id=session_id
             )
             
             if status:
-                await status.end(f"Found {result['total_found']} relevant messages")
+                recall_type = result.get("recall_type", detected_type)
+                if recall_type == "archive":
+                    await status.end(f"Found {result.get('total_found', 0)} relevant messages")
+                elif recall_type == "variable":
+                    await status.end("Retrieved variable content")
+                elif recall_type == "tool_result":
+                    await status.end("Retrieved tool result")
+                elif recall_type == "media":
+                    await status.end("Media file queued for restoration")
+                else:
+                    await status.end("Recall complete")
             
             return {
                 "status": "success",

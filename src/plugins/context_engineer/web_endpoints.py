@@ -101,6 +101,8 @@ class ContextEngineerWebFactory:
                     "total_tool_results_stored": 0,
                     "total_variables_created": 0,
                     "total_messages_archived": 0,
+                    "total_media_deduplicated": 0,
+                    "total_media_compacted": 0,
                     "average_reduction_percent": 0.0
                 }
             
@@ -116,6 +118,12 @@ class ContextEngineerWebFactory:
             total_archived = sum(
                 event.get("messages_archived", 0) for event in self.stats_history
             )
+            total_media_deduplicated = sum(
+                event.get("media_deduplicated", 0) for event in self.stats_history
+            )
+            total_media_compacted = sum(
+                event.get("media_compacted_after_event", 0) for event in self.stats_history
+            )
             avg_reduction = sum(
                 event.get("reduction_percent", 0) for event in self.stats_history
             ) / len(self.stats_history)
@@ -127,6 +135,8 @@ class ContextEngineerWebFactory:
                 "total_tool_results_stored": total_tool_results,
                 "total_variables_created": total_variables,
                 "total_messages_archived": total_archived,
+                "total_media_deduplicated": total_media_deduplicated,
+                "total_media_compacted": total_media_compacted,
                 "average_reduction_percent": round(avg_reduction, 1)
             }
         except Exception as e:

@@ -334,6 +334,38 @@ class ArchivalMemory:
         else:
             return self._search_text(query, session_id, limit)
     
+    def _escape_fts5_query(self, query: str) -> str:
+        """Escape special characters for FTS5 MATCH syntax.
+        
+        FTS5 has special characters that need escaping:
+        - Double quotes around phrases
+        - Special operators: AND, OR, NOT, NEAR, *
+        - Punctuation: . - : @ # etc.
+        
+        Strategy: Wrap each word in double quotes to treat as literal.
+        """
+        import re
+        
+        # Split on whitespace, wrap each token in quotes
+        # This makes FTS5 treat each word as a literal phrase
+        tokens = query.split()
+        
+        # Escape any double quotes within tokens
+        escaped_tokens = []
+        for token in tokens:
+            # Remove/escape problematic chars
+            # FTS5 doesn't like bare punctuation
+            cleaned = re.sub(r'[^\w\s]', ' ', token).strip()
+            if cleaned:
+                escaped_tokens.append(f'"{cleaned}"')
+        
+        if not escaped_tokens:
+            # Fallback: just return original with dangerous chars removed
+            return re.sub(r'[^\w\s]', ' ', query).strip()
+        
+        # Join with OR for broader matching
+        return ' OR '.join(escaped_tokens)
+    
     def _search_text(
         self,
         query: str,
@@ -341,31 +373,40 @@ class ArchivalMemory:
         limit: int
     ) -> list[ArchivedMessage]:
         """Full-text search using SQLite FTS5."""
-        # Build query
-        if session_id:
-            cursor = self._db.execute("""
-                SELECT am.id, am.role, am.content, am.summary, am.timestamp,
-                       am.session_id, am.token_count, am.metadata, 
-                       am.tool_call_id, am.tool_name
-                FROM archived_messages am
-                JOIN archived_fts fts ON am.id = fts.id
-                WHERE archived_fts MATCH ? AND am.session_id = ?
-                ORDER BY rank
-                LIMIT ?
-            """, (query, session_id, limit))
-        else:
-            cursor = self._db.execute("""
-                SELECT am.id, am.role, am.content, am.summary, am.timestamp,
-                       am.session_id, am.token_count, am.metadata,
-                       am.tool_call_id, am.tool_name
-                FROM archived_messages am
-                JOIN archived_fts fts ON am.id = fts.id
-                WHERE archived_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-            """, (query, limit))
+        # Escape query for FTS5 syntax safety
+        fts_query = self._escape_fts5_query(query)
         
-        results = [ArchivedMessage.from_row(row) for row in cursor.fetchall()]
+        try:
+            # Build query
+            if session_id:
+                cursor = self._db.execute("""
+                    SELECT am.id, am.role, am.content, am.summary, am.timestamp,
+                           am.session_id, am.token_count, am.metadata, 
+                           am.tool_call_id, am.tool_name
+                    FROM archived_messages am
+                    JOIN archived_fts fts ON am.id = fts.id
+                    WHERE archived_fts MATCH ? AND am.session_id = ?
+                    ORDER BY rank
+                    LIMIT ?
+                """, (fts_query, session_id, limit))
+            else:
+                cursor = self._db.execute("""
+                    SELECT am.id, am.role, am.content, am.summary, am.timestamp,
+                           am.session_id, am.token_count, am.metadata,
+                           am.tool_call_id, am.tool_name
+                    FROM archived_messages am
+                    JOIN archived_fts fts ON am.id = fts.id
+                    WHERE archived_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                """, (fts_query, limit))
+            
+            results = [ArchivedMessage.from_row(row) for row in cursor.fetchall()]
+            
+        except Exception as e:
+            # FTS5 query failed - fall through to LIKE search
+            logger.debug(f"FTS5 search failed for query '{query}': {e}")
+            results = []
         
         # Fallback to LIKE if FTS returns nothing
         if not results:

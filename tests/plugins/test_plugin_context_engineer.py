@@ -691,7 +691,11 @@ class TestLayeredCompactionStrategy:
 
     @pytest.mark.asyncio
     async def test_compact_multimodal_removes_large_audio(self, strategy_components):
-        """Test that large audio inline data is removed during compaction."""
+        """Test that large audio inline data is removed during compaction.
+        
+        Note: The last user message is protected to preserve recently-submitted media.
+        So we need an OLDER user message with audio that can be compacted.
+        """
         strategy = strategy_components["strategy"]
         strategy.config.tool_result_min_size = 100  # Lower threshold for test
         
@@ -699,15 +703,19 @@ class TestLayeredCompactionStrategy:
         large_audio_base64 = "A" * 4000
         
         messages = [
+            # First user message with audio (will be compacted - not the last user msg)
             {"role": "user", "content": [
                 {"type": "text", "text": "Analyze this audio:"},
                 {"type": "audio", "source": {"type": "base64", "media_type": "audio/wav", "data": large_audio_base64}}
-            ]}
+            ]},
+            {"role": "assistant", "content": "I'll analyze this audio file for you."},
+            # Second user message (this is now the "last" user message, so first one can be compacted)
+            {"role": "user", "content": "What was the result?"}
         ]
         
         result = await strategy.compact(messages, current_tokens=2000, force=True)
         
-        # Audio should be removed and replaced with placeholder
+        # Audio in the FIRST user message should be removed and replaced with placeholder
         compacted_content = result.modified_messages[0]["content"]
         audio_items = [i for i in compacted_content if i.get("type") == "audio"]
         assert len(audio_items) == 0  # Audio removed
@@ -716,11 +724,9 @@ class TestLayeredCompactionStrategy:
         text_items = [i for i in compacted_content if i.get("type") == "text"]
         assert len(text_items) == 2  # Original text + placeholder
         
-        # Verify placeholder mentions token savings and non-recoverable notice
+        # Verify placeholder mentions removal
         placeholders = [t for t in text_items if "Audio removed" in t.get("text", "")]
         assert len(placeholders) == 1
-        assert "tokens" in placeholders[0]["text"]
-        assert "NOT recoverable" in placeholders[0]["text"]
         
         # Verify tokens were saved
         assert result.tokens_saved > 500  # Removed ~1000 token audio
@@ -750,7 +756,11 @@ class TestLayeredCompactionStrategy:
 
     @pytest.mark.asyncio
     async def test_compact_multimodal_removes_large_image(self, strategy_components):
-        """Test that large image inline data is removed during compaction."""
+        """Test that large image inline data is removed during compaction.
+        
+        Note: The last user message is protected to preserve recently-submitted media.
+        So we need an OLDER user message with image that can be compacted.
+        """
         strategy = strategy_components["strategy"]
         strategy.config.tool_result_min_size = 100  # Lower threshold for test
         
@@ -758,15 +768,19 @@ class TestLayeredCompactionStrategy:
         large_image_base64 = "C" * 4000
         
         messages = [
+            # First user message with image (will be compacted - not the last user msg)
             {"role": "user", "content": [
                 {"type": "text", "text": "What's in this image?"},
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": large_image_base64}}
-            ]}
+            ]},
+            {"role": "assistant", "content": "I'll analyze this image for you."},
+            # Second user message (this is now the "last" user message, so first one can be compacted)
+            {"role": "user", "content": "What was the result?"}
         ]
         
         result = await strategy.compact(messages, current_tokens=2000, force=True)
         
-        # Image should be removed and replaced with placeholder
+        # Image in the FIRST user message should be removed and replaced with placeholder
         compacted_content = result.modified_messages[0]["content"]
         image_items = [i for i in compacted_content if i.get("type") == "image"]
         assert len(image_items) == 0  # Image removed
@@ -774,7 +788,6 @@ class TestLayeredCompactionStrategy:
         # Should have placeholder text
         placeholders = [t for t in compacted_content if isinstance(t, dict) and "Image removed" in t.get("text", "")]
         assert len(placeholders) == 1
-        assert "NOT recoverable" in placeholders[0]["text"]
 
     @pytest.mark.asyncio
     async def test_estimate_messages_tokens_includes_inline_data(self, strategy_components):
@@ -841,9 +854,9 @@ class TestLayeredCompactionStrategy:
         assert mm_content[0]["path"] == original_path
         # Should have 'compacted' flag (new Pydantic-compatible field name)
         assert mm_content[0].get("compacted") is True
-        # Description should mention compaction and restoration
+        # Description should mention compaction and restoration via recall tool
         assert "compacted" in mm_content[0]["description"].lower()
-        assert "restore_multimodal" in mm_content[0]["description"]
+        assert "recall" in mm_content[0]["description"]
         
         # Should have saved significant tokens (~33K)
         assert result.tokens_saved > 30_000
@@ -880,6 +893,448 @@ class TestLayeredCompactionStrategy:
         # With new duration-based estimation: 10s audio = 320 tokens
         assert tokens > 300  # Main contribution is the audio file
         assert tokens < 500  # Should be reasonable, not millions
+
+    @pytest.mark.asyncio
+    async def test_deduplicate_media_keeps_newest(self, strategy_components, tmp_path):
+        """Test that media deduplication keeps the newest duplicate and compacts older ones."""
+        strategy = strategy_components["strategy"]
+        strategy.config.deduplicate_media = True
+        # Set high threshold so Layer 1 doesn't also compact the images
+        strategy.config.tool_result_min_size = 100000
+        
+        # Create a test image file
+        image_file = tmp_path / "test_image.png"
+        image_file.write_bytes(b"PNG_DATA" * 100)
+        image_path = str(image_file)
+        
+        # Create messages with the same image appearing multiple times
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "First time showing image:"},
+                {"type": "image", "path": image_path, "source": {"type": "file", "data": "ABC" * 100}}
+            ]},
+            {"role": "assistant", "content": "I see the image."},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Here's the same image again:"},
+                {"type": "image", "path": image_path, "source": {"type": "file", "data": "ABC" * 100}}
+            ]},
+            {"role": "assistant", "content": "Same image as before."},
+            {"role": "user", "content": [
+                {"type": "text", "text": "And one more time:"},
+                {"type": "image", "path": image_path, "source": {"type": "file", "data": "ABC" * 100}}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=1000, force=True)
+        
+        # First two images should be compacted, last one preserved
+        assert result.media_deduplicated == 2
+        
+        # Verify older messages have placeholder text
+        first_user_content = result.modified_messages[0]["content"]
+        third_user_content = result.modified_messages[2]["content"]
+        last_user_content = result.modified_messages[4]["content"]
+        
+        # First image should be replaced with text placeholder
+        first_image = [i for i in first_user_content if i.get("type") in ("image", "text")]
+        assert any("duplicate compacted" in str(i.get("text", "")) for i in first_image)
+        
+        # Third image should also be compacted
+        third_image = [i for i in third_user_content if i.get("type") in ("image", "text")]
+        assert any("duplicate compacted" in str(i.get("text", "")) for i in third_image)
+        
+        # Last image should be preserved (not compacted)
+        last_image = [i for i in last_user_content if i.get("type") == "image"]
+        assert len(last_image) == 1
+
+    @pytest.mark.asyncio
+    async def test_deduplicate_media_different_files_preserved(self, strategy_components, tmp_path):
+        """Test that different media files are not deduplicated."""
+        strategy = strategy_components["strategy"]
+        strategy.config.deduplicate_media = True
+        # Set high threshold so Layer 1 doesn't also compact the images
+        strategy.config.tool_result_min_size = 100000
+        
+        # Create two different image files
+        image_file_1 = tmp_path / "image1.png"
+        image_file_1.write_bytes(b"IMAGE1_DATA")
+        image_file_2 = tmp_path / "image2.png"
+        image_file_2.write_bytes(b"IMAGE2_DATA")
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "First image:"},
+                {"type": "image", "path": str(image_file_1)}
+            ]},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Second image:"},
+                {"type": "image", "path": str(image_file_2)}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=1000, force=True)
+        
+        # No duplicates, so none should be compacted
+        assert result.media_deduplicated == 0
+        
+        # Both images should still be there
+        first_images = [i for i in result.modified_messages[0]["content"] if i.get("type") == "image"]
+        second_images = [i for i in result.modified_messages[1]["content"] if i.get("type") == "image"]
+        assert len(first_images) == 1
+        assert len(second_images) == 1
+
+    @pytest.mark.asyncio
+    async def test_compact_media_after_user_message(self, strategy_components, tmp_path):
+        """Test that media is compacted when a new user message arrives (if configured)."""
+        strategy = strategy_components["strategy"]
+        strategy.config.compact_media_after_user_message = True
+        strategy.config.deduplicate_media = False  # Disable to test separately
+        
+        # Create test audio file
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"AUDIO" * 1000)
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Listen to this:"},
+                {"type": "audio", "path": str(audio_file), "source": {"type": "file", "data": "XYZ" * 500}}
+            ]},
+            {"role": "assistant", "content": "I heard the audio."},
+            {"role": "user", "content": "What did you hear?"}  # New user message
+        ]
+        
+        result = await strategy.compact(
+            messages, 
+            current_tokens=1000, 
+            force=True,
+            trigger_event="user_message"
+        )
+        
+        # Audio should be compacted (not in last message)
+        assert result.media_compacted_after_event >= 1
+        
+        # First message's audio should be replaced with text
+        first_user_content = result.modified_messages[0]["content"]
+        audio_items = [i for i in first_user_content if i.get("type") == "audio"]
+        assert len(audio_items) == 0
+        
+        text_items = [i for i in first_user_content if i.get("type") == "text"]
+        assert any("removed after user_message" in i.get("text", "") for i in text_items)
+
+    @pytest.mark.asyncio
+    async def test_compact_media_after_final_response(self, strategy_components, tmp_path):
+        """Test that media is compacted when agent sends final response (if configured)."""
+        strategy = strategy_components["strategy"]
+        strategy.config.compact_media_after_final_response = True
+        strategy.config.deduplicate_media = False  # Disable to test separately
+        
+        # Create test image file
+        image_file = tmp_path / "screenshot.png"
+        image_file.write_bytes(b"PNG" * 1000)
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Look at this:"},
+                {"type": "image", "path": str(image_file), "source": {"type": "file", "data": "IMG" * 500}}
+            ]},
+            {"role": "assistant", "content": "Final response - I see the image."}  # Final response
+        ]
+        
+        result = await strategy.compact(
+            messages, 
+            current_tokens=1000, 
+            force=True,
+            trigger_event="final_response"
+        )
+        
+        # Image in user message should be compacted (not in last message)
+        assert result.media_compacted_after_event >= 1
+        
+        # User message's image should be replaced with placeholder
+        user_content = result.modified_messages[0]["content"]
+        image_items = [i for i in user_content if i.get("type") == "image"]
+        assert len(image_items) == 0
+        
+        text_items = [i for i in user_content if i.get("type") == "text"]
+        assert any("removed after final_response" in i.get("text", "") for i in text_items)
+
+    @pytest.mark.asyncio
+    async def test_compact_media_preserves_last_message(self, strategy_components, tmp_path):
+        """Test that media compaction preserves media in the last message."""
+        strategy = strategy_components["strategy"]
+        strategy.config.compact_media_after_user_message = True
+        strategy.config.deduplicate_media = False
+        # Set high threshold so Layer 1 doesn't also compact the images
+        strategy.config.tool_result_min_size = 100000
+        
+        # Create test image
+        image_file = tmp_path / "new_image.png"
+        image_file.write_bytes(b"NEWIMG" * 100)
+        
+        messages = [
+            {"role": "assistant", "content": "Hello, how can I help?"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Here's my new image:"},
+                {"type": "image", "path": str(image_file), "source": {"type": "file", "data": "DATA" * 100}}
+            ]}  # This is the last message, so its media should be preserved
+        ]
+        
+        result = await strategy.compact(
+            messages, 
+            current_tokens=1000, 
+            force=True,
+            trigger_event="user_message"
+        )
+        
+        # No media should be compacted (the only media is in the last message)
+        assert result.media_compacted_after_event == 0
+        
+        # Image should still exist in the last message
+        last_content = result.modified_messages[1]["content"]
+        images = [i for i in last_content if i.get("type") == "image"]
+        assert len(images) == 1
+
+    @pytest.mark.asyncio
+    async def test_deduplicate_media_multimodal_content(self, strategy_components, tmp_path):
+        """Test deduplication of media in multimodal_content (tool responses)."""
+        strategy = strategy_components["strategy"]
+        strategy.config.deduplicate_media = True
+        
+        # Create test audio file
+        audio_file = tmp_path / "response_audio.wav"
+        audio_file.write_bytes(b"AUDIO_DATA" * 100)
+        audio_path = str(audio_file)
+        
+        messages = [
+            # First tool response with audio
+            {"role": "assistant", "tool_calls": [{"id": "call_1", "function": {"name": "audio"}}]},
+            {
+                "role": "tool", 
+                "tool_call_id": "call_1", 
+                "name": "audio_ops",
+                "content": '{"status": "success"}',
+                "multimodal_content": [
+                    {"type": "audio", "path": audio_path, "description": "Audio 1"}
+                ]
+            },
+            {"role": "assistant", "content": "Played audio."},
+            # Second tool response with same audio
+            {"role": "assistant", "tool_calls": [{"id": "call_2", "function": {"name": "audio"}}]},
+            {
+                "role": "tool", 
+                "tool_call_id": "call_2", 
+                "name": "audio_ops",
+                "content": '{"status": "success"}',
+                "multimodal_content": [
+                    {"type": "audio", "path": audio_path, "description": "Audio 2 (same file)"}
+                ]
+            }
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=1000, force=True)
+        
+        # First occurrence should be compacted (marked as compacted)
+        assert result.media_deduplicated == 1
+        
+        first_tool_msg = result.modified_messages[1]
+        mm_content = first_tool_msg.get("multimodal_content", [])
+        assert len(mm_content) == 1
+        assert mm_content[0].get("compacted") is True
+        assert "duplicate compacted" in mm_content[0].get("description", "").lower()
+        
+        # Second occurrence (newer) should be preserved
+        second_tool_msg = result.modified_messages[4]
+        mm_content_2 = second_tool_msg.get("multimodal_content", [])
+        assert len(mm_content_2) == 1
+        assert mm_content_2[0].get("compacted") is not True
+
+    @pytest.mark.asyncio
+    async def test_compute_media_hash_with_path(self, strategy_components, tmp_path):
+        """Test _compute_media_hash with file path."""
+        strategy = strategy_components["strategy"]
+        
+        # Create test file
+        test_file = tmp_path / "test.png"
+        test_file.write_bytes(b"data")
+        
+        item = {"type": "image", "path": str(test_file)}
+        
+        hash_value = strategy._compute_media_hash(item)
+        
+        assert hash_value is not None
+        assert len(hash_value) == 16  # First 16 chars of MD5
+        
+        # Same path should give same hash
+        hash_value_2 = strategy._compute_media_hash(item)
+        assert hash_value == hash_value_2
+
+    @pytest.mark.asyncio
+    async def test_compute_media_hash_with_inline_data(self, strategy_components):
+        """Test _compute_media_hash with inline base64 data."""
+        strategy = strategy_components["strategy"]
+        
+        item = {"type": "audio", "data": "ABC123XYZ" * 200}
+        
+        hash_value = strategy._compute_media_hash(item)
+        
+        assert hash_value is not None
+        assert len(hash_value) == 16
+        
+        # Same data should give same hash
+        item_same = {"type": "audio", "data": "ABC123XYZ" * 200}
+        assert strategy._compute_media_hash(item_same) == hash_value
+        
+        # Different data should give different hash
+        item_diff = {"type": "audio", "data": "DIFFERENT" * 200}
+        assert strategy._compute_media_hash(item_diff) != hash_value
+
+    @pytest.mark.asyncio
+    async def test_get_media_filename_from_path(self, strategy_components, tmp_path):
+        """Test _get_media_filename extracts filename from path."""
+        strategy = strategy_components["strategy"]
+        
+        item = {"type": "image", "path": str(tmp_path / "subdir" / "my_image.png")}
+        
+        filename = strategy._get_media_filename(item)
+        
+        assert filename == "my_image.png"
+
+    @pytest.mark.asyncio
+    async def test_get_media_filename_from_name_field(self, strategy_components):
+        """Test _get_media_filename uses name field as fallback."""
+        strategy = strategy_components["strategy"]
+        
+        item = {"type": "audio", "name": "recording.wav"}
+        
+        filename = strategy._get_media_filename(item)
+        
+        assert filename == "recording.wav"
+
+    @pytest.mark.asyncio
+    async def test_disabled_deduplication(self, strategy_components, tmp_path):
+        """Test that deduplication can be disabled via config."""
+        strategy = strategy_components["strategy"]
+        strategy.config.deduplicate_media = False
+        
+        # Create duplicate media
+        image_file = tmp_path / "dup.png"
+        image_file.write_bytes(b"DATA")
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image", "path": str(image_file)}
+            ]},
+            {"role": "user", "content": [
+                {"type": "image", "path": str(image_file)}
+            ]}
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=1000, force=True)
+        
+        # No deduplication should occur
+        assert result.media_deduplicated == 0
+
+    @pytest.mark.asyncio
+    async def test_estimate_request_bytes(self, strategy_components):
+        """Test _estimate_request_bytes calculates byte size correctly."""
+        strategy = strategy_components["strategy"]
+        
+        # Simple text messages
+        messages = [
+            {"role": "user", "content": "Hello world"},
+            {"role": "assistant", "content": "Hi there!"}
+        ]
+        
+        bytes_estimate = strategy._estimate_request_bytes(messages)
+        
+        # Should include JSON structure overhead plus content
+        assert bytes_estimate > 0
+        assert bytes_estimate < 1000  # Small messages
+
+    @pytest.mark.asyncio
+    async def test_estimate_request_bytes_with_inline_data(self, strategy_components):
+        """Test _estimate_request_bytes accounts for inline_data."""
+        strategy = strategy_components["strategy"]
+        
+        # Create large inline data (simulating audio)
+        large_data = "A" * 1_000_000  # 1 MB of base64-ish data
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Here is audio:"},
+                {"type": "audio", "inline_data": large_data}
+            ]}
+        ]
+        
+        bytes_estimate = strategy._estimate_request_bytes(messages)
+        
+        # Should be at least the size of the inline data
+        assert bytes_estimate >= 1_000_000
+
+    @pytest.mark.asyncio
+    async def test_compact_for_byte_limit_triggers_media_compaction(self, strategy_components, tmp_path):
+        """Test that byte limit triggers aggressive media compaction."""
+        strategy = strategy_components["strategy"]
+        
+        # Set byte limits to very low values for testing
+        strategy.config.max_request_bytes = 10_000  # 10 KB
+        strategy.config.target_request_bytes = 5_000  # 5 KB
+        
+        # Create messages with inline data exceeding the limit
+        large_data = "B" * 15_000  # 15 KB - exceeds max_request_bytes
+        
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Process this audio:"},
+                {"type": "audio", "data": large_data}
+            ]},
+            {"role": "assistant", "content": "I heard the audio."},
+            {"role": "user", "content": "What did you hear?"}
+        ]
+        
+        # Use low token count so normal compaction wouldn't trigger
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # Should have triggered byte-limit compaction
+        # Either media was compacted or removed
+        final_bytes = strategy._estimate_request_bytes(result.modified_messages)
+        
+        # Should be significantly reduced
+        assert final_bytes < 15_000
+
+    @pytest.mark.asyncio
+    async def test_compact_media_for_byte_limit_keeps_recent(self, strategy_components, tmp_path):
+        """Test byte-limit compaction preserves the last 2 messages."""
+        strategy = strategy_components["strategy"]
+        strategy.config.max_request_bytes = 5_000  # Low threshold
+        strategy.config.target_request_bytes = 2_000
+        
+        # Create large inline data that exceeds the byte limit
+        large_data = "X" * 10_000  # 10 KB
+        
+        messages = [
+            # Old message with media - should be compacted
+            {"role": "user", "content": [
+                {"type": "text", "text": "Check this:"},
+                {"type": "audio", "data": large_data}
+            ]},
+            {"role": "assistant", "content": "Processed."},
+            # Recent messages - should be preserved
+            {"role": "user", "content": "What next?"},
+            {"role": "assistant", "content": "Tell me more."}
+        ]
+        
+        # Use low token count so we rely on byte-limit triggering
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # Should have triggered byte-limit compaction
+        # The audio in the first message should be compacted
+        first_content = result.modified_messages[0].get("content", [])
+        if isinstance(first_content, list):
+            # Audio should be replaced with text placeholder
+            # Check that bytes are reduced
+            final_bytes = strategy._estimate_request_bytes(result.modified_messages)
+            assert final_bytes < 10_000  # Should be significantly reduced
 
 
 # =============================================================================
@@ -921,9 +1376,10 @@ class TestPluginIntegration:
         # MCPTool objects have .name attribute
         tool_names = [t.name for t in tools]
         
+        # Core tools: recall (unified), store_fact, compact
         assert any("recall" in name for name in tool_names)
         assert any("store_fact" in name for name in tool_names)
-        assert any("get_variable" in name for name in tool_names)
+        assert any("compact" in name for name in tool_names)
     
     @pytest.mark.asyncio
     async def test_tool_handler_store_fact(self, plugin_instance):

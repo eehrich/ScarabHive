@@ -18,26 +18,42 @@ tools:
     function:
       name: "{{ name }}_recall"
       description: |
-        Search archived conversation history for past interactions and decisions.
+        Universal recall tool - retrieve ANY compacted/stored content from context.
         
-        Use this when:
-        - You need to recall something from earlier in a long conversation
-        - Looking for a decision or fact discussed previously
-        - Context was compacted and you need original details
+        This single tool handles ALL content retrieval:
+        1. Archived messages - search conversation history
+        2. Variables ($VAR_N) - retrieve stored content blocks  
+        3. Tool results (TR_xxx) - retrieve stored tool outputs
+        4. Media files - restore compacted audio/image/video
         
-        Returns relevant archived messages with timestamps and summaries.
+        The tool auto-detects what you need based on the query:
+        - Plain text query → searches archived messages
+        - "$VAR_1" or "VAR_1" → retrieves that variable
+        - "TR_abc123" or hash → retrieves that tool result
+        - File path ending in media extension → restores media
+        
+        Examples:
+        - recall(query="what did we decide about the API?") → archived search
+        - recall(query="$VAR_1") → get variable content
+        - recall(query="TR_abc123") → get tool result
+        - recall(query="/path/to/audio.wav") → restore media file
       parameters:
         type: object
         properties:
           query:
             type: string
-            description: "What to search for in archived context (semantic search)"
+            description: "What to recall: search text, $VAR_N, TR_xxx reference, or file path for media"
+          mode:
+            type: string
+            enum: ["auto", "archive", "variable", "tool_result", "media"]
+            default: "auto"
+            description: "Force specific recall type (default: auto-detect from query)"
           limit:
             type: integer
             minimum: 1
             maximum: 20
             default: 5
-            description: "Maximum number of results to return"
+            description: "Max results for archive search"
         required:
           - query
         additionalProperties: false
@@ -79,166 +95,26 @@ tools:
           - fact
         additionalProperties: false
 
-  - type: function
-    function:
-      name: "{{ name }}_get_variable"
-      description: |
-        Retrieve content from a stored variable ($VAR_N).
-        
-        Variables are created automatically when large content blocks are
-        encountered. Use modes to control how much content is returned:
-        
-        - preview: First ~500 chars (default, saves tokens)
-        - chunk: Paginated access with offset/limit
-        - search: Find specific content within the variable
-        - full: Complete content (use sparingly!)
-      parameters:
-        type: object
-        properties:
-          variable_name:
-            type: string
-            pattern: "^\\$VAR_\\d+$"
-            description: "Variable name to retrieve (e.g., $VAR_1, $VAR_2)"
-          mode:
-            type: string
-            enum: ["preview", "chunk", "search", "full"]
-            default: "preview"
-            description: "Retrieval mode: preview (default), chunk (paginated), search, or full"
-          offset:
-            type: integer
-            minimum: 0
-            default: 0
-            description: "Start position in characters (for mode=chunk)"
-          limit:
-            type: integer
-            minimum: 100
-            maximum: 5000
-            default: 1000
-            description: "Maximum characters to return (for mode=chunk)"
-          search:
-            type: string
-            description: "Search query to find within variable (for mode=search)"
-          context_chars:
-            type: integer
-            minimum: 50
-            maximum: 500
-            default: 150
-            description: "Characters of context around search matches"
-        required:
-          - variable_name
-        additionalProperties: false
-
-  - type: function
-    function:
-      name: "{{ name }}_get_tool_result"
-      description: |
-        Retrieve content from a stored tool result.
-        
-        Tool results are cleared (replaced with references) to save tokens.
-        Use modes to control how much content is returned:
-        
-        - preview: First ~500 chars (default, saves tokens)
-        - chunk: Paginated access with offset/limit  
-        - search: Find specific content within the result
-        - full: Complete content (use sparingly!)
-      parameters:
-        type: object
-        properties:
-          reference:
-            type: string
-            description: "The reference ID or content hash from the tool result marker"
-          mode:
-            type: string
-            enum: ["preview", "chunk", "search", "full"]
-            default: "preview"
-            description: "Retrieval mode: preview (default), chunk (paginated), search, or full"
-          offset:
-            type: integer
-            minimum: 0
-            default: 0
-            description: "Start position in characters (for mode=chunk)"
-          limit:
-            type: integer
-            minimum: 100
-            maximum: 5000
-            default: 1000
-            description: "Maximum characters to return (for mode=chunk)"
-          search:
-            type: string
-            description: "Search query to find within result (for mode=search)"
-          context_chars:
-            type: integer
-            minimum: 50
-            maximum: 500
-            default: 150
-            description: "Characters of context around search matches"
-        required:
-          - reference
-        additionalProperties: false
-
-# No need to expose stats function for now to the LLM
-#  - type: function
-#    function:
-#      name: "{{ name }}_stats"
-#      description: |
-#        Get current context engineering statistics.
-#        
-#        Returns:
-#        - Tool results stored and tokens saved
-#        - Variables created and tokens saved
-#        - Core memory facts and token usage
-#        - Archival memory entries
-#        - Overall token reduction percentage
-#      parameters:
-#        type: object
-#        properties: {}
-#        additionalProperties: false
+  # NOTE: get_variable, get_tool_result, and restore_multimodal are now unified 
+  # into the recall tool above. The recall tool auto-detects query type.
 
   - type: function
     function:
       name: "{{ name }}_compact"
       description: |
-        Manually trigger context engineering optimizations.
-        
-        When called, optimization will ALWAYS run (ignores thresholds).
+        Manually trigger context engineering optimizations.        
         Use this to proactively reduce token usage before context gets too large.
         
         Applies reversible optimizations:
         - Store large tool results externally with references
         - Create variables ($VAR_N) for large content blocks
-        
-        Note: For message summarization, use context_summarizer plugin.
-        For dropping old messages, use context_optimizer plugin.
       parameters:
         type: object
         properties: {}
         additionalProperties: false
 
-  - type: function
-    function:
-      name: "{{ name }}_restore_multimodal"
-      description: |
-        Restore a compacted audio/image/video file back into the conversation context.
-        
-        When large multimodal files are compacted to save tokens, they can be
-        restored using this tool. The file will be reloaded and sent to the LLM
-        in the next turn.
-        
-        Use this when:
-        - You need to re-analyze a previously compacted audio/image/video
-        - The compaction message says "use restore_multimodal(path=...)"
-        
-        Returns info about the file to be restored. The actual content will
-        appear in your next response from the multimodal injection.
-      parameters:
-        type: object
-        properties:
-          path:
-            type: string
-            description: "Full file path of the multimodal content to restore (from the compaction message)"
-        required:
-          - path
-        additionalProperties: false
+  # NOTE: restore_multimodal is now part of the unified recall tool.
+  # Use recall(query="/path/to/file.wav") to restore media.
 
 # Web UI configuration
 web_ui:
@@ -393,6 +269,22 @@ config:
     type: boolean
     default: false
     description: "Use ChromaDB for semantic search (requires chromadb)"
+
+  # Media Deduplication and Compaction
+  deduplicate_media:
+    type: boolean
+    default: true
+    description: "Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item."
+
+  compact_media_after_user_message:
+    type: boolean
+    default: false
+    description: "Compact all media from previous messages when a new user message arrives. Keeps only media in the most recent message."
+
+  compact_media_after_final_response:
+    type: boolean
+    default: false
+    description: "Compact all media when the agent sends a final response (no tool calls). Useful for long-running sessions with lots of media."
 
   # Compaction Strategy
   compaction_strategy:

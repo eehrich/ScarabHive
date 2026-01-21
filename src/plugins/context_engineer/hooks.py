@@ -13,12 +13,12 @@ from typing import Any
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
-from agent_system.llm.token_utils import estimate_token_count
 from agent_system.mcp.status import StatusScope, status_bus
 
 from .archival_memory import ArchivalMemory
 from .compaction import CompactionConfig, LayeredCompactionStrategy
 from .core_memory import CoreMemory
+from .media_store import MediaStore
 from .tool_result_store import ToolResultStore
 from .variable_manager import VariableManager
 
@@ -74,6 +74,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.layer3_threshold = int(config.get("layer3_threshold", 120000))
         self.target_tokens = int(config.get("target_tokens", 60000))
         
+        # Byte size limits (Gemini has 20MB limit)
+        self.max_request_bytes = int(config.get("max_request_bytes", 18 * 1024 * 1024))  # 18 MB
+        self.target_request_bytes = int(config.get("target_request_bytes", 10 * 1024 * 1024))  # 10 MB
+        
         # Tool result settings
         self.tool_result_min_size = int(config.get("tool_result_min_size", 500))
         self.tool_result_keep_last = int(config.get("tool_result_keep_last", 3))
@@ -94,6 +98,16 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # Optional features
         self.enable_semantic_search = bool(config.get("enable_semantic_search", False))
         
+        # Media handling settings
+        self.deduplicate_media = bool(config.get("deduplicate_media", True))
+        self.compact_media_after_user_message = bool(config.get("compact_media_after_user_message", False))
+        self.compact_media_after_final_response = bool(config.get("compact_media_after_final_response", False))
+        
+        # Media store settings (for storing inline base64 before compaction)
+        self.store_media_before_compaction = bool(config.get("store_media_before_compaction", True))
+        self.media_store_ttl_seconds = int(config.get("media_store_ttl_seconds", 86400 * 7))  # 7 days
+        self.media_store_max_files = int(config.get("media_store_max_files", 500))
+        
         # Storage paths (will be session-specific)
         self._storage_base = Path(config.get("storage_path", "data/context_engineer"))
         
@@ -101,7 +115,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             f"ContextEngineerPlugin initialized: "
             f"thresholds=L1:{self.layer1_threshold}/L2:{self.layer2_threshold}/"
             f"L3:{self.layer3_threshold}, target={self.target_tokens}, "
-            f"min_time_between={self.min_time_between}s"
+            f"min_time_between={self.min_time_between}s, "
+            f"deduplicate_media={self.deduplicate_media}, "
+            f"compact_media_after_user_message={self.compact_media_after_user_message}, "
+            f"compact_media_after_final_response={self.compact_media_after_final_response}"
         )
     
     def _cleanup_expired_sessions(self) -> None:
@@ -168,12 +185,23 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 vector_store_path=session_path / "vectors" if self.enable_semantic_search else None
             )
             
+            # Initialize media store for inline media preservation
+            media_store = None
+            if self.store_media_before_compaction:
+                media_store = MediaStore(
+                    storage_path=session_path / "media",
+                    ttl_seconds=self.media_store_ttl_seconds,
+                    max_files=self.media_store_max_files
+                )
+            
             # Create compaction config
             compaction_config = CompactionConfig(
                 layer1_threshold=self.layer1_threshold,
                 layer2_threshold=self.layer2_threshold,
                 layer3_threshold=self.layer3_threshold,
                 target_tokens=self.target_tokens,
+                max_request_bytes=self.max_request_bytes,
+                target_request_bytes=self.target_request_bytes,
                 tool_result_min_size=self.tool_result_min_size,
                 tool_result_keep_last=self.tool_result_keep_last,
                 tool_result_max_inline_size=self.tool_result_max_inline_size,
@@ -181,7 +209,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 assistant_keep_last=self.assistant_keep_last,
                 archive_after_turns=self.archive_after_turns,
                 drop_after_turns=self.drop_after_turns,
-                keep_system_messages=self.keep_system_messages
+                keep_system_messages=self.keep_system_messages,
+                deduplicate_media=self.deduplicate_media,
+                compact_media_after_user_message=self.compact_media_after_user_message,
+                compact_media_after_final_response=self.compact_media_after_final_response,
+                store_media_before_compaction=self.store_media_before_compaction,
+                media_store_ttl_seconds=self.media_store_ttl_seconds,
+                media_store_max_files=self.media_store_max_files
             )
             
             # Create strategy
@@ -190,7 +224,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 variable_manager=variable_manager,
                 core_memory=core_memory,
                 archival_memory=archival_memory,
-                config=compaction_config
+                config=compaction_config,
+                media_store=media_store
             )
             
             self._session_components[session_id] = {
@@ -198,6 +233,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "variable_manager": variable_manager,
                 "core_memory": core_memory,
                 "archival_memory": archival_memory,
+                "media_store": media_store,
                 "strategy": strategy,
                 "last_accessed": time.time()
             }
@@ -241,16 +277,53 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 else:
                     messages_as_dicts.append(msg)
             
+            # Get session components (needed for token/byte estimation and compaction)
+            components = self._get_session_components(session_id)
+            strategy: LayeredCompactionStrategy = components["strategy"]
+            
             # Get actual or estimated token usage (prefer actual from usage_tracker)
-            current_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts)
+            current_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts, strategy)
+            
+            # Estimate request bytes using strategy's method (for Gemini 20MB limit check)
+            request_bytes = strategy._estimate_request_bytes(messages_as_dicts)
+            bytes_exceeded = request_bytes > self.max_request_bytes
+            
+            if bytes_exceeded:
+                logger.warning(
+                    f"[ContextEngineer] Session {session_id}: Request size "
+                    f"{request_bytes / (1024*1024):.1f}MB exceeds "
+                    f"{self.max_request_bytes / (1024*1024):.0f}MB limit - forcing compaction"
+                )
             
             # Check if compaction needed
             is_manual = context.metadata.get("manual_trigger", False) if context.metadata else False
             
-            if not is_manual and current_tokens < self.layer1_threshold:
+            # Determine trigger event for media compaction BEFORE early return check
+            # This is a pre_llm_call hook, so the last message is what the user just sent
+            trigger_event = None
+            if messages_as_dicts:
+                last_msg = messages_as_dicts[-1]
+                last_role = last_msg.get("role", "")
+                if last_role == "user":
+                    trigger_event = "user_message"
+                # Note: final_response is detected in post-hooks, not here
+            
+            # Check if event-based media compaction should run even below threshold
+            event_media_compaction_needed = False
+            if trigger_event == "user_message" and self.compact_media_after_user_message:
+                event_media_compaction_needed = True
+                logger.debug(
+                    f"[ContextEngineer] Session {session_id}: Event-based media compaction "
+                    f"triggered by user_message (compact_media_after_user_message=true)"
+                )
+            
+            # Skip only if: not manual, below token threshold, below byte limit, AND no event-based media compaction
+            if not is_manual and current_tokens < self.layer1_threshold and not bytes_exceeded and not event_media_compaction_needed:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: "
-                    f"{current_tokens} tokens < {self.layer1_threshold} threshold, skipping"
+                    f"{current_tokens} tokens < {self.layer1_threshold} threshold, "
+                    f"{request_bytes / (1024*1024):.1f}MB < {self.max_request_bytes / (1024*1024):.0f}MB limit, "
+                    f"no event-based media compaction needed, skipping"
                 )
                 
                 # Below threshold - no compaction needed, return unchanged
@@ -261,15 +334,18 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     metadata={
                         "reason": "below_threshold",
                         "current_tokens": current_tokens,
-                        "threshold": self.layer1_threshold
+                        "threshold": self.layer1_threshold,
+                        "request_bytes": request_bytes,
+                        "max_request_bytes": self.max_request_bytes
                     }
                 )
             
-            # Rate limiting
+            # Rate limiting - but NOT if bytes exceeded (must compact to avoid API errors!)
+            # Also NOT if event-based media compaction is needed
             current_time = time.monotonic()
             last_compaction = self._last_compaction_time.get(session_id)
             
-            if not is_manual and last_compaction:
+            if not is_manual and not bytes_exceeded and not event_media_compaction_needed and last_compaction:
                 time_since = current_time - last_compaction
                 if time_since < self.min_time_between:
                     logger.info(
@@ -288,13 +364,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                         }
                     )
             
-            # Get session components
-            components = self._get_session_components(session_id)
-            strategy: LayeredCompactionStrategy = components["strategy"]
-            
-            # When manually triggered (via MCP tool), always bypass threshold checks
-            # Hook execution respects thresholds (force=False)
-            force = is_manual
+            # Force compaction if manually triggered, byte limit exceeded, OR event-based media compaction needed
+            # Byte limit MUST be enforced to avoid API errors (Gemini 20MB limit)
+            force = is_manual or bytes_exceeded or event_media_compaction_needed
             
             # Apply compaction with status updates
             result = None
@@ -308,13 +380,30 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 import asyncio
                 await asyncio.sleep(0.01)  # Allow START message to be delivered
                 
-                result = await strategy.compact(messages_as_dicts, current_tokens, force=force)
+                result = await strategy.compact(
+                    messages_as_dicts, 
+                    current_tokens, 
+                    force=force,
+                    trigger_event=trigger_event,
+                    session_id=session_id
+                )
             
             # Update rate limit tracker
             self._last_compaction_time[session_id] = current_time
             
-            # Track in history for web UI
-            if self.stats_history is not None:
+            # Track in history for web UI - ONLY if something was actually compacted
+            # Skip history entry if nothing happened to avoid noise
+            something_compacted = (
+                result.tokens_saved > 0 or
+                result.tool_results_stored > 0 or
+                result.variables_created > 0 or
+                result.messages_archived > 0 or
+                result.messages_dropped > 0 or
+                result.media_deduplicated > 0 or
+                result.media_compacted_after_event > 0
+            )
+            
+            if self.stats_history is not None and something_compacted:
                 self.stats_history.append({
                     "timestamp": time.time(),
                     "session_id": session_id,
@@ -327,7 +416,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "tool_results_stored": result.tool_results_stored,
                     "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
-                    "messages_dropped": result.messages_dropped
+                    "messages_dropped": result.messages_dropped,
+                    "media_deduplicated": result.media_deduplicated,
+                    "media_compacted_after_event": result.media_compacted_after_event,
+                    "media_bytes_saved": result.media_bytes_saved
                 })
                 
                 # Save history to disk (support both sync and async callbacks)
@@ -389,7 +481,44 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 f"{result.original_tokens} -> {result.final_tokens} tokens "
                 f"({result.reduction_percent:.1f}% reduction), "
                 f"layers: {result.layers_applied}"
+                + (f", media_dedup: {result.media_deduplicated}" if result.media_deduplicated > 0 else "")
+                + (f", media_event: {result.media_compacted_after_event}" if result.media_compacted_after_event > 0 else "")
             )
+            
+            # CRITICAL: Persist compacted messages to session tracker
+            # This ensures the compacted messages are saved to the session, not just
+            # used for the current LLM call. Without this, each turn would see the
+            # original (uncompacted) messages again.
+            if context.agent and hasattr(context.agent, '_session_tracker'):
+                # Filter out the ORIGINAL system message (agent's system prompt) for persistence.
+                # The system prompt is rebuilt each turn from config.
+                # BUT keep archived_ref system messages - those are compacted conversation!
+                import json
+                conversation_msgs = []
+                for msg in new_messages:
+                    if msg.role == 'system':
+                        # Check if this is an archived_ref (keep) or original system prompt (skip)
+                        content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
+                        if isinstance(content, str):
+                            try:
+                                parsed = json.loads(content)
+                                if isinstance(parsed, dict) and parsed.get("type") == "archived_ref":
+                                    # Keep archived references
+                                    conversation_msgs.append(msg)
+                                    continue
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                        # Skip original system prompt
+                        continue
+                    conversation_msgs.append(msg)
+                
+                context.agent._session_tracker.set_compacted_messages(
+                    session_id, conversation_msgs
+                )
+                logger.debug(
+                    f"[ContextEngineer] Persisted {len(conversation_msgs)} compacted messages "
+                    f"for session {session_id}"
+                )
             
             # CRITICAL: modified=True signals hook registry to use our modified context
             return HookResult(
@@ -405,7 +534,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "tool_results_stored": result.tool_results_stored,
                     "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
-                    "messages_dropped": result.messages_dropped
+                    "messages_dropped": result.messages_dropped,
+                    "media_deduplicated": result.media_deduplicated,
+                    "media_compacted_after_event": result.media_compacted_after_event
                 }
             )
             
@@ -418,28 +549,17 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 error=str(e)
             )
     
-    def _estimate_total_tokens(self, messages: list[dict[str, Any]]) -> int:
-        """Estimate total tokens in messages using shared token counting."""
-        # Convert dicts back to ChatMessage for accurate counting
-        # This ensures tool results (role=tool with tool_call_id) are counted
-        chat_messages = []
-        for msg in messages:
-            try:
-                chat_messages.append(ChatMessage(**msg))
-            except Exception:
-                # Fallback: estimate from content string
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    chat_messages.append(ChatMessage(role="user", content=content))
-        
-        return estimate_token_count(chat_messages)
-    
-    def _get_actual_or_estimated_tokens(self, context: HookContext, messages: list[dict[str, Any]]) -> int:
+    def _get_actual_or_estimated_tokens(
+        self, 
+        context: HookContext, 
+        messages: list[dict[str, Any]],
+        strategy: LayeredCompactionStrategy
+    ) -> int:
         """Get actual token count from last LLM response or estimate from messages.
 
         Uses the MAXIMUM of:
         1. Actual prompt_tokens from last LLM response (via context_usage_tracker)
-        2. Estimated tokens from current messages
+        2. Estimated tokens from current messages (via strategy)
 
         This ensures we trigger compaction if either metric exceeds threshold,
         preventing context overflow.
@@ -447,11 +567,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         Args:
             context: Hook context with session_id
             messages: Current message list
+            strategy: Compaction strategy for token estimation
 
         Returns:
             Maximum of actual or estimated token count
         """
-        estimated_tokens = self._estimate_total_tokens(messages)
+        estimated_tokens = strategy._estimate_messages_tokens(messages)
         actual_tokens = 0
 
         # Try to get actual tokens from context_usage_tracker's latest snapshot
@@ -500,46 +621,128 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         return {
             "recall": self._handle_recall,
             "store_fact": self._handle_store_fact,
+            # Legacy handlers kept for backward compatibility but no longer exposed as tools
             "get_variable": self._handle_get_variable,
             "get_tool_result": self._handle_get_tool_result,
             "stats": self._handle_stats,
             "restore_multimodal": self._handle_restore_multimodal
         }
     
+    def _detect_recall_type(self, query: str) -> str:
+        """Detect what type of recall is needed based on query pattern.
+        
+        Returns one of: 'variable', 'tool_result', 'media', 'archive'
+        """
+        import re
+        from pathlib import Path
+        
+        query_stripped = query.strip()
+        
+        # Pattern 1: Variable reference ($VAR_N or VAR_N)
+        if re.match(r'^\$?VAR_\d+$', query_stripped, re.IGNORECASE):
+            return 'variable'
+        
+        # Pattern 2: Tool result reference (TR_xxx or hash-like)
+        if re.match(r'^TR_[a-zA-Z0-9]+$', query_stripped) or re.match(r'^call_[a-zA-Z0-9]+$', query_stripped):
+            return 'tool_result'
+        
+        # Pattern 3: Looks like a hex hash (8+ hex chars)
+        if re.match(r'^[a-f0-9]{8,}$', query_stripped, re.IGNORECASE):
+            return 'tool_result'
+        
+        # Pattern 4: File path with media extension
+        media_extensions = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac',
+                          '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
+                          '.mp4', '.webm', '.avi', '.mov'}
+        
+        # Check if it looks like a path
+        if '/' in query_stripped or '\\' in query_stripped or query_stripped.startswith('data/'):
+            suffix = Path(query_stripped).suffix.lower()
+            if suffix in media_extensions:
+                return 'media'
+        
+        # Default: archive search
+        return 'archive'
+    
     async def _handle_recall(
         self,
         query: str,
+        mode: str = "auto",
         limit: int = 5,
         session_id: str = "default"
     ) -> dict[str, Any]:
-        """Handle recall tool - search archived messages.
+        """Handle unified recall tool - auto-detects and retrieves any stored content.
+        
+        Supports:
+        - Archived messages (semantic/text search)
+        - Variables ($VAR_N)
+        - Tool results (TR_xxx or hash)
+        - Media files (file paths)
         
         Args:
-            query: Search query
-            limit: Max results
+            query: Search query, variable name, reference, or file path
+            mode: Force specific mode or 'auto' to detect
+            limit: Max results for archive search
             session_id: Session ID
             
         Returns:
-            Search results
+            Retrieved content based on detected/specified mode
         """
-        components = self._get_session_components(session_id)
-        archival: ArchivalMemory = components["archival_memory"]
         
-        results = archival.search(query, limit=limit)
+        # Determine recall type
+        if mode == "auto":
+            recall_type = self._detect_recall_type(query)
+        else:
+            recall_type = mode
         
-        return {
-            "results": [
-                {
-                    "id": r.id,
-                    "role": r.role,
-                    "summary": r.summary,
-                    "content_preview": r.content[:500] + "..." if len(r.content) > 500 else r.content,
-                    "timestamp": r.timestamp.isoformat()
-                }
-                for r in results
-            ],
-            "total_found": len(results)
-        }
+        # Handle each type
+        if recall_type == 'variable':
+            # Normalize variable name
+            var_name = query.strip().upper()
+            if not var_name.startswith('$'):
+                var_name = '$' + var_name
+            
+            return await self._handle_get_variable(
+                variable_name=var_name,
+                session_id=session_id,
+                mode="preview"
+            )
+        
+        elif recall_type == 'tool_result':
+            return await self._handle_get_tool_result(
+                reference=query.strip(),
+                session_id=session_id,
+                mode="preview"
+            )
+        
+        elif recall_type == 'media':
+            return await self._handle_restore_multimodal(
+                path=query.strip(),
+                session_id=session_id
+            )
+        
+        else:  # archive search
+            components = self._get_session_components(session_id)
+            archival: ArchivalMemory = components["archival_memory"]
+            
+            results = archival.search(query, limit=limit)
+            
+            return {
+                "recall_type": "archive",
+                "query": query,
+                "results": [
+                    {
+                        "id": r.id,
+                        "role": r.role,
+                        "summary": r.summary,
+                        "content_preview": r.content[:500] + "..." if len(r.content) > 500 else r.content,
+                        "timestamp": r.timestamp.isoformat()
+                    }
+                    for r in results
+                ],
+                "total_found": len(results),
+                "hint": "Use recall(query='$VAR_N') for variables, recall(query='TR_xxx') for tool results, or recall(query='/path/to/file.wav') for media" if not results else None
+            }
     
     async def _handle_store_fact(
         self,
@@ -976,6 +1179,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         core_memory: CoreMemory = components["core_memory"]
         archival: ArchivalMemory = components["archival_memory"]
         
+        # Aggregate media compaction stats from history for this session
+        media_deduplicated = 0
+        media_compacted = 0
+        if self.stats_history:
+            for event in self.stats_history:
+                if event.get("session_id") == session_id:
+                    media_deduplicated += event.get("media_deduplicated", 0)
+                    media_compacted += event.get("media_compacted_after_event", 0)
+        
         return {
             "tool_results": tool_store.get_stats(),
             "variables": variable_manager.get_stats(),
@@ -985,7 +1197,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "categories": core_memory.get_categories(),
                 "token_usage": core_memory.get_token_usage()
             },
-            "archival_memory": archival.get_stats()
+            "archival_memory": archival.get_stats(),
+            "media_deduplicated": media_deduplicated,
+            "media_compacted": media_compacted
         }
     
     def cleanup_session(self, session_id: str) -> None:

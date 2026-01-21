@@ -414,6 +414,14 @@ plugins:
         layer2_threshold: 80000   # Start semi-reversible compaction (archival with summaries)
         layer3_threshold: 120000  # Start irreversible compaction (drop old messages)
         target_tokens: 40000      # Target token count after compaction
+
+        store_media_before_compaction: true  # Aktiviert MediaStore
+        media_store_ttl_seconds: 604800      # 7 Tage
+        media_store_max_files: 500           # Max Dateien pro Session
+
+        # Request size limits (bytes) - prevents Gemini 20MB limit errors
+        max_request_bytes: 18874368    # 18 MB - trigger compaction threshold
+        target_request_bytes: 10485760 # 10 MB - target after compaction
         
         # Core memory settings
         core_memory_max_tokens: 3000   # Max tokens for always-present facts
@@ -434,6 +442,10 @@ plugins:
         # Irreversible compaction settings
         drop_after_turns: 30           # Drop messages older than N turns (Layer 3 only)
         max_summary_tokens: 100        # Max tokens for archived message summaries
+
+        deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
+        compact_media_after_user_message: true  # Compact media files after user messages 
+        compact_media_after_final_response: true  # Compact media files after final agent response
 
     context_usage_tracker:
       type: context_usage_tracker

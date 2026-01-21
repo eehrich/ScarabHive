@@ -8,6 +8,7 @@ Layers (in order of application):
    - Store tool outputs with references
    - Create variables for large content blocks
    - Replace large audio/image inline data with references
+   - Deduplicate media by hash (keep newest, compact older duplicates)
    
 2. **Semi-Reversible Compaction** - Operations partially recoverable:
    - Archive old messages with summaries
@@ -24,7 +25,9 @@ with minimum information loss.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +35,7 @@ from agent_system.llm.token_utils import estimate_content_tokens, estimate_inlin
 
 from .archival_memory import ArchivalMemory
 from .core_memory import CoreMemory
+from .media_store import MediaStore
 from .tool_result_store import ToolResultStore
 from .variable_manager import VariableManager
 
@@ -50,6 +54,11 @@ class CompactionConfig:
     # Target tokens after compaction
     target_tokens: int = 60000
     
+    # Byte size limit (Gemini has 20MB limit, use 18MB as safe threshold)
+    # If request_bytes exceeds this, force compaction regardless of token count
+    max_request_bytes: int = 18 * 1024 * 1024  # 18 MB
+    target_request_bytes: int = 10 * 1024 * 1024  # 10 MB target after compaction
+    
     # Tool result settings
     tool_result_min_size: int = 500  # Min tokens to store externally
     tool_result_keep_last: int = 3   # Keep last N tool results inline (unless too large)
@@ -66,6 +75,18 @@ class CompactionConfig:
     # Irreversible settings
     drop_after_turns: int = 50       # Drop messages older than N turns
     max_summary_tokens: int = 100    # Max tokens for archived summaries
+    
+    # Media deduplication settings
+    deduplicate_media: bool = True  # Auto-compact older duplicate media (by file hash)
+    
+    # Media removal settings (compact media after certain events)
+    compact_media_after_user_message: bool = False  # Compact all media when a new user message arrives
+    compact_media_after_final_response: bool = False  # Compact all media when agent sends final response
+    
+    # Media store settings (for storing inline base64 before compaction)
+    store_media_before_compaction: bool = True  # Save inline media to disk before removing
+    media_store_ttl_seconds: int = 86400 * 7  # 7 days TTL for stored media
+    media_store_max_files: int = 500  # Max files per session
 
 
 @dataclass
@@ -81,9 +102,12 @@ class CompactionResult:
     variables_created: int = 0
     messages_archived: int = 0
     messages_dropped: int = 0
+    media_deduplicated: int = 0  # Duplicate media compacted
+    media_compacted_after_event: int = 0  # Media compacted due to user/final message trigger
+    media_bytes_saved: int = 0  # Bytes saved by media compaction (for byte-limit compaction)
     
-    # Layer applied
-    layers_applied: list[int] = field(default_factory=list)
+    # Layer applied (int for L1/L2/L3, str "B" for byte-limit)
+    layers_applied: list[int | str] = field(default_factory=list)
     
     # Modified messages
     modified_messages: list[dict[str, Any]] = field(default_factory=list)
@@ -119,7 +143,8 @@ class LayeredCompactionStrategy:
         variable_manager: VariableManager,
         core_memory: CoreMemory,
         archival_memory: ArchivalMemory,
-        config: CompactionConfig | None = None
+        config: CompactionConfig | None = None,
+        media_store: MediaStore | None = None
     ):
         """Initialize the compaction strategy.
         
@@ -129,12 +154,64 @@ class LayeredCompactionStrategy:
             core_memory: Core memory for important facts
             archival_memory: Archive for old messages
             config: Compaction configuration
+            media_store: Optional store for inline media before compaction
         """
         self.tool_store = tool_store
         self.variable_manager = variable_manager
         self.core_memory = core_memory
         self.archival_memory = archival_memory
         self.config = config or CompactionConfig()
+        self.media_store = media_store
+    
+    def _estimate_request_bytes(self, messages: list[dict[str, Any]]) -> int:
+        """Estimate the total request size in bytes.
+        
+        This is important for providers like Gemini that have byte-size limits (20MB).
+        
+        Args:
+            messages: Conversation messages
+            
+        Returns:
+            Estimated size in bytes
+        """
+        import json
+        
+        total_bytes = 0
+        
+        for msg in messages:
+            # Estimate JSON overhead for message structure
+            role = msg.get("role", "")
+            total_bytes += len(role) + 20  # role + JSON structure
+            
+            content = msg.get("content")
+            if isinstance(content, str):
+                total_bytes += len(content.encode('utf-8'))
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        # Text content
+                        if item.get("type") == "text":
+                            text = item.get("text", "")
+                            total_bytes += len(text.encode('utf-8')) if isinstance(text, str) else 0
+                        
+                        # Image/audio inline data - check various formats
+                        elif item.get("type") in ("image", "audio", "image_url"):
+                            total_bytes += self._estimate_item_bytes(item)
+            
+            # Tool calls
+            tool_calls = msg.get("tool_calls", [])
+            if tool_calls:
+                total_bytes += len(json.dumps(tool_calls))
+            
+            # Multimodal content in tool responses (may have inline data or file paths)
+            multimodal_content = msg.get("multimodal_content", [])
+            if multimodal_content:
+                for mm_item in multimodal_content:
+                    if isinstance(mm_item, dict):
+                        # Use _estimate_item_bytes which handles both inline data and file paths
+                        total_bytes += self._estimate_item_bytes(mm_item)
+        
+        return total_bytes
     
     def _build_tool_call_map(self, messages: list[dict[str, Any]]) -> dict[str, list[int]]:
         """Build map of tool_call_id to related message indices.
@@ -172,7 +249,9 @@ class LayeredCompactionStrategy:
         self,
         messages: list[dict[str, Any]],
         current_tokens: int | None = None,
-        force: bool = False
+        force: bool = False,
+        trigger_event: str | None = None,
+        session_id: str = "default"
     ) -> CompactionResult:
         """Apply layered compaction to messages.
         
@@ -180,10 +259,17 @@ class LayeredCompactionStrategy:
             messages: Conversation messages
             current_tokens: Current token count (calculated if not provided)
             force: Force compaction even if below target threshold
+            trigger_event: Optional event that triggered compaction:
+                - 'user_message': New user message arrived
+                - 'final_response': Agent sent final response
+                Used for config-based media compaction.
+            session_id: Session ID for media storage
             
         Returns:
             CompactionResult with modified messages
         """
+        # Store session_id for use in _compact_multimodal_content
+        self._current_session_id = session_id
         if current_tokens is None:
             current_tokens = self._estimate_messages_tokens(messages)
         
@@ -193,6 +279,17 @@ class LayeredCompactionStrategy:
             tokens_saved=0,
             modified_messages=messages.copy()
         )
+        
+        # Check byte size - Gemini has 20MB limit, force compaction if exceeded
+        request_bytes = self._estimate_request_bytes(messages)
+        bytes_exceeded = request_bytes > self.config.max_request_bytes
+        
+        if bytes_exceeded:
+            logger.warning(
+                f"Request size {request_bytes / (1024*1024):.1f}MB exceeds "
+                f"{self.config.max_request_bytes / (1024*1024):.0f}MB limit - forcing compaction"
+            )
+            force = True  # Force compaction to reduce byte size
         
         # Check if compaction needed (unless forced)
         if not force and current_tokens <= self.config.target_tokens:
@@ -204,8 +301,28 @@ class LayeredCompactionStrategy:
         
         logger.info(
             f"Starting compaction{' (FORCED)' if force else ''}: {current_tokens} tokens, "
-            f"target {self.config.target_tokens}"
+            f"{request_bytes / (1024*1024):.1f}MB, target {self.config.target_tokens} tokens"
         )
+        
+        # Pre-Layer: Media deduplication (always run if enabled)
+        # This is independent of token thresholds - duplicates waste space regardless
+        if self.config.deduplicate_media:
+            await self._deduplicate_media(result)
+        
+        # Pre-Layer: Event-triggered media compaction
+        # Compact all media if configured to do so on user message or final response
+        if trigger_event == "user_message" and self.config.compact_media_after_user_message:
+            await self._compact_media_after_event(result, trigger="user_message")
+        elif trigger_event == "final_response" and self.config.compact_media_after_final_response:
+            await self._compact_media_after_event(result, trigger="final_response")
+        
+        # If byte size is the issue, compact media aggressively
+        # Keep only the last 2 messages with inline media, compact all others
+        if bytes_exceeded:
+            await self._compact_media_for_byte_limit(result)
+            # Mark that size-limit compaction was applied (shown as "B" in UI)
+            if "B" not in result.layers_applied:
+                result.layers_applied.append("B")
         
         # Apply layers progressively based on TOKEN thresholds
         # force=True only bypasses Layer 1 threshold (always run Layer 1)
@@ -217,7 +334,10 @@ class LayeredCompactionStrategy:
             await self._apply_layer1(result)
             result.layers_applied.append(1)
             
-            if result.final_tokens <= self.config.target_tokens:
+            # Check both token AND byte targets
+            final_bytes = self._estimate_request_bytes(result.modified_messages)
+            if (result.final_tokens <= self.config.target_tokens and 
+                final_bytes <= self.config.target_request_bytes):
                 return self._finalize(result)
         
         # Layer 2: Only apply if above threshold (turn-based archival)
@@ -235,10 +355,529 @@ class LayeredCompactionStrategy:
         
         return self._finalize(result)
     
+    def _compute_media_hash(self, item: dict[str, Any]) -> str | None:
+        """Compute a hash for a media item to detect duplicates.
+        
+        Uses file path as primary identifier. If path doesn't exist, 
+        falls back to inline data hash.
+        
+        Args:
+            item: Media item dict (from multimodal_content or content list)
+            
+        Returns:
+            Hash string or None if not hashable
+        """
+        # Primary: use file path
+        file_path = item.get("path", "")
+        if file_path:
+            # Normalize path for consistent hashing
+            normalized = os.path.normpath(file_path)
+            return hashlib.md5(normalized.encode()).hexdigest()[:16]
+        
+        # Fallback: hash inline data if present
+        inline_data = item.get("data")
+        if inline_data and isinstance(inline_data, str):
+            # Hash first 1000 chars of base64 data (enough for uniqueness)
+            return hashlib.md5(inline_data[:1000].encode()).hexdigest()[:16]
+        
+        # Check for image_url format
+        image_url = item.get("image_url", {})
+        if isinstance(image_url, dict):
+            url = image_url.get("url", "")
+            if url.startswith("data:"):
+                # Data URL - hash the data portion
+                data_start = url.find(",")
+                if data_start > 0:
+                    data = url[data_start + 1:data_start + 1001]  # First 1000 chars
+                    return hashlib.md5(data.encode()).hexdigest()[:16]
+        
+        return None
+    
+    def _get_media_filename(self, item: dict[str, Any]) -> str:
+        """Extract original filename from media item.
+        
+        Args:
+            item: Media item dict
+            
+        Returns:
+            Filename string or 'unknown'
+        """
+        file_path = item.get("path", "")
+        if file_path:
+            return os.path.basename(file_path)
+        
+        # Try name field
+        name = item.get("name", "")
+        if name:
+            return name
+        
+        # Try to extract from description
+        desc = item.get("description", "")
+        if desc:
+            return desc[:50]  # Use first 50 chars of description
+        
+        return "unknown"
+    
+    async def _deduplicate_media(self, result: CompactionResult) -> None:
+        """Deduplicate media items by hash - keep newest, compact older duplicates.
+        
+        Scans all messages for media items, groups by hash, and compacts all
+        but the newest occurrence of each duplicate.
+        
+        Args:
+            result: CompactionResult to update
+        """
+        if not self.config.deduplicate_media:
+            return
+        
+        messages = result.modified_messages
+        
+        # Map: hash -> list of (message_idx, item_idx, item, is_multimodal_content)
+        media_by_hash: dict[str, list[tuple[int, int, dict, bool]]] = {}
+        
+        # Scan all messages for media items
+        for msg_idx, msg in enumerate(messages):
+            # Check content list (user messages with images/audio)
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item_idx, item in enumerate(content):
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type", "")
+                    if item_type in ("image", "image_url", "audio", "video"):
+                        if item.get("compacted"):
+                            continue  # Already compacted
+                        media_hash = self._compute_media_hash(item)
+                        if media_hash:
+                            if media_hash not in media_by_hash:
+                                media_by_hash[media_hash] = []
+                            media_by_hash[media_hash].append((msg_idx, item_idx, item, False))
+            
+            # Check multimodal_content (tool responses with files)
+            mm_content = msg.get("multimodal_content")
+            if mm_content and isinstance(mm_content, list):
+                for item_idx, item in enumerate(mm_content):
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("compacted"):
+                        continue  # Already compacted
+                    media_hash = self._compute_media_hash(item)
+                    if media_hash:
+                        if media_hash not in media_by_hash:
+                            media_by_hash[media_hash] = []
+                        media_by_hash[media_hash].append((msg_idx, item_idx, item, True))
+        
+        # Compact duplicates (keep newest = highest message index)
+        for media_hash, occurrences in media_by_hash.items():
+            if len(occurrences) <= 1:
+                continue  # No duplicates
+            
+            # Sort by message index (ascending) - newest is last
+            occurrences.sort(key=lambda x: x[0])
+            
+            # Compact all except the last (newest) one
+            for msg_idx, item_idx, item, is_mm_content in occurrences[:-1]:
+                msg = messages[msg_idx]
+                filename = self._get_media_filename(item)
+                item_type = item.get("type", "media")
+                inline_tokens = estimate_inline_data_tokens(item)
+                
+                # Create compacted placeholder
+                placeholder = {
+                    "type": "text",
+                    "text": (
+                        f"[{item_type.title()} '{filename}' - duplicate compacted. "
+                        f"Newer version exists later in conversation. "
+                        f"Use recall(query=\"{item.get('path', 'N/A')}\") if needed.]"
+                    )
+                }
+                
+                # Replace in appropriate content list
+                if is_mm_content:
+                    mm_list = msg.get("multimodal_content", [])
+                    if item_idx < len(mm_list):
+                        # Mark as compacted instead of replacing (for multimodal_content)
+                        mm_list[item_idx] = {
+                            **item,
+                            "compacted": True,
+                            "original_tokens": inline_tokens,
+                            "description": (
+                                f"[{item_type.title()} '{filename}' - duplicate compacted. "
+                                f"Newer version exists later in conversation.]"
+                            )
+                        }
+                else:
+                    content_list = msg.get("content", [])
+                    if isinstance(content_list, list) and item_idx < len(content_list):
+                        content_list[item_idx] = placeholder
+                
+                result.media_deduplicated += 1
+                result.tokens_saved += inline_tokens
+                logger.info(
+                    f"Deduplicated media '{filename}' (hash={media_hash[:8]}...): "
+                    f"{inline_tokens:,} tokens saved"
+                )
+        
+        if result.media_deduplicated > 0:
+            result.final_tokens = self._estimate_messages_tokens(messages)
+            logger.info(f"Media deduplication: {result.media_deduplicated} duplicates compacted")
+    
+    def _store_inline_media(
+        self,
+        item: dict[str, Any],
+        media_type: str,
+        session_id: str
+    ) -> str | None:
+        """Store inline base64 media to disk before compaction.
+        
+        Args:
+            item: Media item with various formats:
+                - source.data (Anthropic/Gemini format)
+                - image_url.url (OpenAI format)
+                - inline_data.data (Gemini native format)
+                - audio_url (data URL format)
+            media_type: MIME type (e.g., "audio/flac", "image/png")
+            session_id: Session ID for organization
+            
+        Returns:
+            File path if stored successfully, None if media_store not available or failed
+        """
+        if not self.media_store or not self.config.store_media_before_compaction:
+            return None
+        
+        try:
+            # Extract base64 data from item - check all possible formats
+            base64_data = None
+            source_name = item.get("name")
+            
+            # Format 1: source.data (Anthropic/Gemini format)
+            source = item.get("source", {})
+            if isinstance(source, dict):
+                base64_data = source.get("data")
+                if base64_data and isinstance(base64_data, bytes):
+                    # Convert bytes to base64 string
+                    import base64
+                    base64_data = base64.b64encode(base64_data).decode("utf-8")
+                # Get media_type from source if available
+                if not media_type or media_type in ("audio", "image"):
+                    media_type = source.get("media_type", media_type)
+            
+            # Format 2: image_url.url (OpenAI format with data URL)
+            if not base64_data:
+                image_url = item.get("image_url", {})
+                if isinstance(image_url, dict):
+                    url = image_url.get("url", "")
+                    if isinstance(url, str) and ";base64," in url:
+                        # Extract base64 part and mime type from data URL
+                        parts = url.split(";base64,", 1)
+                        base64_data = parts[1]
+                        if parts[0].startswith("data:"):
+                            media_type = parts[0][5:]  # Extract mime type
+            
+            # Format 3: inline_data.data (Gemini native format)
+            if not base64_data:
+                inline_data = item.get("inline_data", {})
+                if isinstance(inline_data, dict):
+                    data = inline_data.get("data")
+                    if data:
+                        if isinstance(data, bytes):
+                            import base64
+                            base64_data = base64.b64encode(data).decode("utf-8")
+                        else:
+                            base64_data = data
+                        # Get mime_type from inline_data
+                        if inline_data.get("mime_type"):
+                            media_type = inline_data["mime_type"]
+            
+            # Format 4: audio_url (data URL for audio)
+            if not base64_data:
+                audio_url = item.get("audio_url", "")
+                if isinstance(audio_url, str) and ";base64," in audio_url:
+                    parts = audio_url.split(";base64,", 1)
+                    base64_data = parts[1]
+                    if parts[0].startswith("data:"):
+                        media_type = parts[0][5:]  # Extract mime type
+            
+            if not base64_data:
+                logger.debug(f"No base64 data found in item with keys: {list(item.keys())}")
+                return None
+            
+            # Store the media
+            stored_path = self.media_store.store(
+                data=base64_data,
+                media_type=media_type,
+                session_id=session_id,
+                source_name=source_name
+            )
+            
+            return stored_path
+            
+        except Exception as e:
+            logger.warning(f"Failed to store inline media: {e}")
+            return None
+    
+    async def _compact_media_for_byte_limit(
+        self,
+        result: CompactionResult,
+        keep_last_n: int = 2
+    ) -> None:
+        """Aggressively compact media to reduce request byte size.
+        
+        This is called when the request size exceeds max_request_bytes (e.g., Gemini's 20MB limit).
+        Compacts ALL media except in the last N messages.
+        
+        Args:
+            result: CompactionResult to update
+            keep_last_n: Number of recent messages to keep media for
+        """
+        messages = result.modified_messages
+        if not messages:
+            return
+        
+        compacted_count = 0
+        bytes_saved = 0
+        
+        # Protect last N messages
+        protected_indices = set(range(max(0, len(messages) - keep_last_n), len(messages)))
+        
+        for msg_idx, msg in enumerate(messages):
+            if msg_idx in protected_indices:
+                continue  # Don't compact recent messages
+            
+            # Process content list
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item_idx, item in enumerate(content):
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type", "")
+                    if item_type not in ("image", "image_url", "audio", "video"):
+                        continue
+                    if item.get("compacted"):
+                        continue  # Already compacted
+                    
+                    # Estimate bytes for this item
+                    item_bytes = self._estimate_item_bytes(item)
+                    if item_bytes < 10000:  # Skip small items (<10KB)
+                        continue
+                    
+                    filename = self._get_media_filename(item)
+                    inline_tokens = estimate_inline_data_tokens(item)
+                    file_path = item.get("path", "")
+                    
+                    # Replace with text placeholder
+                    placeholder = {
+                        "type": "text",
+                        "text": (
+                            f"[{item_type.title()} '{filename}' removed to reduce request size. "
+                            f"Saved {item_bytes / 1024:.0f}KB."
+                            + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                        )
+                    }
+                    content[item_idx] = placeholder
+                    compacted_count += 1
+                    bytes_saved += item_bytes
+                    result.tokens_saved += inline_tokens
+            
+            # Process multimodal_content
+            mm_content = msg.get("multimodal_content")
+            if mm_content and isinstance(mm_content, list):
+                for item_idx, item in enumerate(mm_content):
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("compacted"):
+                        continue  # Already compacted
+                    
+                    # Estimate bytes for this item
+                    item_bytes = self._estimate_item_bytes(item)
+                    if item_bytes < 10000:  # Skip small items (<10KB)
+                        continue
+                    
+                    item_type = item.get("type", "media")
+                    filename = self._get_media_filename(item)
+                    inline_tokens = estimate_inline_data_tokens(item)
+                    file_path = item.get("path", "")
+                    
+                    # Mark as compacted (remove data)
+                    mm_content[item_idx] = {
+                        "type": item_type,
+                        "path": file_path,
+                        "mime_type": item.get("mime_type", ""),
+                        "compacted": True,
+                        "original_bytes": item_bytes,
+                        "original_tokens": inline_tokens,
+                        "description": (
+                            f"[{item_type.title()} '{filename}' compacted to reduce request size. "
+                            f"Saved {item_bytes / 1024:.0f}KB.]"
+                        )
+                    }
+                    compacted_count += 1
+                    bytes_saved += item_bytes
+                    result.tokens_saved += inline_tokens
+        
+        if compacted_count > 0:
+            result.final_tokens = self._estimate_messages_tokens(messages)
+            result.media_compacted_after_event += compacted_count
+            result.media_bytes_saved += bytes_saved  # Track bytes saved for UI
+            logger.warning(
+                f"Byte limit compaction: {compacted_count} media items compacted, "
+                f"saved {bytes_saved / (1024*1024):.1f}MB"
+            )
+    
+    def _estimate_item_bytes(self, item: dict) -> int:
+        """Estimate bytes for a single media item.
+        
+        Checks for inline data first, then falls back to file size if path exists.
+        Returns base64-encoded size estimate (file_size * 4/3) for path-based items.
+        Returns 0 for already-compacted items (they have no data).
+        """
+        # Skip already compacted items - they have no data
+        if item.get("compacted"):
+            return 0
+        
+        # Check various inline data formats first
+        source = item.get("source", {})
+        if isinstance(source, dict):
+            data = source.get("data", "")
+            if data:
+                return len(data) if isinstance(data, str) else len(data)
+        
+        image_url = item.get("image_url", {})
+        if isinstance(image_url, dict):
+            url = image_url.get("url", "")
+            if ";base64," in url:
+                return len(url.split(";base64,", 1)[1])
+        
+        audio_url = item.get("audio_url", "")
+        if isinstance(audio_url, str) and ";base64," in audio_url:
+            return len(audio_url.split(";base64,", 1)[1])
+        
+        # Check various data field names
+        for field_name in ("data", "inline_data", "content"):
+            field_data = item.get(field_name, "")
+            if field_data:
+                return len(field_data) if isinstance(field_data, str) else len(field_data)
+        
+        # Fallback: check file path and get actual file size
+        # This is important for multimodal_content items that reference files
+        file_path = item.get("path", "")
+        if file_path and os.path.isfile(file_path):
+            try:
+                file_size = os.path.getsize(file_path)
+                # Base64 encoding increases size by ~33%
+                return int(file_size * 4 / 3)
+            except (OSError, IOError):
+                pass
+        
+        return 0
+    
+    async def _compact_media_after_event(
+        self,
+        result: CompactionResult,
+        trigger: str = "user_message"
+    ) -> None:
+        """Compact all media items except those in the most recent message.
+        
+        This is triggered by config options:
+        - compact_media_after_user_message: When a new user message arrives
+        - compact_media_after_final_response: When agent sends final response
+        
+        Args:
+            result: CompactionResult to update
+            trigger: What triggered this compaction ('user_message' or 'final_response')
+        """
+        messages = result.modified_messages
+        if not messages:
+            return
+        
+        # Find the last message index to protect (don't compact its media)
+        last_msg_idx = len(messages) - 1
+        
+        # Compact all media in older messages
+        for msg_idx in range(last_msg_idx):  # Exclude last message
+            msg = messages[msg_idx]
+            
+            # Process content list
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item_idx, item in enumerate(content):
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type", "")
+                    if item_type not in ("image", "image_url", "audio", "video"):
+                        continue
+                    if item.get("compacted"):
+                        continue  # Already compacted
+                    
+                    filename = self._get_media_filename(item)
+                    inline_tokens = estimate_inline_data_tokens(item)
+                    item_bytes = self._estimate_item_bytes(item)
+                    file_path = item.get("path", "")
+                    
+                    # If no file_path, try to store inline data before removing
+                    if not file_path:
+                        source = item.get("source", {})
+                        media_type = source.get("media_type", item_type) if isinstance(source, dict) else item_type
+                        stored_path = self._store_inline_media(item, media_type, self._current_session_id)
+                        if stored_path:
+                            file_path = stored_path
+                    
+                    # Replace with text placeholder
+                    placeholder = {
+                        "type": "text",
+                        "text": (
+                            f"[{item_type.title()} removed after {trigger}."
+                            + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                        )
+                    }
+                    content[item_idx] = placeholder
+                    result.media_compacted_after_event += 1
+                    result.tokens_saved += inline_tokens
+                    result.media_bytes_saved += item_bytes
+            
+            # Process multimodal_content
+            mm_content = msg.get("multimodal_content")
+            if mm_content and isinstance(mm_content, list):
+                for item_idx, item in enumerate(mm_content):
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("compacted"):
+                        continue  # Already compacted
+                    
+                    item_type = item.get("type", "media")
+                    filename = self._get_media_filename(item)
+                    inline_tokens = estimate_inline_data_tokens(item)
+                    item_bytes = self._estimate_item_bytes(item)
+                    file_path = item.get("path", "")
+                    
+                    # Mark as compacted
+                    mm_content[item_idx] = {
+                        **item,
+                        "compacted": True,
+                        "original_tokens": inline_tokens,
+                        "original_bytes": item_bytes,
+                        "description": (
+                            f"[{item_type.title()} '{filename}' compacted after {trigger}. "
+                            f"Use recall(query=\"{file_path}\") to reload.]"
+                        )
+                    }
+                    result.media_compacted_after_event += 1
+                    result.tokens_saved += inline_tokens
+                    result.media_bytes_saved += item_bytes
+        
+        if result.media_compacted_after_event > 0:
+            result.final_tokens = self._estimate_messages_tokens(messages)
+            logger.info(
+                f"Media compaction after {trigger}: "
+                f"{result.media_compacted_after_event} items compacted"
+            )
+    
     async def _compact_multimodal_content(
         self,
         content: list,
-        result: CompactionResult
+        result: CompactionResult,
+        session_id: str = "default",
+        preserve_media: bool = False
     ) -> list:
         """Compact multimodal content by replacing large items with variables/references.
         
@@ -250,6 +889,8 @@ class LayeredCompactionStrategy:
         Args:
             content: Multimodal content list (text, image, text_file, audio, etc.)
             result: CompactionResult to update tokens_saved/variables_created
+            session_id: Session ID for media storage
+            preserve_media: If True, skip audio/image/video compaction (preserve media in last user msg)
             
         Returns:
             Compacted content list with large items replaced
@@ -291,30 +932,49 @@ class LayeredCompactionStrategy:
                         continue
             
             # Compact audio items - remove large base64 inline data
-            # NOTE: Audio data cannot be retrieved later (unlike text tool results).
-            # The LLM should extract and store important information as text via store_fact
-            # before audio is compacted.
+            # If media_store is available, save to disk first for potential restoration
+            # Skip if preserve_media is True (last user message)
             elif item_type == "audio":
+                if preserve_media:
+                    compacted.append(item)
+                    continue
+                    
                 inline_tokens = estimate_inline_data_tokens(item)
                 if inline_tokens >= self.config.tool_result_min_size:
                     # Get audio metadata if available
                     source = item.get("source", {})
                     media_type = source.get("media_type", "audio") if isinstance(source, dict) else "audio"
                     
-                    # Replace with placeholder - audio CANNOT be recovered
+                    # Estimate bytes for tracking
+                    item_bytes = self._estimate_item_bytes(item)
+                    
+                    # Try to store before removing
+                    stored_path = self._store_inline_media(item, media_type, session_id)
+                    
+                    # Create placeholder
+                    if stored_path:
+                        placeholder_text = f"[Audio removed. Use recall(query=\"{stored_path}\") to reload.]"
+                    else:
+                        placeholder_text = "[Audio removed - not recoverable. Use store_fact to save key information before compaction.]"
+                    
                     compacted.append({
                         "type": "text",
-                        "text": f"[Audio removed - {inline_tokens:,} tokens. Type: {media_type}. "
-                                f"NOTE: Audio data is NOT recoverable. If you needed information from this audio, "
-                                f"use store_fact to save key findings before context compaction.]"
+                        "text": placeholder_text
                     })
                     result.tokens_saved += inline_tokens
-                    logger.debug(f"Removed audio inline data: {inline_tokens:,} tokens saved")
+                    result.media_compacted_after_event += 1
+                    result.media_bytes_saved += item_bytes
+                    logger.debug(f"Removed audio inline data: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved")
                     continue
             
             # Compact image items - remove large base64 inline data  
-            # NOTE: Image data cannot be retrieved later (unlike text tool results).
+            # If media_store is available, save to disk first for potential restoration
+            # Skip if preserve_media is True (last user message)
             elif item_type in ("image", "image_url"):
+                if preserve_media:
+                    compacted.append(item)
+                    continue
+                    
                 inline_tokens = estimate_inline_data_tokens(item)
                 if inline_tokens >= self.config.tool_result_min_size:
                     # Get image metadata if available
@@ -328,15 +988,26 @@ class LayeredCompactionStrategy:
                         if "data:" in url and ";" in url:
                             media_type = url.split(";")[0].replace("data:", "")
                     
-                    # Replace with placeholder - image CANNOT be recovered
+                    # Estimate bytes for tracking
+                    item_bytes = self._estimate_item_bytes(item)
+                    
+                    # Try to store before removing
+                    stored_path = self._store_inline_media(item, media_type, session_id)
+                    
+                    # Create placeholder
+                    if stored_path:
+                        placeholder_text = f"[Image removed. Use recall(query=\"{stored_path}\") to reload.]"
+                    else:
+                        placeholder_text = "[Image removed - not recoverable. Use store_fact to save key observations before compaction.]"
+                    
                     compacted.append({
                         "type": "text", 
-                        "text": f"[Image removed - {inline_tokens:,} tokens. Type: {media_type}. "
-                                f"NOTE: Image data is NOT recoverable. If you needed information from this image, "
-                                f"use store_fact to save key observations before context compaction.]"
+                        "text": placeholder_text
                     })
                     result.tokens_saved += inline_tokens
-                    logger.debug(f"Removed image inline data: {inline_tokens:,} tokens saved")
+                    result.media_compacted_after_event += 1
+                    result.media_bytes_saved += item_bytes
+                    logger.debug(f"Removed image inline data: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved")
                     continue
                 
             # Keep item as-is (including small items and non-compactable types)
@@ -354,7 +1025,7 @@ class LayeredCompactionStrategy:
         This handles MultimodalToolContent objects that reference files which will be
         base64-encoded at LLM call time. We compact by:
         1. Keeping the path for potential restoration
-        2. Adding a _compacted flag so LLM clients skip encoding
+        2. Adding a "compacted" flag so LLM clients skip encoding
         3. Updating description to explain how to restore
         
         Args:
@@ -392,6 +1063,9 @@ class LayeredCompactionStrategy:
                 mime_type = item.get("mime_type", item_type)
                 original_description = item.get("description", "")
                 
+                # Estimate bytes for tracking (base64 encoded size)
+                item_bytes = self._estimate_item_bytes(item)
+                
                 # Create compacted placeholder - keeps path for restoration
                 # Use non-underscore field names for Pydantic model compatibility
                 placeholder = {
@@ -400,15 +1074,21 @@ class LayeredCompactionStrategy:
                     "mime_type": mime_type,
                     "compacted": True,  # Flag for LLM clients to skip encoding
                     "original_tokens": inline_tokens,
+                    "original_bytes": item_bytes,
                     "original_description": original_description,
                     "description": (
-                        f"[{item_type.title()} compacted - {inline_tokens:,} tokens saved. "
-                        f"Use restore_multimodal(path=\"{file_path}\") to reload into context.]"
+                        f"[{item_type.title()} compacted. "
+                        f"Use recall(query=\"{file_path}\") to reload.]"
                     )
                 }
                 compacted.append(placeholder)
                 tokens_saved += inline_tokens
-                logger.info(f"Compacted {item_type} file: {inline_tokens:,} tokens saved (path: {file_path})")
+                
+                # Track media compaction for UI
+                result.media_compacted_after_event += 1
+                result.media_bytes_saved += item_bytes
+                
+                logger.info(f"Compacted {item_type} file: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved (path: {file_path})")
                     
             else:
                 # Small enough to keep
@@ -450,7 +1130,9 @@ class LayeredCompactionStrategy:
                 content = msg.get("content", "")
                 # Handle multimodal content - compact text_file items
                 if isinstance(content, list):
-                    compacted_content = await self._compact_multimodal_content(content, result)
+                    compacted_content = await self._compact_multimodal_content(
+                        content, result, session_id=self._current_session_id
+                    )
                     if compacted_content != content:
                         messages[i] = {**msg, "content": compacted_content}
                     continue
@@ -512,10 +1194,23 @@ class LayeredCompactionStrategy:
                             )
             
             # Process user messages with multimodal content
+            # Only skip the LAST user message for audio/image/video media preservation
+            # text_file items should always be processed (they are code/text)
             elif msg.get("role") == "user":
+                # Find if this is the last user message
+                is_last_user_msg = all(
+                    messages[j].get("role") != "user" 
+                    for j in range(i + 1, len(messages))
+                )
+                
                 content = msg.get("content")
                 if content and isinstance(content, list):
-                    compacted_content = await self._compact_multimodal_content(content, result)
+                    # For the last user message, only compact text_file items
+                    # (preserve audio/image/video inline data)
+                    compacted_content = await self._compact_multimodal_content(
+                        content, result, session_id=self._current_session_id,
+                        preserve_media=is_last_user_msg  # Preserve media in last user msg
+                    )
                     if compacted_content != content:
                         messages[i] = {**msg, "content": compacted_content}
         
@@ -694,7 +1389,7 @@ class LayeredCompactionStrategy:
     def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate total tokens in messages including multimodal inline data.
         
-        Skips items marked as _compacted since they won't be encoded at LLM call time.
+        Skips items marked as compacted since they won't be encoded at LLM call time.
         """
         total = 0
         for msg in messages:
@@ -713,13 +1408,15 @@ class LayeredCompactionStrategy:
                             total += inline_tokens
             
             # Count multimodal_content from tool responses (file paths that will be base64-encoded)
-            # SKIP items marked as _compacted - they won't be encoded at LLM call time
+            # SKIP items marked as compacted - they won't be encoded at LLM call time
             mm_content = msg.get("multimodal_content")
             if mm_content and isinstance(mm_content, list):
                 for mm_item in mm_content:
                     if isinstance(mm_item, dict):
                         # Skip compacted items - they're not sent to LLM
-                        if mm_item.get("_compacted"):
+                        # Note: Field name is "compacted" (not "_compacted") to match
+                        # the placeholder created in _compact_multimodal_content_items()
+                        if mm_item.get("compacted"):
                             continue
                         item_tokens = estimate_inline_data_tokens(mm_item)
                         if item_tokens > 0:
