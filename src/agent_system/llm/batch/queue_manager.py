@@ -392,6 +392,7 @@ class BatchQueueManager:
         provider: str,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: Optional[int] = None,
         session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         custom_id: Optional[str] = None,
@@ -409,6 +410,7 @@ class BatchQueueManager:
             provider: Provider name ("openai" or "gemini")
             messages: Chat messages
             tools: Optional tool definitions
+            max_tokens: Optional max output tokens limit
             session_id: Optional session ID
             agent_name: Optional agent name
             custom_id: Optional custom ID for correlation
@@ -442,6 +444,7 @@ class BatchQueueManager:
             model=model,
             messages=messages,
             tools=tools,
+            max_tokens=max_tokens,
             session_id=session_id,
             agent_name=agent_name,
             metadata={"provider": provider},

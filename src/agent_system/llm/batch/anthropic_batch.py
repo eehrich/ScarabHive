@@ -323,9 +323,10 @@ class AnthropicBatchClient(BatchProviderClient):
                 tools = self._convert_openai_tools_to_anthropic(request.tools)
             
             # Build request params
+            # Use max_tokens from request if specified, otherwise fall back to default
             params: Dict[str, Any] = {
                 "model": request.model or self.default_model,
-                "max_tokens": self.default_max_tokens,
+                "max_tokens": request.max_tokens if request.max_tokens is not None else self.default_max_tokens,
                 "messages": messages,
             }
             

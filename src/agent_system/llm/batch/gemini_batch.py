@@ -231,11 +231,15 @@ class GeminiBatchClient(BatchProviderClient):
                 'contents': contents,
             }
             
-            # Build config with system_instruction and tools
+            # Build config with system_instruction, tools, and generation parameters
             config: Dict[str, Any] = {}
             
             if system_instruction:
                 config['system_instruction'] = system_instruction
+            
+            # Add max_output_tokens if specified in request
+            if req.max_tokens is not None:
+                config['max_output_tokens'] = req.max_tokens
             
             # Add tools if present - use SDK types.Tool objects
             if req.tools:

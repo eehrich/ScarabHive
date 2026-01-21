@@ -279,6 +279,10 @@ class OpenAIBatchClient(BatchProviderClient):
                     "messages": normalized_messages,
                 }
                 
+                # Add max_tokens if specified in request
+                if request.max_tokens is not None:
+                    body["max_tokens"] = request.max_tokens
+                
                 if request.tools:
                     body["tools"] = request.tools
                 

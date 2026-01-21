@@ -322,6 +322,9 @@ class BatchLLMClient(LLMClient):
                     "content": msg.content,
                 })
         
+        # Get max_tokens from underlying client if available
+        max_tokens = getattr(self.underlying_client, 'max_tokens', None)
+        
         try:
             # Submit to queue and get future with cancellation support
             # Status updates are reported by the queue_manager
@@ -330,6 +333,7 @@ class BatchLLMClient(LLMClient):
                 provider=self.batch_provider,
                 messages=messages_data,
                 tools=tools,
+                max_tokens=max_tokens,
                 cancellation_token=cancellation_token,
                 status_scope=status_scope,
             )

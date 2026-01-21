@@ -47,6 +47,7 @@ class BatchRequest:
         model: Model name (e.g., "gpt-4o", "gemini-2.5-flash")
         messages: Chat messages in OpenAI format
         tools: Optional tool definitions
+        max_tokens: Optional max output tokens limit
         session_id: Optional session ID for tracking
         agent_name: Optional agent name for tracking
         created_at: Timestamp when request was created
@@ -57,6 +58,7 @@ class BatchRequest:
     model: str = ""
     messages: List[Dict[str, Any]] = field(default_factory=list)
     tools: Optional[List[Dict[str, Any]]] = None
+    max_tokens: Optional[int] = None
     session_id: Optional[str] = None
     agent_name: Optional[str] = None
     created_at: datetime = field(default_factory=_utc_now)
