@@ -43,12 +43,15 @@ plugins:
         tools:
           allowed:
             - "comfyui/*"
+            - "context_engineer/*"
         
         hooks:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: true
+              enabled: true    
+            context_engineer.engineer_context:
+              enabled: true              
       
       metadata:
         visibility: "both"
