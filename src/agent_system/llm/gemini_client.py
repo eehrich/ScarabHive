@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import httpx
 
@@ -19,6 +19,10 @@ from .retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
     convert_openai_tools_to_gemini,
     prepare_messages_for_gemini,
+    extract_usage_from_metadata,
+    should_disable_thinking_on_retry,
+    StreamingLoopDetector,
+    ThinkingProgressTracker,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,7 +106,8 @@ class GeminiClient(LLMClient):
         
         # Filter unavailable tool calls and convert messages to Gemini format
         # This prevents UNEXPECTED_TOOL_CALL when switching agents
-        system_instruction, contents = prepare_messages_for_gemini(messages, tools)
+        # enforce_byte_limit=True enables fallback compaction if Context Engineer didn't run
+        system_instruction, contents = prepare_messages_for_gemini(messages, tools, enforce_byte_limit=True)
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
@@ -151,9 +156,11 @@ class GeminiClient(LLMClient):
         first_thought_signature = None
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
-        # Track consecutive thinking-only chunks to detect infinite thinking loop
-        consecutive_thought_only_chunks = 0
-        MAX_CONSECUTIVE_THOUGHT_CHUNKS = 100  # ~200-300s of pure thinking = likely stuck
+        # Track MAX_TOKENS for logging purposes
+        hit_max_tokens = False
+        # Loop detection utilities
+        loop_detector = StreamingLoopDetector()
+        progress_tracker = ThinkingProgressTracker()
 
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -167,6 +174,15 @@ class GeminiClient(LLMClient):
                 if "toolConfig" not in payload:
                     payload["toolConfig"] = {}
                 payload["toolConfig"]["functionCallingConfig"] = {"mode": "ANY"}
+            
+            # DEFENSIVE RETRY: On any retry, disable thinking entirely
+            disable_thinking = should_disable_thinking_on_retry(
+                attempt, self.extra_params.get("include_thoughts")
+            )
+            if disable_thinking:
+                logger.info(f"[Gemini] Retry #{attempt}: disabling thinking mode for defensive retry")
+                if "generationConfig" in payload and "thinkingConfig" in payload["generationConfig"]:
+                    del payload["generationConfig"]["thinkingConfig"]
 
             try:
                 logger.debug(f"Gemini streaming: Starting request to {self.model}")
@@ -245,10 +261,17 @@ class GeminiClient(LLMClient):
                             finish_reason = candidate.get("finishReason")
                             if finish_reason:
                                 logger.debug(f"Gemini chunk finishReason: {finish_reason}")
-                                consecutive_thought_only_chunks = 0  # Reset on finish_reason
+                                loop_detector.reset()  # Reset on finish_reason
+                                progress_tracker.reset()  # Reset on finish_reason
                                 if finish_reason == "MALFORMED_FUNCTION_CALL":
                                     got_malformed_function_call = True
                                     logger.warning("[Gemini] MALFORMED_FUNCTION_CALL detected in chunk")
+                                if finish_reason == "MAX_TOKENS":
+                                    hit_max_tokens = True
+                                    logger.warning(
+                                        "[Gemini] MAX_TOKENS detected - output token limit reached. "
+                                        "Will retry with thinking disabled."
+                                    )
                             
                             logger.debug(f"Gemini chunk: {len(parts)} parts")
                             
@@ -264,6 +287,18 @@ class GeminiClient(LLMClient):
                                     # Separate thoughts from content
                                     if is_thought:
                                         accumulated_thoughts.append(text_delta)
+                                        
+                                        # Check for repetitive loop pattern in thoughts
+                                        loop_result = loop_detector.check_for_loop(text_delta)
+                                        if loop_result:
+                                            repeated_text, count = loop_result
+                                            logger.error(
+                                                f"[Gemini] Repetitive thinking loop detected: "
+                                                f"'{repeated_text}' repeated {count} times"
+                                            )
+                                            raise httpx.RemoteProtocolError(
+                                                f"Gemini repetitive thinking loop: same text repeated {count} times"
+                                            )
                                     else:
                                         accumulated_content.append(text_delta)
                                         chunk_has_progress = True  # Non-thought content = progress
@@ -317,8 +352,6 @@ class GeminiClient(LLMClient):
                                                 "thought_signature": effective_signature
                                             }
                                         }
-                                        # Also store directly for easier access
-                                        tool_call["thought_signature"] = effective_signature
                                         if thought_signature:
                                             logger.debug(f"Including thoughtSignature for {func_name} (original)")
                                         else:
@@ -336,36 +369,24 @@ class GeminiClient(LLMClient):
                                     }
                             
                             # Track consecutive thinking-only chunks to detect infinite loop
+                            if progress_tracker.check_stuck(chunk_has_progress, bool(finish_reason)):
+                                logger.error(
+                                    "[Gemini] Infinite thinking loop detected: "
+                                    "too many consecutive thought-only chunks without progress. Breaking stream."
+                                )
+                                raise httpx.RemoteProtocolError(
+                                    "Gemini infinite thinking loop: too many chunks without progress"
+                                )
+                            
+                            # Reset loop detector on progress
                             if chunk_has_progress or finish_reason:
-                                consecutive_thought_only_chunks = 0
-                            else:
-                                consecutive_thought_only_chunks += 1
-                                if consecutive_thought_only_chunks >= MAX_CONSECUTIVE_THOUGHT_CHUNKS:
-                                    logger.error(
-                                        f"[Gemini] Infinite thinking loop detected: {consecutive_thought_only_chunks} "
-                                        f"consecutive thought-only chunks without progress. Breaking stream."
-                                    )
-                                    # Treat as retriable error - break out and retry
-                                    raise httpx.RemoteProtocolError(
-                                        f"Gemini infinite thinking loop: {consecutive_thought_only_chunks} chunks without progress"
-                                    )
+                                loop_detector.reset()
 
                             # Handle usage metadata (at top level of chunk, not in candidate)
                             usage_metadata = chunk.get("usageMetadata")
-                            usage_metadata = chunk.get("usageMetadata")
                             if usage_metadata:
-                                # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count, cached_content_token_count
-                                accumulated_usage = {
-                                    "prompt_tokens": usage_metadata.get("promptTokenCount", usage_metadata.get("prompt_token_count", 0)),
-                                    "completion_tokens": usage_metadata.get("candidatesTokenCount", usage_metadata.get("candidates_token_count", 0)),
-                                    "total_tokens": usage_metadata.get("totalTokenCount", usage_metadata.get("total_token_count", 0))
-                                }
-                                
-                                # Extract cached tokens (implicit caching for Gemini 2.5+)
-                                cached_tokens = usage_metadata.get("cachedContentTokenCount", usage_metadata.get("cached_content_token_count", 0))
-                                if cached_tokens > 0:
-                                    # Store in OpenAI-compatible format: prompt_tokens_details.cached_tokens
-                                    accumulated_usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+                                # Use shared utility for usage extraction
+                                accumulated_usage = extract_usage_from_metadata(usage_metadata)
 
                         # Stream finished successfully
                         logger.debug(f"Gemini streaming complete: {len(accumulated_content)} content parts, {len(accumulated_tool_calls)} tool calls")
@@ -385,13 +406,39 @@ class GeminiClient(LLMClient):
                                 accumulated_tool_calls = {}
                                 accumulated_usage = None
                                 first_thought_signature = None
-                                consecutive_thought_only_chunks = 0
+                                loop_detector.reset()
+                                progress_tracker.reset()
                                 # DON'T reset got_malformed_function_call - we need it for mode=ANY in retry
                                 continue
                             else:
                                 logger.error(
                                     "[Gemini] MALFORMED_FUNCTION_CALL persisted after all retries. "
                                     "This may indicate invalid tool schema or complex function call arguments."
+                                )
+                        
+                        # Check for MAX_TOKENS - retry with thinking disabled
+                        if hit_max_tokens and not accumulated_tool_calls:
+                            if attempt < self.max_retries:
+                                wait_time = 1.0
+                                logger.warning(
+                                    f"[Gemini] MAX_TOKENS detected (no tool calls, "
+                                    f"{len(accumulated_content)} content parts - likely stuck in thinking). "
+                                    f"Will retry with thinking disabled (attempt {attempt + 1}/{self.max_retries + 1})"
+                                )
+                                await self._cancellable_sleep(wait_time, cancellation_token)
+                                # Reset accumulators for retry
+                                accumulated_content = []
+                                accumulated_thoughts = []
+                                accumulated_tool_calls = {}
+                                accumulated_usage = None
+                                first_thought_signature = None
+                                loop_detector.reset()
+                                progress_tracker.reset()
+                                continue
+                            else:
+                                logger.error(
+                                    "[Gemini] MAX_TOKENS persisted after all retries. "
+                                    f"Final output has {len(accumulated_content)} content parts, no tool calls."
                                 )
                         
                         assistant = {
@@ -489,7 +536,8 @@ class GeminiClient(LLMClient):
                     accumulated_tool_calls = {}
                     accumulated_usage = None
                     first_thought_signature = None
-                    consecutive_thought_only_chunks = 0
+                    loop_detector.reset()
+                    progress_tracker.reset()
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
@@ -519,7 +567,8 @@ class GeminiClient(LLMClient):
         
         # Filter unavailable tool calls and convert messages to Gemini format
         # This prevents UNEXPECTED_TOOL_CALL when switching agents
-        system_instruction, contents = prepare_messages_for_gemini(messages, tools)
+        # enforce_byte_limit=True enables fallback compaction if Context Engineer didn't run
+        system_instruction, contents = prepare_messages_for_gemini(messages, tools, enforce_byte_limit=True)
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
@@ -674,7 +723,6 @@ class GeminiClient(LLMClient):
                                         "thought_signature": effective_signature
                                     }
                                 }
-                                tool_call["thought_signature"] = effective_signature
                                 if thought_signature:
                                     logger.debug(f"Non-streaming: stored thought_signature for {func_name} (original)")
                                 else:

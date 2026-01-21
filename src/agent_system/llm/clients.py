@@ -95,6 +95,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             parallel_tool_calls=parallel_tool_calls,
             include_thoughts=include_thoughts,
             thinking_budget=thinking_budget,
+            max_tokens=max_tokens,
         )
 
     if provider == "openai" or provider == "openai_httpx":

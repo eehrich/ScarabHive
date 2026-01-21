@@ -13,6 +13,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Gemini API has a 20MB request size limit
+GEMINI_MAX_REQUEST_BYTES = 20 * 1024 * 1024  # 20 MB
+GEMINI_TARGET_REQUEST_BYTES = 15 * 1024 * 1024  # 15 MB target after compaction
+
 
 def extract_available_tool_names(tools: List[Dict[str, Any]]) -> Set[str]:
     """Extract tool names from OpenAI-format tools list.
@@ -36,20 +40,168 @@ def extract_available_tool_names(tools: List[Dict[str, Any]]) -> Set[str]:
     return available
 
 
+def estimate_contents_bytes(contents: List[Dict[str, Any]]) -> int:
+    """Estimate the total size of Gemini contents in bytes.
+    
+    This is used to check against Gemini's 20MB request size limit.
+    
+    Args:
+        contents: List of Gemini content dicts with role and parts
+        
+    Returns:
+        Estimated size in bytes
+    """
+    total_bytes = 0
+    
+    for content in contents:
+        # Role overhead
+        role = content.get("role", "")
+        total_bytes += len(role) + 20  # JSON structure overhead
+        
+        parts = content.get("parts", [])
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+                
+            # Text parts
+            if "text" in part:
+                text = part["text"]
+                total_bytes += len(text.encode('utf-8')) if isinstance(text, str) else 0
+            
+            # Inline data (images, audio)
+            if "inlineData" in part:
+                inline_data = part["inlineData"]
+                if isinstance(inline_data, dict):
+                    data = inline_data.get("data", "")
+                    total_bytes += len(data) if isinstance(data, str) else 0
+            
+            # Function calls/responses
+            if "functionCall" in part:
+                total_bytes += len(json.dumps(part["functionCall"]))
+            if "functionResponse" in part:
+                total_bytes += len(json.dumps(part["functionResponse"]))
+    
+    return total_bytes
+
+
+def compact_contents_for_byte_limit(
+    contents: List[Dict[str, Any]],
+    max_bytes: int = GEMINI_MAX_REQUEST_BYTES,
+    target_bytes: int = GEMINI_TARGET_REQUEST_BYTES
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Compact Gemini contents by replacing old inline data with text placeholders.
+    
+    This is a fallback mechanism when Context Engineer's compaction wasn't enough
+    or isn't enabled. It removes inline data from oldest messages first until
+    the request size is under the target.
+    
+    Args:
+        contents: List of Gemini content dicts
+        max_bytes: Maximum bytes before compaction triggers
+        target_bytes: Target bytes after compaction
+        
+    Returns:
+        (compacted_contents, bytes_removed) tuple
+    """
+    current_bytes = estimate_contents_bytes(contents)
+    
+    if current_bytes <= max_bytes:
+        return contents, 0
+    
+    logger.warning(
+        f"[Gemini] Request size {current_bytes / (1024*1024):.1f}MB exceeds "
+        f"{max_bytes / (1024*1024):.1f}MB limit. Compacting inline data..."
+    )
+    
+    # Deep copy to avoid mutating original
+    import copy
+    compacted = copy.deepcopy(contents)
+    
+    bytes_removed = 0
+    
+    # Collect all inline data with their locations and sizes
+    # Format: (content_idx, part_idx, size, mime_type)
+    inline_data_items: List[Tuple[int, int, int, str]] = []
+    
+    for content_idx, content in enumerate(compacted):
+        parts = content.get("parts", [])
+        for part_idx, part in enumerate(parts):
+            if isinstance(part, dict) and "inlineData" in part:
+                inline_data = part["inlineData"]
+                if isinstance(inline_data, dict):
+                    data = inline_data.get("data", "")
+                    size = len(data) if isinstance(data, str) else 0
+                    mime_type = inline_data.get("mimeType", "unknown")
+                    if size > 0:
+                        inline_data_items.append((content_idx, part_idx, size, mime_type))
+    
+    if not inline_data_items:
+        logger.warning("[Gemini] No inline data found to compact")
+        return compacted, 0
+    
+    # Sort by content index (oldest first) - we want to remove oldest data first
+    # Keep last 2 content blocks protected
+    protected_indices = set(range(max(0, len(compacted) - 2), len(compacted)))
+    
+    # Filter to only include items from non-protected content blocks
+    compactable_items = [
+        item for item in inline_data_items 
+        if item[0] not in protected_indices
+    ]
+    
+    # Sort by content index (oldest first)
+    compactable_items.sort(key=lambda x: x[0])
+    
+    # Remove inline data until we're under target
+    for content_idx, part_idx, size, mime_type in compactable_items:
+        if current_bytes <= target_bytes:
+            break
+        
+        # Replace inline data with text placeholder
+        part = compacted[content_idx]["parts"][part_idx]
+        media_type = mime_type.split("/")[0] if "/" in mime_type else "media"
+        
+        placeholder = {
+            "text": f"[{media_type.title()} removed: {mime_type}, {size / 1024:.0f}KB - "
+                    f"compacted to reduce request size]"
+        }
+        compacted[content_idx]["parts"][part_idx] = placeholder
+        
+        bytes_removed += size
+        current_bytes -= size
+        
+        logger.debug(
+            f"[Gemini] Compacted {mime_type} ({size / 1024:.0f}KB) at content[{content_idx}]"
+        )
+    
+    if bytes_removed > 0:
+        logger.info(
+            f"[Gemini] Compacted {bytes_removed / (1024*1024):.1f}MB of inline data. "
+            f"New size: {current_bytes / (1024*1024):.1f}MB"
+        )
+    
+    return compacted, bytes_removed
+
+
 def prepare_messages_for_gemini(
     messages: List[Any],
     tools: List[Dict[str, Any]],
-    include_critical_instruction: bool = True
+    include_critical_instruction: bool = True,
+    enforce_byte_limit: bool = True
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """Prepare messages for Gemini API: filter unavailable tool calls and convert.
     
     This is the main entry point for both streaming and non-streaming requests.
     It combines filter_unavailable_tool_calls and convert_openai_messages_to_gemini.
     
+    Also enforces Gemini's 20MB request size limit by compacting old inline data
+    if necessary (fallback when Context Engineer isn't enabled or wasn't enough).
+    
     Args:
         messages: List of ChatMessage objects
         tools: List of OpenAI-format tool dicts
         include_critical_instruction: Whether to prepend critical function calling instruction
+        enforce_byte_limit: Whether to compact inline data if request exceeds 20MB
     
     Returns:
         (system_instruction, contents) tuple for Gemini API
@@ -61,7 +213,20 @@ def prepare_messages_for_gemini(
     filtered_messages = filter_unavailable_tool_calls(messages, available_tool_names)
     
     # Convert to Gemini format
-    return convert_openai_messages_to_gemini(filtered_messages, include_critical_instruction)
+    system_instruction, contents = convert_openai_messages_to_gemini(
+        filtered_messages, include_critical_instruction
+    )
+    
+    # Enforce byte limit if enabled (fallback compaction)
+    if enforce_byte_limit and contents:
+        contents, bytes_removed = compact_contents_for_byte_limit(contents)
+        if bytes_removed > 0:
+            logger.warning(
+                f"[Gemini] Fallback compaction removed {bytes_removed / (1024*1024):.1f}MB. "
+                "Consider enabling Context Engineer plugin for smarter compaction."
+            )
+    
+    return system_instruction, contents
 
 
 def filter_unavailable_tool_calls(
@@ -857,3 +1022,201 @@ def clean_schema_for_gemini(
         Cleaned schema dict
     """
     return sanitize_schema_for_gemini(schema)
+
+
+# =============================================================================
+# Streaming Utilities: Loop Detection, Defensive Retry, Usage Extraction
+# =============================================================================
+
+# Constants for loop detection
+DEFAULT_MAX_RECENT_CHUNKS = 20  # Keep last N chunks for pattern detection
+DEFAULT_MIN_REPETITIONS_FOR_LOOP = 5  # Need N identical chunks to confirm loop
+DEFAULT_MAX_CONSECUTIVE_THOUGHT_CHUNKS = 100  # ~200-300s of pure thinking = likely stuck
+
+
+class StreamingLoopDetector:
+    """Detect repetitive patterns in streaming text that indicate infinite loops.
+    
+    Used by Gemini clients to detect when the model gets stuck repeating the
+    same text in thinking mode, which often leads to MAX_TOKENS exhaustion.
+    
+    Usage:
+        detector = StreamingLoopDetector()
+        for chunk in stream:
+            if detector.check_for_loop(chunk.text):
+                raise RuntimeError("Loop detected")
+    """
+    
+    def __init__(
+        self,
+        max_recent_chunks: int = DEFAULT_MAX_RECENT_CHUNKS,
+        min_repetitions: int = DEFAULT_MIN_REPETITIONS_FOR_LOOP,
+        min_chunk_length: int = 20
+    ):
+        """Initialize loop detector.
+        
+        Args:
+            max_recent_chunks: Number of recent chunks to track
+            min_repetitions: Minimum repetitions to confirm loop
+            min_chunk_length: Minimum chunk length to consider (avoids false positives)
+        """
+        self.max_recent_chunks = max_recent_chunks
+        self.min_repetitions = min_repetitions
+        self.min_chunk_length = min_chunk_length
+        self.recent_chunks: List[str] = []
+    
+    def check_for_loop(self, text: str) -> Optional[Tuple[str, int]]:
+        """Check if text indicates a repetitive loop pattern.
+        
+        Args:
+            text: Text chunk to check
+            
+        Returns:
+            Tuple of (repeated_text, count) if loop detected, None otherwise
+        """
+        if len(text) < self.min_chunk_length:
+            return None
+        
+        # Normalize text for comparison
+        normalized = text.strip().lower()
+        self.recent_chunks.append(normalized)
+        
+        # Keep only last N chunks
+        if len(self.recent_chunks) > self.max_recent_chunks:
+            self.recent_chunks.pop(0)
+        
+        # Check for repetitive pattern
+        if len(self.recent_chunks) >= self.min_repetitions:
+            count = self.recent_chunks.count(normalized)
+            if count >= self.min_repetitions:
+                return (text[:80] + "..." if len(text) > 80 else text, count)
+        
+        return None
+    
+    def reset(self) -> None:
+        """Reset the detector state."""
+        self.recent_chunks = []
+
+
+class ThinkingProgressTracker:
+    """Track progress during streaming to detect infinite thinking loops.
+    
+    Tracks whether chunks contain "progress" (non-thought content or tool calls)
+    and detects when the model is stuck producing only thought content.
+    
+    Usage:
+        tracker = ThinkingProgressTracker()
+        for chunk in stream:
+            has_progress = chunk.has_tool_call or chunk.has_text_content
+            if tracker.check_stuck(has_progress):
+                raise RuntimeError("Stuck in thinking loop")
+    """
+    
+    def __init__(
+        self,
+        max_consecutive_no_progress: int = DEFAULT_MAX_CONSECUTIVE_THOUGHT_CHUNKS
+    ):
+        """Initialize progress tracker.
+        
+        Args:
+            max_consecutive_no_progress: Max chunks without progress before stuck
+        """
+        self.max_consecutive = max_consecutive_no_progress
+        self.consecutive_no_progress = 0
+    
+    def check_stuck(self, has_progress: bool, has_finish_reason: bool = False) -> bool:
+        """Check if stream is stuck without progress.
+        
+        Args:
+            has_progress: Whether this chunk had meaningful progress
+            has_finish_reason: Whether this chunk had a finish_reason
+            
+        Returns:
+            True if stuck (exceeded max consecutive no-progress chunks)
+        """
+        if has_progress or has_finish_reason:
+            self.consecutive_no_progress = 0
+            return False
+        
+        self.consecutive_no_progress += 1
+        return self.consecutive_no_progress >= self.max_consecutive
+    
+    def reset(self) -> None:
+        """Reset the tracker state."""
+        self.consecutive_no_progress = 0
+
+
+def extract_usage_from_metadata(usage_metadata: Any, use_camel_case: bool = False) -> Dict[str, Any]:
+    """Extract usage info from Gemini metadata in OpenAI-compatible format.
+    
+    Handles both SDK objects (snake_case attributes) and HTTP responses 
+    (snake_case or camelCase keys).
+    
+    Args:
+        usage_metadata: Usage metadata from Gemini (SDK object or dict)
+        use_camel_case: If True, expect camelCase keys (HTTP API format)
+        
+    Returns:
+        OpenAI-compatible usage dict with prompt_tokens, completion_tokens, 
+        total_tokens, and optionally prompt_tokens_details.cached_tokens
+    """
+    if not usage_metadata:
+        return {}
+    
+    # Handle SDK objects (have attributes)
+    if hasattr(usage_metadata, 'prompt_token_count'):
+        usage = {
+            "prompt_tokens": getattr(usage_metadata, 'prompt_token_count', 0),
+            "completion_tokens": getattr(usage_metadata, 'candidates_token_count', 0),
+            "total_tokens": getattr(usage_metadata, 'total_token_count', 0),
+        }
+        cached_tokens = getattr(usage_metadata, 'cached_content_token_count', 0)
+    elif isinstance(usage_metadata, dict):
+        # Handle HTTP responses - try both snake_case and camelCase
+        if use_camel_case:
+            usage = {
+                "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
+                "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
+                "total_tokens": usage_metadata.get("totalTokenCount", 0),
+            }
+            cached_tokens = usage_metadata.get("cachedContentTokenCount", 0)
+        else:
+            # Try snake_case first, fall back to camelCase
+            usage = {
+                "prompt_tokens": usage_metadata.get("prompt_token_count", 
+                    usage_metadata.get("promptTokenCount", 0)),
+                "completion_tokens": usage_metadata.get("candidates_token_count",
+                    usage_metadata.get("candidatesTokenCount", 0)),
+                "total_tokens": usage_metadata.get("total_token_count",
+                    usage_metadata.get("totalTokenCount", 0)),
+            }
+            cached_tokens = usage_metadata.get("cached_content_token_count",
+                usage_metadata.get("cachedContentTokenCount", 0))
+    else:
+        return {}
+    
+    # Add cached tokens if present
+    if cached_tokens and cached_tokens > 0:
+        usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+    
+    return usage
+
+
+def should_disable_thinking_on_retry(
+    attempt: int,
+    include_thoughts: Optional[bool]
+) -> bool:
+    """Determine if thinking should be disabled for a retry attempt.
+    
+    Implements defensive retry strategy: on ANY retry (attempt > 0),
+    disable thinking entirely. Thinking loops are often the root cause
+    of issues like MAX_TOKENS exhaustion, infinite loops, etc.
+    
+    Args:
+        attempt: Current retry attempt (0 = first try)
+        include_thoughts: Whether thinking was originally enabled
+        
+    Returns:
+        True if thinking should be disabled
+    """
+    return attempt > 0 and bool(include_thoughts)

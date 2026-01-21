@@ -39,6 +39,11 @@ from agent_system.llm.gemini_utils import (
     convert_openai_tools_to_gemini,
     extract_available_tool_names,
     filter_unavailable_tool_calls,
+    compact_contents_for_byte_limit,
+    extract_usage_from_metadata,
+    should_disable_thinking_on_retry,
+    StreamingLoopDetector,
+    ThinkingProgressTracker,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +123,7 @@ class GeminiSDKClient(LLMClient):
         """Convert ChatMessage list to SDK Content format.
         
         Uses shared conversion logic, then wraps in SDK types.
+        Also enforces Gemini's 20MB request size limit as fallback.
         
         Returns:
             (system_instruction, contents_list)
@@ -125,6 +131,14 @@ class GeminiSDKClient(LLMClient):
         # Debug: log input messages
         # Use shared conversion utility to get plain dicts
         system_instruction, dict_contents = convert_openai_messages_to_gemini(messages)
+        
+        # Apply byte-limit compaction as fallback (in case Context Engineer wasn't enough)
+        dict_contents, bytes_removed = compact_contents_for_byte_limit(dict_contents)
+        if bytes_removed > 0:
+            logger.warning(
+                f"[GeminiSDK] Fallback compaction removed {bytes_removed / (1024*1024):.1f}MB. "
+                "Consider enabling Context Engineer plugin for smarter compaction."
+            )
         
         # Convert dicts to SDK Content objects
         sdk_contents: List[types.Content] = []
@@ -218,7 +232,8 @@ class GeminiSDKClient(LLMClient):
         self, 
         system_instruction: Optional[str],
         sdk_tools: Optional[types.Tool],
-        force_any_mode: bool = False
+        force_any_mode: bool = False,
+        disable_thinking: bool = False
     ) -> types.GenerateContentConfig:
         """Build generation config with all parameters."""
         config = types.GenerateContentConfig(
@@ -226,6 +241,12 @@ class GeminiSDKClient(LLMClient):
             top_p=self.extra_params.get("top_p", 0.95),
             top_k=self.extra_params.get("top_k", 40),
         )
+        
+        # Set max output tokens if specified
+        max_tokens = self.extra_params.get("max_tokens")
+        if max_tokens is not None:
+            config.max_output_tokens = max_tokens
+            logger.debug(f"[GeminiSDK] max_output_tokens set to {max_tokens}")
         
         # Add tools if present
         if sdk_tools:
@@ -247,8 +268,8 @@ class GeminiSDKClient(LLMClient):
             config.system_instruction = system_instruction
             logger.debug(f"[GeminiSDK] System instruction set: {len(system_instruction)} chars")
         
-        # Enable thinking if requested
-        if self.extra_params.get("include_thoughts") is True:
+        # Enable thinking if requested (but not if disabled for defensive retry)
+        if self.extra_params.get("include_thoughts") is True and not disable_thinking:
             budget = self.extra_params.get("thinking_budget", 8192)
             config.thinking_config = types.ThinkingConfig(
                 thinking_budget=budget,
@@ -258,23 +279,11 @@ class GeminiSDKClient(LLMClient):
         return config
 
     def _extract_usage(self, usage_metadata) -> Dict[str, Any]:
-        """Extract usage info in OpenAI-compatible format."""
-        if not usage_metadata:
-            return {}
+        """Extract usage info in OpenAI-compatible format.
         
-        usage = {
-            "prompt_tokens": getattr(usage_metadata, 'prompt_token_count', 0),
-            "completion_tokens": getattr(usage_metadata, 'candidates_token_count', 0),
-            "total_tokens": getattr(usage_metadata, 'total_token_count', 0),
-        }
-        
-        # Extract cached tokens (implicit caching for Gemini 2.5+)
-        cached_tokens = getattr(usage_metadata, 'cached_content_token_count', 0)
-        if cached_tokens and cached_tokens > 0:
-            # Store in OpenAI-compatible format: prompt_tokens_details.cached_tokens
-            usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
-        
-        return usage
+        Delegates to shared utility function.
+        """
+        return extract_usage_from_metadata(usage_metadata)
 
     async def _cancellable_stream(
         self,
@@ -451,9 +460,11 @@ class GeminiSDKClient(LLMClient):
         first_thought_signature = None
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
-        # Track consecutive thinking-only chunks to detect infinite thinking loop
-        consecutive_thought_only_chunks = 0
-        MAX_CONSECUTIVE_THOUGHT_CHUNKS = 100  # ~200-300s of pure thinking = likely stuck
+        # Track MAX_TOKENS for logging purposes
+        hit_max_tokens = False
+        # Loop detection utilities
+        loop_detector = StreamingLoopDetector()
+        progress_tracker = ThinkingProgressTracker()
         
         # Status reporting helper
         async def report_status(message: str) -> None:
@@ -472,8 +483,19 @@ class GeminiSDKClient(LLMClient):
             # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
             # This helps the model generate proper JSON instead of Python code
             force_any_mode = attempt > 0 and got_malformed_function_call
+            
+            # DEFENSIVE RETRY: On any retry, disable thinking entirely
+            disable_thinking = should_disable_thinking_on_retry(
+                attempt, self.extra_params.get("include_thoughts")
+            )
+            if disable_thinking:
+                logger.info(
+                    f"[GeminiSDK] Retry #{attempt}: disabling thinking mode for defensive retry"
+                )
+            
             generation_config = self._build_generation_config(
-                system_instruction, sdk_tools, force_any_mode=force_any_mode
+                system_instruction, sdk_tools, force_any_mode=force_any_mode,
+                disable_thinking=disable_thinking
             )
             if force_any_mode:
                 logger.debug(f"[GeminiSDK] Retry #{attempt} with forced function calling (mode=ANY)")
@@ -528,7 +550,8 @@ class GeminiSDKClient(LLMClient):
                     has_finish_reason = False
                     if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
                         has_finish_reason = True
-                        consecutive_thought_only_chunks = 0  # Reset on finish_reason
+                        loop_detector.reset()  # Reset on finish_reason
+                        progress_tracker.reset()  # Reset on finish_reason
                         finish_reason_str = str(candidate.finish_reason)
                         finish_msg = getattr(candidate, 'finish_message', None)
                         
@@ -594,8 +617,17 @@ class GeminiSDKClient(LLMClient):
                                 f"Contents sent:\n{contents_json}"
                             )
                         
+                        # Detect MAX_TOKENS - output token limit reached
+                        # This is often caused by infinite thinking loops
+                        if 'MAX_TOKENS' in finish_reason_str:
+                            hit_max_tokens = True
+                            logger.warning(
+                                "[GeminiSDK] MAX_TOKENS detected - output token limit reached. "
+                                "Will retry with thinking disabled."
+                            )
+                        
                         # Log at WARNING level if there's a message or if it's a problematic finish_reason
-                        if finish_msg or 'MALFORMED' in finish_reason_str or 'ERROR' in finish_reason_str or 'UNEXPECTED' in finish_reason_str:
+                        if finish_msg or 'MALFORMED' in finish_reason_str or 'ERROR' in finish_reason_str or 'UNEXPECTED' in finish_reason_str or 'MAX_TOKENS' in finish_reason_str:
                             msg = f"[GeminiSDK] finish_reason: {candidate.finish_reason}"
                             if finish_msg:
                                 msg += f", finish_message: {finish_msg}"
@@ -617,6 +649,18 @@ class GeminiSDKClient(LLMClient):
                             if text:
                                 accumulated_thoughts.append(text)
                                 logger.debug(f"[GeminiSDK] Thought delta: {len(text)} chars")
+                                
+                                # Check for repetitive loop pattern in thoughts
+                                loop_result = loop_detector.check_for_loop(text)
+                                if loop_result:
+                                    repeated_text, count = loop_result
+                                    logger.error(
+                                        f"[GeminiSDK] Repetitive thinking loop detected: "
+                                        f"'{repeated_text}' repeated {count} times"
+                                    )
+                                    raise RuntimeError(
+                                        f"Gemini repetitive thinking loop: same text repeated {count} times"
+                                    )
                                 
                                 # Stream thoughts as content_delta (like HTTP Gemini client)
                                 # Thoughts appear before regular content in the accumulated text
@@ -662,7 +706,6 @@ class GeminiSDKClient(LLMClient):
                                 tool_call["extra_content"] = {
                                     "google": {"thought_signature": effective_signature}
                                 }
-                                tool_call["thought_signature"] = effective_signature
                                 if thought_signature:
                                     logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (original)")
                                 else:
@@ -695,18 +738,18 @@ class GeminiSDKClient(LLMClient):
                             }
                     
                     # Track consecutive thinking-only chunks to detect infinite loop
+                    if progress_tracker.check_stuck(chunk_has_progress, has_finish_reason):
+                        logger.error(
+                            f"[GeminiSDK] Infinite thinking loop detected: "
+                            f"too many consecutive thought-only chunks without progress. Breaking stream."
+                        )
+                        raise RuntimeError(
+                            "Gemini infinite thinking loop: too many chunks without progress"
+                        )
+                    
+                    # Reset loop detector on progress/finish
                     if chunk_has_progress or has_finish_reason:
-                        consecutive_thought_only_chunks = 0
-                    else:
-                        consecutive_thought_only_chunks += 1
-                        if consecutive_thought_only_chunks >= MAX_CONSECUTIVE_THOUGHT_CHUNKS:
-                            logger.error(
-                                f"[GeminiSDK] Infinite thinking loop detected: {consecutive_thought_only_chunks} "
-                                f"consecutive thought-only chunks without progress. Breaking stream."
-                            )
-                            raise RuntimeError(
-                                f"Gemini infinite thinking loop: {consecutive_thought_only_chunks} chunks without progress"
-                            )
+                        loop_detector.reset()
                     
                     # Extract usage from chunks
                     if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
@@ -740,7 +783,8 @@ class GeminiSDKClient(LLMClient):
                         accumulated_tool_calls = {}
                         accumulated_usage = None
                         first_thought_signature = None
-                        consecutive_thought_only_chunks = 0
+                        loop_detector.reset()
+                        progress_tracker.reset()
                         # Keep got_malformed_function_call=True for mode=ANY in retry
                         continue
                     else:
@@ -753,7 +797,7 @@ class GeminiSDKClient(LLMClient):
                     # Check if tool calls have empty arguments - this indicates a parsing failure
                     # and we should retry instead of using the malformed output
                     empty_args_calls = [
-                        tc["function"]["name"] 
+                        tc["function"]["name"]
                         for tc in accumulated_tool_calls.values() 
                         if json.loads(tc["function"]["arguments"]) == {}
                     ]
@@ -773,7 +817,8 @@ class GeminiSDKClient(LLMClient):
                         accumulated_tool_calls = {}
                         accumulated_usage = None
                         first_thought_signature = None
-                        consecutive_thought_only_chunks = 0
+                        loop_detector.reset()
+                        progress_tracker.reset()
                         continue
                     elif empty_args_calls:
                         # Retries exhausted, log error and use what we have
@@ -788,6 +833,31 @@ class GeminiSDKClient(LLMClient):
                             f"[GeminiSDK] MALFORMED_FUNCTION_CALL finish_reason, but we have "
                             f"{len(accumulated_tool_calls)} tool calls and {len(accumulated_content)} content parts. "
                             f"Using the successfully parsed output instead of retrying."
+                        )
+                
+                # Check for MAX_TOKENS - retry with thinking disabled
+                if hit_max_tokens and not accumulated_tool_calls:
+                    if attempt < self.max_retries:
+                        wait_time = 1.0
+                        logger.warning(
+                            f"[GeminiSDK] MAX_TOKENS detected (no tool calls, "
+                            f"{len(accumulated_content)} content parts - likely stuck in thinking). "
+                            f"Will retry with thinking disabled (attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await self._cancellable_sleep(wait_time, cancellation_token)
+                        # Reset accumulators for retry
+                        accumulated_content = []
+                        accumulated_thoughts = []
+                        accumulated_tool_calls = {}
+                        accumulated_usage = None
+                        first_thought_signature = None
+                        loop_detector.reset()
+                        progress_tracker.reset()
+                        continue
+                    else:
+                        logger.error(
+                            f"[GeminiSDK] MAX_TOKENS persisted after all retries. "
+                            f"Final output has {len(accumulated_content)} content parts, no tool calls."
                         )
                 
                 # Warn if response is completely empty
@@ -847,7 +917,8 @@ class GeminiSDKClient(LLMClient):
                         accumulated_tool_calls = {}
                         accumulated_usage = None
                         first_thought_signature = None
-                        consecutive_thought_only_chunks = 0
+                        loop_detector.reset()
+                        progress_tracker.reset()
                         # Keep got_malformed_function_call for mode=ANY if it was set
                         continue
                     
@@ -878,7 +949,27 @@ class GeminiSDKClient(LLMClient):
                     accumulated_tool_calls = {}
                     accumulated_usage = None
                     first_thought_signature = None
-                    consecutive_thought_only_chunks = 0
+                    loop_detector.reset()
+                    progress_tracker.reset()
+                    continue
+                
+                # Handle 500 INTERNAL errors (transient Google infrastructure issues)
+                if ("500" in error_str and "internal" in error_str.lower()) and attempt < self.max_retries:
+                    wait_time = 5.0 * (2 ** attempt)  # 5s, 10s, 20s - longer waits for server issues
+                    logger.warning(
+                        f"[GeminiSDK] Server error (500 INTERNAL). "
+                        f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await report_status(f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._cancellable_sleep(wait_time, cancellation_token)
+                    # Reset accumulators for retry
+                    accumulated_content = []
+                    accumulated_thoughts = []
+                    accumulated_tool_calls = {}
+                    accumulated_usage = None
+                    first_thought_signature = None
+                    loop_detector.reset()
+                    progress_tracker.reset()
                     continue
                 
                 logger.error(f"[GeminiSDK] Streaming error: {e}", exc_info=True)
@@ -897,7 +988,8 @@ class GeminiSDKClient(LLMClient):
                     accumulated_tool_calls = {}
                     accumulated_usage = None
                     first_thought_signature = None
-                    consecutive_thought_only_chunks = 0
+                    loop_detector.reset()
+                    progress_tracker.reset()
                     continue
                 else:
                     await report_status(f"Failed after retries: {self.model}")
@@ -1017,7 +1109,6 @@ class GeminiSDKClient(LLMClient):
                             tool_call["extra_content"] = {
                                 "google": {"thought_signature": effective_signature}
                             }
-                            tool_call["thought_signature"] = effective_signature
                             if thought_sig_b64:
                                 logger.debug(f"[GeminiSDK] Non-streaming: stored thought_signature for {func_call.name} (original)")
                             else:
@@ -1074,6 +1165,17 @@ class GeminiSDKClient(LLMClient):
                         f"Rate limit exceeded: {error_str}",
                         provider="gemini_sdk", model=self.model, retry_after=wait_time
                     )
+                
+                # Handle 500 INTERNAL errors (transient Google infrastructure issues)
+                if ("500" in error_str and "internal" in error_str.lower()) and attempt < self.max_retries:
+                    wait_time = 5.0 * (2 ** attempt)  # 5s, 10s, 20s - longer waits for server issues
+                    logger.warning(
+                        f"[GeminiSDK] Server error (500 INTERNAL). "
+                        f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await report_status(f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._cancellable_sleep(wait_time, cancellation_token)
+                    continue
                 
                 logger.error(f"[GeminiSDK] Request error: {e}", exc_info=True)
                 
