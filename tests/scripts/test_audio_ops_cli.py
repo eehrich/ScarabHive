@@ -28,7 +28,7 @@ class TestCLIHelp:
     def test_help_shows_all_commands(self):
         """Test that --help shows all available commands."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -41,7 +41,7 @@ class TestCLIHelp:
     def test_help_shows_examples(self):
         """Test that help shows usage examples."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -55,7 +55,7 @@ class TestCLIHelp:
     def test_subcommand_help_info(self):
         """Test info command help."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "info", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "info", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -64,7 +64,7 @@ class TestCLIHelp:
     def test_subcommand_help_cut(self):
         """Test cut command help."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "cut", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "cut", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -77,7 +77,7 @@ class TestCLIHelp:
     def test_subcommand_help_merge(self):
         """Test merge command help."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "merge", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "merge", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -87,7 +87,7 @@ class TestCLIHelp:
     def test_subcommand_help_mix(self):
         """Test mix command help."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "mix", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "mix", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -98,7 +98,7 @@ class TestCLIHelp:
     def test_subcommand_help_volume(self):
         """Test volume command help."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "volume", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "volume", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -108,7 +108,7 @@ class TestCLIHelp:
     def test_subcommand_help_create(self):
         """Test create command help."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "create", "--help"],
+            [sys.executable, "-m", "plugins.audio_ops", "create", "--help"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -123,7 +123,7 @@ class TestCLIArgumentParsing:
     def test_no_command_shows_help(self):
         """Test that no command shows help."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops"],
+            [sys.executable, "-m", "plugins.audio_ops"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode == 0
@@ -132,7 +132,7 @@ class TestCLIArgumentParsing:
     def test_cut_requires_start_end(self):
         """Test that cut command requires -s and -e."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "cut", "in.wav", "out.wav"],
+            [sys.executable, "-m", "plugins.audio_ops", "cut", "in.wav", "out.wav"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode != 0
@@ -141,7 +141,7 @@ class TestCLIArgumentParsing:
     def test_create_requires_duration(self):
         """Test that create command requires --duration."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "create", "silence.wav"],
+            [sys.executable, "-m", "plugins.audio_ops", "create", "silence.wav"],
             capture_output=True, text=True, encoding='utf-8', errors='replace'
         )
         assert result.returncode != 0
@@ -185,7 +185,7 @@ plugins:
     def test_info_command(self, temp_storage: Path, sample_wav: Path):
         """Test info command on real file."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "info", sample_wav.name],
+            [sys.executable, "-m", "plugins.audio_ops", "info", sample_wav.name],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(temp_storage.parent)
         )
@@ -197,7 +197,7 @@ plugins:
     def test_list_command(self, temp_storage: Path, sample_wav: Path):
         """Test list command."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "list"],
+            [sys.executable, "-m", "plugins.audio_ops", "list"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(temp_storage.parent)
         )
@@ -207,7 +207,7 @@ plugins:
     def test_create_command(self, temp_storage: Path):
         """Test create command."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "create", "silence.wav", "-d", "1000"],
+            [sys.executable, "-m", "plugins.audio_ops", "create", "silence.wav", "-d", "1000"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(temp_storage.parent)
         )
@@ -218,7 +218,7 @@ plugins:
     def test_cut_extract(self, temp_storage: Path, sample_wav: Path):
         """Test cut command in extract mode."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "cut", "test.wav", "segment.wav", 
+            [sys.executable, "-m", "plugins.audio_ops", "cut", "test.wav", "segment.wav", 
              "-s", "1", "-e", "3"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(temp_storage.parent)
@@ -234,7 +234,7 @@ plugins:
     def test_volume_gain(self, temp_storage: Path, sample_wav: Path):
         """Test volume command with gain."""
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "volume", "test.wav", "louder.wav",
+            [sys.executable, "-m", "plugins.audio_ops", "volume", "test.wav", "louder.wav",
              "--gain", "6"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(temp_storage.parent)
@@ -251,7 +251,7 @@ plugins:
         audio2.export(str(wav2), format="wav")
         
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "merge", "merged.wav", 
+            [sys.executable, "-m", "plugins.audio_ops", "merge", "merged.wav", 
              "test.wav", "test2.wav"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(temp_storage.parent)
@@ -272,7 +272,7 @@ plugins:
         audio2.export(str(wav2), format="wav")
         
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "mix", "test.wav", "test2.wav", 
+            [sys.executable, "-m", "plugins.audio_ops", "mix", "test.wav", "test2.wav", 
              "mixed.wav", "-f", "0.5"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(temp_storage.parent)
@@ -302,7 +302,7 @@ plugins:
         monkeypatch.chdir(tmp_path)
         
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "info", "nonexistent.wav"],
+            [sys.executable, "-m", "plugins.audio_ops", "info", "nonexistent.wav"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(tmp_path)
         )
@@ -333,7 +333,7 @@ plugins:
         monkeypatch.chdir(tmp_path)
         
         result = subprocess.run(
-            [sys.executable, "-m", "scripts.audio_ops", "volume", "test.wav", "out.wav"],
+            [sys.executable, "-m", "plugins.audio_ops", "volume", "test.wav", "out.wav"],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             cwd=str(tmp_path)
         )
