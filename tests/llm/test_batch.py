@@ -26,6 +26,7 @@ from agent_system.llm.batch.models import (
 from agent_system.llm.batch.queue_manager import BatchQueueManager
 from agent_system.llm.batch.openai_batch import OpenAIBatchClient
 from agent_system.llm.batch.gemini_batch import GeminiBatchClient
+from agent_system.llm.gemini_utils import sanitize_schema_for_gemini
 
 # Filter out deprecation warnings from test setup
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -1636,15 +1637,12 @@ class TestBatchLLMClient:
 # ==============================================================================
 
 class TestSchemaSanitization:
-    """Tests for JSON Schema sanitization in Gemini batch client."""
+    """Tests for JSON Schema sanitization for Gemini API.
     
-    @pytest.fixture
-    def gemini_client(self) -> GeminiBatchClient:
-        """Create a Gemini batch client for testing."""
-        client = GeminiBatchClient(api_key="test-key")
-        return client
+    These tests use sanitize_schema_for_gemini() from gemini_utils directly.
+    """
     
-    def test_sanitize_removes_oneof(self, gemini_client):
+    def test_sanitize_removes_oneof(self):
         """Test that oneOf is removed from schemas."""
         schema = {
             "type": "object",
@@ -1658,13 +1656,13 @@ class TestSchemaSanitization:
             }
         }
         
-        result = gemini_client._sanitize_schema_for_sdk(schema)
+        result = sanitize_schema_for_gemini(schema)
         
         assert "oneOf" not in result.get("properties", {}).get("value", {})
         # First option should be merged
         assert result["properties"]["value"].get("type") == "string"
     
-    def test_sanitize_removes_anyof(self, gemini_client):
+    def test_sanitize_removes_anyof(self):
         """Test that anyOf is removed from schemas."""
         schema = {
             "type": "object", 
@@ -1678,11 +1676,11 @@ class TestSchemaSanitization:
             }
         }
         
-        result = gemini_client._sanitize_schema_for_sdk(schema)
+        result = sanitize_schema_for_gemini(schema)
         
         assert "anyOf" not in result.get("properties", {}).get("score", {})
     
-    def test_sanitize_nested_properties(self, gemini_client):
+    def test_sanitize_nested_properties(self):
         """Test that nested properties are sanitized recursively."""
         schema = {
             "type": "object",
@@ -1701,13 +1699,13 @@ class TestSchemaSanitization:
             }
         }
         
-        result = gemini_client._sanitize_schema_for_sdk(schema)
+        result = sanitize_schema_for_gemini(schema)
         
         inner_prop = result["properties"]["outer"]["properties"]["inner"]
         assert "oneOf" not in inner_prop
         assert inner_prop.get("type") == "boolean"
     
-    def test_sanitize_array_items(self, gemini_client):
+    def test_sanitize_array_items(self):
         """Test that array items are sanitized."""
         schema = {
             "type": "array",
@@ -1719,11 +1717,11 @@ class TestSchemaSanitization:
             }
         }
         
-        result = gemini_client._sanitize_schema_for_sdk(schema)
+        result = sanitize_schema_for_gemini(schema)
         
         assert "oneOf" not in result.get("items", {})
     
-    def test_sanitize_removes_additional_properties(self, gemini_client):
+    def test_sanitize_removes_additional_properties(self):
         """Test that additionalProperties is removed from schemas."""
         schema = {
             "type": "object",
@@ -1734,13 +1732,13 @@ class TestSchemaSanitization:
             "required": ["name"]
         }
         
-        result = gemini_client._sanitize_schema_for_sdk(schema)
+        result = sanitize_schema_for_gemini(schema)
         
         assert "additionalProperties" not in result
         assert result["type"] == "object"
         assert result["required"] == ["name"]
     
-    def test_sanitize_removes_default_and_examples(self, gemini_client):
+    def test_sanitize_removes_default_and_examples(self):
         """Test that default and examples are removed from schemas."""
         schema = {
             "type": "object",
@@ -1753,13 +1751,13 @@ class TestSchemaSanitization:
             }
         }
         
-        result = gemini_client._sanitize_schema_for_sdk(schema)
+        result = sanitize_schema_for_gemini(schema)
         
         assert "default" not in result["properties"]["count"]
         assert "examples" not in result["properties"]["count"]
         assert result["properties"]["count"]["type"] == "integer"
     
-    def test_sanitize_preserves_valid_keywords(self, gemini_client):
+    def test_sanitize_preserves_valid_keywords(self):
         """Test that valid JSON Schema keywords are preserved."""
         schema = {
             "type": "object",
@@ -1770,7 +1768,7 @@ class TestSchemaSanitization:
             "required": ["name"]
         }
         
-        result = gemini_client._sanitize_schema_for_sdk(schema)
+        result = sanitize_schema_for_gemini(schema)
         
         assert result["type"] == "object"
         assert result["required"] == ["name"]

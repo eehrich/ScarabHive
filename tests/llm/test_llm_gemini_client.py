@@ -5,6 +5,10 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_system.llm.gemini_client import GeminiClient
+from agent_system.llm.gemini_utils import (
+    convert_openai_messages_to_gemini,
+    convert_openai_tools_to_gemini,
+)
 from agent_system.llm.models import ChatMessage
 
 
@@ -38,7 +42,7 @@ class TestGeminiClientMessageConversion:
             ChatMessage(role="user", content="Hello, how are you?")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction always present to prevent MALFORMED_FUNCTION_CALL
         assert system_instruction == CRITICAL_INSTRUCTION
@@ -53,7 +57,7 @@ class TestGeminiClientMessageConversion:
             ChatMessage(role="user", content="Hello")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction prepended to user system message
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
@@ -68,7 +72,7 @@ class TestGeminiClientMessageConversion:
             ChatMessage(role="assistant", content="I'm doing well, thank you!")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction always present
         assert system_instruction == CRITICAL_INSTRUCTION
@@ -91,7 +95,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction always present
         assert system_instruction == CRITICAL_INSTRUCTION
@@ -123,7 +127,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction always present
         assert system_instruction == CRITICAL_INSTRUCTION
@@ -167,7 +171,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         assert len(contents) == 1
         assert len(contents[0]["parts"]) == 2  # Two function calls
@@ -200,7 +204,7 @@ class TestGeminiClientMessageConversion:
             ChatMessage(role="assistant", content="The weather in Berlin is 22°C.")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction prepended
         assert system_instruction.startswith(CRITICAL_INSTRUCTION)
@@ -277,7 +281,7 @@ class TestGeminiClientMessageConversion:
             ChatMessage(role="assistant", content="Results: Berlin is 22°C, Tokyo time is 15:30, and 1 EUR = 162.5 JPY.")
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # Should have: User, Assistant with 3 calls, SINGLE merged tool response, Assistant response
         assert len(contents) == 4, f"Expected 4 content blocks, got {len(contents)}: {[c.get('role') for c in contents]}"
@@ -327,7 +331,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         assert len(contents) == 1
         assert len(contents[0]["parts"]) == 1
@@ -358,7 +362,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         part = contents[0]["parts"][0]
         assert "thoughtSignature" in part
@@ -381,7 +385,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         # CRITICAL instruction always present
         assert system_instruction == CRITICAL_INSTRUCTION
@@ -415,7 +419,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         assert len(contents) == 1
         assert len(contents[0]["parts"]) == 2
@@ -448,7 +452,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         assert len(contents) == 1
         parts = contents[0]["parts"]
@@ -483,7 +487,7 @@ class TestGeminiClientMessageConversion:
             )
         ]
         
-        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
         
         part = contents[0]["parts"][0]
         # Should NOT have thoughtSignature when not present originally
@@ -512,7 +516,7 @@ class TestGeminiClientToolConversion:
             }
         ]
         
-        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        function_declarations = convert_openai_tools_to_gemini(tools)
         
         assert len(function_declarations) == 1
         assert function_declarations[0]["name"] == "get_weather"
@@ -541,7 +545,7 @@ class TestGeminiClientToolConversion:
             }
         ]
         
-        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        function_declarations = convert_openai_tools_to_gemini(tools)
         
         assert len(function_declarations) == 2
         assert function_declarations[0]["name"] == "get_weather"
@@ -559,7 +563,7 @@ class TestGeminiClientToolConversion:
             }
         ]
         
-        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        function_declarations = convert_openai_tools_to_gemini(tools)
         
         assert len(function_declarations) == 1
         assert function_declarations[0]["name"] == "hello_world"
@@ -578,7 +582,7 @@ class TestGeminiClientToolConversion:
             }
         ]
         
-        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        function_declarations = convert_openai_tools_to_gemini(tools)
         
         assert len(function_declarations) == 1
         assert function_declarations[0]["name"] == "test"
@@ -611,7 +615,7 @@ class TestGeminiClientToolConversion:
             }
         ]
         
-        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        function_declarations = convert_openai_tools_to_gemini(tools)
         
         assert len(function_declarations) == 1
         params = function_declarations[0]["parameters"]
@@ -806,11 +810,8 @@ class TestGeminiClientStreaming:
             
             tool_call = final_events[0]["assistant"]["tool_calls"][0]
             
-            # Verify thoughtSignature is stored in both locations
-            assert "thought_signature" in tool_call
-            assert tool_call["thought_signature"] == "gemini3_thought_sig_abc123"
-            
-            # Also check extra_content format (OpenAI-compatible)
+            # Verify thoughtSignature is stored in OpenAI-compatible extra_content format
+            # (not at top level, to maintain OpenAI API compatibility)
             assert "extra_content" in tool_call
             assert tool_call["extra_content"]["google"]["thought_signature"] == "gemini3_thought_sig_abc123"
 
