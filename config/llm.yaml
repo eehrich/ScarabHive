@@ -60,8 +60,8 @@ llm_system:
       context_window: 200000
       request_timeout: 240
       include_thoughts: true
-      thinking_budget: 1024
-      max_tokens: 8192
+      thinking_level: low  # Gemini 3 uses thinking_level: minimal, low, medium, high
+      max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -80,8 +80,8 @@ llm_system:
       context_window: 200000
       request_timeout: 240
       include_thoughts: false
-      thinking_budget: 1024
-      max_tokens: 8192
+      thinking_level: low  # Gemini 3 uses thinking_level: minimal, low, medium, high
+      max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -100,8 +100,8 @@ llm_system:
       context_window: 200000
       request_timeout: 240
       include_thoughts: true
-      thinking_budget: 4096
-      max_tokens: 8192
+      thinking_level: high  # Gemini 3 uses thinking_level: low, high
+      max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -120,8 +120,8 @@ llm_system:
       context_window: 200000
       request_timeout: 240
       include_thoughts: false
-      thinking_budget: 4096
-      max_tokens: 8192
+      thinking_level: high  # Gemini 3 uses thinking_level: low, high
+      max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -136,14 +136,14 @@ llm_system:
     # GEMINI BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
     gemini-3-0-flash-batch:
-      provider: batch                   # NEW: Explicit batch provider
-      batch_provider: gemini            # NEW: Which batch API to use
+      provider: batch                   
+      batch_provider: gemini            # Which batch API to use
       model: gemini-3-flash-preview
       api_key: "***REMOVED***"
       context_window: 200000
       include_thoughts: false
-      thinking_budget: 1024
-      max_tokens: 8192
+      thinking_level: low
+      #max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -158,9 +158,9 @@ llm_system:
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       context_window: 200000
-      include_thoughts: false
-      thinking_budget: 4096
-      max_tokens: 8192
+      include_thoughts: false      
+      thinking_level: high
+      max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -179,7 +179,7 @@ llm_system:
       api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 180
-      max_tokens: 8192
+      max_tokens: 16384
       include_thinking: false
       enable_prompt_caching: true
       capabilities:

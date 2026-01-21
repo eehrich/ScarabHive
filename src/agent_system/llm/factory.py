@@ -136,6 +136,9 @@ def create_llm_from_profile(
     if llm_kwargs.get("thinking_budget") is not None:
         make_kwargs["thinking_budget"] = llm_kwargs.get("thinking_budget")
 
+    if llm_kwargs.get("thinking_level") is not None:
+        make_kwargs["thinking_level"] = llm_kwargs.get("thinking_level")
+
     if llm_kwargs.get("modalities") is not None:
         make_kwargs["modalities"] = llm_kwargs.get("modalities")
 
@@ -250,6 +253,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
 
     if model_config.thinking_budget is not None:
         llm_kwargs["thinking_budget"] = model_config.thinking_budget
+
+    if model_config.thinking_level is not None:
+        llm_kwargs["thinking_level"] = model_config.thinking_level
 
     if model_config.modalities is not None:
         llm_kwargs["modalities"] = model_config.modalities

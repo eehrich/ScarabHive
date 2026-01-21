@@ -54,10 +54,10 @@ class CompactionConfig:
     # Target tokens after compaction
     target_tokens: int = 60000
     
-    # Byte size limit (Gemini has 20MB limit, use 18MB as safe threshold)
+    # Byte size limit (Gemini has 100MB limit, use 90MB as safe threshold)
     # If request_bytes exceeds this, force compaction regardless of token count
-    max_request_bytes: int = 18 * 1024 * 1024  # 18 MB
-    target_request_bytes: int = 10 * 1024 * 1024  # 10 MB target after compaction
+    max_request_bytes: int = 90 * 1024 * 1024  # 90 MB
+    target_request_bytes: int = 70 * 1024 * 1024  # 70 MB target after compaction
     
     # Tool result settings
     tool_result_min_size: int = 500  # Min tokens to store externally
@@ -210,7 +210,7 @@ class LayeredCompactionStrategy:
     def _estimate_request_bytes(self, messages: list[dict[str, Any]]) -> int:
         """Estimate the total request size in bytes.
         
-        This is important for providers like Gemini that have byte-size limits (20MB).
+        This is important for providers like Gemini that have byte-size limits (100MB).
         
         Args:
             messages: Conversation messages
@@ -324,7 +324,7 @@ class LayeredCompactionStrategy:
             modified_messages=messages.copy()
         )
         
-        # Check byte size - Gemini has 20MB limit, force compaction if exceeded
+        # Check byte size - Gemini has 100MB limit, force compaction if exceeded
         request_bytes = self._estimate_request_bytes(messages)
         bytes_exceeded = request_bytes > self.config.max_request_bytes
         
@@ -677,7 +677,7 @@ class LayeredCompactionStrategy:
     ) -> None:
         """Aggressively compact media to reduce request byte size.
         
-        This is called when the request size exceeds max_request_bytes (e.g., Gemini's 20MB limit).
+        This is called when the request size exceeds max_request_bytes (e.g., Gemini's 100MB limit).
         Compacts ALL media except in the last N messages.
         
         Args:

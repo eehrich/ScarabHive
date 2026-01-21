@@ -35,6 +35,7 @@ from .job_tracker import get_job_tracker
 from ..models import LLMRateLimitError, LLMQuotaExhaustedError
 from ..retry_utils import is_rate_limit_error, parse_retry_delay
 from ..gemini_utils import (
+    build_thinking_config,
     extract_available_tool_names,
     filter_unavailable_tool_calls_dict,
     sanitize_schema_for_gemini,
@@ -246,6 +247,26 @@ class GeminiBatchClient(BatchProviderClient):
                 sdk_tools = self._convert_tools_to_sdk(req.tools)
                 if sdk_tools:
                     config['tools'] = sdk_tools
+            
+            # Add thinking config if specified (Gemini 2.5: thinking_budget, Gemini 3: thinking_level)
+            # Note: include_thoughts is always False for batch - thoughts aren't streamed
+            # and would just waste tokens in the response
+            thinking_config = build_thinking_config(
+                include_thoughts=False,  # Always False for batch
+                thinking_budget=req.thinking_budget,
+                thinking_level=req.thinking_level,
+            )
+            if thinking_config:
+                # Convert HTTP API format to SDK format
+                sdk_thinking_kwargs = {}
+                if "includeThoughts" in thinking_config:
+                    sdk_thinking_kwargs["include_thoughts"] = thinking_config["includeThoughts"]
+                if "thinkingBudget" in thinking_config:
+                    sdk_thinking_kwargs["thinking_budget"] = thinking_config["thinkingBudget"]
+                if "thinkingLevel" in thinking_config:
+                    # SDK expects lowercase values ("low", "medium", "high", "minimal")
+                    sdk_thinking_kwargs["thinking_level"] = thinking_config["thinkingLevel"]
+                config['thinking_config'] = types.ThinkingConfig(**sdk_thinking_kwargs)
             
             if config:
                 request_dict['config'] = config

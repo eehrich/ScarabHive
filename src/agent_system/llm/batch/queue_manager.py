@@ -393,6 +393,8 @@ class BatchQueueManager:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         max_tokens: Optional[int] = None,
+        thinking_budget: Optional[int] = None,
+        thinking_level: Optional[str] = None,
         session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         custom_id: Optional[str] = None,
@@ -411,6 +413,8 @@ class BatchQueueManager:
             messages: Chat messages
             tools: Optional tool definitions
             max_tokens: Optional max output tokens limit
+            thinking_budget: Token budget for thinking (Gemini 2.5 models)
+            thinking_level: Thinking intensity level (Gemini 3 models)
             session_id: Optional session ID
             agent_name: Optional agent name
             custom_id: Optional custom ID for correlation
@@ -445,6 +449,8 @@ class BatchQueueManager:
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
+            thinking_budget=thinking_budget,
+            thinking_level=thinking_level,
             session_id=session_id,
             agent_name=agent_name,
             metadata={"provider": provider},

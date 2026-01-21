@@ -322,8 +322,14 @@ class BatchLLMClient(LLMClient):
                     "content": msg.content,
                 })
         
-        # Get max_tokens from underlying client if available
+        # Get generation parameters from underlying client if available
         max_tokens = getattr(self.underlying_client, 'max_tokens', None)
+        
+        # Get thinking parameters from underlying client's extra_params (Gemini only)
+        # Note: include_thoughts is always False for batch to avoid wasting tokens
+        extra_params = getattr(self.underlying_client, 'extra_params', {})
+        thinking_budget = extra_params.get('thinking_budget')
+        thinking_level = extra_params.get('thinking_level')
         
         try:
             # Submit to queue and get future with cancellation support
@@ -334,6 +340,8 @@ class BatchLLMClient(LLMClient):
                 messages=messages_data,
                 tools=tools,
                 max_tokens=max_tokens,
+                thinking_budget=thinking_budget,
+                thinking_level=thinking_level,
                 cancellation_token=cancellation_token,
                 status_scope=status_scope,
             )

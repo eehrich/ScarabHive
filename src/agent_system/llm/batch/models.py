@@ -48,6 +48,8 @@ class BatchRequest:
         messages: Chat messages in OpenAI format
         tools: Optional tool definitions
         max_tokens: Optional max output tokens limit
+        thinking_budget: Token budget for thinking (Gemini 2.5 models)
+        thinking_level: Thinking intensity level (Gemini 3 models): minimal, low, medium, high
         session_id: Optional session ID for tracking
         agent_name: Optional agent name for tracking
         created_at: Timestamp when request was created
@@ -59,6 +61,8 @@ class BatchRequest:
     messages: List[Dict[str, Any]] = field(default_factory=list)
     tools: Optional[List[Dict[str, Any]]] = None
     max_tokens: Optional[int] = None
+    thinking_budget: Optional[int] = None
+    thinking_level: Optional[str] = None
     session_id: Optional[str] = None
     agent_name: Optional[str] = None
     created_at: datetime = field(default_factory=_utc_now)

@@ -17,10 +17,12 @@ from .models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError
 from .clients import LLMClient
 from .retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
+    adjust_thinking_for_retry,
+    build_thinking_config,
+    convert_openai_messages_to_gemini,
     convert_openai_tools_to_gemini,
-    prepare_messages_for_gemini,
     extract_usage_from_metadata,
-    should_disable_thinking_on_retry,
+    prepare_messages_for_gemini,
     StreamingLoopDetector,
     ThinkingProgressTracker,
 )
@@ -44,6 +46,7 @@ class GeminiClient(LLMClient):
         parallel_tool_calls: bool = True,
         include_thoughts: bool | None = None,
         thinking_budget: int | None = None,
+        thinking_level: str | None = None,
         max_tokens: int | None = None,
         **extra_params
     ):
@@ -62,9 +65,13 @@ class GeminiClient(LLMClient):
         if include_thoughts is not None:
             self.extra_params["include_thoughts"] = include_thoughts
         
-        # Store thinking_budget in extra_params for consistency
+        # Store thinking_budget in extra_params for consistency (Gemini 2.5 models)
         if thinking_budget is not None:
             self.extra_params["thinking_budget"] = thinking_budget
+        
+        # Store thinking_level in extra_params for consistency (Gemini 3 models)
+        if thinking_level is not None:
+            self.extra_params["thinking_level"] = thinking_level
 
         # Setup HTTPX timeouts
         if httpx_timeouts:
@@ -84,7 +91,10 @@ class GeminiClient(LLMClient):
             self.verify = ssl_verify
 
         logger.debug(
-            f"GeminiClient initialized model={model} base_url={base_url} verify={self.verify} include_thoughts={self.extra_params.get('include_thoughts')} thinking_budget={self.extra_params.get('thinking_budget')}"
+            f"GeminiClient initialized model={model} base_url={base_url} verify={self.verify} "
+            f"include_thoughts={self.extra_params.get('include_thoughts')} "
+            f"thinking_budget={self.extra_params.get('thinking_budget')} "
+            f"thinking_level={self.extra_params.get('thinking_level')}"
         )
 
     async def chat_tools_streaming(
@@ -123,14 +133,21 @@ class GeminiClient(LLMClient):
         # Optional: enable Gemini "thought summaries" in responses.
         # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
         # thinkingConfig must be inside generationConfig.
-        # - Gemini 2.5: use thinkingBudget (e.g. 8192)
-        # - Gemini 3: use thinkingBudget (works for both) or thinkingLevel
-        if self.extra_params.get("include_thoughts") is True:
-            budget = self.extra_params.get("thinking_budget", 8192)
-            generation_config["thinkingConfig"] = {
-                "thinkingBudget": budget,
-                "includeThoughts": True
-            }
+        # Note: Gemini 3 models ALWAYS think - thinking cannot be disabled!
+        # include_thoughts only controls whether thoughts are returned in the response
+        # thinking_budget controls how much the model can think (Gemini 2.5 models)
+        # thinking_level controls thinking intensity: minimal, low, medium, high (Gemini 3 models)
+        thinking_config = build_thinking_config(
+            include_thoughts=self.extra_params.get("include_thoughts"),
+            thinking_budget=self.extra_params.get("thinking_budget"),
+            thinking_level=self.extra_params.get("thinking_level"),
+        )
+        if thinking_config:
+            # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
+            if "thinkingLevel" in thinking_config:
+                level = thinking_config["thinkingLevel"]
+                thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+            generation_config["thinkingConfig"] = thinking_config
 
         payload = {
             "contents": contents,
@@ -175,14 +192,32 @@ class GeminiClient(LLMClient):
                     payload["toolConfig"] = {}
                 payload["toolConfig"]["functionCallingConfig"] = {"mode": "ANY"}
             
-            # DEFENSIVE RETRY: On any retry, disable thinking entirely
-            disable_thinking = should_disable_thinking_on_retry(
-                attempt, self.extra_params.get("include_thoughts")
+            # DEFENSIVE RETRY: On retry, reduce thinking to avoid token exhaustion
+            retry_thinking_budget, retry_thinking_level = adjust_thinking_for_retry(
+                attempt,
+                self.extra_params.get("thinking_budget"),
+                self.extra_params.get("thinking_level"),
             )
-            if disable_thinking:
-                logger.info(f"[Gemini] Retry #{attempt}: disabling thinking mode for defensive retry")
-                if "generationConfig" in payload and "thinkingConfig" in payload["generationConfig"]:
-                    del payload["generationConfig"]["thinkingConfig"]
+            if attempt > 0:
+                # Update thinking config in payload for retry
+                thinking_config = build_thinking_config(
+                    include_thoughts=self.extra_params.get("include_thoughts"),
+                    thinking_budget=retry_thinking_budget,
+                    thinking_level=retry_thinking_level,
+                )
+                if thinking_config:
+                    # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
+                    if "thinkingLevel" in thinking_config:
+                        level = thinking_config["thinkingLevel"]
+                        thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+                    if "generationConfig" not in payload:
+                        payload["generationConfig"] = {}
+                    payload["generationConfig"]["thinkingConfig"] = thinking_config
+                    logger.info(
+                        f"[Gemini] Retry #{attempt}: reducing thinking "
+                        f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
+                        f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
+                    )
 
             try:
                 logger.debug(f"Gemini streaming: Starting request to {self.model}")
@@ -584,12 +619,21 @@ class GeminiClient(LLMClient):
         # Optional: enable Gemini "thought summaries" in responses.
         # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
         # thinkingConfig must be inside generationConfig.
-        if self.extra_params.get("include_thoughts") is True:
-            budget = self.extra_params.get("thinking_budget", 8192)
-            generation_config["thinkingConfig"] = {
-                "thinkingBudget": budget,
-                "includeThoughts": True
-            }
+        # Note: Gemini 3 models ALWAYS think - thinking cannot be disabled!
+        # include_thoughts only controls whether thoughts are returned in the response
+        # thinking_budget controls how much the model can think (Gemini 2.5 models)
+        # thinking_level controls thinking intensity: minimal, low, medium, high (Gemini 3 models)
+        thinking_config = build_thinking_config(
+            include_thoughts=self.extra_params.get("include_thoughts"),
+            thinking_budget=self.extra_params.get("thinking_budget"),
+            thinking_level=self.extra_params.get("thinking_level"),
+        )
+        if thinking_config:
+            # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
+            if "thinkingLevel" in thinking_config:
+                level = thinking_config["thinkingLevel"]
+                thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+            generation_config["thinkingConfig"] = thinking_config
 
         payload = {
             "contents": contents,
@@ -619,6 +663,33 @@ class GeminiClient(LLMClient):
                 if "toolConfig" not in payload:
                     payload["toolConfig"] = {}
                 payload["toolConfig"]["functionCallingConfig"] = {"mode": "ANY"}
+            
+            # DEFENSIVE RETRY: On retry, reduce thinking to avoid token exhaustion
+            retry_thinking_budget, retry_thinking_level = adjust_thinking_for_retry(
+                attempt,
+                self.extra_params.get("thinking_budget"),
+                self.extra_params.get("thinking_level"),
+            )
+            if attempt > 0:
+                # Update thinking config in payload for retry
+                thinking_config = build_thinking_config(
+                    include_thoughts=self.extra_params.get("include_thoughts"),
+                    thinking_budget=retry_thinking_budget,
+                    thinking_level=retry_thinking_level,
+                )
+                if thinking_config:
+                    # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
+                    if "thinkingLevel" in thinking_config:
+                        level = thinking_config["thinkingLevel"]
+                        thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+                    if "generationConfig" not in payload:
+                        payload["generationConfig"] = {}
+                    payload["generationConfig"]["thinkingConfig"] = thinking_config
+                    logger.info(
+                        f"[Gemini] Non-streaming retry #{attempt}: reducing thinking "
+                        f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
+                        f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
+                    )
 
             try:
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:

@@ -13,9 +13,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Gemini API has a 20MB request size limit
-GEMINI_MAX_REQUEST_BYTES = 20 * 1024 * 1024  # 20 MB
-GEMINI_TARGET_REQUEST_BYTES = 15 * 1024 * 1024  # 15 MB target after compaction
+# Gemini API has a 100MB request size limit
+GEMINI_MAX_REQUEST_BYTES = 100 * 1024 * 1024  # 100 MB
+GEMINI_TARGET_REQUEST_BYTES = 80 * 1024 * 1024  # 80 MB target after compaction
 
 
 def extract_available_tool_names(tools: List[Dict[str, Any]]) -> Set[str]:
@@ -43,7 +43,7 @@ def extract_available_tool_names(tools: List[Dict[str, Any]]) -> Set[str]:
 def estimate_contents_bytes(contents: List[Dict[str, Any]]) -> int:
     """Estimate the total size of Gemini contents in bytes.
     
-    This is used to check against Gemini's 20MB request size limit.
+    This is used to check against Gemini's 100MB request size limit.
     
     Args:
         contents: List of Gemini content dicts with role and parts
@@ -194,14 +194,14 @@ def prepare_messages_for_gemini(
     This is the main entry point for both streaming and non-streaming requests.
     It combines filter_unavailable_tool_calls and convert_openai_messages_to_gemini.
     
-    Also enforces Gemini's 20MB request size limit by compacting old inline data
+    Also enforces Gemini's 100MB request size limit by compacting old inline data
     if necessary (fallback when Context Engineer isn't enabled or wasn't enough).
     
     Args:
         messages: List of ChatMessage objects
         tools: List of OpenAI-format tool dicts
         include_critical_instruction: Whether to prepend critical function calling instruction
-        enforce_byte_limit: Whether to compact inline data if request exceeds 20MB
+        enforce_byte_limit: Whether to compact inline data if request exceeds 100MB
     
     Returns:
         (system_instruction, contents) tuple for Gemini API
@@ -1202,21 +1202,86 @@ def extract_usage_from_metadata(usage_metadata: Any, use_camel_case: bool = Fals
     return usage
 
 
-def should_disable_thinking_on_retry(
+def adjust_thinking_for_retry(
     attempt: int,
-    include_thoughts: Optional[bool]
-) -> bool:
-    """Determine if thinking should be disabled for a retry attempt.
+    thinking_budget: Optional[int],
+    thinking_level: Optional[str],
+) -> tuple[Optional[int], Optional[str]]:
+    """Adjust thinking parameters for retry attempts to avoid token exhaustion.
     
-    Implements defensive retry strategy: on ANY retry (attempt > 0),
-    disable thinking entirely. Thinking loops are often the root cause
-    of issues like MAX_TOKENS exhaustion, infinite loops, etc.
+    Strategy:
+    - thinking_level: Reduce to "low" on retry, or keep "minimal" if already set
+    - thinking_budget: Halve on each retry attempt
     
     Args:
         attempt: Current retry attempt (0 = first try)
-        include_thoughts: Whether thinking was originally enabled
+        thinking_budget: Original thinking budget (Gemini 2.5)
+        thinking_level: Original thinking level (Gemini 3)
         
     Returns:
-        True if thinking should be disabled
+        Tuple of (adjusted_thinking_budget, adjusted_thinking_level)
     """
-    return attempt > 0 and bool(include_thoughts)
+    if attempt == 0:
+        # First attempt - use original values
+        return thinking_budget, thinking_level
+    
+    # Adjust thinking_level for Gemini 3
+    adjusted_level = thinking_level
+    if thinking_level is not None:
+        # Reduce to "low" unless already "minimal"
+        if thinking_level.lower() != "minimal":
+            adjusted_level = "low"
+    
+    # Adjust thinking_budget for Gemini 2.5
+    adjusted_budget = thinking_budget
+    if thinking_budget is not None and thinking_budget > 0:
+        # Halve on each retry attempt
+        adjusted_budget = thinking_budget // (2 ** attempt)
+        # If budget falls below 512, disable thinking entirely (set to 0)
+        # Below 512 tokens, thinking is not meaningful enough
+        if adjusted_budget < 512:
+            adjusted_budget = 0
+    
+    return adjusted_budget, adjusted_level
+
+
+def build_thinking_config(
+    include_thoughts: Optional[bool],
+    thinking_budget: Optional[int],
+    thinking_level: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build thinking config for Gemini API requests.
+    
+    Centralizes thinking configuration logic for all Gemini clients.
+    
+    IMPORTANT: Gemini 3 models ALWAYS think - thinking cannot be disabled!
+    - include_thoughts: Controls whether thoughts are RETURNED in response
+    - thinking_budget: Token budget for thinking (Gemini 2.5 only: 1-24576)
+    - thinking_level: Thinking level (Gemini 3 only: minimal, low, medium, high)
+    
+    Only sends parameters that are explicitly configured - if not set, uses Google defaults.
+        
+    Returns:
+        Dict with thinkingConfig for HTTP API, or None if no config needed
+    """
+    # Only set thinking_config if we have explicit settings
+    if include_thoughts is None and thinking_budget is None and thinking_level is None:
+        return None
+    
+    thinking_config: Dict[str, Any] = {}
+    
+    # include_thoughts: whether to return thoughts in response (model still thinks!)
+    if include_thoughts is not None:
+        thinking_config["includeThoughts"] = include_thoughts
+    
+    # thinking_budget: token budget for Gemini 2.5 models (don't set = use default 8192)
+    if thinking_budget is not None and thinking_budget > 0:
+        thinking_config["thinkingBudget"] = thinking_budget
+    
+    # thinking_level: for Gemini 3 models (minimal, low, medium, high)
+    # Keep lowercase - HTTP client will map to THINKING_LEVEL_X format if needed
+    if thinking_level is not None:
+        thinking_config["thinkingLevel"] = thinking_level.lower()
+    
+    return thinking_config if thinking_config else None
+

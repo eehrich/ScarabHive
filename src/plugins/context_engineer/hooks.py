@@ -74,9 +74,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.layer3_threshold = int(config.get("layer3_threshold", 120000))
         self.target_tokens = int(config.get("target_tokens", 60000))
         
-        # Byte size limits (Gemini has 20MB limit)
-        self.max_request_bytes = int(config.get("max_request_bytes", 18 * 1024 * 1024))  # 18 MB
-        self.target_request_bytes = int(config.get("target_request_bytes", 10 * 1024 * 1024))  # 10 MB
+        # Byte size limits (Gemini has 100MB limit)
+        self.max_request_bytes = int(config.get("max_request_bytes", 90 * 1024 * 1024))  # 90 MB
+        self.target_request_bytes = int(config.get("target_request_bytes", 70 * 1024 * 1024))  # 70 MB
         
         # Tool result settings
         self.tool_result_min_size = int(config.get("tool_result_min_size", 500))
@@ -284,7 +284,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Get actual or estimated token usage (prefer actual from usage_tracker)
             current_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts, strategy)
             
-            # Estimate request bytes using strategy's method (for Gemini 20MB limit check)
+            # Estimate request bytes using strategy's method (for Gemini 100MB limit check)
             request_bytes = strategy._estimate_request_bytes(messages_as_dicts)
             bytes_exceeded = request_bytes > self.max_request_bytes
             
@@ -365,7 +365,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     )
             
             # Force compaction if manually triggered, byte limit exceeded, OR event-based media compaction needed
-            # Byte limit MUST be enforced to avoid API errors (Gemini 20MB limit)
+            # Byte limit MUST be enforced to avoid API errors (Gemini 100MB limit)
             force = is_manual or bytes_exceeded or event_media_compaction_needed
             
             # Apply compaction with status updates

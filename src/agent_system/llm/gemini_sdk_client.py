@@ -35,13 +35,14 @@ from agent_system.llm.models import ChatMessage, LLMRateLimitError, LLMQuotaExha
 from agent_system.llm.clients import LLMClient
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.gemini_utils import (
+    adjust_thinking_for_retry,
+    build_thinking_config,
+    compact_contents_for_byte_limit,
     convert_openai_messages_to_gemini,
     convert_openai_tools_to_gemini,
     extract_available_tool_names,
-    filter_unavailable_tool_calls,
-    compact_contents_for_byte_limit,
     extract_usage_from_metadata,
-    should_disable_thinking_on_retry,
+    filter_unavailable_tool_calls,
     StreamingLoopDetector,
     ThinkingProgressTracker,
 )
@@ -73,6 +74,7 @@ class GeminiSDKClient(LLMClient):
         parallel_tool_calls: bool = True,  # Ignored, kept for compatibility
         include_thoughts: bool | None = None,
         thinking_budget: int | None = None,
+        thinking_level: str | None = None,
         **extra_params
     ):
         """Initialize Gemini SDK client.
@@ -88,7 +90,8 @@ class GeminiSDKClient(LLMClient):
             max_retries: Maximum retry attempts
             parallel_tool_calls: Ignored (SDK handles this)
             include_thoughts: Enable thought/reasoning output
-            thinking_budget: Token budget for thinking
+            thinking_budget: Token budget for thinking (Gemini 2.5 models)
+            thinking_level: Thinking level: minimal, low, medium, high (Gemini 3 models)
             **extra_params: Additional generation parameters (temperature, top_p, etc.)
         """
         self.model = model
@@ -107,6 +110,10 @@ class GeminiSDKClient(LLMClient):
         if thinking_budget is not None:
             self.extra_params["thinking_budget"] = thinking_budget
         
+        # Store thinking_level in extra_params for consistency (Gemini 3 models)
+        if thinking_level is not None:
+            self.extra_params["thinking_level"] = thinking_level
+        
         # Initialize the official client
         self._client = genai.Client(api_key=api_key)
         
@@ -114,7 +121,8 @@ class GeminiSDKClient(LLMClient):
             f"Initialized GeminiSDKClient with model={model} "
             f"context_window={context_window} "
             f"include_thoughts={self.extra_params.get('include_thoughts')} "
-            f"thinking_budget={self.extra_params.get('thinking_budget')}"
+            f"thinking_budget={self.extra_params.get('thinking_budget')} "
+            f"thinking_level={self.extra_params.get('thinking_level')}"
         )
 
     def _convert_messages_to_sdk(
@@ -123,7 +131,7 @@ class GeminiSDKClient(LLMClient):
         """Convert ChatMessage list to SDK Content format.
         
         Uses shared conversion logic, then wraps in SDK types.
-        Also enforces Gemini's 20MB request size limit as fallback.
+        Also enforces Gemini's 100MB request size limit as fallback.
         
         Returns:
             (system_instruction, contents_list)
@@ -233,9 +241,18 @@ class GeminiSDKClient(LLMClient):
         system_instruction: Optional[str],
         sdk_tools: Optional[types.Tool],
         force_any_mode: bool = False,
-        disable_thinking: bool = False
+        retry_thinking_budget: Optional[int] = None,
+        retry_thinking_level: Optional[str] = None,
     ) -> types.GenerateContentConfig:
-        """Build generation config with all parameters."""
+        """Build generation config with all parameters.
+        
+        Args:
+            system_instruction: Optional system instruction
+            sdk_tools: Optional SDK tool definitions
+            force_any_mode: Force function calling mode=ANY (for retries)
+            retry_thinking_budget: Override thinking budget for retry (Gemini 2.5)
+            retry_thinking_level: Override thinking level for retry (Gemini 3)
+        """
         config = types.GenerateContentConfig(
             temperature=self.extra_params.get("temperature", 1.0),
             top_p=self.extra_params.get("top_p", 0.95),
@@ -268,13 +285,27 @@ class GeminiSDKClient(LLMClient):
             config.system_instruction = system_instruction
             logger.debug(f"[GeminiSDK] System instruction set: {len(system_instruction)} chars")
         
-        # Enable thinking if requested (but not if disabled for defensive retry)
-        if self.extra_params.get("include_thoughts") is True and not disable_thinking:
-            budget = self.extra_params.get("thinking_budget", 8192)
-            config.thinking_config = types.ThinkingConfig(
-                thinking_budget=budget,
-                include_thoughts=True
-            )
+        # Configure thinking parameters
+        # Use retry overrides if provided, otherwise use original values
+        thinking_budget = retry_thinking_budget if retry_thinking_budget is not None else self.extra_params.get("thinking_budget")
+        thinking_level = retry_thinking_level if retry_thinking_level is not None else self.extra_params.get("thinking_level")
+        
+        thinking_config = build_thinking_config(
+            include_thoughts=self.extra_params.get("include_thoughts"),
+            thinking_budget=thinking_budget,
+            thinking_level=thinking_level,
+        )
+        if thinking_config:
+            # Convert HTTP API format to SDK format
+            sdk_thinking_kwargs = {}
+            if "includeThoughts" in thinking_config:
+                sdk_thinking_kwargs["include_thoughts"] = thinking_config["includeThoughts"]
+            if "thinkingBudget" in thinking_config:
+                sdk_thinking_kwargs["thinking_budget"] = thinking_config["thinkingBudget"]
+            if "thinkingLevel" in thinking_config:
+                # SDK expects lowercase values ("low", "medium", "high", "minimal")
+                sdk_thinking_kwargs["thinking_level"] = thinking_config["thinkingLevel"]
+            config.thinking_config = types.ThinkingConfig(**sdk_thinking_kwargs)
         
         return config
 
@@ -484,18 +515,24 @@ class GeminiSDKClient(LLMClient):
             # This helps the model generate proper JSON instead of Python code
             force_any_mode = attempt > 0 and got_malformed_function_call
             
-            # DEFENSIVE RETRY: On any retry, disable thinking entirely
-            disable_thinking = should_disable_thinking_on_retry(
-                attempt, self.extra_params.get("include_thoughts")
+            # DEFENSIVE RETRY: On retry, reduce thinking to avoid token exhaustion
+            retry_thinking_budget, retry_thinking_level = adjust_thinking_for_retry(
+                attempt,
+                self.extra_params.get("thinking_budget"),
+                self.extra_params.get("thinking_level"),
             )
-            if disable_thinking:
+            if attempt > 0 and (retry_thinking_budget != self.extra_params.get("thinking_budget") or 
+                               retry_thinking_level != self.extra_params.get("thinking_level")):
                 logger.info(
-                    f"[GeminiSDK] Retry #{attempt}: disabling thinking mode for defensive retry"
+                    f"[GeminiSDK] Retry #{attempt}: reducing thinking "
+                    f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
+                    f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
                 )
             
             generation_config = self._build_generation_config(
                 system_instruction, sdk_tools, force_any_mode=force_any_mode,
-                disable_thinking=disable_thinking
+                retry_thinking_budget=retry_thinking_budget,
+                retry_thinking_level=retry_thinking_level,
             )
             if force_any_mode:
                 logger.debug(f"[GeminiSDK] Retry #{attempt} with forced function calling (mode=ANY)")
@@ -740,8 +777,8 @@ class GeminiSDKClient(LLMClient):
                     # Track consecutive thinking-only chunks to detect infinite loop
                     if progress_tracker.check_stuck(chunk_has_progress, has_finish_reason):
                         logger.error(
-                            f"[GeminiSDK] Infinite thinking loop detected: "
-                            f"too many consecutive thought-only chunks without progress. Breaking stream."
+                            "[GeminiSDK] Infinite thinking loop detected: "
+                            "too many consecutive thought-only chunks without progress. Breaking stream."
                         )
                         raise RuntimeError(
                             "Gemini infinite thinking loop: too many chunks without progress"
@@ -1030,12 +1067,31 @@ class GeminiSDKClient(LLMClient):
         
         system_instruction, contents = self._convert_messages_to_sdk(filtered_messages)
         sdk_tools = self._convert_tools_to_sdk(tools)
-        generation_config = self._build_generation_config(system_instruction, sdk_tools)
         
         last_exception = None
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
+            
+            # DEFENSIVE RETRY: On retry, reduce thinking to avoid token exhaustion
+            retry_thinking_budget, retry_thinking_level = adjust_thinking_for_retry(
+                attempt,
+                self.extra_params.get("thinking_budget"),
+                self.extra_params.get("thinking_level"),
+            )
+            if attempt > 0 and (retry_thinking_budget != self.extra_params.get("thinking_budget") or 
+                               retry_thinking_level != self.extra_params.get("thinking_level")):
+                logger.info(
+                    f"[GeminiSDK] Non-streaming retry #{attempt}: reducing thinking "
+                    f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
+                    f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
+                )
+            
+            generation_config = self._build_generation_config(
+                system_instruction, sdk_tools,
+                retry_thinking_budget=retry_thinking_budget,
+                retry_thinking_level=retry_thinking_level,
+            )
             
             try:
                 logger.debug(f"[GeminiSDK] Starting non-streaming request to {self.model}")

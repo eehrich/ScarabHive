@@ -969,8 +969,62 @@ class TestGeminiClientStreaming:
             _, kwargs = mock_client.stream.call_args
             assert "json" in kwargs
             # thinkingConfig is now inside generationConfig
+            # Only includeThoughts is set - thinkingBudget uses Google's default (8192) if not specified
             gen_config = kwargs["json"].get("generationConfig", {})
-            assert gen_config.get("thinkingConfig") == {"thinkingBudget": 8192, "includeThoughts": True}
+            assert gen_config.get("thinkingConfig") == {"includeThoughts": True}
+
+    @pytest.mark.asyncio
+    async def test_streaming_payload_includes_thinking_level_for_gemini_3(self):
+        """When thinking_level is set, request payload must include thinkingConfig.thinkingLevel for Gemini 3 models."""
+        gemini_client = GeminiClient(
+            model="gemini-3-pro-preview",
+            api_key="test-api-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            include_thoughts=True,
+            thinking_level="medium",  # Gemini 3 models use thinking_level
+        )
+
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def mock_aiter_lines():
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {"parts": [{"text": "Hi"}]}
+                }]
+            })
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+
+            mock_client_class.return_value = mock_client
+
+            events = []
+            async for event in gemini_client.chat_tools_streaming(messages, tools):
+                events.append(event)
+
+            # Verify payload passed into httpx stream
+            assert mock_client.stream.call_count == 1
+            _, kwargs = mock_client.stream.call_args
+            assert "json" in kwargs
+            # thinkingConfig should include thinkingLevel for Gemini 3 models
+            gen_config = kwargs["json"].get("generationConfig", {})
+            thinking_config = gen_config.get("thinkingConfig", {})
+            assert thinking_config.get("includeThoughts") == True
+            assert thinking_config.get("thinkingLevel") == "THINKING_LEVEL_MEDIUM"
 
     @pytest.mark.asyncio
     async def test_streaming_http_error(self, gemini_client):

@@ -419,9 +419,9 @@ plugins:
         media_store_ttl_seconds: 604800      # 7 Tage
         media_store_max_files: 500           # Max Dateien pro Session
 
-        # Request size limits (bytes) - prevents Gemini 20MB limit errors
-        max_request_bytes: 18874368    # 18 MB - trigger compaction threshold
-        target_request_bytes: 10485760 # 10 MB - target after compaction
+        # Request size limits (bytes) - prevents Gemini 100MB limit errors
+        max_request_bytes: 94371840    # 90 MB - trigger compaction threshold
+        target_request_bytes: 73400320 # 70 MB - target after compaction
         
         # Core memory settings
         core_memory_max_tokens: 3000   # Max tokens for always-present facts

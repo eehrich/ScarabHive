@@ -586,7 +586,7 @@
         function renderLayers(layers) {
             return layers.map(l => {
                 if (l === 'B') {
-                    return `<span class="badge badge-layerB" title="Size limit exceeded (20MB)">B</span>`;
+                    return `<span class="badge badge-layerB" title="Size limit exceeded (100MB)">B</span>`;
                 }
                 return `<span class="badge badge-layer${l}">L${l}</span>`;
             }).join(' ');

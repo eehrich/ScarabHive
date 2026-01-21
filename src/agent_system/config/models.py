@@ -117,7 +117,8 @@ class LLMModelConfig(BaseModel):
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
-    thinking_budget: Optional[int] = None  # Token budget for thinking process (Gemini 2.5+, default: 8192)
+    thinking_budget: Optional[int] = None  # Token budget for thinking (Gemini 2.5: 1-24576, default 8192)
+    thinking_level: Optional[Literal["minimal", "low", "medium", "high"]] = None  # Thinking level (Gemini 3 only)
     modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
     max_tokens: Optional[int] = None  # Maximum output tokens (limits response length, reduces costs)
     
