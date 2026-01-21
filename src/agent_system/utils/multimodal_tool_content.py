@@ -121,7 +121,6 @@ class MultimodalError:
     type: str  # "image", "audio", "video"
     path: str
     error: str  # Human-readable error message
-    is_compacted: bool = False  # True if this was compacted by context engineer
 
 
 def encode_multimodal_item(
@@ -137,18 +136,6 @@ def encode_multimodal_item(
     Returns:
         EncodedMultimodalContent or None if encoding fails/skipped
     """
-    # Check if item was compacted by context engineer - skip encoding
-    is_compacted: bool = False
-    if isinstance(item, dict):
-        is_compacted = bool(item.get("compacted"))
-    elif hasattr(item, "compacted"):
-        is_compacted = bool(item.compacted)
-    
-    if is_compacted:
-        logger.debug("Skipping compacted multimodal item: %s", 
-                    getattr(item, "description", None) or (item.get("description") if isinstance(item, dict) else ""))
-        return None
-    
     # Handle both Pydantic model and dict
     if hasattr(item, "path"):
         path = Path(item.path)
@@ -353,7 +340,6 @@ def create_multimodal_injection(
     
     Handles:
     - Normal items: Encode to base64 and inject
-    - Compacted items (_compacted=True): Inject text description only (no encoding)
     - Missing files: Inject error message explaining file not found
     
     Args:
@@ -374,28 +360,14 @@ def create_multimodal_injection(
     
     # Collect info about all items (for both vision and non-vision models)
     items_info = []
-    compacted_items = []
     error_items = []
     
     for item in multimodal_content:
         item_type = getattr(item, 'type', None) or (item.get('type') if isinstance(item, dict) else 'unknown')
         desc = getattr(item, 'description', None) or (item.get('description') if isinstance(item, dict) else None)
         path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
-        # Check 'compacted' field (Pydantic model or dict)
-        is_compacted = (
-            getattr(item, 'compacted', False) if hasattr(item, 'compacted')
-            else item.get('compacted') if isinstance(item, dict)
-            else False
-        )
         
-        if is_compacted:
-            # Item was compacted by context engineer - show description with restore instructions
-            compacted_items.append({
-                'type': item_type,
-                'path': path,
-                'description': desc
-            })
-        elif path and not Path(path).exists():
+        if path and not Path(path).exists():
             # File doesn't exist - this is an error!
             error_items.append({
                 'type': item_type,
@@ -421,12 +393,6 @@ def create_multimodal_injection(
         text_content += f"Generated {len(multimodal_content)} multimodal item(s):\n"
         text_content += "\n".join(items_info)
         
-        # Add compacted items info
-        if compacted_items:
-            text_content += "\n\n📦 Compacted items (use restore_multimodal to reload):\n"
-            for item in compacted_items:
-                text_content += f"- {item['type']}: {item['description']}\n"
-        
         # Add error items info
         if error_items:
             text_content += "\n\n⚠️ Missing files:\n"
@@ -441,22 +407,10 @@ def create_multimodal_injection(
     # Model supports vision - encode and inject images
     try:
         encoded_items = []
-        text_notes = []  # Additional text notes for compacted/error items
+        text_notes = []  # Additional text notes for error items
         
         for item in multimodal_content:
-            # Check 'compacted' field (Pydantic model or dict)
-            is_compacted = (
-                getattr(item, 'compacted', False) if hasattr(item, 'compacted')
-                else item.get('compacted') if isinstance(item, dict)
-                else False
-            )
             path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
-            
-            if is_compacted:
-                # Don't try to encode - just add text note
-                desc = item.get('description') if isinstance(item, dict) else getattr(item, 'description', None)
-                text_notes.append(f"📦 {desc}")
-                continue
             
             if path and not Path(path).exists():
                 # File doesn't exist - add error note

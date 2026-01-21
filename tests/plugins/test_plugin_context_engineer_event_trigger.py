@@ -98,22 +98,33 @@ class TestEventBasedMediaCompaction:
         assert result.success is True
         assert result.modified is True, "Expected media compaction to modify messages"
         
-        # Check that first message's media was compacted
+        # Check that first message's media was compacted (removed from multimodal_content)
         modified_messages = result.context.messages
         first_msg = modified_messages[0]
         
-        # First message should have compacted media
+        # First message should have compacted media - item removed from multimodal_content
         if hasattr(first_msg, 'multimodal_content'):
             multimodal_content = first_msg.multimodal_content
         else:
             multimodal_content = first_msg.get('multimodal_content')
         
-        if multimodal_content:
-            first_item = multimodal_content[0]
-            if isinstance(first_item, dict):
-                assert first_item.get("compacted") is True, "Expected media to be marked as compacted"
-            else:
-                assert hasattr(first_item, 'compacted') and first_item.compacted is True
+        # multimodal_content should be empty (item removed)
+        assert not multimodal_content or len(multimodal_content) == 0, \
+            "Expected multimodal_content to be empty after compaction"
+        
+        # Hint should be added to content
+        if hasattr(first_msg, 'content'):
+            content = first_msg.content
+        else:
+            content = first_msg.get('content')
+        
+        if isinstance(content, list):
+            content_text = " ".join(str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in content)
+        else:
+            content_text = str(content) if content else ""
+        
+        assert "removed" in content_text.lower() or "compacted" in content_text.lower(), \
+            f"Expected compaction hint in content, got: {content_text}"
     
     @pytest.mark.asyncio
     async def test_no_compaction_without_event_below_threshold(self, hooks_impl, tmp_path):

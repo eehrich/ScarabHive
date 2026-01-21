@@ -301,10 +301,6 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
         Estimated token count for the inline data, or 0 if no inline data
     """
     if isinstance(item, dict):
-        # Skip compacted items - they won't be encoded at LLM call time
-        if item.get('compacted'):
-            return 0
-        
         # PRIORITY: Check for duration_seconds first (most accurate for audio)
         # This is set by encode_audio_to_data_url BEFORE base64 encoding
         duration = item.get('duration_seconds')
@@ -398,9 +394,6 @@ def estimate_inline_data_tokens(item: Union[dict, Any]) -> int:
     
     if hasattr(item, 'path'):
         # Pydantic model with path attribute (MultimodalToolContent)
-        # Skip compacted items - they won't be encoded at LLM call time
-        if hasattr(item, 'compacted') and item.compacted:
-            return 0
         file_path = getattr(item, 'path', '')
         item_type = getattr(item, 'type', '')
         if file_path and item_type in ('audio', 'image', 'video'):

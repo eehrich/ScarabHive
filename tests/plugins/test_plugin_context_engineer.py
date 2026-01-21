@@ -845,18 +845,17 @@ class TestLayeredCompactionStrategy:
         
         result = await strategy.compact(messages, current_tokens=35000, force=True)
         
-        # multimodal_content should be compacted with 'compacted' flag
+        # multimodal_content should be empty - item removed and hint added to content
         tool_msg = result.modified_messages[2]
         mm_content = tool_msg.get("multimodal_content", [])
         
-        assert len(mm_content) == 1
-        # Path should be PRESERVED for restoration
-        assert mm_content[0]["path"] == original_path
-        # Should have 'compacted' flag (new Pydantic-compatible field name)
-        assert mm_content[0].get("compacted") is True
-        # Description should mention compaction and restoration via recall tool
-        assert "compacted" in mm_content[0]["description"].lower()
-        assert "recall" in mm_content[0]["description"]
+        # Item should be removed from multimodal_content
+        assert len(mm_content) == 0
+        
+        # Hint should be added to the content
+        content = tool_msg.get("content", "")
+        assert "compacted" in content.lower() or "removed" in content.lower()
+        assert "recall" in content.lower()
         
         # Should have saved significant tokens (~33K)
         assert result.tokens_saved > 30_000
@@ -1133,20 +1132,20 @@ class TestLayeredCompactionStrategy:
         
         result = await strategy.compact(messages, current_tokens=1000, force=True)
         
-        # First occurrence should be compacted (marked as compacted)
+        # First occurrence should be removed (duplicate compacted)
         assert result.media_deduplicated == 1
         
         first_tool_msg = result.modified_messages[1]
         mm_content = first_tool_msg.get("multimodal_content", [])
-        assert len(mm_content) == 1
-        assert mm_content[0].get("compacted") is True
-        assert "duplicate compacted" in mm_content[0].get("description", "").lower()
+        # Item should be removed from multimodal_content
+        assert len(mm_content) == 0
+        # Note: Layer 1 may replace content with tool_result_ref, which is expected
+        # The important thing is multimodal_content was compacted
         
         # Second occurrence (newer) should be preserved
         second_tool_msg = result.modified_messages[4]
         mm_content_2 = second_tool_msg.get("multimodal_content", [])
         assert len(mm_content_2) == 1
-        assert mm_content_2[0].get("compacted") is not True
 
     @pytest.mark.asyncio
     async def test_compute_media_hash_with_path(self, strategy_components, tmp_path):

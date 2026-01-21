@@ -406,9 +406,11 @@ class TestByteLimitCompaction:
         # Find tool messages
         first_tool = next(m for m in modified if m.get("name") == "tool_0")
         
-        # First tool message SHOULD be compacted by byte-limit
-        first_mm = first_tool.get("multimodal_content", [])[0]
-        assert first_mm.get("compacted"), "First file should be compacted"
+        # First tool message SHOULD be compacted by byte-limit - item removed, hint in content
+        first_mm = first_tool.get("multimodal_content", [])
+        assert len(first_mm) == 0, "First file should be removed from multimodal_content"
+        content = first_tool.get("content", "")
+        assert "removed" in content.lower() or "_media_compacted" in content.lower()
     
     @pytest.mark.asyncio
     async def test_byte_limit_skips_small_items(self, strategy_components, tmp_path):
@@ -453,11 +455,13 @@ class TestByteLimitCompaction:
         small_msg = next(m for m in modified if m.get("name") == "tool1")
         large_msg = next(m for m in modified if m.get("name") == "tool2")
         
-        # Small should NOT be compacted
-        small_mm = small_msg.get("multimodal_content", [])[0]
-        assert not small_mm.get("compacted")
+        # Small should NOT be compacted (still in multimodal_content)
+        small_mm = small_msg.get("multimodal_content", [])
+        assert len(small_mm) == 1
         
-        # If request was >18MB, large should be compacted
+        # If request was >18MB, large should be compacted (removed from multimodal_content)
         if result.media_compacted_after_event > 0:
-            large_mm = large_msg.get("multimodal_content", [])[0]
-            assert large_mm.get("compacted")
+            large_mm = large_msg.get("multimodal_content", [])
+            assert len(large_mm) == 0, "Large file should be removed"
+            content = large_msg.get("content", "")
+            assert "removed" in content.lower() or "_media_compacted" in content.lower()

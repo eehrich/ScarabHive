@@ -163,6 +163,50 @@ class LayeredCompactionStrategy:
         self.config = config or CompactionConfig()
         self.media_store = media_store
     
+    def _add_media_hint_to_content(
+        self,
+        msg: dict[str, Any],
+        hint_text: str
+    ) -> None:
+        """Add a media compaction hint to a message's content.
+        
+        For user/assistant messages with list content, appends a text item.
+        For tool messages with string content, appends hint after the JSON.
+        
+        Args:
+            msg: Message dict to modify
+            hint_text: Hint text to add (e.g., "[Audio removed. Use recall(...)]")
+        """
+        import json
+        
+        content = msg.get("content")
+        role = msg.get("role", "")
+        
+        if isinstance(content, list):
+            # List content (user/assistant) - append text item
+            content.append({"type": "text", "text": hint_text})
+        elif isinstance(content, str):
+            # String content (tool messages) - append to JSON or plain text
+            if role == "tool":
+                # Try to inject into JSON, otherwise append as text
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        data["_media_compacted"] = hint_text
+                        msg["content"] = json.dumps(data, ensure_ascii=False)
+                    else:
+                        # Non-dict JSON, append as suffix
+                        msg["content"] = content + f"\n\n{hint_text}"
+                except (json.JSONDecodeError, TypeError):
+                    # Plain text, append
+                    msg["content"] = content + f"\n\n{hint_text}"
+            else:
+                # Other roles - append as text
+                msg["content"] = content + f"\n\n{hint_text}"
+        elif content is None:
+            # No content yet - create it
+            msg["content"] = hint_text
+    
     def _estimate_request_bytes(self, messages: list[dict[str, Any]]) -> int:
         """Estimate the total request size in bytes.
         
@@ -468,6 +512,9 @@ class LayeredCompactionStrategy:
                         media_by_hash[media_hash].append((msg_idx, item_idx, item, True))
         
         # Compact duplicates (keep newest = highest message index)
+        # Track items to remove (we can't modify list while iterating)
+        items_to_remove: list[tuple[int, int, str, str]] = []  # (msg_idx, item_idx, hint_text, location)
+        
         for media_hash, occurrences in media_by_hash.items():
             if len(occurrences) <= 1:
                 continue  # No duplicates
@@ -481,35 +528,25 @@ class LayeredCompactionStrategy:
                 filename = self._get_media_filename(item)
                 item_type = item.get("type", "media")
                 inline_tokens = estimate_inline_data_tokens(item)
+                file_path = item.get("path", "N/A")
                 
-                # Create compacted placeholder
-                placeholder = {
-                    "type": "text",
-                    "text": (
-                        f"[{item_type.title()} '{filename}' - duplicate compacted. "
-                        f"Newer version exists later in conversation. "
-                        f"Use recall(query=\"{item.get('path', 'N/A')}\") if needed.]"
-                    )
-                }
+                hint_text = (
+                    f"[{item_type.title()} '{filename}' - duplicate compacted. "
+                    f"Newer version exists later in conversation. "
+                    f"Use recall(query=\"{file_path}\") if needed.]"
+                )
                 
                 # Replace in appropriate content list
                 if is_mm_content:
                     mm_list = msg.get("multimodal_content", [])
                     if item_idx < len(mm_list):
-                        # Mark as compacted instead of replacing (for multimodal_content)
-                        mm_list[item_idx] = {
-                            **item,
-                            "compacted": True,
-                            "original_tokens": inline_tokens,
-                            "description": (
-                                f"[{item_type.title()} '{filename}' - duplicate compacted. "
-                                f"Newer version exists later in conversation.]"
-                            )
-                        }
+                        # Mark for removal and add hint to content
+                        items_to_remove.append((msg_idx, item_idx, hint_text, "multimodal_content"))
                 else:
                     content_list = msg.get("content", [])
                     if isinstance(content_list, list) and item_idx < len(content_list):
-                        content_list[item_idx] = placeholder
+                        # Replace with text placeholder in content list
+                        content_list[item_idx] = {"type": "text", "text": hint_text}
                 
                 result.media_deduplicated += 1
                 result.tokens_saved += inline_tokens
@@ -517,6 +554,23 @@ class LayeredCompactionStrategy:
                     f"Deduplicated media '{filename}' (hash={media_hash[:8]}...): "
                     f"{inline_tokens:,} tokens saved"
                 )
+        
+        # Remove items from multimodal_content (process in reverse to maintain indices)
+        # Group by message index and sort by item_idx descending
+        from collections import defaultdict
+        removals_by_msg: dict[int, list[tuple[int, str]]] = defaultdict(list)
+        for msg_idx, item_idx, hint_text, location in items_to_remove:
+            if location == "multimodal_content":
+                removals_by_msg[msg_idx].append((item_idx, hint_text))
+        
+        for msg_idx, removals in removals_by_msg.items():
+            msg = messages[msg_idx]
+            mm_list = msg.get("multimodal_content", [])
+            # Sort by item_idx descending to remove from end first
+            for item_idx, hint_text in sorted(removals, key=lambda x: x[0], reverse=True):
+                if item_idx < len(mm_list):
+                    del mm_list[item_idx]
+                    self._add_media_hint_to_content(msg, hint_text)
         
         if result.media_deduplicated > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
@@ -682,11 +736,10 @@ class LayeredCompactionStrategy:
             # Process multimodal_content
             mm_content = msg.get("multimodal_content")
             if mm_content and isinstance(mm_content, list):
+                items_to_remove: list[tuple[int, str, int]] = []  # (item_idx, hint_text, bytes_saved)
                 for item_idx, item in enumerate(mm_content):
                     if not isinstance(item, dict):
                         continue
-                    if item.get("compacted"):
-                        continue  # Already compacted
                     
                     # Estimate bytes for this item
                     item_bytes = self._estimate_item_bytes(item)
@@ -698,22 +751,21 @@ class LayeredCompactionStrategy:
                     inline_tokens = estimate_inline_data_tokens(item)
                     file_path = item.get("path", "")
                     
-                    # Mark as compacted (remove data)
-                    mm_content[item_idx] = {
-                        "type": item_type,
-                        "path": file_path,
-                        "mime_type": item.get("mime_type", ""),
-                        "compacted": True,
-                        "original_bytes": item_bytes,
-                        "original_tokens": inline_tokens,
-                        "description": (
-                            f"[{item_type.title()} '{filename}' compacted to reduce request size. "
-                            f"Saved {item_bytes / 1024:.0f}KB.]"
-                        )
-                    }
+                    hint_text = (
+                        f"[{item_type.title()} '{filename}' removed to reduce request size. "
+                        f"Saved {item_bytes / 1024:.0f}KB."
+                        + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                    )
+                    
+                    items_to_remove.append((item_idx, hint_text, item_bytes))
                     compacted_count += 1
                     bytes_saved += item_bytes
                     result.tokens_saved += inline_tokens
+                
+                # Remove items in reverse order to maintain indices
+                for item_idx, hint_text, _ in sorted(items_to_remove, key=lambda x: x[0], reverse=True):
+                    del mm_content[item_idx]
+                    self._add_media_hint_to_content(msg, hint_text)
         
         if compacted_count > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
@@ -818,7 +870,7 @@ class LayeredCompactionStrategy:
                     if not file_path:
                         source = item.get("source", {})
                         media_type = source.get("media_type", item_type) if isinstance(source, dict) else item_type
-                        stored_path = self._store_inline_media(item, media_type, self._current_session_id)
+                        stored_path = self._store_inline_media(item, str(media_type), self._current_session_id)
                         if stored_path:
                             file_path = stored_path
                     
@@ -838,11 +890,10 @@ class LayeredCompactionStrategy:
             # Process multimodal_content
             mm_content = msg.get("multimodal_content")
             if mm_content and isinstance(mm_content, list):
+                items_to_remove: list[tuple[int, str, int, int]] = []  # (item_idx, hint_text, tokens, bytes)
                 for item_idx, item in enumerate(mm_content):
                     if not isinstance(item, dict):
                         continue
-                    if item.get("compacted"):
-                        continue  # Already compacted
                     
                     item_type = item.get("type", "media")
                     filename = self._get_media_filename(item)
@@ -850,17 +901,17 @@ class LayeredCompactionStrategy:
                     item_bytes = self._estimate_item_bytes(item)
                     file_path = item.get("path", "")
                     
-                    # Mark as compacted
-                    mm_content[item_idx] = {
-                        **item,
-                        "compacted": True,
-                        "original_tokens": inline_tokens,
-                        "original_bytes": item_bytes,
-                        "description": (
-                            f"[{item_type.title()} '{filename}' compacted after {trigger}. "
-                            f"Use recall(query=\"{file_path}\") to reload.]"
-                        )
-                    }
+                    hint_text = (
+                        f"[{item_type.title()} '{filename}' removed after {trigger}."
+                        + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                    )
+                    
+                    items_to_remove.append((item_idx, hint_text, inline_tokens, item_bytes))
+                
+                # Remove items in reverse order to maintain indices
+                for item_idx, hint_text, inline_tokens, item_bytes in sorted(items_to_remove, key=lambda x: x[0], reverse=True):
+                    del mm_content[item_idx]
+                    self._add_media_hint_to_content(msg, hint_text)
                     result.media_compacted_after_event += 1
                     result.tokens_saved += inline_tokens
                     result.media_bytes_saved += item_bytes
@@ -1018,25 +1069,27 @@ class LayeredCompactionStrategy:
     async def _compact_multimodal_content_items(
         self,
         mm_content: list,
-        result: CompactionResult
+        result: CompactionResult,
+        msg: dict[str, Any] | None = None
     ) -> tuple[list, int]:
-        """Compact multimodal_content items (file paths) by storing reference and removing from context.
+        """Compact multimodal_content items (file paths) by removing from list and adding hint to content.
         
         This handles MultimodalToolContent objects that reference files which will be
         base64-encoded at LLM call time. We compact by:
-        1. Keeping the path for potential restoration
-        2. Adding a "compacted" flag so LLM clients skip encoding
-        3. Updating description to explain how to restore
+        1. Removing the item from multimodal_content
+        2. Adding a text hint to the message content explaining how to restore
         
         Args:
             mm_content: List of MultimodalToolContent dicts with path, type, mime_type
             result: CompactionResult for tracking
+            msg: Message dict to add hints to (if None, hints are not added)
             
         Returns:
-            Tuple of (compacted list, tokens saved)
+            Tuple of (compacted list with large items removed, tokens saved)
         """
         compacted = []
         tokens_saved = 0
+        hints_to_add: list[str] = []
         
         for item in mm_content:
             if not isinstance(item, dict):
@@ -1046,11 +1099,6 @@ class LayeredCompactionStrategy:
             item_type = item.get("type", "")
             file_path = item.get("path", "")
             
-            # Skip already compacted items
-            if item.get("compacted"):
-                compacted.append(item)
-                continue
-            
             if not file_path:
                 compacted.append(item)
                 continue
@@ -1059,29 +1107,15 @@ class LayeredCompactionStrategy:
             inline_tokens = estimate_inline_data_tokens(item)
             
             if inline_tokens >= self.config.tool_result_min_size:
-                # Compact large audio/image/video files - but KEEP the path for restoration!
-                mime_type = item.get("mime_type", item_type)
-                original_description = item.get("description", "")
-                
+                # Compact large audio/image/video files
                 # Estimate bytes for tracking (base64 encoded size)
                 item_bytes = self._estimate_item_bytes(item)
                 
-                # Create compacted placeholder - keeps path for restoration
-                # Use non-underscore field names for Pydantic model compatibility
-                placeholder = {
-                    "type": item_type,
-                    "path": file_path,  # KEEP the path for restoration
-                    "mime_type": mime_type,
-                    "compacted": True,  # Flag for LLM clients to skip encoding
-                    "original_tokens": inline_tokens,
-                    "original_bytes": item_bytes,
-                    "original_description": original_description,
-                    "description": (
-                        f"[{item_type.title()} compacted. "
-                        f"Use recall(query=\"{file_path}\") to reload.]"
-                    )
-                }
-                compacted.append(placeholder)
+                hint_text = (
+                    f"[{item_type.title()} compacted. "
+                    f"Use recall(query=\"{file_path}\") to reload.]"
+                )
+                hints_to_add.append(hint_text)
                 tokens_saved += inline_tokens
                 
                 # Track media compaction for UI
@@ -1089,10 +1123,16 @@ class LayeredCompactionStrategy:
                 result.media_bytes_saved += item_bytes
                 
                 logger.info(f"Compacted {item_type} file: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved (path: {file_path})")
+                # Don't append to compacted - item is removed
                     
             else:
                 # Small enough to keep
                 compacted.append(item)
+        
+        # Add hints to message content
+        if msg is not None:
+            for hint in hints_to_add:
+                self._add_media_hint_to_content(msg, hint)
         
         return compacted, tokens_saved
     
@@ -1118,7 +1158,7 @@ class LayeredCompactionStrategy:
             # This is crucial for tool responses with audio/image files
             mm_content = msg.get("multimodal_content")
             if mm_content and isinstance(mm_content, list):
-                compacted_mm, mm_tokens_saved = await self._compact_multimodal_content_items(mm_content, result)
+                compacted_mm, mm_tokens_saved = await self._compact_multimodal_content_items(mm_content, result, msg)
                 if mm_tokens_saved > 0:
                     messages[i] = {**msg, "multimodal_content": compacted_mm}
                     result.tokens_saved += mm_tokens_saved
