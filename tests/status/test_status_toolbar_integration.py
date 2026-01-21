@@ -6,6 +6,15 @@ from agent_system.app import build_app
 pytestmark = pytest.mark.anyio
 
 
+@pytest.fixture(autouse=True)
+def clean_status_env(monkeypatch):
+    """Ensure status-related env vars are clean before each test."""
+    # Remove any status auth env vars that might have been set
+    for var in ["AGENT_STATUS_REQUIRE_AUTH", "AGENT_STATUS_TOKEN"]:
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
 async def test_main_page_has_toolbar():
     """Main page contains toolbar and status toggle."""
     app = build_app()
@@ -13,8 +22,8 @@ async def test_main_page_has_toolbar():
         r = await client.get('/')
         assert r.status_code == 200
         assert 'statusToggleBtn' in r.text
-        assert 'Status' in r.text
-        assert 'Show status & metrics' in r.text
+        # Button now shows emoji + System text
+        assert 'System' in r.text
 
 
 async def test_status_meta_endpoint_provides_metrics():

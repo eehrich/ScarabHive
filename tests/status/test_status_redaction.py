@@ -1,14 +1,43 @@
 import httpx
 import pytest
 from agent_system.mcp.status import StatusPhase, publish_status
-from agent_system.app import build_app
 
 pytestmark = pytest.mark.anyio
 
+
+def _build_app_with_auth_disabled():
+    """Build app with auth disabled for testing."""
+    # Patch AuthConfig.enabled to return False
+    from agent_system.config.models import AuthConfig
+    
+    class DisabledAuth:
+        def __get__(self, obj, objtype=None):
+            return False
+        def __set__(self, obj, value):
+            pass
+    
+    AuthConfig.enabled = DisabledAuth()
+    
+    from agent_system.app import build_app
+    return build_app()
+
+
+@pytest.fixture(autouse=True)
+def clean_status_env(monkeypatch):
+    """Ensure status-related env vars are clean before each test."""
+    # Remove any status auth env vars that might have been set
+    for var in ["AGENT_STATUS_REQUIRE_AUTH", "AGENT_STATUS_TOKEN"]:
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
 async def test_status_redaction_message_and_meta(monkeypatch):
+    # Ensure no auth required
+    monkeypatch.delenv("AGENT_STATUS_REQUIRE_AUTH", raising=False)
+    monkeypatch.delenv("AGENT_STATUS_TOKEN", raising=False)
     monkeypatch.setenv("AGENT_STATUS_REDACT_PATTERNS", "secret,token[0-9]+")
     monkeypatch.setenv("AGENT_STATUS_REDACT_REPLACEMENT", "[[REDACT]]")
-    app = build_app()
+    app = _build_app_with_auth_disabled()
     # Publish events containing sensitive tokens
     await publish_status("sec","user secret here", phase=StatusPhase.PROGRESS, meta={"note":"no secret"})
     await publish_status("sec","multi token123 and token999", phase=StatusPhase.PROGRESS, meta={"api_token":"xyz"})

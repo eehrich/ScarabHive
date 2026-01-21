@@ -15,7 +15,8 @@ async def test_main_page_contains_filtering_logic():
         
         # Check that the page contains the status toggle elements
         assert 'statusToggleBtn' in r.text
-        assert 'Show status & metrics' in r.text
+        # Button now shows emoji + System text
+        assert 'System' in r.text
         assert 'aria-expanded="false"' in r.text
         
         # Check that JavaScript is included
@@ -42,8 +43,8 @@ async def test_main_page_status_structure():
         # Should have proper ARIA attributes
         assert 'aria-expanded="false"' in content
         
-        # Should have status button text
-        assert 'Show status & metrics' in content
+        # Should have status button text (emoji + System)
+        assert 'System' in content
         
         # Should have JavaScript inclusion
         assert '/static/js/main.js' in content

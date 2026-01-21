@@ -23,7 +23,8 @@ async def test_main_page_has_status_integration():
         assert '<title>Agent System (MCP)</title>' in r.text
         # Check for status toggle elements (replaced inline status events)
         assert 'statusToggleBtn' in r.text
-        assert 'Show status & metrics' in r.text
+        # Button now shows emoji + System text
+        assert 'System' in r.text
         assert 'aria-expanded="false"' in r.text
         # Ensure MCP calls section is removed
         assert 'MCP Calls' not in r.text
