@@ -2,21 +2,36 @@
 
 import pytest
 import httpx
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock, patch, MagicMock
 
 from agent_system.app import build_app
+from agent_system.auth.security import create_access_token
+
+# Use the secret key from config/config.yaml to match what build_app() loads
+_CONFIG_SECRET_KEY = "published-signing-key-replace-with-your-own-0000000000"
 
 
 class TestMCPStatusEndpoint:
     """Test the /mcp/status endpoint functionality."""
 
+    @pytest.fixture
+    def auth_headers(self):
+        """Create authentication headers with a valid admin JWT token.
+        
+        Uses the secret key from config/config.yaml to match what the app uses.
+        """
+        token = create_access_token(
+            data={"sub": "test_admin", "role": "admin"},
+            secret_key=_CONFIG_SECRET_KEY
+        )
+        return {"Authorization": f"Bearer {token}"}
+
     @pytest.mark.asyncio
-    async def test_mcp_status_endpoint_basic_structure(self):
+    async def test_mcp_status_endpoint_basic_structure(self, auth_headers):
         """Test that the MCP status endpoint returns the expected structure."""
         app = build_app()
-        
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get('/mcp/status')
+            response = await client.get('/mcp/status', headers=auth_headers)
             
             assert response.status_code == 200
             data = response.json()
@@ -37,10 +52,10 @@ class TestMCPStatusEndpoint:
                 assert isinstance(data['total_tools'], int)
 
     @pytest.mark.asyncio
-    async def test_mcp_status_with_mock_service(self):
+    async def test_mcp_status_with_mock_service(self, auth_headers):
         """Test MCP status endpoint with mocked MCP service."""
         app = build_app()
-
+        
         # Mock the MCP service
         mock_service = AsyncMock()
         mock_service.get_comprehensive_status.return_value = {
@@ -77,7 +92,7 @@ class TestMCPStatusEndpoint:
         with patch('agent_system.app._mcp_service', mock_service), \
              patch('agent_system.app._app_registry', mock_registry):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get('/mcp/status')
+                response = await client.get('/mcp/status', headers=auth_headers)
                 
                 assert response.status_code == 200
                 data = response.json()
@@ -106,13 +121,12 @@ class TestMCPStatusEndpoint:
                 assert data['total_tools'] == 2
 
     @pytest.mark.asyncio
-    async def test_mcp_status_service_not_initialized(self):
+    async def test_mcp_status_service_not_initialized(self, auth_headers):
         """Test MCP status endpoint when MCP service is not initialized."""
         app = build_app()
-
         with patch('agent_system.app._mcp_service', None):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get('/mcp/status')
+                response = await client.get('/mcp/status', headers=auth_headers)
                 
                 assert response.status_code == 200
                 data = response.json()
@@ -121,16 +135,15 @@ class TestMCPStatusEndpoint:
                 assert 'MCP service not initialized' in data['error']
 
     @pytest.mark.asyncio
-    async def test_mcp_status_registry_not_initialized(self):
+    async def test_mcp_status_registry_not_initialized(self, auth_headers):
         """Test MCP status endpoint when registry is not initialized."""
         app = build_app()
-
         mock_service = AsyncMock()
 
         with patch('agent_system.app._mcp_service', mock_service), \
              patch('agent_system.app._app_registry', None):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get('/mcp/status')
+                response = await client.get('/mcp/status', headers=auth_headers)
                 
                 assert response.status_code == 200
                 data = response.json()
@@ -139,10 +152,10 @@ class TestMCPStatusEndpoint:
                 assert 'Registry not initialized' in data['error']
 
     @pytest.mark.asyncio
-    async def test_mcp_status_handles_service_exception(self):
+    async def test_mcp_status_handles_service_exception(self, auth_headers):
         """Test MCP status endpoint handles service exceptions gracefully."""
         app = build_app()
-
+        
         # Mock service that raises exception
         mock_service = AsyncMock()
         mock_service.get_comprehensive_status.side_effect = Exception("Test service error")
@@ -153,7 +166,7 @@ class TestMCPStatusEndpoint:
         with patch('agent_system.app._mcp_service', mock_service), \
              patch('agent_system.app._app_registry', mock_registry):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get('/mcp/status')
+                response = await client.get('/mcp/status', headers=auth_headers)
                 
                 assert response.status_code == 200
                 data = response.json()
@@ -162,10 +175,10 @@ class TestMCPStatusEndpoint:
                 assert 'Test service error' in data['error']
 
     @pytest.mark.asyncio
-    async def test_mcp_status_empty_servers(self):
+    async def test_mcp_status_empty_servers(self, auth_headers):
         """Test MCP status endpoint with no servers configured."""
         app = build_app()
-
+        
         # Mock service returning empty status
         mock_service = AsyncMock()
         mock_service.get_comprehensive_status.return_value = {
@@ -182,7 +195,7 @@ class TestMCPStatusEndpoint:
         with patch('agent_system.app._mcp_service', mock_service), \
              patch('agent_system.app._app_registry', mock_registry):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get('/mcp/status')
+                response = await client.get('/mcp/status', headers=auth_headers)
                 
                 assert response.status_code == 200
                 data = response.json()

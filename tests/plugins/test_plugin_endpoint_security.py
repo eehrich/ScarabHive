@@ -18,6 +18,7 @@ from agent_system.plugins.web_adapter import (
 from agent_system.config.models import (
     AuthConfig,
     PluginSecurityConfig,
+    EndpointSecurityConfig,
     EndpointSecurityRule,
 )
 
@@ -31,10 +32,10 @@ def basic_auth_config():
     """Basic auth config with plugin security enabled."""
     return AuthConfig(
         enabled=True,
+        endpoint_security=EndpointSecurityConfig(audit_enabled=True),
         plugin_security=PluginSecurityConfig(
             default_policy="require_auth",
             default_min_role="user",
-            audit_enabled=True,
             plugin_overrides={},
             endpoint_rules=[],
         ),
@@ -46,10 +47,10 @@ def auth_config_with_overrides():
     """Auth config with plugin-specific overrides."""
     return AuthConfig(
         enabled=True,
+        endpoint_security=EndpointSecurityConfig(audit_enabled=True),
         plugin_security=PluginSecurityConfig(
             default_policy="require_auth",
             default_min_role="user",
-            audit_enabled=True,
             plugin_overrides={
                 "public_plugin": {"policy": "allow_anonymous"},
                 "admin_tools": {"min_role": "admin"},
@@ -227,7 +228,7 @@ class TestAuditLogging:
 
     def test_audit_log_disabled(self, basic_auth_config):
         """Test audit logging when disabled."""
-        basic_auth_config.plugin_security.audit_enabled = False
+        basic_auth_config.endpoint_security.audit_enabled = False
         enforcer = PluginEndpointSecurityEnforcer(basic_auth_config)
         
         enforcer.audit_access(
@@ -302,9 +303,13 @@ class TestConfigIntegration:
         
         assert config.default_policy == "require_auth"
         assert config.default_min_role == "user"
-        assert config.audit_enabled is True
         assert config.plugin_overrides == {}
         assert len(config.endpoint_rules) == 1  # Default admin rule
+
+    def test_endpoint_security_config_audit_enabled(self):
+        """Test EndpointSecurityConfig audit_enabled default value."""
+        config = EndpointSecurityConfig()
+        assert config.audit_enabled is True
 
     def test_auth_config_includes_plugin_security(self):
         """Test AuthConfig includes plugin_security field."""
