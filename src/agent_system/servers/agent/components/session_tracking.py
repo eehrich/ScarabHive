@@ -345,7 +345,7 @@ class SessionTracker:
         """
         self._sessions[session_id] = messages
 
-    def set_compacted_messages(self, session_id: str, messages: List[ChatMessage]) -> None:
+    def set_compacted_messages(self, session_id: str, messages: List[ChatMessage] | None) -> None:
         """
         Set compacted messages to be used instead of request messages when persisting.
         
@@ -355,10 +355,15 @@ class SessionTracker:
 
         Args:
             session_id: The session ID
-            messages: The compacted messages to use
+            messages: The compacted messages to use, or None to clear
         """
-        self._compacted_messages[session_id] = messages
-        logger.debug(f"Set {len(messages)} compacted messages for session {session_id}")
+        if messages is None:
+            # Clear by removing from dict
+            self._compacted_messages.pop(session_id, None)
+            logger.debug(f"Cleared compacted messages for session {session_id}")
+        else:
+            self._compacted_messages[session_id] = messages
+            logger.debug(f"Set {len(messages)} compacted messages for session {session_id}")
 
     def get_compacted_messages(self, session_id: str) -> Optional[List[ChatMessage]]:
         """
