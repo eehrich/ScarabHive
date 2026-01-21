@@ -281,7 +281,12 @@ async def test_agent_handles_empty_llm_responses():
     """Test that agent handles empty LLM responses without infinite loop.
     
     Real-world scenario: LLM returns empty content repeatedly.
-    System should detect this and stop (not loop forever).
+    System should detect this and try to recover by injecting 'Continue' prompts.
+    If empty responses persist beyond threshold (5), it emits an error and stops.
+    
+    Current behavior: 
+    - After 2 consecutive empty responses, agent injects "Continue with your task." 
+    - After 5 consecutive empty responses (2 + 3), it gives up and emits error
     """
     system_config = create_test_system_config()
     registry = MCPRegistry()
@@ -289,15 +294,19 @@ async def test_agent_handles_empty_llm_responses():
     agent_config = MCPConfig(
         type="agent",
         enabled=True,
-        agent_config=AgentConfig(max_steps=5)  # More steps to test loop detection
+        agent_config=AgentConfig(max_steps=10)  # More steps to test loop detection
     )
     agent = Agent("test_agent", system_config, agent_config, registry)
     
-    # Mock LLM to return empty responses
+    # Mock LLM to return 6 empty responses - this exceeds the threshold (5)
+    # so the agent should emit an error
     agent.llm = create_mock_llm([
         {"assistant": {"content": ""}},
         {"assistant": {"content": ""}},
-        {"assistant": {"content": ""}},  # 3 empty responses should trigger break
+        {"assistant": {"content": ""}},
+        {"assistant": {"content": ""}},
+        {"assistant": {"content": ""}},
+        {"assistant": {"content": ""}},  # 6 empty responses to exceed threshold
     ])
     
     # Execute
@@ -305,14 +314,17 @@ async def test_agent_handles_empty_llm_responses():
     async for event in agent.run_events("Test"):
         events.append(event)
     
-    # Should detect empty responses and stop
+    # Should detect empty responses and stop with error
     error_events = [e for e in events if e["type"] == "error"]
     assert len(error_events) > 0, "Should emit error for consecutive empty responses"
     assert "empty" in error_events[0]["message"].lower()
     
-    # Should not use all max_steps (should break early)
+    # Should not use all max_steps (should break early due to empty response detection)
+    # With max_steps=10, we should see fewer steps completed
+    # (5 empty responses triggers the break: 2 initial + 3 after injection)
+    # Each step emits 2 thinking events, so 5 steps = 10 thinking events is the limit
     thinking_events = [e for e in events if e["type"] == "thinking"]
-    assert len(thinking_events) < 5, "Should break before hitting max steps"
+    assert len(thinking_events) <= 10, f"Should break at or before hitting max steps, got {len(thinking_events)} thinking events"
 
 
 @pytest.mark.asyncio

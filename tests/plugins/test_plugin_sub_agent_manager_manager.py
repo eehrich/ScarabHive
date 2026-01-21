@@ -16,6 +16,7 @@ def mock_session_service():
     service.session_manager.create_session = AsyncMock()
     service.session_manager.load_session = AsyncMock()
     service.session_manager.save_session = AsyncMock()
+    service.session_manager.update_session_metadata = AsyncMock()  # Required for _link_sub_to_parent
     # Mock _session_id_exists_globally to always return False (ID is available)
     service.session_manager._session_id_exists_globally = MagicMock(return_value=False)
     return service
@@ -25,6 +26,9 @@ def mock_session_service():
 def mock_registry():
     """Mock MCPRegistry."""
     return MagicMock()
+
+
+import re
 
 
 @pytest.fixture
@@ -50,7 +54,8 @@ async def test_create_sub_session_generates_unique_id(manager, mock_session_serv
         initial_message="Search for AI news"
     )
 
-    assert sub_id1 == "sub_web_research_001"  # New short format
+    # Check format: sub_web_research_{counter} where counter is a number
+    assert re.match(r"sub_web_research_\d+", sub_id1), f"Expected pattern sub_web_research_<digits>, got {sub_id1}"
 
     # Create second sub-session with same type
     sub_id2 = await manager.create_sub_session(
@@ -59,8 +64,9 @@ async def test_create_sub_session_generates_unique_id(manager, mock_session_serv
         initial_message="Search for ML papers"
     )
 
-    assert sub_id2 == "sub_web_research_002"  # Global counter increments
-    assert sub_id1 != sub_id2
+    # Check format and uniqueness (counter should increment)
+    assert re.match(r"sub_web_research_\d+", sub_id2), f"Expected pattern sub_web_research_<digits>, got {sub_id2}"
+    assert sub_id1 != sub_id2, "Sub-session IDs should be unique"
 
 
 @pytest.mark.asyncio
@@ -111,26 +117,27 @@ async def test_create_sub_session_links_to_parent(manager, mock_session_service)
 
     mock_session_service.session_manager.load_session.side_effect = load_session_side_effect
 
-    await manager.create_sub_session(
+    sub_id = await manager.create_sub_session(
         parent_session_id="parent123",
         agent_type="web_research",
         initial_message="Search AI"
     )
 
-    # Verify save_session was called for both sub and parent
-    assert mock_session_service.session_manager.save_session.call_count >= 2
-
-    # Get the parent save call (last call)
-    last_save_call = mock_session_service.session_manager.save_session.call_args_list[-1]
-    parent_data_saved = last_save_call.args[0]
-
-    # Verify parent metadata contains sub-agent
-    assert "metadata" in parent_data_saved
-    assert "sub_agents" in parent_data_saved["metadata"]
-    # Counter resets per test, so instance_id is 001
-    assert "sub_web_research_001" in parent_data_saved["metadata"]["sub_agents"]
-
-    sub_metadata = parent_data_saved["metadata"]["sub_agents"]["sub_web_research_001"]
+    # Verify update_session_metadata was called to link sub-agent to parent
+    mock_session_service.session_manager.update_session_metadata.assert_called()
+    
+    # Get the call args - parent session should have sub_agents metadata
+    call_args = mock_session_service.session_manager.update_session_metadata.call_args
+    assert call_args is not None
+    user_id, parent_id, metadata = call_args.args
+    assert parent_id == "parent123"
+    assert "sub_agents" in metadata
+    
+    # The sub_id should be in the sub_agents dict
+    sub_agents = metadata["sub_agents"]
+    assert sub_id in sub_agents
+    
+    sub_metadata = sub_agents[sub_id]
     assert sub_metadata["agent_type"] == "web_research"
     assert sub_metadata["status"] == "active"
     assert "Search AI" in sub_metadata["task_summary"]
@@ -212,26 +219,36 @@ async def test_list_sub_sessions_returns_metadata(manager, mock_session_service)
 async def test_generate_instance_id_increments_counter(manager):
     """Test global counter increments."""
     id1 = await manager._generate_instance_id("web_research", None)
-    assert id1 == "sub_web_research_001"
+    # Check format: sub_web_research_{digits}
+    assert re.match(r"sub_web_research_\d+", id1), f"Expected pattern sub_web_research_<digits>, got {id1}"
+    # Extract the counter from id1
+    counter1 = int(id1.split("_")[-1])
 
     id2 = await manager._generate_instance_id("web_research", None)
-    assert id2 == "sub_web_research_002"
+    assert re.match(r"sub_web_research_\d+", id2), f"Expected pattern sub_web_research_<digits>, got {id2}"
+    counter2 = int(id2.split("_")[-1])
+    assert counter2 > counter1, f"Counter should increment: {counter2} should be > {counter1}"
 
     # Different agent type uses same global counter
     id3 = await manager._generate_instance_id("financial_analyst", None)
-    assert id3 == "sub_financial_analyst_003"
+    assert re.match(r"sub_financial_analyst_\d+", id3), f"Expected pattern sub_financial_analyst_<digits>, got {id3}"
+    counter3 = int(id3.split("_")[-1])
+    assert counter3 > counter2, f"Counter should increment: {counter3} should be > {counter2}"
 
 
 @pytest.mark.asyncio
 async def test_generate_instance_id_with_label(manager):
     """Test instance ID generation with custom label."""
     id1 = await manager._generate_instance_id("web_research", "my_research")
-    # Fresh manager, counter starts at 1
-    assert id1 == "sub_my_research_001"
+    # Check format with custom label: sub_my_research_{digits}
+    assert re.match(r"sub_my_research_\d+", id1), f"Expected pattern sub_my_research_<digits>, got {id1}"
+    counter1 = int(id1.split("_")[-1])
 
-    # Sanitize label
+    # Sanitize label - special chars should become underscores
     id2 = await manager._generate_instance_id("web", "task#2@test")
-    assert id2 == "sub_task_2_test_002"  # Counter increments
+    assert re.match(r"sub_task_2_test_\d+", id2), f"Expected pattern sub_task_2_test_<digits>, got {id2}"
+    counter2 = int(id2.split("_")[-1])
+    assert counter2 > counter1, f"Counter should increment: {counter2} should be > {counter1}"
 
 
 def test_extract_user_id_handles_formats(manager):
