@@ -83,6 +83,11 @@ class CompactionConfig:
     compact_media_after_user_message: bool = False  # Compact all media when a new user message arrives
     compact_media_after_final_response: bool = False  # Compact all media when agent sends final response
     
+    # Always compact media setting - runs regardless of token count
+    # Removes ALL media items except those in the last N messages that contain media
+    # Set to 0 to disable, >0 to enable and keep last N media-containing messages
+    always_compact_media_keep_last: int = 0  # 0 = disabled, 5 = keep last 5 messages with media
+    
     # Media store settings (for storing inline base64 before compaction)
     store_media_before_compaction: bool = True  # Save inline media to disk before removing
     media_store_ttl_seconds: int = 86400 * 7  # 7 days TTL for stored media
@@ -104,6 +109,7 @@ class CompactionResult:
     messages_dropped: int = 0
     media_deduplicated: int = 0  # Duplicate media compacted
     media_compacted_after_event: int = 0  # Media compacted due to user/final message trigger
+    media_always_compacted: int = 0  # Media compacted by always_compact_media_keep_last
     media_bytes_saved: int = 0  # Bytes saved by media compaction (for byte-limit compaction)
     
     # Layer applied (int for L1/L2/L3, str "B" for byte-limit)
@@ -335,8 +341,12 @@ class LayeredCompactionStrategy:
             )
             force = True  # Force compaction to reduce byte size
         
-        # Check if compaction needed (unless forced)
-        if not force and current_tokens <= self.config.target_tokens:
+        # Also force compaction if always_compact_media is enabled
+        # (need to run compact() to apply the media compaction even if under token threshold)
+        always_compact_media = self.config.always_compact_media_keep_last > 0
+        
+        # Check if compaction needed (unless forced or always_compact_media enabled)
+        if not force and not always_compact_media and current_tokens <= self.config.target_tokens:
             logger.debug(
                 f"No compaction needed: {current_tokens} tokens "
                 f"<= {self.config.target_tokens} target"
@@ -347,6 +357,14 @@ class LayeredCompactionStrategy:
             f"Starting compaction{' (FORCED)' if force else ''}: {current_tokens} tokens, "
             f"{request_bytes / (1024*1024):.1f}MB, target {self.config.target_tokens} tokens"
         )
+        
+        # Pre-Layer 0: Always compact media (keep last N) - runs regardless of token count
+        # This is the most aggressive media compaction, runs first if enabled
+        if self.config.always_compact_media_keep_last > 0:
+            await self._compact_media_always(result)
+            # Mark that always-compact media was applied (shown as "M" in UI)
+            if result.media_always_compacted > 0 and "M" not in result.layers_applied:
+                result.layers_applied.append("M")
         
         # Pre-Layer: Media deduplication (always run if enabled)
         # This is independent of token thresholds - duplicates waste space regardless
@@ -923,6 +941,149 @@ class LayeredCompactionStrategy:
                 f"{result.media_compacted_after_event} items compacted"
             )
     
+    async def _compact_media_always(
+        self,
+        result: CompactionResult
+    ) -> None:
+        """Always compact media items, keeping only the last N messages with media.
+        
+        This runs regardless of token count and is controlled by
+        config.always_compact_media_keep_last (0 = disabled).
+        
+        Unlike _compact_media_after_event, this keeps the last N messages that 
+        CONTAIN media, not just the last N messages overall.
+        
+        Args:
+            result: CompactionResult to update
+        """
+        messages = result.modified_messages
+        if not messages:
+            return
+        
+        keep_count = self.config.always_compact_media_keep_last
+        if keep_count <= 0:
+            return
+        
+        # Find all message indices that have media content
+        messages_with_media: list[int] = []
+        for msg_idx, msg in enumerate(messages):
+            has_media = False
+            
+            # Check content list for media items
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") in ("image", "image_url", "audio", "video"):
+                        if not item.get("compacted"):
+                            has_media = True
+                            break
+            
+            # Check multimodal_content
+            if not has_media:
+                mm_content = msg.get("multimodal_content")
+                if mm_content and isinstance(mm_content, list):
+                    for item in mm_content:
+                        if isinstance(item, dict) and item.get("type") in ("image", "audio", "video"):
+                            has_media = True
+                            break
+            
+            if has_media:
+                messages_with_media.append(msg_idx)
+        
+        if not messages_with_media:
+            return
+        
+        # Determine which message indices to protect (keep last N with media)
+        protected_indices = set(messages_with_media[-keep_count:])
+        
+        # Compact media in all non-protected messages
+        compacted_count = 0
+        for msg_idx in messages_with_media:
+            if msg_idx in protected_indices:
+                continue
+            
+            msg = messages[msg_idx]
+            
+            # Process content list
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item_idx, item in enumerate(content):
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type", "")
+                    if item_type not in ("image", "image_url", "audio", "video"):
+                        continue
+                    if item.get("compacted"):
+                        continue
+                    
+                    filename = self._get_media_filename(item)
+                    inline_tokens = estimate_inline_data_tokens(item)
+                    item_bytes = self._estimate_item_bytes(item)
+                    file_path = item.get("path", "")
+                    
+                    # Store inline data before removing if configured
+                    if not file_path and self.config.store_media_before_compaction:
+                        source = item.get("source", {})
+                        media_type = source.get("media_type", item_type) if isinstance(source, dict) else item_type
+                        stored_path = self._store_inline_media(item, str(media_type), self._current_session_id)
+                        if stored_path:
+                            file_path = stored_path
+                    
+                    # Replace with text placeholder
+                    placeholder = {
+                        "type": "text",
+                        "text": (
+                            f"[{item_type.title()} '{filename}' compacted."
+                            + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                        )
+                    }
+                    content[item_idx] = placeholder
+                    compacted_count += 1
+                    result.tokens_saved += inline_tokens
+                    result.media_bytes_saved += item_bytes
+            
+            # Process multimodal_content
+            mm_content = msg.get("multimodal_content")
+            if mm_content and isinstance(mm_content, list):
+                items_to_remove: list[tuple[int, str, int, int]] = []
+                for item_idx, item in enumerate(mm_content):
+                    if not isinstance(item, dict):
+                        continue
+                    
+                    item_type = item.get("type", "media")
+                    if item_type not in ("image", "audio", "video"):
+                        continue
+                    
+                    filename = self._get_media_filename(item)
+                    inline_tokens = estimate_inline_data_tokens(item)
+                    item_bytes = self._estimate_item_bytes(item)
+                    file_path = item.get("path", "")
+                    
+                    hint_text = (
+                        f"[{item_type.title()} '{filename}' compacted."
+                        + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                    )
+                    
+                    items_to_remove.append((item_idx, hint_text, inline_tokens, item_bytes))
+                
+                # Remove items in reverse order to maintain indices
+                for item_idx, hint_text, inline_tokens, item_bytes in sorted(items_to_remove, key=lambda x: x[0], reverse=True):
+                    del mm_content[item_idx]
+                    self._add_media_hint_to_content(msg, hint_text)
+                    compacted_count += 1
+                    result.tokens_saved += inline_tokens
+                    result.media_bytes_saved += item_bytes
+        
+        result.media_always_compacted = compacted_count
+        
+        if compacted_count > 0:
+            result.final_tokens = self._estimate_messages_tokens(messages)
+            logger.info(
+                f"Always-compact media: {compacted_count} items compacted, "
+                f"kept last {keep_count} messages with media "
+                f"({len(protected_indices)} protected)"
+            )
+
     async def _compact_multimodal_content(
         self,
         content: list,

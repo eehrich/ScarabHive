@@ -221,6 +221,11 @@
             color: #e1bee7;
         }
 
+        .badge-layerM {
+            background: #00838f;
+            color: #80deea;
+        }
+
         /* Stats Cards */
         .stats-grid {
             display: grid;
@@ -587,6 +592,8 @@
             return layers.map(l => {
                 if (l === 'B') {
                     return `<span class="badge badge-layerB" title="Size limit exceeded (100MB)">B</span>`;
+                } else if (l === 'M') {
+                    return `<span class="badge badge-layerM" title="Always-compact media active (keep last N)">M</span>`;
                 }
                 return `<span class="badge badge-layer${l}">L${l}</span>`;
             }).join(' ');
@@ -624,7 +631,7 @@
                 tbody.innerHTML = data.events.map(event => {
                     // Format media info (count + bytes saved)
                     const bytesSaved = event.media_bytes_saved || 0;
-                    const mediaCount = (event.media_deduplicated || 0) + (event.media_compacted_after_event || 0);
+                    const mediaCount = (event.media_deduplicated || 0) + (event.media_compacted_after_event || 0) + (event.media_always_compacted || 0);
                     let mediaInfo = '-';
                     if (mediaCount > 0) {
                         if (bytesSaved > 0) {
@@ -686,8 +693,8 @@
                     </div>
                     <div class="stat-card">
                         <h3>Media Compacted</h3>
-                        <div class="value">${formatNumber((data.media_deduplicated || 0) + (data.media_compacted || 0))}</div>
-                        <div class="subvalue">${formatNumber(data.media_deduplicated || 0)} deduped, ${formatNumber(data.media_compacted || 0)} by event</div>
+                        <div class="value">${formatNumber((data.media_deduplicated || 0) + (data.media_compacted || 0) + (data.media_always_compacted || 0))}</div>
+                        <div class="subvalue">${formatNumber(data.media_always_compacted || 0)} always, ${formatNumber(data.media_deduplicated || 0)} dedup, ${formatNumber(data.media_compacted || 0)} event</div>
                     </div>
                     <div class="stat-card">
                         <h3>Core Memory</h3>

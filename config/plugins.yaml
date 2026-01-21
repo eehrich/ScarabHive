@@ -446,6 +446,11 @@ plugins:
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 
         compact_media_after_final_response: true  # Compact media files after final agent response
+        
+        # Always compact media - runs regardless of token count
+        # Removes ALL media items except those in the last N messages that contain media
+        # Set to 0 to disable, >0 to enable (e.g., 5 keeps last 5 messages with media)
+        always_compact_media_keep_last: 5
 
     context_usage_tracker:
       type: context_usage_tracker

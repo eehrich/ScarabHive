@@ -102,6 +102,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.deduplicate_media = bool(config.get("deduplicate_media", True))
         self.compact_media_after_user_message = bool(config.get("compact_media_after_user_message", False))
         self.compact_media_after_final_response = bool(config.get("compact_media_after_final_response", False))
+        self.always_compact_media_keep_last = int(config.get("always_compact_media_keep_last", 0))
         
         # Media store settings (for storing inline base64 before compaction)
         self.store_media_before_compaction = bool(config.get("store_media_before_compaction", True))
@@ -118,7 +119,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             f"min_time_between={self.min_time_between}s, "
             f"deduplicate_media={self.deduplicate_media}, "
             f"compact_media_after_user_message={self.compact_media_after_user_message}, "
-            f"compact_media_after_final_response={self.compact_media_after_final_response}"
+            f"compact_media_after_final_response={self.compact_media_after_final_response}, "
+            f"always_compact_media_keep_last={self.always_compact_media_keep_last}"
         )
     
     def _cleanup_expired_sessions(self) -> None:
@@ -213,6 +215,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 deduplicate_media=self.deduplicate_media,
                 compact_media_after_user_message=self.compact_media_after_user_message,
                 compact_media_after_final_response=self.compact_media_after_final_response,
+                always_compact_media_keep_last=self.always_compact_media_keep_last,
                 store_media_before_compaction=self.store_media_before_compaction,
                 media_store_ttl_seconds=self.media_store_ttl_seconds,
                 media_store_max_files=self.media_store_max_files
