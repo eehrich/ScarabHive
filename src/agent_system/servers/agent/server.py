@@ -1426,8 +1426,12 @@ class Agent(MCPServer):
                     
                     # Build: [system] + compacted + [current_step_messages]
                     reconstructed = []
-                    if messages and messages[0].get("role") == "system":
-                        reconstructed.append(messages[0])
+                    # Check first message for system role (handle both dict and ChatMessage)
+                    if messages:
+                        first_msg = messages[0]
+                        first_role = first_msg.get("role") if isinstance(first_msg, dict) else getattr(first_msg, "role", None)
+                        if first_role == "system":
+                            reconstructed.append(first_msg)
                     
                     reconstructed.extend(compacted_messages)
                     
@@ -1435,7 +1439,7 @@ class Agent(MCPServer):
                     context.messages = reconstructed
                     
                     # Clear compacted_messages for next iteration
-                    self._session_tracker.set_compacted_messages(session_id, None)
+                    self._session_tracker.clear_compacted_messages(session_id)
                     
                 elif modified_messages is not None:
                     # Hook returned modified messages directly (old mechanism)
