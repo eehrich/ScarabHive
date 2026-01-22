@@ -572,6 +572,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         history = await self.client.get_history(prompt_id)
         
         if prompt_id not in history:
+            if status:
+                await status.error(f"Job {prompt_id} not found or not completed")
             return {
                 "error": "Job not found or not completed",
                 "prompt_id": prompt_id,
@@ -586,6 +588,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 prompt_id, "failed",
                 str(job_data.get("status", {}).get("messages", []))
             )
+            if status:
+                await status.error(f"Job {prompt_id} failed")
             return {
                 "status": "failed",
                 "prompt_id": prompt_id,
@@ -947,6 +951,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         path_obj = matches[0]
             
             if not path_obj.exists():
+                if status:
+                    await status.error(f"File not found: {file_path or filename}")
                 return {
                     "error": f"File not found: {file_path or filename}",
                     "searched_in": str(effective_output_dir),
