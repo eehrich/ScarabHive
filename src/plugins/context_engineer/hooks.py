@@ -91,6 +91,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.archive_after_turns = int(config.get("archive_after_turns", 10))
         self.drop_after_turns = int(config.get("drop_after_turns", 50))
         self.keep_system_messages = bool(config.get("keep_system_messages", True))
+        self.max_messages = int(config.get("max_messages", 0))  # 0 = disabled
         
         # Rate limiting
         self.min_time_between = float(config.get("min_time_between_compactions", 120.0))
@@ -120,7 +121,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             f"deduplicate_media={self.deduplicate_media}, "
             f"compact_media_after_user_message={self.compact_media_after_user_message}, "
             f"compact_media_after_final_response={self.compact_media_after_final_response}, "
-            f"always_compact_media_keep_last={self.always_compact_media_keep_last}"
+            f"always_compact_media_keep_last={self.always_compact_media_keep_last}, "
+            f"max_messages={self.max_messages}"
         )
     
     def _cleanup_expired_sessions(self) -> None:
@@ -212,6 +214,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 archive_after_turns=self.archive_after_turns,
                 drop_after_turns=self.drop_after_turns,
                 keep_system_messages=self.keep_system_messages,
+                max_messages=self.max_messages,
                 deduplicate_media=self.deduplicate_media,
                 compact_media_after_user_message=self.compact_media_after_user_message,
                 compact_media_after_final_response=self.compact_media_after_final_response,
@@ -223,6 +226,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             
             logger.info(
                 f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
+                f"max_messages={compaction_config.max_messages}, "
                 f"always_compact_media_keep_last={compaction_config.always_compact_media_keep_last}"
             )
             
@@ -412,6 +416,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 result.variables_created > 0 or
                 result.messages_archived > 0 or
                 result.messages_dropped > 0 or
+                result.messages_pruned > 0 or  # Pre-Layer P (message count limit)
                 result.media_deduplicated > 0 or
                 result.media_compacted_after_event > 0 or
                 result.media_always_compacted > 0  # Always-compact media (Pre-Layer M)
@@ -431,6 +436,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
                     "messages_dropped": result.messages_dropped,
+                    "messages_pruned": result.messages_pruned,  # Pre-Layer P
                     "media_deduplicated": result.media_deduplicated,
                     "media_compacted_after_event": result.media_compacted_after_event,
                     "media_bytes_saved": result.media_bytes_saved
@@ -549,6 +555,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
                     "messages_dropped": result.messages_dropped,
+                    "messages_pruned": result.messages_pruned,
                     "media_deduplicated": result.media_deduplicated,
                     "media_compacted_after_event": result.media_compacted_after_event
                 }

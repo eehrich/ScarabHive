@@ -453,6 +453,154 @@ class TestMessageSequence:
         sequence_issues = [i for i in result.issues if i.type == "consecutive_assistant_messages"]
         assert len(sequence_issues) == 0
 
+    def test_invalid_first_message_assistant(self):
+        """Test detection when first non-system message is assistant (not user).
+        
+        Gemini requires: user -> assistant (with tool_calls) -> tool responses
+        If first message after system is assistant, it's invalid.
+        """
+        messages = [
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="assistant", content="Hello!"),  # Invalid - should be user
+            ChatMessage(role="user", content="Hi there")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect invalid first message
+        invalid_first_issues = [i for i in result.issues if i.type == "invalid_first_message"]
+        assert len(invalid_first_issues) == 1
+        assert invalid_first_issues[0].severity == "error"
+        assert invalid_first_issues[0].message_index == 1  # Index of assistant message
+
+    def test_invalid_first_message_tool(self):
+        """Test detection when first non-system message is tool response."""
+        messages = [
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="tool", content="Some result", tool_call_id="call_1"),  # Invalid
+            ChatMessage(role="user", content="Hi")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect invalid first message
+        invalid_first_issues = [i for i in result.issues if i.type == "invalid_first_message"]
+        assert len(invalid_first_issues) == 1
+
+    def test_invalid_first_message_repaired(self):
+        """Test that invalid first message is repaired by removal."""
+        messages = [
+            ChatMessage(role="system", content="System prompt"),
+            ChatMessage(role="assistant", content="Orphaned assistant"),
+            ChatMessage(role="user", content="Real user message"),
+            ChatMessage(role="assistant", content="Valid response")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Repaired messages should have the invalid assistant removed
+        assert len(result.repaired_messages) == 3
+        roles = [m.role for m in result.repaired_messages]
+        assert roles == ["system", "user", "assistant"]
+        assert result.repaired_messages[1].content == "Real user message"
+
+    def test_invalid_first_message_with_tool_calls_repaired(self):
+        """Test that invalid first assistant with tool_calls also removes tool responses."""
+        messages = [
+            ChatMessage(role="system", content="System prompt"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "test_tool"}}]
+            ),
+            ChatMessage(role="tool", content="Result", tool_call_id="call_1", name="test_tool"),
+            ChatMessage(role="user", content="Real user message"),
+            ChatMessage(role="assistant", content="Valid response")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Both invalid assistant AND its tool response should be removed
+        assert len(result.repaired_messages) == 3
+        roles = [m.role for m in result.repaired_messages]
+        assert roles == ["system", "user", "assistant"]
+
+    def test_invalid_first_message_cascading_removal(self):
+        """Test cascading removal when multiple bad messages at start.
+        
+        If removing first bad message exposes another bad message,
+        that should also be removed.
+        """
+        messages = [
+            ChatMessage(role="system", content="System prompt"),
+            ChatMessage(role="assistant", content="First bad"),
+            ChatMessage(role="assistant", content="Second bad"),
+            ChatMessage(role="tool", content="Orphaned tool", tool_call_id="x"),
+            ChatMessage(role="user", content="Finally a user message"),
+            ChatMessage(role="assistant", content="Valid response")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # All bad messages at start should be removed until we hit user
+        roles = [m.role for m in result.repaired_messages]
+        # First non-system should be user
+        non_system_roles = [r for r in roles if r != "system"]
+        assert non_system_roles[0] == "user"
+        assert "Finally a user message" in [m.content for m in result.repaired_messages]
+
+    def test_valid_first_message_user(self):
+        """Test that valid sequence starting with user passes."""
+        messages = [
+            ChatMessage(role="system", content="System prompt"),
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content="Hi!")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should not have invalid first message issue
+        invalid_first_issues = [i for i in result.issues if i.type == "invalid_first_message"]
+        assert len(invalid_first_issues) == 0
+
+    def test_no_system_message_user_first(self):
+        """Test validation when no system message and user is first."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content="Hi!")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should be valid
+        invalid_first_issues = [i for i in result.issues if i.type == "invalid_first_message"]
+        assert len(invalid_first_issues) == 0
+
+    def test_no_system_message_assistant_first(self):
+        """Test validation when no system message and assistant is first (invalid)."""
+        messages = [
+            ChatMessage(role="assistant", content="I'm starting first"),
+            ChatMessage(role="user", content="Hello")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect invalid first message
+        invalid_first_issues = [i for i in result.issues if i.type == "invalid_first_message"]
+        assert len(invalid_first_issues) == 1
+
+        # Should repair by removing the assistant
+        assert len(result.repaired_messages) == 1
+        assert result.repaired_messages[0].role == "user"
+
 
 class TestRepairFunctionality:
     """Test message repair functionality."""

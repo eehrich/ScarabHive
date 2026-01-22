@@ -1699,3 +1699,320 @@ class TestToolResultPagination:
         
         assert result["found"] is False
         assert "error" in result
+
+
+# =============================================================================
+# Pre-Layer P (Message Count Pruning) Tests
+# =============================================================================
+
+
+class TestPreLayerP:
+    """Tests for Pre-Layer P: Message count pruning."""
+    
+    @pytest.fixture
+    def strategy_with_max_messages(self, tmp_path):
+        """Create strategy with max_messages limit."""
+        tool_store = ToolResultStore(tmp_path / "tools.db")
+        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
+        core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
+        archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
+        
+        config = CompactionConfig(
+            layer1_threshold=100000,  # High threshold - won't trigger token-based layers
+            layer2_threshold=200000,
+            layer3_threshold=300000,
+            target_tokens=50000,
+            max_messages=10,  # Low limit for testing
+            keep_system_messages=True,
+        )
+        
+        return LayeredCompactionStrategy(
+            tool_store=tool_store,
+            variable_manager=variable_manager,
+            core_memory=core_memory,
+            archival_memory=archival_memory,
+            config=config
+        )
+    
+    @pytest.mark.asyncio
+    async def test_no_pruning_below_limit(self, strategy_with_max_messages):
+        """Test no pruning when message count is below max_messages."""
+        strategy = strategy_with_max_messages
+        
+        messages = [
+            {"role": "user", "content": "Message 1"},
+            {"role": "assistant", "content": "Response 1"},
+            {"role": "user", "content": "Message 2"},
+            {"role": "assistant", "content": "Response 2"},
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        assert result.messages_pruned == 0
+        assert len(result.modified_messages) == 4
+    
+    @pytest.mark.asyncio
+    async def test_pruning_above_limit(self, strategy_with_max_messages):
+        """Test pruning when message count exceeds max_messages."""
+        strategy = strategy_with_max_messages
+        
+        # Create 20 messages (exceeds limit of 10)
+        messages = []
+        for i in range(10):
+            messages.append({"role": "user", "content": f"User message {i}"})
+            messages.append({"role": "assistant", "content": f"Assistant response {i}"})
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        assert result.messages_pruned > 0
+        assert len(result.modified_messages) <= 10
+        assert "P" in result.layers_applied
+    
+    @pytest.mark.asyncio
+    async def test_pruning_preserves_system_messages(self, strategy_with_max_messages):
+        """Test that system messages are preserved during pruning."""
+        strategy = strategy_with_max_messages
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+        ]
+        # Add many user/assistant pairs
+        for i in range(15):
+            messages.append({"role": "user", "content": f"User {i}"})
+            messages.append({"role": "assistant", "content": f"Response {i}"})
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # System message should be preserved
+        system_msgs = [m for m in result.modified_messages if m.get("role") == "system"]
+        assert len(system_msgs) == 1
+        assert system_msgs[0]["content"] == "You are a helpful assistant."
+    
+    @pytest.mark.asyncio
+    async def test_pruning_preserves_tool_pairs(self, strategy_with_max_messages):
+        """Test that tool call/response pairs are kept together."""
+        strategy = strategy_with_max_messages
+        
+        messages = [
+            {"role": "user", "content": "Old message 1"},
+            {"role": "assistant", "content": "Old response 1"},
+            {"role": "user", "content": "Old message 2"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_old", "function": {"name": "test_tool"}}
+            ]},
+            {"role": "tool", "content": "Old tool result", "tool_call_id": "call_old"},
+            {"role": "user", "content": "Recent message 1"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_new", "function": {"name": "test_tool"}}
+            ]},
+            {"role": "tool", "content": "New tool result", "tool_call_id": "call_new"},
+            {"role": "user", "content": "Recent message 2"},
+            {"role": "assistant", "content": "Recent response 2"},
+            {"role": "user", "content": "Latest message"},
+            {"role": "assistant", "content": "Latest response"},
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # Check that no orphaned tool calls/responses exist
+        tool_call_ids = set()
+        tool_response_ids = set()
+        
+        for msg in result.modified_messages:
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    tool_call_ids.add(tc["id"])
+            if msg.get("role") == "tool":
+                tool_response_ids.add(msg.get("tool_call_id"))
+        
+        # Every tool response should have a matching tool call
+        assert tool_response_ids.issubset(tool_call_ids)
+    
+    @pytest.mark.asyncio
+    async def test_pruning_ensures_user_first(self, strategy_with_max_messages):
+        """Test that first non-system message is always 'user' after pruning."""
+        strategy = strategy_with_max_messages
+        
+        messages = [
+            {"role": "system", "content": "System prompt"},
+        ]
+        # Add many messages to trigger pruning
+        for i in range(20):
+            messages.append({"role": "user", "content": f"User {i}"})
+            messages.append({"role": "assistant", "content": f"Response {i}"})
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # Find first non-system message
+        first_non_system = None
+        for msg in result.modified_messages:
+            if msg.get("role") != "system":
+                first_non_system = msg
+                break
+        
+        assert first_non_system is not None
+        assert first_non_system.get("role") == "user"
+    
+    @pytest.mark.asyncio
+    async def test_pruning_removes_from_oldest(self, strategy_with_max_messages):
+        """Test that oldest messages are pruned first."""
+        strategy = strategy_with_max_messages
+        
+        messages = []
+        for i in range(15):
+            messages.append({"role": "user", "content": f"User message {i}"})
+            messages.append({"role": "assistant", "content": f"Response {i}"})
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # Latest messages should be preserved
+        contents = [m.get("content", "") for m in result.modified_messages]
+        
+        # Last message should still be there
+        assert "Response 14" in contents or any("14" in c for c in contents if c)
+    
+    @pytest.mark.asyncio
+    async def test_pruning_disabled_when_zero(self, tmp_path):
+        """Test that pruning is disabled when max_messages=0."""
+        tool_store = ToolResultStore(tmp_path / "tools.db")
+        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
+        core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
+        archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
+        
+        config = CompactionConfig(
+            layer1_threshold=100000,
+            layer2_threshold=200000,
+            layer3_threshold=300000,
+            target_tokens=50000,
+            max_messages=0,  # Disabled
+        )
+        
+        strategy = LayeredCompactionStrategy(
+            tool_store=tool_store,
+            variable_manager=variable_manager,
+            core_memory=core_memory,
+            archival_memory=archival_memory,
+            config=config
+        )
+        
+        # Create many messages
+        messages = []
+        for i in range(50):
+            messages.append({"role": "user", "content": f"User {i}"})
+            messages.append({"role": "assistant", "content": f"Response {i}"})
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # Should not have pruned anything
+        assert result.messages_pruned == 0
+        assert len(result.modified_messages) == 100
+
+
+class TestEnsureValidMessageSequence:
+    """Tests for _ensure_valid_message_sequence helper method."""
+    
+    @pytest.fixture
+    def strategy(self, tmp_path):
+        """Create strategy for testing."""
+        tool_store = ToolResultStore(tmp_path / "tools.db")
+        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
+        core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
+        archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
+        
+        config = CompactionConfig(
+            layer1_threshold=100000,
+            layer2_threshold=200000,
+            layer3_threshold=300000,
+            target_tokens=50000,
+        )
+        
+        return LayeredCompactionStrategy(
+            tool_store=tool_store,
+            variable_manager=variable_manager,
+            core_memory=core_memory,
+            archival_memory=archival_memory,
+            config=config
+        )
+    
+    def test_valid_sequence_unchanged(self, strategy):
+        """Test that valid sequence is not modified."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+        tool_map = {}
+        
+        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        
+        assert removed == 0
+        assert len(messages) == 3
+    
+    def test_removes_leading_assistant(self, strategy):
+        """Test that leading assistant message is removed."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "assistant", "content": "Bad start"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+        tool_map = {}
+        
+        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        
+        assert removed == 1
+        assert len(messages) == 3
+        # First non-system should be user
+        assert messages[1]["role"] == "user"
+    
+    def test_removes_leading_tool(self, strategy):
+        """Test that leading tool message is removed."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "tool", "content": "Orphan", "tool_call_id": "x"},
+            {"role": "user", "content": "Hello"},
+        ]
+        tool_map = {}
+        
+        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        
+        assert removed == 1
+        assert len(messages) == 2
+        assert messages[1]["role"] == "user"
+    
+    def test_removes_assistant_with_tool_calls_and_responses(self, strategy):
+        """Test that assistant with tool_calls also removes tool responses."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "function": {"name": "test"}}
+            ]},
+            {"role": "tool", "content": "Result", "tool_call_id": "call_1"},
+            {"role": "user", "content": "Hello"},
+        ]
+        # Build tool map as the strategy would
+        tool_map = {"call_1": {1, 2}}  # indices of assistant and tool
+        
+        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        
+        assert removed == 2  # Both assistant and tool removed
+        assert len(messages) == 2
+        assert messages[1]["role"] == "user"
+    
+    def test_cascading_removal(self, strategy):
+        """Test cascading removal when multiple bad messages at start."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "assistant", "content": "First bad"},
+            {"role": "assistant", "content": "Second bad"},
+            {"role": "tool", "content": "Orphan", "tool_call_id": "x"},
+            {"role": "user", "content": "Finally user"},
+        ]
+        tool_map = {}
+        
+        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        
+        assert removed == 3  # All three bad messages removed
+        assert len(messages) == 2
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == "Finally user"

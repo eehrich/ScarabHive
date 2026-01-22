@@ -442,7 +442,12 @@ plugins:
         # Irreversible compaction settings
         drop_after_turns: 30           # Drop messages older than N turns (Layer 3 only)
         max_summary_tokens: 100        # Max tokens for archived message summaries
-
+        
+        # Pre-Layer P: Hard message limit - prunes oldest messages if exceeded
+        # Runs BEFORE token-based layers to prevent excessive message counts
+        # Counts ALL messages including tool calls/results, not just user messages
+        max_messages: 200              # 0 = disabled, e.g., 200 = keep max 200 messages
+        
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 
         compact_media_after_final_response: true  # Compact media files after final agent response

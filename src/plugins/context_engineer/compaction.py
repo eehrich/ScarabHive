@@ -76,6 +76,11 @@ class CompactionConfig:
     drop_after_turns: int = 50       # Drop messages older than N turns
     max_summary_tokens: int = 100    # Max tokens for archived summaries
     
+    # Hard message limit - drops oldest messages if exceeded (runs in Layer 3)
+    # Counts ALL messages including tool calls/results, not just user messages
+    # Set to 0 to disable
+    max_messages: int = 0            # 0 = disabled, e.g., 200 = keep max 200 messages
+    
     # Media deduplication settings
     deduplicate_media: bool = True  # Auto-compact older duplicate media (by file hash)
     
@@ -111,8 +116,9 @@ class CompactionResult:
     media_compacted_after_event: int = 0  # Media compacted due to user/final message trigger
     media_always_compacted: int = 0  # Media compacted by always_compact_media_keep_last
     media_bytes_saved: int = 0  # Bytes saved by media compaction (for byte-limit compaction)
+    messages_pruned: int = 0  # Messages pruned by max_messages limit (Pre-Layer P)
     
-    # Layer applied (int for L1/L2/L3, str "B" for byte-limit)
+    # Layer applied (int for L1/L2/L3, str "M" for media, "B" for byte-limit, "P" for prune)
     layers_applied: list[int | str] = field(default_factory=list)
     
     # Modified messages
@@ -345,21 +351,49 @@ class LayeredCompactionStrategy:
         # (need to run compact() to apply the media compaction even if under token threshold)
         always_compact_media = self.config.always_compact_media_keep_last > 0
         
-        # Check if compaction needed (unless forced or always_compact_media enabled)
-        if not force and not always_compact_media and current_tokens <= self.config.target_tokens:
+        # Also force compaction if max_messages exceeded
+        # (need to run compact() to apply Pre-Layer P even if under token threshold)
+        max_messages_exceeded = (
+            self.config.max_messages > 0 and 
+            len(messages) > self.config.max_messages
+        )
+        
+        # Check if compaction needed (unless forced or special conditions)
+        if not force and not always_compact_media and not max_messages_exceeded and current_tokens <= self.config.target_tokens:
             logger.debug(
                 f"No compaction needed: {current_tokens} tokens "
                 f"<= {self.config.target_tokens} target"
             )
             return result
         
+        # Build trigger reason for logging
+        triggers = []
+        if force:
+            triggers.append("FORCED")
+        if max_messages_exceeded:
+            triggers.append(f"MSG_LIMIT({len(messages)}>{self.config.max_messages})")
+        if always_compact_media:
+            triggers.append("MEDIA_ALWAYS")
+        if current_tokens > self.config.target_tokens:
+            triggers.append(f"TOKENS({current_tokens}>{self.config.target_tokens})")
+        
         logger.info(
-            f"Starting compaction{' (FORCED)' if force else ''}: {current_tokens} tokens, "
-            f"{request_bytes / (1024*1024):.1f}MB, target {self.config.target_tokens} tokens, "
-            f"always_compact_media_keep_last={self.config.always_compact_media_keep_last}"
+            f"Starting compaction [{', '.join(triggers)}]: {current_tokens} tokens, "
+            f"{request_bytes / (1024*1024):.1f}MB, {len(messages)} messages, "
+            f"max_messages={self.config.max_messages}"
         )
         
-        # Pre-Layer 0: Always compact media (keep last N) - runs regardless of token count
+        # Pre-Layer P: Prune by message count - runs FIRST if message limit exceeded
+        # This is independent of token thresholds - too many messages waste API overhead
+        if self.config.max_messages > 0 and len(result.modified_messages) > self.config.max_messages:
+            await self._prune_by_message_count(result)
+            if result.messages_pruned > 0:
+                result.layers_applied.append("P")
+                # Recalculate tokens after pruning
+                result.final_tokens = self._estimate_messages_tokens(result.modified_messages)
+                current_tokens = result.final_tokens
+        
+        # Pre-Layer M: Always compact media (keep last N) - runs regardless of token count
         # This is the most aggressive media compaction, runs first if enabled
         if self.config.always_compact_media_keep_last > 0:
             await self._compact_media_always(result)
@@ -1586,11 +1620,166 @@ class LayeredCompactionStrategy:
             f"(including tool_call pairs)"
         )
         
+        # Ensure valid message sequence after dropping
+        extra_dropped = self._ensure_valid_message_sequence(messages, tool_map, "Layer 3")
+        result.messages_dropped += extra_dropped
+        
+        # Note: max_messages limit is now handled by Pre-Layer P at the start of compact()
+        # This ensures message count is limited even when token thresholds aren't reached
+        
         # Cleanup unreferenced variables after dropping messages
         removed = await self.variable_manager.cleanup_unused_variables(messages)
         if removed > 0:
             logger.debug(f"Cleaned up {removed} unreferenced variables")
-    
+
+    async def _prune_by_message_count(self, result: CompactionResult) -> None:
+        """Pre-Layer P: Prune oldest messages to enforce max_messages limit.
+        
+        This runs BEFORE token-based layers to prevent excessive message counts
+        that waste API overhead even when token count is low.
+        
+        Counts ALL messages (user, assistant, tool calls, tool results).
+        System messages are kept if keep_system_messages is True.
+        Tool call/result pairs are kept together to maintain conversation integrity.
+        """
+        messages = result.modified_messages
+        max_msgs = self.config.max_messages
+        
+        if len(messages) <= max_msgs:
+            return
+        
+        excess = len(messages) - max_msgs
+        logger.info(
+            f"Pre-Layer P: {len(messages)} messages exceeds limit of {max_msgs}, "
+            f"pruning ~{excess} oldest messages"
+        )
+        
+        # Build tool_call mapping to keep pairs together
+        tool_map = self._build_tool_call_map(messages)
+        
+        # Find system message indices to protect
+        system_indices = set()
+        if self.config.keep_system_messages:
+            system_indices = {
+                i for i, msg in enumerate(messages) if msg.get("role") == "system"
+            }
+        
+        # Collect indices to remove (oldest first, respecting tool call pairs)
+        indices_to_remove: set[int] = set()
+        
+        # Start from beginning (oldest) and collect messages until we have enough
+        i = 0
+        while len(indices_to_remove) < excess and i < len(messages):
+            # Skip system messages
+            if i in system_indices:
+                i += 1
+                continue
+            
+            # Skip if already marked for removal
+            if i in indices_to_remove:
+                i += 1
+                continue
+            
+            msg = messages[i]
+            role = msg.get("role")
+            
+            # Add this message
+            indices_to_remove.add(i)
+            
+            # If tool call/result, add related messages
+            if role == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls", []):
+                    tc_id = tc.get("id")
+                    if tc_id and tc_id in tool_map:
+                        indices_to_remove.update(tool_map[tc_id])
+            elif role == "tool":
+                tc_id = msg.get("tool_call_id")
+                if tc_id and tc_id in tool_map:
+                    indices_to_remove.update(tool_map[tc_id])
+            
+            i += 1
+        
+        # Remove in reverse order to preserve indices
+        pruned_count = len(indices_to_remove)
+        for idx in sorted(indices_to_remove, reverse=True):
+            del messages[idx]
+        
+        # Ensure valid message sequence after pruning
+        extra_pruned = self._ensure_valid_message_sequence(messages, tool_map, "Pre-Layer P")
+        pruned_count += extra_pruned
+        
+        result.messages_pruned = pruned_count
+        result.final_tokens = self._estimate_messages_tokens(messages)
+        
+        logger.info(
+            f"Pre-Layer P: pruned {pruned_count} messages, "
+            f"now {len(messages)} messages, {result.final_tokens:,} tokens"
+        )
+
+    def _ensure_valid_message_sequence(
+        self, 
+        messages: list[dict[str, Any]], 
+        tool_map: dict[str, set[int]],
+        caller: str
+    ) -> int:
+        """Ensure first non-system message is 'user' to satisfy Gemini requirements.
+        
+        Gemini requires: user -> assistant (with tool_calls) -> tool responses
+        If first non-system msg is assistant/tool, we remove until we hit a user msg.
+        
+        Args:
+            messages: List of messages (modified in place)
+            tool_map: Mapping of tool_call_id to related message indices
+            caller: Name of calling function for logging
+            
+        Returns:
+            Number of additional messages removed
+        """
+        extra_removed = 0
+        
+        while messages:
+            first_non_system_idx = None
+            for i, msg in enumerate(messages):
+                if msg.get("role") != "system":
+                    first_non_system_idx = i
+                    break
+            
+            if first_non_system_idx is None:
+                break  # Only system messages left
+            
+            first_msg = messages[first_non_system_idx]
+            if first_msg.get("role") == "user":
+                break  # Good - first non-system message is user
+            
+            # First non-system message is not user - need to remove it and related tool messages
+            role = first_msg.get("role")
+            indices_to_remove: set[int] = {first_non_system_idx}
+            
+            if role == "assistant" and first_msg.get("tool_calls"):
+                # Remove this assistant message AND all its tool responses
+                for tc in first_msg.get("tool_calls", []):
+                    tc_id = tc.get("id")
+                    if tc_id and tc_id in tool_map:
+                        indices_to_remove.update(tool_map[tc_id])
+            elif role == "tool":
+                # Remove this tool response AND its parent assistant message
+                tc_id = first_msg.get("tool_call_id")
+                if tc_id and tc_id in tool_map:
+                    indices_to_remove.update(tool_map[tc_id])
+            
+            # Remove these messages
+            for idx in sorted(indices_to_remove, reverse=True):
+                if idx < len(messages):
+                    del messages[idx]
+                    extra_removed += 1
+            
+            logger.debug(
+                f"{caller}: removed {len(indices_to_remove)} more messages "
+                f"to ensure first non-system message is 'user'"
+            )
+        
+        return extra_removed
+
     def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate total tokens in messages including multimodal inline data.
         

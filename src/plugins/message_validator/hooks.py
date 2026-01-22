@@ -352,6 +352,20 @@ class InternalMessageValidator:
         """Check for problematic message sequences."""
         issues = []
 
+        # Check that first non-system message is 'user'
+        # Gemini requires: user -> assistant (with tool_calls) -> tool responses
+        for i, msg in enumerate(messages):
+            if msg.role != "system":
+                if msg.role != "user":
+                    issues.append(ValidationIssue(
+                        type="invalid_first_message",
+                        severity="error",
+                        message_index=i,
+                        description=f"First non-system message must be 'user', got '{msg.role}'",
+                        details={"actual_role": msg.role}
+                    ))
+                break  # Only check first non-system message
+
         # Check for consecutive assistant messages
         for i in range(len(messages) - 1):
             if messages[i].role == "assistant" and messages[i + 1].role == "assistant":
@@ -395,6 +409,9 @@ class InternalMessageValidator:
                 # Remove empty assistant messages - they serve no purpose and can 
                 # confuse the LLM (especially when followed by user "Continue" messages)
                 remove_indices.add(issue.message_index)
+
+            # Note: invalid_first_message is handled by the loop after all removals
+            # (see "Ensure first non-system message is 'user'" section below)
 
             elif issue.type == "consecutive_assistant_messages":
                 # Merge second assistant message into first
@@ -483,6 +500,54 @@ class InternalMessageValidator:
         for idx in sorted(remove_indices, reverse=True):
             if 0 <= idx < len(repaired):
                 repaired.pop(idx)
+
+        # Ensure first non-system message is 'user' (loop until valid or empty)
+        # This handles cascading removals where removing first bad message exposes another
+        max_iterations = 100  # Safety limit
+        for _ in range(max_iterations):
+            first_non_system_idx = None
+            for i, msg in enumerate(repaired):
+                if msg.role != "system":
+                    first_non_system_idx = i
+                    break
+            
+            if first_non_system_idx is None:
+                break  # Only system messages left
+            
+            first_msg = repaired[first_non_system_idx]
+            if first_msg.role == "user":
+                break  # Valid sequence
+            
+            # Need to remove this message and related tool messages
+            indices_to_remove: Set[int] = {first_non_system_idx}
+            
+            if first_msg.role == "assistant" and first_msg.tool_calls:
+                # Find and remove matching tool responses
+                tool_call_ids = set()
+                for tc in first_msg.tool_calls:
+                    tc_id = getattr(tc, 'id', None) or (tc.get('id') if isinstance(tc, dict) else None)
+                    if tc_id:
+                        tool_call_ids.add(tc_id)
+                for j, other_msg in enumerate(repaired):
+                    if other_msg.role == "tool":
+                        other_tc_id = getattr(other_msg, 'tool_call_id', None)
+                        if not other_tc_id and hasattr(other_msg, 'model_dump'):
+                            other_tc_id = other_msg.model_dump().get('tool_call_id')
+                        if other_tc_id in tool_call_ids:
+                            indices_to_remove.add(j)
+            elif first_msg.role == "tool":
+                # Tool message without assistant - just remove it
+                pass
+            
+            # Remove in reverse order
+            for idx in sorted(indices_to_remove, reverse=True):
+                if idx < len(repaired):
+                    repaired.pop(idx)
+            
+            logger.debug(
+                f"Removed {len(indices_to_remove)} messages to ensure first "
+                f"non-system message is 'user'"
+            )
 
         # Strip tool_calls from assistant messages with orphaned calls
         # We do this AFTER removals to work with adjusted indices

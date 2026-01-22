@@ -292,6 +292,13 @@ config:
     minimum: 0
     description: "Always compact media regardless of token count. Keeps only the last N messages that contain media. Set to 0 to disable, 5 to keep last 5 messages with media."
 
+  # Pre-Layer P: Hard message limit
+  max_messages:
+    type: integer
+    default: 0
+    minimum: 0
+    description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers. Preserves tool call/result pairs."
+
   # Compaction Strategy
   compaction_strategy:
     type: string

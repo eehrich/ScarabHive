@@ -68,6 +68,14 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self.layer3_threshold = int(config_dict.get("layer3_threshold", 120000))
         self.target_tokens = int(config_dict.get("target_tokens", 60000))
         
+        # ============================================================
+        # CONFIG LOADING - WICHTIG für neue Parameter:
+        # 1. Hier aus config_dict laden (plugins.yaml Werte)
+        # 2. Unten zu self._hooks_impl syncen
+        # 3. In schema.yaml unter 'config:' Sektion hinzufügen (für Defaults)
+        # 4. In hooks.py __init__ auch laden (für get_config() Fallback)
+        # ============================================================
+        
         # Feature settings
         self.tool_result_min_size = int(config_dict.get("tool_result_min_size", 500))
         self.tool_result_keep_last = int(config_dict.get("tool_result_keep_last", 3))
@@ -81,6 +89,9 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self.compact_media_after_user_message = bool(config_dict.get("compact_media_after_user_message", False))
         self.compact_media_after_final_response = bool(config_dict.get("compact_media_after_final_response", False))
         self.always_compact_media_keep_last = int(config_dict.get("always_compact_media_keep_last", 0))
+        
+        # Pre-Layer P: Hard message limit
+        self.max_messages = int(config_dict.get("max_messages", 0))
         
         # Media store settings
         self.store_media_before_compaction = bool(config_dict.get("store_media_before_compaction", True))
@@ -103,6 +114,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         )
         
         # Sync config to hooks implementation
+        # WICHTIG: Neue Parameter hier hinzufügen! (siehe Kommentar oben)
         self._hooks_impl.layer1_threshold = self.layer1_threshold
         self._hooks_impl.layer2_threshold = self.layer2_threshold
         self._hooks_impl.layer3_threshold = self.layer3_threshold
@@ -120,6 +132,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl.store_media_before_compaction = self.store_media_before_compaction
         self._hooks_impl.media_store_ttl_seconds = self.media_store_ttl_seconds
         self._hooks_impl.media_store_max_files = self.media_store_max_files
+        self._hooks_impl.max_messages = self.max_messages
         
         logger.info(
             f"ContextEngineerServer initialized: "
@@ -127,7 +140,8 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             f"L3:{self.layer3_threshold}, target={self.target_tokens}, "
             f"compact_media_after_user_message={self.compact_media_after_user_message}, "
             f"compact_media_after_final_response={self.compact_media_after_final_response}, "
-            f"always_compact_media_keep_last={self.always_compact_media_keep_last}"
+            f"always_compact_media_keep_last={self.always_compact_media_keep_last}, "
+            f"max_messages={self.max_messages}"
         )
     
     def _load_history_sync(self) -> list[dict[str, Any]]:
