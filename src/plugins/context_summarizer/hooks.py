@@ -52,6 +52,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self._max_tracked_sessions = int(config.get('max_tracked_sessions', 200))
         self.trigger_percentage = float(config.get('summarization_trigger_percentage', 0.60))
         self.chunk_size = int(config.get('summarization_chunk_size', 10))
+        self.max_chunks = int(config.get('max_chunks', 10))  # Limit parallel LLM calls
         self.preserve_recent = int(config.get('preserve_recent_count', 10))
         self.preserve_system = bool(config.get('preserve_system_messages', True))
         self.llm_profile = str(config.get('llm_profile', 'turbo'))
@@ -69,7 +70,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
-            f"chunk_size={self.chunk_size}, preserve_recent={self.preserve_recent}, "
+            f"chunk_size={self.chunk_size}, max_chunks={self.max_chunks}, preserve_recent={self.preserve_recent}, "
             f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
         )
 
@@ -809,6 +810,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         
         Uses parallel processing to submit all chunks to the LLM simultaneously,
         which enables efficient batch API usage when configured.
+        
+        If chunk count exceeds max_chunks, automatically increases chunk_size
+        to reduce the number of parallel LLM calls.
 
         Args:
             messages: Messages to summarize
@@ -825,10 +829,30 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             logger.warning("[ContextSummarizer] No LLM available, skipping summarization")
             return messages, {'summary_count': 0, 'reason': 'no_llm'}
 
+        # Calculate effective chunk_size to respect max_chunks limit
+        effective_chunk_size = self.chunk_size
+        if self.max_chunks > 0 and len(messages) > 0:
+            # Calculate minimum chunk size needed to stay within max_chunks
+            min_chunk_size_for_limit = (len(messages) + self.max_chunks - 1) // self.max_chunks
+            if min_chunk_size_for_limit > effective_chunk_size:
+                logger.info(
+                    f"[ContextSummarizer] Increasing chunk_size from {effective_chunk_size} to "
+                    f"{min_chunk_size_for_limit} to respect max_chunks={self.max_chunks} "
+                    f"(messages={len(messages)})"
+                )
+                effective_chunk_size = min_chunk_size_for_limit
+
         # CRITICAL: Create chunks that keep tool_calls/tool response pairs together
-        chunks = self._create_smart_chunks(messages, self.chunk_size)
+        chunks = self._create_smart_chunks(messages, effective_chunk_size)
 
         total_chunks = len(chunks)
+        
+        # Log if we had to limit chunks
+        if total_chunks > self.max_chunks and self.max_chunks > 0:
+            logger.warning(
+                f"[ContextSummarizer] Chunk count ({total_chunks}) still exceeds max_chunks "
+                f"({self.max_chunks}) due to tool_call grouping. Proceeding anyway."
+            )
 
         # Get cancellation token from context (if available)
         cancellation_token = getattr(context, 'cancellation_token', None)

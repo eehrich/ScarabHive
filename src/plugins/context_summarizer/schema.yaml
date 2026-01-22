@@ -86,6 +86,13 @@ config:
     minimum: 2
     maximum: 50
 
+  max_chunks:
+    type: integer
+    default: 10
+    description: "Maximum number of parallel chunks to process. If message count would exceed this, chunk_size is automatically increased. Set to 0 to disable limit."
+    minimum: 0
+    maximum: 100
+
   preserve_recent_count:
     type: integer
     default: 10
