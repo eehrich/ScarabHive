@@ -413,7 +413,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 result.messages_archived > 0 or
                 result.messages_dropped > 0 or
                 result.media_deduplicated > 0 or
-                result.media_compacted_after_event > 0
+                result.media_compacted_after_event > 0 or
+                result.media_always_compacted > 0  # Always-compact media (Pre-Layer M)
             )
             
             if self.stats_history is not None and something_compacted:

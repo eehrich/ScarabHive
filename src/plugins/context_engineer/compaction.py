@@ -390,12 +390,14 @@ class LayeredCompactionStrategy:
                 result.layers_applied.append("B")
         
         # Apply layers progressively based on TOKEN thresholds
-        # force=True only bypasses Layer 1 threshold (always run Layer 1)
-        # Layer 2 and 3 still respect their token thresholds because
-        # they do turn-based operations that don't make sense on small contexts
+        # Layer 1/2/3 should ONLY run based on token thresholds
+        # The 'force' flag is used to enter compact() even when below threshold,
+        # but it should NOT force Layer 1 to run if we're just doing media compaction
         
-        # Layer 1: Always apply if forced, or if above threshold
-        if force or current_tokens >= self.config.layer1_threshold:
+        # Layer 1: Apply only if above threshold (or bytes exceeded which sets force)
+        # Note: always_compact_media triggers compact() but should NOT trigger Layer 1
+        layer1_needed = current_tokens >= self.config.layer1_threshold or bytes_exceeded
+        if layer1_needed:
             await self._apply_layer1(result)
             result.layers_applied.append(1)
             
