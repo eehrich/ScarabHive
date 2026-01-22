@@ -596,7 +596,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         estimated_tokens = strategy._estimate_messages_tokens(messages)
         actual_tokens = 0
 
-        # Try to get actual tokens from context_usage_tracker's latest snapshot
+        # Try to get actual tokens from context_usage_tracker's latest snapshot FOR THIS SESSION
+        # This uses the previous LLM call's token count as baseline - if it was already high,
+        # the next call will be at least as large (probably larger with new messages)
         try:
             # Access the plugin registry via agent's system_config
             if context.agent and hasattr(context.agent, 'system_config'):
@@ -609,9 +611,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
                         tracker = usage_tracker_plugin.tracker
 
-                        # Get latest snapshot for this session
-                        if tracker._latest_snapshot and tracker._latest_snapshot.session_id == context.session_id:
-                            actual_tokens = tracker._latest_snapshot.prompt_tokens
+                        # Get latest snapshot FOR THIS SESSION (not global _latest_snapshot!)
+                        # This filters by session_id to avoid interference from sub-agents
+                        latest = tracker.get_latest(session_id=context.session_id)
+                        if latest:
+                            actual_tokens = latest.get('prompt_tokens', 0)
                             logger.debug(
                                 f"[ContextEngineer] Got actual tokens from usage_tracker: {actual_tokens} "
                                 f"(estimated: {estimated_tokens})"
