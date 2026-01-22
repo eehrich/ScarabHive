@@ -380,16 +380,7 @@
     </div>
     
     <script>
-        // Prevent parent page scroll when scrolling in this panel
-        document.addEventListener('wheel', function(e) {
-            const scrollable = document.scrollingElement || document.documentElement;
-            const atTop = scrollable.scrollTop === 0;
-            const atBottom = scrollable.scrollHeight - scrollable.scrollTop === scrollable.clientHeight;
-            
-            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-                e.preventDefault();
-            }
-        }, { passive: false });
+        // Note: Scroll prevention is now handled centrally by plugin_manager.js
 
         let autoRefreshInterval = null;
         let allMemories = [];

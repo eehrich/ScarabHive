@@ -8,6 +8,44 @@ window.AgentSystem.Status = {
   mcpData: null,
   mcpLastRefreshTime: null,
   
+  /**
+   * Prevent wheel events from scrolling parent page
+   */
+  _addScrollPrevention: function(element) {
+    element.addEventListener('wheel', (e) => {
+      let target = e.target;
+      while (target && target !== element) {
+        const style = window.getComputedStyle(target);
+        const overflowY = style.overflowY;
+        const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') && target.scrollHeight > target.clientHeight;
+        
+        if (isScrollable) {
+          const atTop = target.scrollTop <= 0;
+          const atBottom = target.scrollHeight - target.scrollTop <= target.clientHeight + 1;
+          
+          if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) {
+            return;
+          }
+          e.preventDefault();
+          return;
+        }
+        target = target.parentElement;
+      }
+      // Check if element itself is scrollable
+      const style = window.getComputedStyle(element);
+      const overflowY = style.overflowY;
+      const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') && element.scrollHeight > element.clientHeight;
+      if (isScrollable) {
+        const atTop = element.scrollTop <= 0;
+        const atBottom = element.scrollHeight - element.scrollTop <= element.clientHeight + 1;
+        if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) {
+          return;
+        }
+      }
+      e.preventDefault();
+    }, { passive: false });
+  },
+  
   showPanel: function() {
     // Create header with controls only (tabs are in content area)
     const headerContent = `
@@ -26,6 +64,12 @@ window.AgentSystem.Status = {
       '',
       headerContent
     );
+    
+    // Add scroll prevention to panel body
+    const panelBody = panel.querySelector('.floating-panel-body');
+    if (panelBody) {
+      this._addScrollPrevention(panelBody);
+    }
     
     // Add event listeners
     const refreshBtn = panel.querySelector('#statusRefreshBtn');

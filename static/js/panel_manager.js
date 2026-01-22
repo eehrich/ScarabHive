@@ -188,6 +188,14 @@ window.AgentSystem.PanelManager = {
       closeBtn.addEventListener('click', () => this.closePanel(id));
     }
 
+    // Prevent wheel events on panel header from scrolling parent page
+    const header = panel.querySelector('.floating-panel-header');
+    if (header) {
+      header.addEventListener('wheel', (e) => {
+        e.preventDefault();
+      }, { passive: false });
+    }
+
     // Prevent panel from getting focus outline when child elements are focused
     panel.addEventListener('focus', (e) => {
       e.preventDefault();

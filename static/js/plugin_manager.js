@@ -137,6 +137,9 @@ window.AgentSystem.PluginManager = {
     iframe.style.border = 'none';
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
 
+    // Inject scroll prevention script after iframe loads
+    this._injectScrollPrevention(iframe);
+
     // Replace panel content with iframe
     const contentDiv = panel.querySelector('.panel-content') || panel.querySelector('.floating-panel-body');
     if (contentDiv) {
@@ -467,6 +470,74 @@ window.AgentSystem.PluginManager = {
   },
 
   /**
+   * Inject scroll prevention script into iframe
+   */
+  _injectScrollPrevention(iframe) {
+    iframe.addEventListener('load', () => {
+      try {
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        if (iframeDoc) {
+          const script = iframeDoc.createElement('script');
+          script.textContent = `
+            // Prevent parent page scroll when scrolling in this panel (iframe)
+            document.addEventListener('wheel', function(e) {
+              // Check if body or documentElement is scrollable
+              const docEl = document.documentElement;
+              const body = document.body;
+              const docScrollable = docEl.scrollHeight > docEl.clientHeight;
+              const bodyScrollable = body.scrollHeight > body.clientHeight;
+              
+              // Find closest scrollable ancestor (including checking elements)
+              let target = e.target;
+              let foundScrollable = false;
+              
+              while (target && target !== body && target !== docEl) {
+                const style = window.getComputedStyle(target);
+                const overflowY = style.overflowY;
+                const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') && target.scrollHeight > target.clientHeight;
+                
+                if (isScrollable) {
+                  foundScrollable = true;
+                  const atTop = target.scrollTop <= 0;
+                  const atBottom = target.scrollHeight - target.scrollTop <= target.clientHeight + 1;
+                  
+                  if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) {
+                    return; // Allow normal scroll within element
+                  }
+                  // At boundary of this element - prevent and stop
+                  e.preventDefault();
+                  return;
+                }
+                target = target.parentElement;
+              }
+              
+              // Check if body/document itself is scrollable
+              if (docScrollable || bodyScrollable) {
+                const scrollTop = docEl.scrollTop || body.scrollTop;
+                const scrollHeight = Math.max(docEl.scrollHeight, body.scrollHeight);
+                const clientHeight = docEl.clientHeight;
+                const atTop = scrollTop <= 0;
+                const atBottom = scrollHeight - scrollTop <= clientHeight + 1;
+                
+                if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) {
+                  return; // Allow normal page scroll
+                }
+              }
+              
+              // At boundary or no scrollable content - prevent parent scroll
+              e.preventDefault();
+            }, { passive: false });
+          `;
+          iframeDoc.body.appendChild(script);
+        }
+      } catch (err) {
+        // Cross-origin iframes will throw - ignore silently
+        console.debug('Could not inject scroll prevention into iframe:', err.message);
+      }
+    });
+  },
+
+  /**
    * Load content for a tab (creates/reuses iframe)
    */
   loadTabContent(tab, container) {
@@ -478,6 +549,9 @@ window.AgentSystem.PluginManager = {
     iframe.src = tab.endpoint;
     iframe.style.cssText = 'width: 100%; height: 100%; border: none;';
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+
+    // Inject scroll prevention
+    this._injectScrollPrevention(iframe);
 
     container.appendChild(iframe);
   }

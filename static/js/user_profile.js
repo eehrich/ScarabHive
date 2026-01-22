@@ -262,6 +262,30 @@ window.AgentSystem.UserProfile = {
       </div>
     `;
 
+    // Prevent wheel events from scrolling parent page
+    overlay.addEventListener('wheel', (e) => {
+      // Find if there's a scrollable element under cursor
+      let target = e.target;
+      while (target && target !== overlay) {
+        const style = window.getComputedStyle(target);
+        const overflowY = style.overflowY;
+        const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') && target.scrollHeight > target.clientHeight;
+        
+        if (isScrollable) {
+          const atTop = target.scrollTop <= 0;
+          const atBottom = target.scrollHeight - target.scrollTop <= target.clientHeight + 1;
+          
+          if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) {
+            return; // Allow scroll within element
+          }
+          break;
+        }
+        target = target.parentElement;
+      }
+      // Prevent parent page scroll
+      e.preventDefault();
+    }, { passive: false });
+
     // Close on overlay click
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) {
