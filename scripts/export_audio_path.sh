@@ -12,8 +12,8 @@ if [ $# -ne 3 ]; then
     echo ""
     echo "Settings:"
     echo "  - Normalize volume: clip-level (EBU R128, -16 LUFS)"
-    echo "  - Pause between scenes: 2s"
-    echo "  - Compress silence: max 2s"
+    echo "  - Pause between scenes: 3s"
+    echo "  - Compress silence: max 3s"
     echo "  - Force: include unreviewed clips, irgnore missing clips"
     exit 1
 fi
@@ -33,9 +33,9 @@ echo ""
     --path-id "$PATH_ID" \
     -o "$OUTPUT_FILE" \
     --compress-silence \
-    --max-silence 2 \
+    --max-silence 3 \
     --normalize clip \
-    --pause 2 \
+    --pause 3 \
     --force
 
 echo ""
