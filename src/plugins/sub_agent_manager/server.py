@@ -472,8 +472,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                             )
                         elif event_type == "status":
                             status_msg = event.get("message", "Processing...")
+                            phase = event.get("phase", "progress")
+                            # Use different icons based on status phase
+                            if phase == "error":
+                                icon = "❌"
+                            elif phase == "end":
+                                icon = "✅"
+                            else:
+                                icon = "⚙️"
                             await manager.update_sub_agent_activity(
-                                parent_session_id, sub_session_id, f"⚙️ {status_msg}"
+                                parent_session_id, sub_session_id, f"{icon} {status_msg}"
                             )
                     except Exception as activity_err:
                         # Don't fail execution if activity tracking fails
@@ -674,8 +682,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                             )
                         elif event_type == "status":
                             status_msg = event.get("message", "Processing...")
+                            phase = event.get("phase", "progress")
+                            # Use different icons based on status phase
+                            if phase == "error":
+                                icon = "❌"
+                            elif phase == "end":
+                                icon = "✅"
+                            else:
+                                icon = "⚙️"
                             await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, f"⚙️ {status_msg}"
+                                parent_session_id, instance_id, f"{icon} {status_msg}"
                             )
                     except Exception as activity_err:
                         # Don't fail execution if activity tracking fails
@@ -1175,8 +1191,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                             )
                         elif event_type == "status":
                             status_msg = event.get("message", "Processing...")
+                            phase = event.get("phase", "progress")
+                            # Use different icons based on status phase
+                            if phase == "error":
+                                icon = "❌"
+                            elif phase == "end":
+                                icon = "✅"
+                            else:
+                                icon = "⚙️"
                             await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, f"⚙️ {status_msg}"
+                                parent_session_id, instance_id, f"{icon} {status_msg}"
                             )
                     except Exception:
                         pass  # Don't fail on activity tracking
