@@ -31,7 +31,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_system.llm.token_utils import estimate_content_tokens, estimate_inline_data_tokens
+from agent_system.llm.token_utils import (
+    estimate_content_tokens,
+    estimate_inline_data_tokens,
+    estimate_token_count,
+)
 
 from .archival_memory import ArchivalMemory
 from .core_memory import CoreMemory
@@ -1781,53 +1785,42 @@ class LayeredCompactionStrategy:
         return extra_removed
 
     def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
-        """Estimate total tokens in messages including multimodal inline data.
-        
-        Skips items marked as compacted since they won't be encoded at LLM call time.
+        """Estimate total tokens in messages, aligned with LLM token estimation.
+
+        Uses the same estimation path as context_summarizer to avoid drift,
+        while skipping media items marked as compacted since they won't be
+        encoded at LLM call time.
         """
-        total = 0
+        sanitized_messages: list[dict[str, Any]] = []
+
         for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                total += estimate_content_tokens(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        # Count text content
-                        if "text" in part:
-                            total += estimate_content_tokens(part["text"])
-                        # Count inline data tokens (audio, images, etc.)
-                        inline_tokens = estimate_inline_data_tokens(part)
-                        if inline_tokens > 0:
-                            total += inline_tokens
-            
-            # Count multimodal_content from tool responses (file paths that will be base64-encoded)
-            # SKIP items marked as compacted - they won't be encoded at LLM call time
-            mm_content = msg.get("multimodal_content")
-            if mm_content and isinstance(mm_content, list):
-                for mm_item in mm_content:
-                    if isinstance(mm_item, dict):
-                        # Skip compacted items - they're not sent to LLM
-                        # Note: Field name is "compacted" (not "_compacted") to match
-                        # the placeholder created in _compact_multimodal_content_items()
-                        if mm_item.get("compacted"):
-                            continue
-                        item_tokens = estimate_inline_data_tokens(mm_item)
-                        if item_tokens > 0:
-                            total += item_tokens
-                            logger.debug(f"Counted {item_tokens:,} tokens for multimodal_content file")
-            
-            # Add overhead for role and structure
-            total += 4  # Role tokens + message structure
-            
-            # Tool calls
-            if "tool_calls" in msg:
-                for tc in msg["tool_calls"]:
-                    func = tc.get("function", {})
-                    total += estimate_content_tokens(func.get("name", ""))
-                    total += estimate_content_tokens(func.get("arguments", ""))
-        
-        return total
+            if not isinstance(msg, dict):
+                sanitized_messages.append(msg)
+                continue
+
+            msg_copy = dict(msg)
+
+            # Remove compacted multimodal_content items (they are placeholders only)
+            mm_content = msg_copy.get("multimodal_content")
+            if isinstance(mm_content, list):
+                msg_copy["multimodal_content"] = [
+                    item
+                    for item in mm_content
+                    if not (isinstance(item, dict) and item.get("compacted"))
+                ]
+
+            # Remove compacted content parts if any were inserted as placeholders
+            content = msg_copy.get("content")
+            if isinstance(content, list):
+                msg_copy["content"] = [
+                    part
+                    for part in content
+                    if not (isinstance(part, dict) and part.get("compacted"))
+                ]
+
+            sanitized_messages.append(msg_copy)
+
+        return estimate_token_count(sanitized_messages)
     
     def _finalize(self, result: CompactionResult) -> CompactionResult:
         """Finalize compaction result."""
