@@ -596,11 +596,17 @@
         function renderLayers(layers) {
             return layers.map(l => {
                 if (l === 'B') {
-                    return `<span class="badge badge-layerB" title="Size limit exceeded (100MB)">B</span>`;
+                    return `<span class="badge badge-layerB" title="Byte Limit: Request size exceeded 90MB (Gemini limit protection)">B</span>`;
                 } else if (l === 'M') {
-                    return `<span class="badge badge-layerM" title="Always-compact media active (keep last N)">M</span>`;
+                    return `<span class="badge badge-layerM" title="Media Always-Compact: Keeping only last N messages with media files">M</span>`;
                 } else if (l === 'P') {
-                    return `<span class="badge badge-layerP" title="Pre-Layer P: Message count limit exceeded">LP</span>`;
+                    return `<span class="badge badge-layerP" title="Pre-Layer Prune: Message count exceeded limit, oldest messages removed">P</span>`;
+                } else if (l === '1' || l === 1) {
+                    return `<span class="badge badge-layer1" title="Layer 1: Reversible compaction (tool results stored externally, variables created)">L1</span>`;
+                } else if (l === '2' || l === 2) {
+                    return `<span class="badge badge-layer2" title="Layer 2: Semi-reversible compaction (old messages archived with summaries)">L2</span>`;
+                } else if (l === '3' || l === 3) {
+                    return `<span class="badge badge-layer3" title="Layer 3: Irreversible compaction (very old messages dropped permanently)">L3</span>`;
                 }
                 return `<span class="badge badge-layer${l}">L${l}</span>`;
             }).join(' ');
