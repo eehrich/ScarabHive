@@ -61,7 +61,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self._last_compaction_time: dict[str, float] = {}
         self._session_components: dict[str, dict[str, Any]] = {}
         
-        # Load config
+        # Load config from schema (will be overridden by server.py sync)
         config = self.get_config()
         
         # Memory management settings
@@ -221,6 +221,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 media_store_max_files=self.media_store_max_files
             )
             
+            logger.info(
+                f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
+                f"always_compact_media_keep_last={compaction_config.always_compact_media_keep_last}"
+            )
+            
             # Create strategy
             strategy = LayeredCompactionStrategy(
                 tool_store=tool_store,
@@ -320,8 +325,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     f"triggered by user_message (compact_media_after_user_message=true)"
                 )
             
-            # Skip only if: not manual, below token threshold, below byte limit, AND no event-based media compaction
-            if not is_manual and current_tokens < self.layer1_threshold and not bytes_exceeded and not event_media_compaction_needed:
+            # Check if always-compact-media is enabled (must run even below threshold)
+            always_compact_media_enabled = self.always_compact_media_keep_last > 0
+            
+            # Skip only if: not manual, below token threshold, below byte limit, 
+            # AND no event-based media compaction, AND always_compact_media disabled
+            if not is_manual and current_tokens < self.layer1_threshold and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: "
                     f"{current_tokens} tokens < {self.layer1_threshold} threshold, "
@@ -344,11 +353,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 )
             
             # Rate limiting - but NOT if bytes exceeded (must compact to avoid API errors!)
-            # Also NOT if event-based media compaction is needed
+            # Also NOT if event-based media compaction or always_compact_media is needed
             current_time = time.monotonic()
             last_compaction = self._last_compaction_time.get(session_id)
             
-            if not is_manual and not bytes_exceeded and not event_media_compaction_needed and last_compaction:
+            if not is_manual and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled and last_compaction:
                 time_since = current_time - last_compaction
                 if time_since < self.min_time_between:
                     logger.info(
@@ -367,9 +376,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                         }
                     )
             
-            # Force compaction if manually triggered, byte limit exceeded, OR event-based media compaction needed
+            # Force compaction if manually triggered, byte limit exceeded, event-based media compaction needed,
+            # OR always_compact_media enabled
             # Byte limit MUST be enforced to avoid API errors (Gemini 100MB limit)
-            force = is_manual or bytes_exceeded or event_media_compaction_needed
+            force = is_manual or bytes_exceeded or event_media_compaction_needed or always_compact_media_enabled
             
             # Apply compaction with status updates
             result = None

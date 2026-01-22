@@ -286,6 +286,12 @@ config:
     default: false
     description: "Compact all media when the agent sends a final response (no tool calls). Useful for long-running sessions with lots of media."
 
+  always_compact_media_keep_last:
+    type: integer
+    default: 0
+    minimum: 0
+    description: "Always compact media regardless of token count. Keeps only the last N messages that contain media. Set to 0 to disable, 5 to keep last 5 messages with media."
+
   # Compaction Strategy
   compaction_strategy:
     type: string

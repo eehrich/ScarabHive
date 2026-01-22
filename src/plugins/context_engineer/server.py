@@ -80,6 +80,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self.deduplicate_media = bool(config_dict.get("deduplicate_media", True))
         self.compact_media_after_user_message = bool(config_dict.get("compact_media_after_user_message", False))
         self.compact_media_after_final_response = bool(config_dict.get("compact_media_after_final_response", False))
+        self.always_compact_media_keep_last = int(config_dict.get("always_compact_media_keep_last", 0))
         
         # Media store settings
         self.store_media_before_compaction = bool(config_dict.get("store_media_before_compaction", True))
@@ -115,6 +116,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl.deduplicate_media = self.deduplicate_media
         self._hooks_impl.compact_media_after_user_message = self.compact_media_after_user_message
         self._hooks_impl.compact_media_after_final_response = self.compact_media_after_final_response
+        self._hooks_impl.always_compact_media_keep_last = self.always_compact_media_keep_last
         self._hooks_impl.store_media_before_compaction = self.store_media_before_compaction
         self._hooks_impl.media_store_ttl_seconds = self.media_store_ttl_seconds
         self._hooks_impl.media_store_max_files = self.media_store_max_files
@@ -124,7 +126,8 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             f"thresholds=L1:{self.layer1_threshold}/L2:{self.layer2_threshold}/"
             f"L3:{self.layer3_threshold}, target={self.target_tokens}, "
             f"compact_media_after_user_message={self.compact_media_after_user_message}, "
-            f"compact_media_after_final_response={self.compact_media_after_final_response}"
+            f"compact_media_after_final_response={self.compact_media_after_final_response}, "
+            f"always_compact_media_keep_last={self.always_compact_media_keep_last}"
         )
     
     def _load_history_sync(self) -> list[dict[str, Any]]:

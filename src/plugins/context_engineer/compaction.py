@@ -355,7 +355,8 @@ class LayeredCompactionStrategy:
         
         logger.info(
             f"Starting compaction{' (FORCED)' if force else ''}: {current_tokens} tokens, "
-            f"{request_bytes / (1024*1024):.1f}MB, target {self.config.target_tokens} tokens"
+            f"{request_bytes / (1024*1024):.1f}MB, target {self.config.target_tokens} tokens, "
+            f"always_compact_media_keep_last={self.config.always_compact_media_keep_last}"
         )
         
         # Pre-Layer 0: Always compact media (keep last N) - runs regardless of token count
@@ -373,10 +374,12 @@ class LayeredCompactionStrategy:
         
         # Pre-Layer: Event-triggered media compaction
         # Compact all media if configured to do so on user message or final response
-        if trigger_event == "user_message" and self.config.compact_media_after_user_message:
-            await self._compact_media_after_event(result, trigger="user_message")
-        elif trigger_event == "final_response" and self.config.compact_media_after_final_response:
-            await self._compact_media_after_event(result, trigger="final_response")
+        # SKIP if always_compact_media is enabled (it handles media more precisely)
+        if self.config.always_compact_media_keep_last == 0:
+            if trigger_event == "user_message" and self.config.compact_media_after_user_message:
+                await self._compact_media_after_event(result, trigger="user_message")
+            elif trigger_event == "final_response" and self.config.compact_media_after_final_response:
+                await self._compact_media_after_event(result, trigger="final_response")
         
         # If byte size is the issue, compact media aggressively
         # Keep only the last 2 messages with inline media, compact all others
@@ -507,8 +510,6 @@ class LayeredCompactionStrategy:
                         continue
                     item_type = item.get("type", "")
                     if item_type in ("image", "image_url", "audio", "video"):
-                        if item.get("compacted"):
-                            continue  # Already compacted
                         media_hash = self._compute_media_hash(item)
                         if media_hash:
                             if media_hash not in media_by_hash:
@@ -521,8 +522,6 @@ class LayeredCompactionStrategy:
                 for item_idx, item in enumerate(mm_content):
                     if not isinstance(item, dict):
                         continue
-                    if item.get("compacted"):
-                        continue  # Already compacted
                     media_hash = self._compute_media_hash(item)
                     if media_hash:
                         if media_hash not in media_by_hash:
@@ -725,8 +724,6 @@ class LayeredCompactionStrategy:
                     item_type = item.get("type", "")
                     if item_type not in ("image", "image_url", "audio", "video"):
                         continue
-                    if item.get("compacted"):
-                        continue  # Already compacted
                     
                     # Estimate bytes for this item
                     item_bytes = self._estimate_item_bytes(item)
@@ -958,11 +955,15 @@ class LayeredCompactionStrategy:
         """
         messages = result.modified_messages
         if not messages:
+            logger.debug("_compact_media_always: no messages")
             return
         
         keep_count = self.config.always_compact_media_keep_last
         if keep_count <= 0:
+            logger.debug(f"_compact_media_always: disabled (keep_count={keep_count})")
             return
+        
+        logger.info(f"_compact_media_always: scanning {len(messages)} messages, keep_last={keep_count}")
         
         # Find all message indices that have media content
         messages_with_media: list[int] = []
@@ -974,9 +975,10 @@ class LayeredCompactionStrategy:
             if isinstance(content, list):
                 for item in content:
                     if isinstance(item, dict) and item.get("type") in ("image", "image_url", "audio", "video"):
-                        if not item.get("compacted"):
-                            has_media = True
-                            break
+                        # For always-compact, count ALL media (even already compacted)
+                        # We want to manage which messages keep their media references
+                        has_media = True
+                        break
             
             # Check multimodal_content
             if not has_media:
@@ -989,6 +991,8 @@ class LayeredCompactionStrategy:
             
             if has_media:
                 messages_with_media.append(msg_idx)
+        
+        logger.info(f"_compact_media_always: found {len(messages_with_media)} messages with media")
         
         if not messages_with_media:
             return
@@ -1012,8 +1016,6 @@ class LayeredCompactionStrategy:
                         continue
                     item_type = item.get("type", "")
                     if item_type not in ("image", "image_url", "audio", "video"):
-                        continue
-                    if item.get("compacted"):
                         continue
                     
                     filename = self._get_media_filename(item)
