@@ -118,8 +118,75 @@ class HookIntegrationManager:
         
         # Return modified messages if hooks changed them
         if modified_context.messages is not None:
-            return modified_context.messages
+            result_messages = modified_context.messages
+            
+            # AUTO-SYNC: If hooks modified the messages, automatically update session tracker
+            # This eliminates the need for plugins to call set_compacted_messages() manually.
+            # The session tracker is updated so:
+            # 1. Subsequent hooks in the same pre_llm_call chain see the updated messages
+            # 2. The modified messages are persisted at end of request
+            # 3. Tool execution and other components see the compacted state
+            if result_messages is not messages:  # Identity check - different list means modified
+                self._auto_sync_session_messages(session_id, result_messages)
+            
+            return result_messages
         return messages
+    
+    def _auto_sync_session_messages(
+        self, 
+        session_id: str, 
+        messages: List[ChatMessage]
+    ) -> None:
+        """Automatically sync modified messages to session tracker.
+        
+        Called when pre_llm hooks modify the message list. This ensures:
+        - Modified messages are persisted at end of request
+        - Subsequent components see the updated state
+        - Plugins don't need to manually call set_compacted_messages()
+        
+        Args:
+            session_id: Session to update
+            messages: The modified messages (may include system messages)
+        """
+        if not hasattr(self.agent, '_session_tracker') or not self.agent._session_tracker:
+            logger.debug(
+                f"[HookIntegration] No session tracker available, skipping auto-sync "
+                f"for session {session_id}"
+            )
+            return
+        
+        import json
+        
+        # Filter out system messages - session tracker stores conversation only
+        # System messages are prepended fresh each turn from agent config.
+        # EXCEPTION: Keep archived_ref system messages - those are compacted conversation
+        # from context_engineer that must be preserved.
+        conversation_msgs = []
+        for msg in messages:
+            if msg.role == 'system':
+                # Check if this is an archived_ref (keep) or original system prompt (skip)
+                content = msg.content if hasattr(msg, 'content') else ''
+                if isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                        if isinstance(parsed, dict) and parsed.get("type") == "archived_ref":
+                            # Keep archived references - they're compacted conversation
+                            conversation_msgs.append(msg)
+                            continue
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                # Skip original system prompt
+                continue
+            conversation_msgs.append(msg)
+        
+        # Use set_compacted_messages() which signals to _finalize_request 
+        # that hooks modified the conversation and this version should be persisted
+        self.agent._session_tracker.set_compacted_messages(session_id, conversation_msgs)
+        
+        logger.debug(
+            f"[HookIntegration] Auto-synced {len(conversation_msgs)} messages to session "
+            f"{session_id} (hooks modified conversation)"
+        )
     
     async def execute_post_llm_hooks(
         self,

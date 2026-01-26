@@ -19,7 +19,6 @@ from .retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
     adjust_thinking_for_retry,
     build_thinking_config,
-    convert_openai_messages_to_gemini,
     convert_openai_tools_to_gemini,
     extract_usage_from_metadata,
     prepare_messages_for_gemini,

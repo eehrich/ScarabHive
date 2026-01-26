@@ -367,9 +367,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
                         del self._last_summarization_time[oldest]
 
-                    # CRITICAL: Set compacted messages for session persistence
-                    # This ensures the reduced messages are saved to disk, not the original ones
-                    # Filter out system messages before persisting (they are prepended by agent)
+                    # NOTE: Session persistence is now handled automatically by HookIntegrationManager
+                    # when we return HookResult with modified=True. The explicit set_compacted_messages()
+                    # call below is kept for backwards compatibility but is no longer strictly required.
                     conversation_msgs = [msg for msg in new_messages if msg.role != "system"]
                     if context.agent and hasattr(context.agent, '_session_tracker'):
                         context.agent._session_tracker.set_compacted_messages(

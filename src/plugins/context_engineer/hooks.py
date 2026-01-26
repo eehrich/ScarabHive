@@ -511,10 +511,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 + (f", media_event: {result.media_compacted_after_event}" if result.media_compacted_after_event > 0 else "")
             )
             
-            # CRITICAL: Persist compacted messages to session tracker
-            # This ensures the compacted messages are saved to the session, not just
-            # used for the current LLM call. Without this, each turn would see the
-            # original (uncompacted) messages again.
+            # NOTE: Session persistence is now handled automatically by HookIntegrationManager
+            # when we return HookResult with modified=True. The _auto_sync_session_messages()
+            # method filters system messages correctly (keeping archived_ref types).
+            # The explicit set_compacted_messages() call below is kept for backwards compatibility
+            # and as a safety net, but is no longer strictly required.
             if context.agent and hasattr(context.agent, '_session_tracker'):
                 # Filter out the ORIGINAL system message (agent's system prompt) for persistence.
                 # The system prompt is rebuilt each turn from config.
