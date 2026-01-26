@@ -16,6 +16,7 @@ includes:
   - agents/*.yaml
   - agents_writer/*.yaml
   - agents_trading/*.yaml
+  - agents_priv/*.yaml
 
 # Context information automatically added to prompts
 context:
