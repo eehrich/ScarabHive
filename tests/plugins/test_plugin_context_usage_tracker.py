@@ -437,3 +437,117 @@ def test_tracker_cached_tokens_persistence(tmp_path):
     agent_stats2 = tracker2.get_agent_stats()
     assert agent_stats2["agent-1"]["total_cached_tokens"] == 100
 
+
+def test_tracker_invalidate_session(tmp_path):
+    """Test that invalidate_session marks usage data as stale.
+    
+    This feature prevents over-optimization when multiple context optimization
+    hooks run in sequence (e.g., context_engineer then context_summarizer).
+    """
+    storage_path = tmp_path / "tracker_invalidate.json"
+    tracker = UsageTracker(max_history=10, storage_path=storage_path)
+    
+    # Record usage for a session
+    tracker.record_usage(
+        agent_id="agent-1",
+        agent_name="Agent 1",
+        session_id="session-abc",
+        total_tokens=80000,
+        prompt_tokens=75000,
+        completion_tokens=5000,
+        message_count=50,
+        context_window=100000,
+    )
+    
+    # Get latest - should NOT have is_stale flag
+    latest = tracker.get_latest(session_id="session-abc")
+    assert latest is not None
+    assert latest["prompt_tokens"] == 75000
+    assert "is_stale" not in latest
+    
+    # Invalidate the session (simulates context optimization)
+    tracker.invalidate_session("session-abc", "test_context_optimization")
+    
+    # Get latest again - should now have is_stale=True
+    latest_after_invalidate = tracker.get_latest(session_id="session-abc")
+    assert latest_after_invalidate is not None
+    assert latest_after_invalidate["prompt_tokens"] == 75000  # Data still there
+    assert latest_after_invalidate.get("is_stale") is True   # But marked stale
+    
+    # Record new usage - should clear stale flag
+    tracker.record_usage(
+        agent_id="agent-1",
+        agent_name="Agent 1",
+        session_id="session-abc",
+        total_tokens=40000,  # Lower after optimization
+        prompt_tokens=35000,
+        completion_tokens=5000,
+        message_count=25,
+        context_window=100000,
+    )
+    
+    # Get latest - should be fresh (no is_stale flag)
+    latest_fresh = tracker.get_latest(session_id="session-abc")
+    assert latest_fresh is not None
+    assert latest_fresh["prompt_tokens"] == 35000
+    assert "is_stale" not in latest_fresh
+
+
+def test_tracker_invalidate_session_isolation(tmp_path):
+    """Test that invalidate_session only affects the target session."""
+    storage_path = tmp_path / "tracker_invalidate_isolation.json"
+    tracker = UsageTracker(max_history=10, storage_path=storage_path)
+    
+    # Record usage for two sessions
+    tracker.record_usage(
+        agent_id="agent-1", agent_name="Agent 1", session_id="session-1",
+        total_tokens=50000, prompt_tokens=45000, completion_tokens=5000,
+        message_count=30, context_window=100000,
+    )
+    tracker.record_usage(
+        agent_id="agent-1", agent_name="Agent 1", session_id="session-2",
+        total_tokens=60000, prompt_tokens=55000, completion_tokens=5000,
+        message_count=40, context_window=100000,
+    )
+    
+    # Invalidate only session-1
+    tracker.invalidate_session("session-1", "context_engineer_compaction")
+    
+    # session-1 should be stale
+    latest_1 = tracker.get_latest(session_id="session-1")
+    assert latest_1 is not None
+    assert latest_1.get("is_stale") is True
+    
+    # session-2 should NOT be stale
+    latest_2 = tracker.get_latest(session_id="session-2")
+    assert latest_2 is not None
+    assert "is_stale" not in latest_2
+
+
+def test_tracker_clear_history_clears_invalidations(tmp_path):
+    """Test that clear_history also clears invalidation tracking."""
+    storage_path = tmp_path / "tracker_clear_invalidate.json"
+    tracker = UsageTracker(max_history=10, storage_path=storage_path)
+    
+    # Record usage and invalidate
+    tracker.record_usage(
+        agent_id="agent-1", agent_name="Agent 1", session_id="session-1",
+        total_tokens=50000, prompt_tokens=45000, completion_tokens=5000,
+        message_count=30, context_window=100000,
+    )
+    tracker.invalidate_session("session-1", "test")
+    
+    # Clear history
+    tracker.clear_history()
+    
+    # Record new usage - should NOT be stale (invalidation was cleared)
+    tracker.record_usage(
+        agent_id="agent-1", agent_name="Agent 1", session_id="session-1",
+        total_tokens=50000, prompt_tokens=45000, completion_tokens=5000,
+        message_count=30, context_window=100000,
+    )
+    
+    latest = tracker.get_latest(session_id="session-1")
+    assert latest is not None
+    assert "is_stale" not in latest
+

@@ -69,6 +69,11 @@ class UsageTracker:
         self._latest_snapshot: Optional[ContextUsageSnapshot] = None
         self._pending_save: bool = False  # Debounce flag for saves
         self._save_interval: float = 5.0  # Save at most every 5 seconds
+        
+        # Track invalidated sessions - snapshots for these sessions should be ignored
+        # until a new snapshot is recorded. This prevents stale data from being used
+        # after context optimization (compaction/summarization).
+        self._invalidated_sessions: set = set()
 
         self.storage_path = storage_path or Path("data/context_usage_tracker.json")
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +110,9 @@ class UsageTracker:
         with self._lock:
             self._history.append(snapshot)
             self._latest_snapshot = snapshot
+            
+            # Clear invalidation flag - new snapshot means fresh data
+            self._invalidated_sessions.discard(session_id)
 
             # Update agent stats
             if agent_id not in self._agent_stats:
@@ -145,18 +153,56 @@ class UsageTracker:
         return [asdict(snapshot) for snapshot in history_list]
 
     def get_latest(self, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Get the latest usage snapshot."""
+        """Get the latest usage snapshot.
+        
+        If the session has been invalidated (after context optimization), the
+        returned snapshot will include 'is_stale': True to indicate the data
+        may not reflect the current message list.
+        
+        Returns:
+            Snapshot dict with optional 'is_stale' flag, or None if no data
+        """
         with self._lock:
             if session_id is not None:
+                is_stale = session_id in self._invalidated_sessions
+                
                 # Filter by session and get the latest
                 session_snapshots = [s for s in self._history if s.session_id == session_id]
                 if session_snapshots:
-                    return asdict(session_snapshots[-1])
+                    result = asdict(session_snapshots[-1])
+                    if is_stale:
+                        result['is_stale'] = True
+                        logger.debug(
+                            f"Session {session_id} usage data marked as stale - "
+                            f"context was optimized since last LLM call"
+                        )
+                    return result
                 return None
 
             if self._latest_snapshot:
                 return asdict(self._latest_snapshot)
         return None
+    
+    def invalidate_session(self, session_id: str, reason: str = "context_optimization") -> None:
+        """Mark usage data for a session as stale after context optimization.
+        
+        This marks the session's snapshots with 'is_stale': True in get_latest(),
+        indicating the token counts may not reflect the current message list.
+        This prevents over-optimization when multiple context optimization hooks 
+        run in sequence (e.g., context_engineer followed by context_summarizer).
+        
+        The data is preserved for display purposes (Web UI, history), but plugins
+        should check the 'is_stale' flag and ignore actual token counts if set.
+        
+        Args:
+            session_id: The session whose usage data should be marked stale
+            reason: Reason for invalidation (for logging)
+        """
+        with self._lock:
+            self._invalidated_sessions.add(session_id)
+        logger.info(
+            f"📊 Marked usage data as stale for session {session_id} (reason: {reason})"
+        )
 
     def get_agent_stats(self, session_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """Get statistics for all agents."""
@@ -251,6 +297,7 @@ class UsageTracker:
             self._history.clear()
             self._agent_stats.clear()
             self._latest_snapshot = None
+            self._invalidated_sessions.clear()
         self._save_to_disk_sync()  # Immediate sync save for clear operation
         logger.info("🗑️  Context usage history cleared")
 

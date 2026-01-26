@@ -422,6 +422,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 result.media_always_compacted > 0  # Always-compact media (Pre-Layer M)
             )
             
+            # Invalidate usage tracker data for this session if something was compacted
+            # This prevents subsequent hooks (e.g., context_summarizer) from using stale
+            # token counts that don't reflect the optimized message list
+            if something_compacted:
+                self._invalidate_usage_tracker_session(context, session_id, "context_engineer_compaction")
+            
             if self.stats_history is not None and something_compacted:
                 self.stats_history.append({
                     "timestamp": time.time(),
@@ -615,11 +621,19 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                         # This filters by session_id to avoid interference from sub-agents
                         latest = tracker.get_latest(session_id=context.session_id)
                         if latest:
-                            actual_tokens = latest.get('prompt_tokens', 0)
-                            logger.debug(
-                                f"[ContextEngineer] Got actual tokens from usage_tracker: {actual_tokens} "
-                                f"(estimated: {estimated_tokens})"
-                            )
+                            # Check if data is stale (context was optimized since last LLM call)
+                            # Stale data doesn't reflect current message list, so ignore it
+                            if latest.get('is_stale'):
+                                logger.debug(
+                                    f"[ContextEngineer] Ignoring stale usage_tracker data for session "
+                                    f"{context.session_id} (context was already optimized)"
+                                )
+                            else:
+                                actual_tokens = latest.get('prompt_tokens', 0)
+                                logger.debug(
+                                    f"[ContextEngineer] Got actual tokens from usage_tracker: {actual_tokens} "
+                                    f"(estimated: {estimated_tokens})"
+                                )
         except Exception as e:
             logger.debug(f"[ContextEngineer] Could not get actual tokens from usage_tracker: {e}")
 
@@ -633,6 +647,33 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             )
 
         return max_tokens
+    
+    def _invalidate_usage_tracker_session(
+        self, 
+        context: HookContext, 
+        session_id: str, 
+        reason: str
+    ) -> None:
+        """Mark usage tracker data as stale after context optimization.
+        
+        This prevents subsequent hooks from using outdated token counts
+        that don't reflect the optimized message list.
+        
+        Args:
+            context: Hook context with agent reference
+            session_id: Session to invalidate
+            reason: Reason for invalidation (for logging)
+        """
+        try:
+            if context.agent and hasattr(context.agent, 'system_config'):
+                system_config = context.agent.system_config
+                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
+                    registry = system_config.mcp_registry
+                    usage_tracker_plugin = registry.get_server('context_usage_tracker')
+                    if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
+                        usage_tracker_plugin.tracker.invalidate_session(session_id, reason)
+        except Exception as e:
+            logger.debug(f"[ContextEngineer] Could not invalidate usage_tracker session: {e}")
     
     # === MCP Tool Handlers ===
     # These are called by the MCP server when tools are invoked
