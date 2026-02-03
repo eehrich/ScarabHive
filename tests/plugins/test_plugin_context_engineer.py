@@ -1941,9 +1941,8 @@ class TestEnsureValidMessageSequence:
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi"},
         ]
-        tool_map = {}
         
-        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        removed = strategy._ensure_valid_message_sequence(messages, "test")
         
         assert removed == 0
         assert len(messages) == 3
@@ -1956,9 +1955,8 @@ class TestEnsureValidMessageSequence:
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi"},
         ]
-        tool_map = {}
         
-        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        removed = strategy._ensure_valid_message_sequence(messages, "test")
         
         assert removed == 1
         assert len(messages) == 3
@@ -1972,9 +1970,8 @@ class TestEnsureValidMessageSequence:
             {"role": "tool", "content": "Orphan", "tool_call_id": "x"},
             {"role": "user", "content": "Hello"},
         ]
-        tool_map = {}
         
-        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        removed = strategy._ensure_valid_message_sequence(messages, "test")
         
         assert removed == 1
         assert len(messages) == 2
@@ -1990,10 +1987,8 @@ class TestEnsureValidMessageSequence:
             {"role": "tool", "content": "Result", "tool_call_id": "call_1"},
             {"role": "user", "content": "Hello"},
         ]
-        # Build tool map as the strategy would
-        tool_map = {"call_1": {1, 2}}  # indices of assistant and tool
         
-        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        removed = strategy._ensure_valid_message_sequence(messages, "test")
         
         assert removed == 2  # Both assistant and tool removed
         assert len(messages) == 2
@@ -2008,9 +2003,8 @@ class TestEnsureValidMessageSequence:
             {"role": "tool", "content": "Orphan", "tool_call_id": "x"},
             {"role": "user", "content": "Finally user"},
         ]
-        tool_map = {}
         
-        removed = strategy._ensure_valid_message_sequence(messages, tool_map, "test")
+        removed = strategy._ensure_valid_message_sequence(messages, "test")
         
         assert removed == 3  # All three bad messages removed
         assert len(messages) == 2

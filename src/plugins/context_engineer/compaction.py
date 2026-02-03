@@ -1517,6 +1517,7 @@ class LayeredCompactionStrategy:
         # Archive collected messages
         for i in indices_to_archive:
             msg = messages[i]
+            original_role = msg.get("role", "system")
             # Wrap sync SQLite operation in thread pool
             archive_id = await asyncio.to_thread(self.archival_memory.store, msg)
             
@@ -1526,14 +1527,27 @@ class LayeredCompactionStrategy:
                 summary = summary[:self.config.max_summary_tokens * 4] + "..."
             
             import json
-            messages[i] = {
-                "role": "system",
+            # Preserve original role to maintain message structure (important for Gemini)
+            archived_msg: dict[str, Any] = {
+                "role": original_role,
                 "content": json.dumps({
                     "type": "archived_ref",
                     "ref_id": archive_id,
                     "summary": summary
                 })
             }
+            
+            # CRITICAL: Preserve tool_calls for assistant messages!
+            # Gemini requires tool_calls (with thought_signatures) for proper function call handling.
+            # Without tool_calls, the message structure becomes invalid for the LLM.
+            if original_role == "assistant" and msg.get("tool_calls"):
+                archived_msg["tool_calls"] = msg["tool_calls"]
+            
+            # Preserve tool_call_id for tool messages (required for pairing)
+            if original_role == "tool" and msg.get("tool_call_id"):
+                archived_msg["tool_call_id"] = msg["tool_call_id"]
+            
+            messages[i] = archived_msg
             result.messages_archived += 1
         
         result.final_tokens = self._estimate_messages_tokens(messages)
@@ -1625,7 +1639,7 @@ class LayeredCompactionStrategy:
         )
         
         # Ensure valid message sequence after dropping
-        extra_dropped = self._ensure_valid_message_sequence(messages, tool_map, "Layer 3")
+        extra_dropped = self._ensure_valid_message_sequence(messages, "Layer 3")
         result.messages_dropped += extra_dropped
         
         # Note: max_messages limit is now handled by Pre-Layer P at the start of compact()
@@ -1709,7 +1723,8 @@ class LayeredCompactionStrategy:
             del messages[idx]
         
         # Ensure valid message sequence after pruning
-        extra_pruned = self._ensure_valid_message_sequence(messages, tool_map, "Pre-Layer P")
+        # Note: _ensure_valid_message_sequence rebuilds tool_map internally at each iteration
+        extra_pruned = self._ensure_valid_message_sequence(messages, "Pre-Layer P")
         pruned_count += extra_pruned
         
         result.messages_pruned = pruned_count
@@ -1723,7 +1738,6 @@ class LayeredCompactionStrategy:
     def _ensure_valid_message_sequence(
         self, 
         messages: list[dict[str, Any]], 
-        tool_map: dict[str, set[int]],
         caller: str
     ) -> int:
         """Ensure first non-system message is 'user' to satisfy Gemini requirements.
@@ -1731,9 +1745,10 @@ class LayeredCompactionStrategy:
         Gemini requires: user -> assistant (with tool_calls) -> tool responses
         If first non-system msg is assistant/tool, we remove until we hit a user msg.
         
+        Note: This method rebuilds tool_map at each iteration since indices change after deletions.
+        
         Args:
             messages: List of messages (modified in place)
-            tool_map: Mapping of tool_call_id to related message indices
             caller: Name of calling function for logging
             
         Returns:
@@ -1742,6 +1757,9 @@ class LayeredCompactionStrategy:
         extra_removed = 0
         
         while messages:
+            # CRITICAL: Rebuild tool_map at each iteration because indices change after deletions
+            tool_map = self._build_tool_call_map(messages)
+            
             first_non_system_idx = None
             for i, msg in enumerate(messages):
                 if msg.get("role") != "system":

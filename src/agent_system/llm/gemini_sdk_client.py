@@ -1009,6 +1009,31 @@ class GeminiSDKClient(LLMClient):
                     progress_tracker.reset()
                     continue
                 
+                # Handle 400 INVALID_ARGUMENT that may be caused by mode=ANY after MALFORMED_FUNCTION_CALL
+                # When the conversation ends with a tool-response, mode=ANY can cause 400 errors
+                # because Gemini has no "pending" turn to complete with a function call.
+                # Solution: Disable mode=ANY for the next retry by resetting got_malformed_function_call.
+                is_400_error = "400" in error_str or "INVALID_ARGUMENT" in error_str
+                if is_400_error and got_malformed_function_call and force_any_mode and attempt < self.max_retries:
+                    wait_time = 1.0
+                    logger.warning(
+                        f"[GeminiSDK] 400 INVALID_ARGUMENT after mode=ANY retry. "
+                        "This may be caused by conversation ending with tool-response. "
+                        f"Retrying WITHOUT mode=ANY in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await report_status(f"Mode=ANY failed, retry without: {self.model}")
+                    await self._cancellable_sleep(wait_time, cancellation_token)
+                    # Reset accumulators AND disable mode=ANY for next retry
+                    accumulated_content = []
+                    accumulated_thoughts = []
+                    accumulated_tool_calls = {}
+                    accumulated_usage = None
+                    first_thought_signature = None
+                    loop_detector.reset()
+                    progress_tracker.reset()
+                    got_malformed_function_call = False  # Disable mode=ANY for next retry
+                    continue
+                
                 logger.error(f"[GeminiSDK] Streaming error: {e}", exc_info=True)
                 
                 if attempt < self.max_retries:
