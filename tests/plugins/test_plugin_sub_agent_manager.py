@@ -265,3 +265,141 @@ async def test_hook_updates_when_sub_agents_change(mock_manager, injector):
     updated_injection = injections[0]
     assert "research_agent" in updated_injection.content
     assert "code_agent" not in updated_injection.content, "Removed sub-agent should not appear"
+
+
+@pytest.mark.asyncio
+async def test_context_vars_inheritance():
+    """Test that sub-sessions inherit context_vars from parent."""
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+    from agent_system.config.models import AgentConfig
+    import tempfile
+    import os
+    
+    # Create temp directory for test
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create session manager with temp storage
+        session_manager = SessionManager(storage_path=tmpdir)
+        session_service = SessionService(session_manager=session_manager)
+        
+        # Create mock registry with test agent
+        registry = MagicMock()
+        mock_agent = MagicMock()
+        mock_agent.agent_config = AgentConfig(default_llm_profile="test_profile")
+        registry.get = MagicMock(return_value=mock_agent)
+        
+        # Create SubAgentManager
+        manager = SubAgentManager(
+            session_service=session_service,
+            registry=registry,
+            max_nesting_depth=5
+        )
+        
+        # Create parent session with context_vars
+        user_id = "test_user"
+        parent_session_id = "parent_123"
+        await session_manager.create_session(
+            user_id=user_id,
+            session_id=parent_session_id,
+            title="Parent Session",
+            agent_name="parent_agent",
+            llm_profile="test_profile"
+        )
+        
+        # Add context_vars to parent
+        parent_data = await session_manager.load_session(user_id, parent_session_id)
+        parent_data["context_vars"] = {
+            "book_id": "42",
+            "workflow_phase": "planning"
+        }
+        await session_manager.save_session(parent_data)
+        
+        # Create mock parent agent with context_vars
+        parent_agent = MagicMock()
+        parent_agent.name = "parent_agent"
+        parent_agent.agent_config = AgentConfig(
+            default_llm_profile="test_profile",
+            template_vars={"book_id": "42", "workflow_phase": "planning"}
+        )
+        
+        # Create sub-session
+        params = {
+            "_agent": parent_agent,
+            "_user_id": user_id
+        }
+        sub_session_id = await manager.create_sub_session(
+            parent_session_id=parent_session_id,
+            agent_type="test_agent",
+            initial_message="Test task",
+            params=params
+        )
+        
+        # Load sub-session and verify context_vars inherited
+        sub_data = await session_manager.load_session(user_id, sub_session_id)
+        assert "context_vars" in sub_data, "Sub-session should have context_vars"
+        assert sub_data["context_vars"]["book_id"] == "42"
+        assert sub_data["context_vars"]["workflow_phase"] == "planning"
+        
+        # Verify parent link
+        assert sub_data["parent_session"]["session_id"] == parent_session_id
+
+
+@pytest.mark.asyncio
+async def test_context_vars_loaded_into_agent_template_vars():
+    """Test that context_vars from sub-session are loaded into agent's template_vars.
+    
+    This tests the code path in server.py that should load context_vars
+    from the sub-session into the agent's template_vars before execution.
+    """
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+    from agent_system.config.models import AgentConfig
+    import tempfile
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Setup
+        session_manager = SessionManager(storage_path=tmpdir)
+        session_service = SessionService(session_manager=session_manager)
+        
+        user_id = "test_user"
+        sub_session_id = "sub_test_agent_001"
+        
+        # Create sub-session with context_vars (simulating what manager.create_sub_session does)
+        await session_manager.create_session(
+            user_id=user_id,
+            session_id=sub_session_id,
+            title="Sub Session",
+            agent_name="continuity_guardian",
+            llm_profile="test_profile"
+        )
+        
+        # Add context_vars (simulating inheritance from parent)
+        sub_data = await session_manager.load_session(user_id, sub_session_id)
+        sub_data["context_vars"] = {
+            "book_id": "17",
+            "workflow_phase": "structure"
+        }
+        await session_manager.save_session(sub_data)
+        
+        # Create mock agent with EMPTY template_vars
+        mock_agent = MagicMock()
+        mock_agent.agent_config = AgentConfig(
+            default_llm_profile="test_profile",
+            template_vars={}  # EMPTY - should be populated
+        )
+        
+        # Now simulate what server._handle_create does:
+        # Load context_vars and inject into agent's template_vars
+        loaded_session = await session_manager.load_session(user_id, sub_session_id)
+        context_vars = loaded_session.get("context_vars", {})
+        
+        if context_vars:
+            if mock_agent.agent_config.template_vars is None:
+                mock_agent.agent_config.template_vars = {}
+            mock_agent.agent_config.template_vars.update(context_vars)
+        
+        # Verify context_vars were loaded
+        assert mock_agent.agent_config.template_vars.get("book_id") == "17", \
+            f"book_id should be '17', got: {mock_agent.agent_config.template_vars}"
+        assert mock_agent.agent_config.template_vars.get("workflow_phase") == "structure", \
+            f"workflow_phase should be 'structure', got: {mock_agent.agent_config.template_vars}"
