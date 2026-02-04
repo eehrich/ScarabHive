@@ -19,7 +19,9 @@ class SubAgentContextInjector:
         self, 
         manager: SubAgentManager, 
         server_name: str,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        allowed_agents: Optional[List[str]] = None,
+        phase_filtering_config: Optional[Dict[str, Any]] = None
     ):
         """Initialize the context injector.
 
@@ -27,10 +29,13 @@ class SubAgentContextInjector:
             manager: SubAgentManager instance for querying sub-agents
             server_name: Name of the sub_agent_manager plugin instance (e.g., "w_sam_gemini")
             config: Optional configuration (max_shown, show_completed, etc.)
+            allowed_agents: List of allowed agent types for this manager
+            phase_filtering_config: Phase filtering config from server (top-level, not hook_config)
         """
         self.manager = manager
         self.server_name = server_name  # Track which plugin instance this belongs to
         self.config = config or {}
+        self.allowed_agents = allowed_agents or []
 
         # Configuration options
         self.enabled = self.config.get("enabled", True)
@@ -38,6 +43,19 @@ class SubAgentContextInjector:
         self.show_completed = self.config.get("show_completed", False)
         self.show_tool_state = self.config.get("show_tool_state", True)
         self.format = self.config.get("format", "markdown")
+        
+        # Phase-based agent filtering (from server's top-level config)
+        # Config structure:
+        # phase_filtering:
+        #   enabled: true
+        #   phase_variable: "workflow_phase"
+        #   phase_agents:
+        #     planning: [story_designer, story_reviewer]
+        #     characters: [character_designer, character_reviewer]
+        phase_filtering = phase_filtering_config or {}
+        self.phase_filtering_enabled = phase_filtering.get("enabled", False)
+        self.phase_variable = phase_filtering.get("phase_variable", "workflow_phase")
+        self.phase_agents = phase_filtering.get("phase_agents", {})
 
     async def inject_sub_agent_context(self, context: HookContext) -> HookResult:
         """Inject sub-agent context into messages before LLM call.
@@ -66,6 +84,10 @@ class SubAgentContextInjector:
                 logger.debug("[SubAgentContext] No messages in context, skipping")
                 return HookResult(success=True, modified=False, context=context)
 
+            # Get current phase from session template vars (for phase-based filtering)
+            current_phase = self._get_current_phase(context)
+            phase_allowed_agents = self._get_phase_allowed_agents(current_phase)
+            
             # Query sub-agents for this session
             # Filter by creator_plugin (self.server_name) to only show sub-agents from THIS manager
             try:
@@ -104,8 +126,8 @@ class SubAgentContextInjector:
                     context.messages.pop(i)
                     break
 
-            # Build context message
-            context_content = self._build_context_message(sub_agents)
+            # Build context message with phase-aware allowed agents
+            context_content = self._build_context_message(sub_agents, phase_allowed_agents, current_phase)
 
             # Insert after first system message (consistent with other plugins)
             insert_pos = self._find_system_message_position(context.messages)
@@ -134,37 +156,108 @@ class SubAgentContextInjector:
                 metadata={"error": str(e)}
             )
 
-    def _build_context_message(self, sub_agents: List[Dict[str, Any]]) -> str:
+    def _get_current_phase(self, context: HookContext) -> Optional[str]:
+        """Get the current workflow phase from session template vars.
+        
+        Args:
+            context: Hook context with agent reference
+            
+        Returns:
+            Current phase value or None if not set
+        """
+        if not self.phase_filtering_enabled:
+            return None
+            
+        try:
+            if context.agent and hasattr(context.agent, '_session_tracker'):
+                session_vars = context.agent._session_tracker.get_session_template_vars(context.session_id)
+                phase = session_vars.get(self.phase_variable)
+                if phase:
+                    logger.debug(f"[SubAgentContext] Current phase from session vars: {phase}")
+                    return phase
+        except Exception as e:
+            logger.debug(f"[SubAgentContext] Could not get phase from session vars: {e}")
+        
+        return None
+    
+    def _get_phase_allowed_agents(self, current_phase: Optional[str]) -> Optional[List[str]]:
+        """Get list of allowed agents for the current phase.
+        
+        Args:
+            current_phase: Current workflow phase value
+            
+        Returns:
+            List of allowed agent types for this phase, or None if no filtering
+        """
+        if not self.phase_filtering_enabled or not current_phase:
+            return None
+            
+        phase_agents = self.phase_agents.get(current_phase)
+        if phase_agents:
+            logger.debug(f"[SubAgentContext] Phase '{current_phase}' allows agents: {phase_agents}")
+            return phase_agents
+            
+        # Check for default/fallback
+        default_agents = self.phase_agents.get("_default")
+        if default_agents:
+            logger.debug(f"[SubAgentContext] Using _default agents for phase '{current_phase}'")
+            return default_agents
+            
+        return None
+
+    def _build_context_message(
+        self, 
+        sub_agents: List[Dict[str, Any]],
+        phase_allowed_agents: Optional[List[str]] = None,
+        current_phase: Optional[str] = None
+    ) -> str:
         """Build the context message content from sub-agent metadata.
 
         Args:
             sub_agents: List of sub-agent metadata dicts
+            phase_allowed_agents: Optional list of agents allowed in current phase
+            current_phase: Current workflow phase for display
 
         Returns:
             Formatted context message string
         """
         if self.format == "markdown":
-            return self._build_markdown_context(sub_agents)
+            return self._build_markdown_context(sub_agents, phase_allowed_agents, current_phase)
         else:
             return self._build_text_context(sub_agents)
 
-    def _build_markdown_context(self, sub_agents: List[Dict[str, Any]]) -> str:
-        """Build compact Markdown table context message."""
+    def _build_markdown_context(
+        self, 
+        sub_agents: List[Dict[str, Any]],
+        phase_allowed_agents: Optional[List[str]] = None,
+        current_phase: Optional[str] = None
+    ) -> str:
+        """Build compact Markdown table context message with phase-aware agent list."""
         lines = ["## Active Sub-Agents\n"]
         
-        # Table header - minimal columns to preserve token caching
-        lines.append("| Type | Instance ID | Status |")
-        lines.append("|------|-------------|--------|")
+        # Show phase-allowed agents if configured
+        if phase_allowed_agents and current_phase:
+            lines.append(f"**Phase `{current_phase}` - Available agents:** {', '.join(phase_allowed_agents)}\n")
+        elif self.allowed_agents and '*' not in self.allowed_agents:
+            # Fall back to static allowed_agents if no phase filtering
+            lines.append(f"**Available agents:** {', '.join(self.allowed_agents)}\n")
         
-        for sub_agent in sub_agents:
-            instance_id = sub_agent.get("instance_id", "unknown")
-            agent_type = sub_agent.get("agent_type", "unknown")
-            status = sub_agent.get("status", "unknown")
+        if sub_agents:
+            # Table header - minimal columns to preserve token caching
+            lines.append("| Type | Instance ID | Status |")
+            lines.append("|------|-------------|--------|")
             
-            lines.append(f"| {agent_type} | `{instance_id}` | {status} |")
-        
-        lines.append("")
-        lines.append("Continue: `manage_sub_agent(operation='continue', instance_id='...', message='...')`")
+            for sub_agent in sub_agents:
+                instance_id = sub_agent.get("instance_id", "unknown")
+                agent_type = sub_agent.get("agent_type", "unknown")
+                status = sub_agent.get("status", "unknown")
+                
+                lines.append(f"| {agent_type} | `{instance_id}` | {status} |")
+            
+            lines.append("")
+            lines.append("Continue: `manage_sub_agent(operation='continue', instance_id='...', message='...')`")
+        else:
+            lines.append("*No active sub-agents*")
 
         return "\n".join(lines)
 

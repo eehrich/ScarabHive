@@ -252,6 +252,28 @@
   opacity: 1;
 }
 
+/* Context Variable Badges */
+.session-phase-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-left: 0.3rem;
+}
+
+.session-context-badge {
+  display: inline-block;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  background: var(--bg-secondary, #3a3a3a);
+  color: var(--text-secondary, #aaa);
+  margin-left: 0.3rem;
+}
+
 .session-toggle-spacer {
   display: inline-block;
   width: 20px;
@@ -401,4 +423,109 @@
 
 .btn-danger:active {
   background: #b92f2c;
+}
+
+/* Session Info Panel */
+.session-info-panel {
+  background: var(--bg-tertiary, #1e1e1e);
+  border-bottom: 1px solid var(--border-color, #444);
+  padding: 0;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.session-info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-hover, #333);
+  border-bottom: 1px solid var(--border-color, #444);
+  position: sticky;
+  top: 0;
+}
+
+.session-info-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.session-info-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+}
+
+.session-info-close-btn:hover {
+  color: var(--text-primary, #e0e0e0);
+}
+
+.session-info-content {
+  padding: 0.5rem 0.75rem;
+}
+
+.session-info-section {
+  margin-bottom: 0.6rem;
+}
+
+.session-info-label {
+  font-size: 0.65rem;
+  color: var(--text-secondary, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.2rem;
+}
+
+.session-info-value {
+  font-size: 0.8rem;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.session-info-vars {
+  font-size: 0.75rem;
+}
+
+.session-info-var {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: flex-start;
+  margin-bottom: 0.4rem;
+}
+
+.session-info-var .var-name {
+  color: var(--text-secondary, #888);
+  font-family: monospace;
+}
+
+.session-info-var .var-value {
+  color: var(--text-primary, #e0e0e0);
+  font-family: monospace;
+}
+
+.session-info-var .phase-value {
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.phase-agents-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+}
+
+.phase-agent-tag {
+  display: inline-block;
+  padding: 0.15rem 0.4rem;
+  background: var(--bg-secondary, #3a3a3a);
+  border-radius: 3px;
+  font-size: 0.65rem;
+  color: var(--text-secondary, #aaa);
+  font-family: monospace;
 }

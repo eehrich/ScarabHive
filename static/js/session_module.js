@@ -96,6 +96,13 @@ export class SessionManager {
           New Conversation
         </button>
       </div>
+      <div class="session-info-panel" id="sessionInfoPanel" style="display: none;">
+        <div class="session-info-header">
+          <span class="session-info-title">Session Info</span>
+          <button class="session-info-close-btn" id="sessionInfoCloseBtn">×</button>
+        </div>
+        <div class="session-info-content" id="sessionInfoContent"></div>
+      </div>
       <div class="sessions-list" id="sessionsList"></div>
     `;
     
@@ -415,7 +422,100 @@ export class SessionManager {
       this.newConversation();
     });
     
+    // Session info panel close button
+    document.getElementById('sessionInfoCloseBtn')?.addEventListener('click', () => {
+      this.hideSessionInfoPanel();
+    });
+    
     // Note: Rename modal event listeners are now created dynamically in openRenameModal()
+  }
+  
+  showSessionInfoPanel(session) {
+    const panel = document.getElementById('sessionInfoPanel');
+    const content = document.getElementById('sessionInfoContent');
+    if (!panel || !content) return;
+    
+    // Build content HTML
+    let html = `
+      <div class="session-info-section">
+        <div class="session-info-label">Session</div>
+        <div class="session-info-value">${this.escapeHtml(session.title)}</div>
+      </div>
+      <div class="session-info-section">
+        <div class="session-info-label">Agent</div>
+        <div class="session-info-value">${session.agent_name}</div>
+      </div>
+    `;
+    
+    // Show context_vars if present
+    const contextVars = session.context_vars || {};
+    if (Object.keys(contextVars).length > 0) {
+      html += `<div class="session-info-section">
+        <div class="session-info-label">Context Variables</div>
+        <div class="session-info-vars">`;
+      
+      // Highlight workflow_phase
+      if (contextVars.workflow_phase) {
+        const phaseColors = {
+          'planning': '#569cd6',
+          'characters': '#c586c0',
+          'structure': '#4ec9b0',
+          'content': '#dcdcaa',
+          'review': '#ce9178'
+        };
+        const color = phaseColors[contextVars.workflow_phase] || '#858585';
+        html += `<div class="session-info-var">
+          <span class="var-name">workflow_phase:</span>
+          <span class="var-value phase-value" style="color:${color}">${contextVars.workflow_phase}</span>
+        </div>`;
+        
+        // Show phase-specific agents info
+        html += this.renderPhaseAgentsInfo(contextVars.workflow_phase);
+      }
+      
+      // Show other context vars
+      for (const [key, value] of Object.entries(contextVars)) {
+        if (key !== 'workflow_phase') {
+          html += `<div class="session-info-var">
+            <span class="var-name">${key}:</span>
+            <span class="var-value">${this.escapeHtml(String(value))}</span>
+          </div>`;
+        }
+      }
+      
+      html += `</div></div>`;
+    }
+    
+    content.innerHTML = html;
+    panel.style.display = 'block';
+  }
+  
+  renderPhaseAgentsInfo(phase) {
+    // Define phase -> agents mapping (same as in config)
+    const phaseAgents = {
+      'planning': ['story_designer', 'story_reviewer'],
+      'characters': ['character_designer', 'character_reviewer'],
+      'structure': ['structure_builder', 'technical_graph_validator', 'continuity_guardian'],
+      'content': ['scene_writer', 'content_quality_reviewer', 'language_quality_reviewer', 'introduction_validator'],
+      'review': ['quality_meta_reviewer', 'book_test_agent']
+    };
+    
+    const agents = phaseAgents[phase];
+    if (!agents) return '';
+    
+    return `
+      <div class="session-info-var">
+        <span class="var-name">Available Agents:</span>
+        <div class="phase-agents-list">
+          ${agents.map(a => `<span class="phase-agent-tag">${a}</span>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  hideSessionInfoPanel() {
+    const panel = document.getElementById('sessionInfoPanel');
+    if (panel) panel.style.display = 'none';
   }
 
   toggleSidebar() {
@@ -514,6 +614,18 @@ export class SessionManager {
         this.openDeleteModal(btn.dataset.sessionId, sessionTitle);
       });
     });
+    
+    // Info buttons - show session info panel
+    listEl.querySelectorAll('.session-info-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const sessionId = btn.dataset.sessionId;
+        const session = this.findSessionInHierarchy(sessionId);
+        if (session) {
+          this.showSessionInfoPanel(session);
+        }
+      });
+    });
   }
   
   toggleSessionChildren(toggleBtn) {
@@ -566,6 +678,16 @@ export class SessionManager {
             ${this.escapeHtml(session.title)}
           </div>
           <div class="session-item-actions">
+            ${session.context_vars && Object.keys(session.context_vars).length > 0 ? `
+              <button class="session-item-btn session-info-btn" 
+                      data-session-id="${session.session_id}"
+                      title="Session Info">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
+                  <circle cx="8" cy="8" r="6" stroke-width="1.5"/>
+                  <path d="M8 5v1M8 8v4" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </button>
+            ` : ''}
             <button class="session-item-btn session-rename-btn" 
                     data-session-id="${session.session_id}"
                     data-session-title="${this.escapeHtml(session.title)}"
@@ -586,6 +708,7 @@ export class SessionManager {
         </div>
         <div class="session-item-meta">
           <span class="session-item-agent">${session.agent_name}</span>
+          ${this.renderContextVarsBadges(session.context_vars)}
           <span class="session-item-date">${dateStr}</span>
           <span class="session-item-count">${session.message_count} msgs</span>
         </div>
@@ -598,6 +721,34 @@ export class SessionManager {
     `;
     
     return html;
+  }
+  
+  renderContextVarsBadges(contextVars) {
+    if (!contextVars || Object.keys(contextVars).length === 0) {
+      return '';
+    }
+    
+    let badges = '';
+    
+    // Show workflow_phase as special badge
+    if (contextVars.workflow_phase) {
+      const phaseColors = {
+        'planning': '#569cd6',    // blue
+        'characters': '#c586c0',  // purple
+        'structure': '#4ec9b0',   // teal
+        'content': '#dcdcaa',     // yellow
+        'review': '#ce9178'       // orange
+      };
+      const color = phaseColors[contextVars.workflow_phase] || '#858585';
+      badges += `<span class="session-phase-badge" style="background:${color}20;color:${color};border:1px solid ${color}40;" title="Workflow Phase">${contextVars.workflow_phase}</span>`;
+    }
+    
+    // Show book_id if present
+    if (contextVars.book_id) {
+      badges += `<span class="session-context-badge" title="Book ID: ${contextVars.book_id}">📚${contextVars.book_id}</span>`;
+    }
+    
+    return badges;
   }
 
   formatDate(date) {

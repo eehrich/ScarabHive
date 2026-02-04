@@ -433,11 +433,102 @@
         .status-badge.active { background: #16825d; }
         .status-badge.archived { background: #6e6e6e; }
         .status-badge.interrupted { background: #c74e39; }
+        
+        /* Phase Banner Styles */
+        .phase-banner {
+            background: linear-gradient(135deg, #1a3a5c 0%, #264f78 100%);
+            border: 1px solid #3794ff;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .phase-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .phase-label {
+            color: #9cdcfe;
+            font-size: 13px;
+        }
+        
+        .phase-value {
+            background: #569cd6;
+            color: #fff;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+        }
+        
+        .phase-value.planning { background: #569cd6; }
+        .phase-value.characters { background: #c586c0; }
+        .phase-value.structure { background: #4ec9b0; }
+        .phase-value.content { background: #dcdcaa; color: #1e1e1e; }
+        .phase-value.review { background: #ce9178; }
+        
+        .phase-agents-info {
+            flex: 1;
+            min-width: 200px;
+            font-size: 12px;
+            color: #d4d4d4;
+        }
+        
+        #phaseAgentsList {
+            font-family: monospace;
+            color: #9cdcfe;
+        }
+        
+        .phase-toggle {
+            display: flex;
+            align-items: center;
+        }
+        
+        .toggle-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #d4d4d4;
+        }
+        
+        .toggle-label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🤖 Sub-Agent Manager</h1>
+        
+        <!-- Phase Status Banner (shown when phase filtering is active) -->
+        <div class="phase-banner" id="phaseBanner" style="display: none;">
+            <div class="phase-info">
+                <span class="phase-label">Workflow Phase:</span>
+                <span class="phase-value" id="currentPhaseValue">-</span>
+            </div>
+            <div class="phase-agents-info">
+                <span id="phaseAgentsLabel">Available agents:</span>
+                <span id="phaseAgentsList">-</span>
+            </div>
+            <div class="phase-toggle">
+                <label class="toggle-label">
+                    <input type="checkbox" id="showAllAgentsToggle" onchange="toggleAgentFilter()">
+                    <span>Show all agents</span>
+                </label>
+            </div>
+        </div>
         
         <div class="controls">
             <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
@@ -545,6 +636,54 @@
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
         let autoRefreshInterval = null;
+        let phaseInfo = null;  // Store phase filtering info
+        let showAllAgents = false;  // Toggle state for agent filter
+        
+        // Phase filtering functions
+        async function loadPhaseInfo() {
+            if (!currentSessionId) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/phase-info?session_id=${currentSessionId}`);
+                phaseInfo = await response.json();
+                
+                const banner = document.getElementById('phaseBanner');
+                const phaseValue = document.getElementById('currentPhaseValue');
+                const phaseAgentsList = document.getElementById('phaseAgentsList');
+                const phaseAgentsLabel = document.getElementById('phaseAgentsLabel');
+                
+                if (phaseInfo.enabled) {
+                    banner.style.display = 'flex';
+                    
+                    if (phaseInfo.current_phase) {
+                        phaseValue.textContent = phaseInfo.current_phase;
+                        phaseValue.className = 'phase-value ' + phaseInfo.current_phase;
+                        
+                        const agents = showAllAgents 
+                            ? phaseInfo.all_allowed_agents 
+                            : phaseInfo.filtered_agents;
+                        phaseAgentsList.textContent = agents.join(', ');
+                        phaseAgentsLabel.textContent = showAllAgents 
+                            ? 'All allowed agents:' 
+                            : `Phase "${phaseInfo.current_phase}" agents:`;
+                    } else {
+                        phaseValue.textContent = 'Not Set';
+                        phaseValue.className = 'phase-value';
+                        phaseAgentsList.textContent = phaseInfo.all_allowed_agents.join(', ');
+                        phaseAgentsLabel.textContent = 'All allowed agents:';
+                    }
+                } else {
+                    banner.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Error loading phase info:', error);
+            }
+        }
+        
+        function toggleAgentFilter() {
+            showAllAgents = document.getElementById('showAllAgentsToggle').checked;
+            loadPhaseInfo();  // Refresh display
+        }
         
         // Filter dropdown functions
         function toggleFilterDropdown() {
@@ -661,6 +800,7 @@
                 
                 renderAgents(data.instances || [], filters);
                 await loadStats();
+                await loadPhaseInfo();  // Load phase filtering info
             } catch (error) {
                 console.error('Error loading agents:', error);
                 agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>Error: ${error.message}</div></div>`;

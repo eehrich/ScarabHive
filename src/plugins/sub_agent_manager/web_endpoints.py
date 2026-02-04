@@ -192,6 +192,65 @@ class SubAgentManagerWebFactory:
             logger.error(f"Error fetching stats: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
+    async def get_phase_info(
+        self,
+        request: Request,
+        session_id: str = Query(..., description="Parent session ID")
+    ) -> JSONResponse:
+        """Get phase filtering info for current session (handler for GET /phase-info).
+        
+        Returns:
+            - enabled: Whether phase filtering is enabled for this manager
+            - phase_variable: The template variable name (e.g., "workflow_phase")
+            - current_phase: Current phase value from session (or null)
+            - phase_agents: Mapping of phase -> allowed agents
+            - all_allowed_agents: Full list of allowed agents (ignoring phase)
+            - filtered_agents: Agents allowed for current phase (or all if no phase)
+        """
+        try:
+            session_service = get_session_service()
+            
+            # Get phase filtering config from server
+            enabled = self.server.phase_filtering_enabled
+            phase_variable = self.server.phase_variable
+            phase_agents = self.server.phase_agents
+            all_allowed = self.server.allowed_agents
+            
+            # Try to get current phase from session
+            current_phase = None
+            filtered_agents = list(all_allowed)  # Default to all
+            
+            if enabled and session_id:
+                try:
+                    # Load session to get context_vars
+                    session_data = await session_service.load_session(session_id)
+                    if session_data:
+                        context_vars = session_data.get("context_vars", {})
+                        current_phase = context_vars.get(phase_variable)
+                        
+                        if current_phase and current_phase in phase_agents:
+                            filtered_agents = phase_agents[current_phase]
+                        elif "_default" in phase_agents:
+                            default_agents = phase_agents["_default"]
+                            if default_agents:  # Non-empty default
+                                filtered_agents = default_agents
+                            # Empty default = use all allowed
+                except Exception as e:
+                    logger.debug(f"Could not load session for phase info: {e}")
+            
+            return JSONResponse({
+                "enabled": enabled,
+                "phase_variable": phase_variable,
+                "current_phase": current_phase,
+                "phase_agents": phase_agents,
+                "all_allowed_agents": all_allowed,
+                "filtered_agents": filtered_agents
+            })
+
+        except Exception as e:
+            logger.error(f"Error fetching phase info: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
     def render_panel(self, request: Request) -> HTMLResponse:
         """
         Render the main dashboard panel.

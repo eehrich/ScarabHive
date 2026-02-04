@@ -445,6 +445,79 @@ First domain: {{ allowed_domains[0] }}
 Team lead: {{ team[0].name }} ({{ team[0].role }})
 ```
 
+## Session Context Variables (context_vars)
+
+Session context variables allow you to pass runtime state into a session that persists across the session's lifetime. Unlike `template_vars` (which are static config values), `context_vars` are set when spawning sub-agents or starting sessions and can change between sessions.
+
+### Setting Context Variables
+
+Context variables are passed when spawning sub-agents via the sub-agent manager:
+
+```yaml
+# When creating a sub-agent, context_vars can be passed:
+# {
+#   "operation": "create",
+#   "agent_type": "scene_writer",
+#   "task": "Write chapter 1",
+#   "context_vars": {
+#     "workflow_phase": "content",
+#     "book_id": "17",
+#     "chapter_id": "1"
+#   }
+# }
+```
+
+### Accessing Context Variables
+
+Context variables are automatically loaded into the agent's template variables and can be used in prompts:
+
+```yaml
+agents:
+  scene_writer:
+    agent_config:
+      system_prompt: |
+        You are writing for book {{ book_id }}, chapter {{ chapter_id }}.
+        Current workflow phase: {{ workflow_phase }}
+```
+
+### Phase-Based Agent Filtering
+
+A powerful use case for context variables is **phase-based filtering** in sub-agent managers. This restricts which agents are available based on the current workflow phase:
+
+```yaml
+# config/plugins.yaml
+w_sam:
+  type: sub_agent_manager
+  enabled: true
+  
+  allowed_agents:
+    - story_designer
+    - story_reviewer
+    - scene_writer
+    - quality_meta_reviewer
+
+  # Phase filtering uses session context_vars
+  phase_filtering:
+    enabled: true
+    phase_variable: "workflow_phase"  # Which context var to read
+    phase_agents:
+      planning: [story_designer, story_reviewer]
+      content: [scene_writer]
+      review: [quality_meta_reviewer]
+      _default: []  # Empty = all allowed_agents when phase unknown
+```
+
+When `phase_filtering` is enabled:
+1. The sub-agent manager reads `workflow_phase` from the session's context_vars
+2. Only agents matching the current phase are shown as available
+3. Attempts to spawn non-phase agents are blocked with a helpful error
+
+### Frontend Display
+
+Sessions with context_vars display them in the UI:
+- **Badges**: `workflow_phase` and `book_id` shown as colored badges
+- **Info Panel**: Click the info button (ℹ️) to see all context variables and phase-allowed agents
+
 ## LLM Profiles
 
 LLM profiles are defined in `config/llm.yaml`. Common profiles:

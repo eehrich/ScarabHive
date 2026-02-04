@@ -168,6 +168,7 @@ async def list_sessions_hierarchy(
                 "last_agent_response": session.get("last_agent_response"),
                 "tags": session.get("tags", []),
                 "depth": session.get("depth", 0),
+                "context_vars": session.get("context_vars", {}),  # Include context_vars for phase info
                 "children": []
             }
             

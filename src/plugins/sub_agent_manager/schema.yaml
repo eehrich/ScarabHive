@@ -32,7 +32,11 @@ tools:
 
           agent_type:
             type: string
-            description: "Agent to spawn (create). Available: {{ allowed_agents }}"
+            description: |
+              Agent to spawn (create). Available: {{ allowed_agents }}
+              {% if phase_filtering_enabled %}
+              NOTE: Phase filtering is active. Available agents change based on current workflow phase ({{ phase_variable }}).
+              {% endif %}
 
           task:
             type: string
@@ -135,6 +139,11 @@ web_ui:
       handler: "get_stats"
       response_type: "json"
       description: "Get statistics for current session (total, active, archived)"
+    - path: "/phase-info"
+      method: "GET"
+      handler: "get_phase_info"
+      response_type: "json"
+      description: "Get phase filtering info (current phase, allowed agents per phase)"
 
 # Hook configuration
 hooks:
@@ -176,3 +185,17 @@ config:
       show_completed: false
       show_tool_state: true
       format: markdown
+      # Phase-based agent filtering (optional)
+      # Filters the "Available agents" list based on a session template variable
+      # Example: Show only planning agents when workflow_phase="planning"
+      phase_filtering:
+        enabled: false
+        phase_variable: "workflow_phase"  # Name of the template variable to read
+        phase_agents:  # Map of phase -> allowed agents for that phase
+          # planning:
+          #   - story_designer
+          #   - story_reviewer
+          # characters:
+          #   - character_designer
+          #   - character_reviewer
+          _default: []  # Fallback if phase not in map (empty = show all allowed_agents)

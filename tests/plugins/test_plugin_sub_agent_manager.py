@@ -274,7 +274,6 @@ async def test_context_vars_inheritance():
     from agent_system.services.session_service import SessionService
     from agent_system.config.models import AgentConfig
     import tempfile
-    import os
     
     # Create temp directory for test
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -359,7 +358,7 @@ async def test_context_vars_loaded_into_agent_template_vars():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Setup
         session_manager = SessionManager(storage_path=tmpdir)
-        session_service = SessionService(session_manager=session_manager)
+        _ = SessionService(session_manager=session_manager)  # For completeness
         
         user_id = "test_user"
         sub_session_id = "sub_test_agent_001"
@@ -403,3 +402,245 @@ async def test_context_vars_loaded_into_agent_template_vars():
             f"book_id should be '17', got: {mock_agent.agent_config.template_vars}"
         assert mock_agent.agent_config.template_vars.get("workflow_phase") == "structure", \
             f"workflow_phase should be 'structure', got: {mock_agent.agent_config.template_vars}"
+
+
+@pytest.mark.asyncio
+async def test_phase_filtering_shows_correct_agents():
+    """Test that phase_filtering shows only agents allowed for the current phase."""
+    from plugins.sub_agent_manager.hooks import SubAgentContextInjector
+    
+    # Create mock manager that returns various agent types
+    mock_manager = MagicMock(spec=SubAgentManager)
+    async def mock_list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
+        return [
+            {"instance_id": "sub_1", "agent_type": "story_designer", "status": "active"},
+            {"instance_id": "sub_2", "agent_type": "character_designer", "status": "active"},
+            {"instance_id": "sub_3", "agent_type": "structure_builder", "status": "active"},
+        ]
+    mock_manager.list_sub_sessions = AsyncMock(side_effect=mock_list_sub_sessions)
+    
+    # Hook config (without phase_filtering - that's now separate)
+    hook_config = {
+        "enabled": True,
+        "max_sub_agents_shown": 50,
+        "format": "markdown",
+    }
+    
+    # Phase filtering config (now passed separately, mirrors server's top-level config)
+    phase_filtering_config = {
+        "enabled": True,
+        "phase_variable": "workflow_phase",
+        "phase_agents": {
+            "planning": ["story_designer", "story_reviewer"],
+            "characters": ["character_designer", "character_reviewer"],
+            "structure": ["structure_builder", "continuity_guardian"],
+        }
+    }
+    
+    allowed_agents = ["story_designer", "story_reviewer", "character_designer", 
+                      "character_reviewer", "structure_builder", "continuity_guardian"]
+    
+    injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config)
+    
+    # Create mock agent with session_tracker that returns workflow_phase
+    mock_agent = MagicMock()
+    mock_session_tracker = MagicMock()
+    mock_session_tracker.get_session_template_vars.return_value = {"workflow_phase": "planning"}
+    mock_agent._session_tracker = mock_session_tracker
+    
+    context = HookContext(
+        hook_type="inject_sub_agent_context",
+        request_id="test_req",
+        session_id="test_session",
+        agent=mock_agent,
+        messages=[
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content="Test")
+        ]
+    )
+    
+    result = await injector.inject_sub_agent_context(context)
+    
+    assert result.success is True
+    assert result.modified is True
+    
+    # Find the injected message
+    injected = [m for m in context.messages if "## Active Sub-Agents" in m.content]
+    assert len(injected) == 1
+    
+    content = injected[0].content
+    
+    # Should show "Phase `planning` - Available agents: story_designer, story_reviewer"
+    assert "Phase `planning`" in content
+    assert "story_designer" in content
+    assert "story_reviewer" in content
+    
+    # Should NOT show agents from other phases in the "Available agents" line
+    assert "character_designer" not in content.split("Available agents:")[1].split("\n")[0]
+
+
+@pytest.mark.asyncio
+async def test_phase_filtering_disabled_shows_all_allowed():
+    """Test that with phase_filtering disabled, all allowed_agents are shown."""
+    from plugins.sub_agent_manager.hooks import SubAgentContextInjector
+    
+    mock_manager = MagicMock(spec=SubAgentManager)
+    async def mock_list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
+        return [{"instance_id": "sub_1", "agent_type": "story_designer", "status": "active"}]
+    mock_manager.list_sub_sessions = AsyncMock(side_effect=mock_list_sub_sessions)
+    
+    # Hook config
+    hook_config = {
+        "enabled": True,
+        "max_sub_agents_shown": 50,
+        "format": "markdown",
+    }
+    
+    # Phase filtering disabled (passed separately)
+    phase_filtering_config = {
+        "enabled": False
+    }
+    
+    allowed_agents = ["story_designer", "story_reviewer", "character_designer"]
+    
+    injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config)
+    
+    context = HookContext(
+        hook_type="inject_sub_agent_context",
+        request_id="test_req",
+        session_id="test_session",
+        messages=[
+            ChatMessage(role="system", content="Test"),
+            ChatMessage(role="user", content="Test")
+        ]
+    )
+    
+    result = await injector.inject_sub_agent_context(context)
+    
+    assert result.success is True
+    injected = [m for m in context.messages if "## Active Sub-Agents" in m.content]
+    assert len(injected) == 1
+    
+    content = injected[0].content
+    
+    # Should show all allowed_agents since phase_filtering is disabled
+    assert "Available agents:" in content
+    assert "story_designer" in content
+
+
+@pytest.mark.asyncio
+async def test_server_phase_filtering_blocks_wrong_phase_agent():
+    """Test that server blocks agent creation if not allowed in current phase."""
+    from plugins.sub_agent_manager.server import SubAgentManagerServer
+    from agent_system.config import MCPConfig, AgentSystemConfig
+    
+    # Create mock configs
+    mcp_config = MagicMock(spec=MCPConfig)
+    mcp_config.max_sub_agents_per_session = 10
+    mcp_config.max_nesting_depth = 3
+    mcp_config.max_message_history = 100
+    mcp_config.max_sub_agents_per_type = 3
+    mcp_config.default_wait_timeout = 3600
+    mcp_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
+    mcp_config.blocked_agents = []
+    mcp_config.hook_config = {}
+    # Phase filtering config at top-level
+    mcp_config.phase_filtering = {
+        "enabled": True,
+        "phase_variable": "workflow_phase",
+        "phase_agents": {
+            "planning": ["story_designer"],
+            "content": ["scene_writer"],
+        }
+    }
+    
+    system_config = MagicMock(spec=AgentSystemConfig)
+    
+    server = SubAgentManagerServer("test_sam", system_config, mcp_config)
+    
+    # Verify phase filtering config was loaded
+    assert server.phase_filtering_enabled is True
+    assert server.phase_variable == "workflow_phase"
+    assert "planning" in server.phase_agents
+    
+    # Test _get_phase_allowed_agents with mock params
+    mock_agent = MagicMock()
+    mock_session_tracker = MagicMock()
+    mock_session_tracker.get_session_template_vars.return_value = {"workflow_phase": "planning"}
+    mock_agent._session_tracker = mock_session_tracker
+    
+    params = {
+        "_agent": mock_agent,
+        "_session_id": "test_session"
+    }
+    
+    # Should return planning agents
+    phase_allowed = server._get_phase_allowed_agents(params)
+    assert phase_allowed == ["story_designer"]
+    
+    # story_designer should be allowed
+    assert server._is_agent_allowed_for_phase("story_designer", phase_allowed) is True
+    
+    # scene_writer should NOT be allowed (it's in content phase, not planning)
+    assert server._is_agent_allowed_for_phase("scene_writer", phase_allowed) is False
+    
+    # character_designer is in allowed_agents but not in any phase - blocked
+    assert server._is_agent_allowed_for_phase("character_designer", phase_allowed) is False
+
+
+@pytest.mark.asyncio
+async def test_web_endpoint_phase_info():
+    """Test that get_phase_info web endpoint returns correct phase data."""
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+    from plugins.sub_agent_manager.server import SubAgentManagerServer
+    from agent_system.config import MCPConfig, AgentSystemConfig
+    from fastapi import Request
+    from unittest.mock import AsyncMock, patch
+    
+    # Create mock configs with phase filtering
+    mcp_config = MagicMock(spec=MCPConfig)
+    mcp_config.max_sub_agents_per_session = 10
+    mcp_config.max_nesting_depth = 3
+    mcp_config.max_message_history = 100
+    mcp_config.max_sub_agents_per_type = 3
+    mcp_config.default_wait_timeout = 3600
+    mcp_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
+    mcp_config.blocked_agents = []
+    mcp_config.hook_config = {}
+    mcp_config.phase_filtering = {
+        "enabled": True,
+        "phase_variable": "workflow_phase",
+        "phase_agents": {
+            "planning": ["story_designer"],
+            "content": ["scene_writer"],
+            "_default": []
+        }
+    }
+    
+    system_config = MagicMock(spec=AgentSystemConfig)
+    
+    server = SubAgentManagerServer("test_sam", system_config, mcp_config)
+    factory = SubAgentManagerWebFactory(server)
+    
+    # Mock session service
+    mock_session_service = MagicMock()
+    mock_session_service.load_session = AsyncMock(return_value={
+        "context_vars": {"workflow_phase": "planning", "book_id": "17"}
+    })
+    
+    mock_request = MagicMock(spec=Request)
+    
+    with patch('plugins.sub_agent_manager.web_endpoints.get_session_service', return_value=mock_session_service):
+        response = await factory.get_phase_info(mock_request, session_id="test_session")
+    
+    # Parse JSON response
+    import json
+    data = json.loads(response.body.decode())
+    
+    assert data["enabled"] is True
+    assert data["phase_variable"] == "workflow_phase"
+    assert data["current_phase"] == "planning"
+    assert data["filtered_agents"] == ["story_designer"]
+    assert "story_designer" in data["all_allowed_agents"]
+    assert "character_designer" in data["all_allowed_agents"]
+    assert "scene_writer" in data["all_allowed_agents"]

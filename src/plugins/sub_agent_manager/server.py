@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
@@ -74,6 +74,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # Agent filtering (multi-instance support - by instance name, not type)
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
         self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
+
+        # Phase-based agent filtering (affects both tool schema and create validation)
+        # Config is at top-level (same as allowed_agents), not inside hook_config
+        phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
+        self.phase_filtering_enabled = phase_config.get('enabled', False)
+        self.phase_variable = phase_config.get('phase_variable', 'workflow_phase')
+        self.phase_agents = phase_config.get('phase_agents', {})
 
         # Track running sub-agent instances to prevent concurrent execution
         # Format: {sub_session_id: True}
@@ -156,7 +163,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         return {
             'name': self.name,  # CRITICAL: Must include 'name' for {{ name }} template variable in schema.yaml
-            'allowed_agents': agent_names
+            'allowed_agents': agent_names,
+            'phase_filtering_enabled': self.phase_filtering_enabled,
+            'phase_variable': self.phase_variable
         }
 
     async def list_tools(self) -> list:
@@ -304,18 +313,28 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             # Note: config_overrides would be used here when Agent.run_events supports them
             # For now, sub-agent uses its default configuration
 
-            # Validate agent is allowed by this manager instance
-            if not self._is_agent_allowed(agent_name):
-                allowed_str = ', '.join(self.allowed_agents)
-                raise ValueError(
-                    f"Agent '{agent_name}' not allowed by this sub-agent manager. "
-                    f"Allowed agents: {allowed_str}"
-                )
-
             # Get parent session ID from injected context
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
                 raise ValueError("No session context available - this tool must be called from an agent")
+
+            # Validate agent is allowed by this manager instance (with phase filtering)
+            phase_allowed = self._get_phase_allowed_agents(params)
+            if not self._is_agent_allowed_for_phase(agent_name, phase_allowed):
+                # Build helpful error message
+                if phase_allowed:
+                    current_phase = self._get_current_phase(params)
+                    raise ValueError(
+                        f"Agent '{agent_name}' not allowed in current phase '{current_phase}'. "
+                        f"Allowed agents for this phase: {', '.join(phase_allowed)}"
+                    )
+                else:
+                    allowed_str = ', '.join(self.allowed_agents)
+                    raise ValueError(
+                        f"Agent '{agent_name}' not allowed by this sub-agent manager. "
+                        f"Allowed agents: {allowed_str}"
+                    )
+
             if status:
                 await status.progress(f"Creating sub-agent: {agent_name}")
 
@@ -1684,7 +1703,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     # ========== End Async Job Management ==========
 
     def _is_agent_allowed(self, agent_name: str) -> bool:
-        """Check if agent is allowed by this manager instance.
+        """Check if agent is allowed by this manager instance (ignoring phase filtering).
 
         Args:
             agent_name: Agent instance name (e.g., 'coding_agent', 'meta_agent')
@@ -1714,6 +1733,80 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         logger.debug(f"Agent '{agent_name}' not in allowed list: {self.allowed_agents}")
         return False
+
+    def _get_current_phase(self, params: dict[str, Any]) -> Optional[str]:
+        """Get current workflow phase from session template vars.
+        
+        Args:
+            params: Tool parameters with _agent reference
+            
+        Returns:
+            Current phase value or None
+        """
+        if not self.phase_filtering_enabled:
+            return None
+            
+        try:
+            agent = params.get("_agent")
+            session_id = params.get("_session_id")
+            if agent and session_id and hasattr(agent, '_session_tracker'):
+                session_vars = agent._session_tracker.get_session_template_vars(session_id)
+                return session_vars.get(self.phase_variable)
+        except Exception as e:
+            logger.debug(f"Could not get phase from session vars: {e}")
+        
+        return None
+
+    def _get_phase_allowed_agents(self, params: dict[str, Any]) -> Optional[List[str]]:
+        """Get list of allowed agents for the current workflow phase.
+        
+        Args:
+            params: Tool parameters with _agent reference
+            
+        Returns:
+            List of allowed agents for current phase, or None if no phase filtering
+        """
+        if not self.phase_filtering_enabled:
+            return None
+            
+        current_phase = self._get_current_phase(params)
+        if not current_phase:
+            return None
+            
+        phase_agents = self.phase_agents.get(current_phase)
+        if phase_agents:
+            logger.debug(f"Phase '{current_phase}' allows agents: {phase_agents}")
+            return phase_agents
+            
+        # Check for default/fallback
+        default_agents = self.phase_agents.get("_default")
+        if default_agents is not None:
+            if not default_agents:  # Empty list = all allowed_agents
+                return None  # Return None to use all allowed_agents
+            return default_agents
+            
+        return None
+
+    def _is_agent_allowed_for_phase(self, agent_name: str, phase_allowed: Optional[List[str]]) -> bool:
+        """Check if agent is allowed considering both base allowed_agents and phase filtering.
+        
+        Args:
+            agent_name: Agent instance name
+            phase_allowed: List of agents allowed for current phase, or None
+            
+        Returns:
+            True if agent is allowed
+        """
+        # First check base allowed_agents
+        if not self._is_agent_allowed(agent_name):
+            return False
+            
+        # If no phase filtering active, base check is sufficient
+        if phase_allowed is None:
+            return True
+            
+        # Phase filtering active - check if agent in phase list
+        return agent_name in phase_allowed
 
     # =========================================================================
     # Hook Implementation - Pre-LLM Call
@@ -1756,7 +1849,20 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
             # Create fresh injector for this call (each agent has different session_service)
             # Pass self.name so injector only shows sub-agents from THIS manager instance
-            injector = SubAgentContextInjector(manager, self.name, hook_config)
+            # Pass allowed_agents for display in the hook message
+            # Pass phase_filtering config from server (top-level config, not hook_config)
+            phase_filtering_config = {
+                'enabled': self.phase_filtering_enabled,
+                'phase_variable': self.phase_variable,
+                'phase_agents': self.phase_agents
+            }
+            injector = SubAgentContextInjector(
+                manager, 
+                self.name, 
+                hook_config, 
+                self.allowed_agents,
+                phase_filtering_config
+            )
 
             # Delegate to injector
             return await injector.inject_sub_agent_context(context)
