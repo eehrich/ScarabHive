@@ -622,11 +622,16 @@ async def test_web_endpoint_phase_info():
     server = SubAgentManagerServer("test_sam", system_config, mcp_config)
     factory = SubAgentManagerWebFactory(server)
     
-    # Mock session service
-    mock_session_service = MagicMock()
-    mock_session_service.load_session = AsyncMock(return_value={
+    # Mock session manager (used by web endpoint)
+    mock_session_manager = MagicMock()
+    mock_session_manager._find_session_owner_async = AsyncMock(return_value="test_user")
+    mock_session_manager.load_session = AsyncMock(return_value={
         "context_vars": {"workflow_phase": "planning", "book_id": "17"}
     })
+    
+    # Mock session service with session_manager
+    mock_session_service = MagicMock()
+    mock_session_service.session_manager = mock_session_manager
     
     mock_request = MagicMock(spec=Request)
     

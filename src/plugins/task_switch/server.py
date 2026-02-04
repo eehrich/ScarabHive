@@ -343,6 +343,8 @@ class TaskSwitchServer(SchemaBasedMCPServer):
         """Persist context variables to session storage.
         
         This ensures template_vars survive server restarts and session reloads.
+        Creates the session file if it doesn't exist yet (e.g., for new chats where
+        set_context is called before the session is saved).
         """
         if not agent or not hasattr(agent, '_session_service') or not agent._session_service:
             logger.debug("No session service - context vars not persisted")
@@ -360,10 +362,34 @@ class TaskSwitchServer(SchemaBasedMCPServer):
                 if metadata:
                     user_id = metadata.get("user_id", "anonymous")
             
-            # Load current session
-            session_data = await session_manager.load_session(user_id, session_id)
+            # Try to load current session, or create it if it doesn't exist
+            session_data = None
+            try:
+                session_data = await session_manager.load_session(user_id, session_id)
+            except Exception as load_error:
+                # Session doesn't exist yet (new chat) - create it
+                logger.debug(f"Session {session_id} not found, creating it to persist context_vars: {load_error}")
+                try:
+                    # Get agent name and llm_profile for session creation
+                    agent_name = getattr(agent, 'name', 'unknown')
+                    llm_profile = None
+                    if hasattr(agent, 'agent_config') and agent.agent_config:
+                        llm_profile = getattr(agent.agent_config, 'default_llm_profile', None)
+                    
+                    session_data = await session_manager.create_session(
+                        user_id=user_id,
+                        session_id=session_id,
+                        title="New Session",
+                        agent_name=agent_name,
+                        llm_profile=llm_profile or "default"
+                    )
+                    logger.info(f"Created session {session_id} for user {user_id} to persist context_vars")
+                except Exception as create_error:
+                    logger.warning(f"Could not create session {session_id} to persist context vars: {create_error}")
+                    return
+            
             if not session_data:
-                logger.warning(f"Could not load session {session_id} to persist context vars")
+                logger.warning(f"Could not load/create session {session_id} to persist context vars")
                 return
             
             # Update or create context_vars field

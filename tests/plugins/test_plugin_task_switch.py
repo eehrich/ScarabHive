@@ -737,3 +737,48 @@ class TestContextPersistence:
         saved_data = mock_session_manager.save_session.call_args[0][0]
         assert saved_data["context_vars"]["existing_key"] == "existing_value"
         assert saved_data["context_vars"]["book_id"] == "42"
+
+    @pytest.mark.asyncio
+    async def test_persist_creates_session_if_not_exists(self, server):
+        """Persisting should create session if it doesn't exist yet (new chat)."""
+        from agent_system.services.session_manager import SessionNotFoundError
+        
+        agent = MagicMock()
+        agent.name = "test_agent"
+        agent.agent_config = AgentConfig(template_vars={}, default_llm_profile="chat")
+        
+        # Simulate session not found, then creation
+        mock_session_manager = AsyncMock()
+        mock_session_manager.load_session = AsyncMock(side_effect=SessionNotFoundError("Session not found"))
+        mock_session_manager.create_session = AsyncMock(return_value={
+            "session_id": "new_session",
+            "user_id": "test_user",
+            "messages": []
+        })
+        mock_session_manager.save_session = AsyncMock()
+        
+        agent._session_service = MagicMock()
+        agent._session_service.session_manager = mock_session_manager
+        agent._session_tracker = MagicMock()
+        agent._session_tracker.get_session_metadata = MagicMock(return_value={"user_id": "test_user"})
+        agent._session_tracker.get_session_template_vars = MagicMock(return_value={})
+        agent._session_tracker.set_session_template_vars = MagicMock()
+        
+        result = await server.set_context({
+            "book_id": "42",
+            "_agent": agent,
+            "_session_id": "new_session"
+        })
+        
+        assert result["status"] == "success"
+        assert result["persisted"] is True
+        
+        # Verify create_session was called
+        mock_session_manager.create_session.assert_called_once()
+        create_call = mock_session_manager.create_session.call_args
+        assert create_call[1]["session_id"] == "new_session"
+        
+        # Verify save_session was called with context_vars
+        mock_session_manager.save_session.assert_called_once()
+        saved_data = mock_session_manager.save_session.call_args[0][0]
+        assert saved_data["context_vars"]["book_id"] == "42"

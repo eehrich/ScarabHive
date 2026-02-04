@@ -220,21 +220,26 @@ class SubAgentManagerWebFactory:
             current_phase = None
             filtered_agents = list(all_allowed)  # Default to all
             
-            if enabled and session_id:
+            if enabled and session_id and session_service.session_manager:
                 try:
-                    # Load session to get context_vars
-                    session_data = await session_service.load_session(session_id)
-                    if session_data:
-                        context_vars = session_data.get("context_vars", {})
-                        current_phase = context_vars.get(phase_variable)
-                        
-                        if current_phase and current_phase in phase_agents:
-                            filtered_agents = phase_agents[current_phase]
-                        elif "_default" in phase_agents:
-                            default_agents = phase_agents["_default"]
-                            if default_agents:  # Non-empty default
-                                filtered_agents = default_agents
-                            # Empty default = use all allowed
+                    # First find the session owner (user_id)
+                    session_manager = session_service.session_manager
+                    user_id = await session_manager._find_session_owner_async(session_id)
+                    
+                    if user_id:
+                        # Load session to get context_vars
+                        session_data = await session_manager.load_session(user_id, session_id)
+                        if session_data:
+                            context_vars = session_data.get("context_vars", {})
+                            current_phase = context_vars.get(phase_variable)
+                            
+                            if current_phase and current_phase in phase_agents:
+                                filtered_agents = phase_agents[current_phase]
+                            elif "_default" in phase_agents:
+                                default_agents = phase_agents["_default"]
+                                if default_agents:  # Non-empty default
+                                    filtered_agents = default_agents
+                                # Empty default = use all allowed
                 except Exception as e:
                     logger.debug(f"Could not load session for phase info: {e}")
             
