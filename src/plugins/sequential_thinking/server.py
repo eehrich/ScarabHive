@@ -483,6 +483,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 # Check if thought to revise exists
                 thought_exists = any(t.number == revises_thought for t in session.thoughts)
                 if not thought_exists:
+                    logger.info(f"Thought #{revises_thought} not found in session {session_id}")
                     await safe_status_call("error", f"Thought #{revises_thought} not found in session")
                     return {"status": "error", "error": f"Thought #{revises_thought} not found in session"}
 
@@ -637,7 +638,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             return result
 
         except Exception as e:
-            logger.exception(f"Error in sequentialthinking: {e}")
+            logger.info(f"Error in sequentialthinking: {e}")
             # Try to get status for error reporting, but don't fail if not available
             if status:
                 await safe_status_call("error", f"Failed to add thought: {str(e)}")
@@ -702,7 +703,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 }
 
         except Exception as e:
-            logger.exception(f"Error in clear_history: {e}")
+            logger.info(f"Error in clear_history: {e}")
             if status:
                 await safe_status_call("error", f"Failed to clear history: {str(e)}")
             return {"status": "error", "error": str(e)}
@@ -783,7 +784,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             return summary
 
         except Exception as e:
-            logger.exception(f"Error in get_thought_summary: {e}")
+            logger.info(f"Error in get_thought_summary: {e}")
             if status:
                 await safe_status_call("error", f"Failed to generate summary: {str(e)}")
             return {"status": "error", "error": str(e)}

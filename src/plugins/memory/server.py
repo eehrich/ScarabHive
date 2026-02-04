@@ -784,14 +784,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     error_msg = "Missing required parameter 'title' for store operation"
                     if status:
                         await status.error(error_msg)
-                    logger.error(f"Memory store failed: {error_msg}")
+                    logger.info(f"Memory store failed: {error_msg}")
                     return {"error": error_msg}
                 
                 if "content" not in arguments:
                     error_msg = "Missing required parameter 'content' for store operation"
                     if status:
                         await status.error(error_msg)
-                    logger.error(f"Memory store failed: {error_msg}")
+                    logger.info(f"Memory store failed: {error_msg}")
                     return {"error": error_msg}
                 
                 title = arguments["title"]
@@ -818,7 +818,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     error_msg = "Missing required parameter 'memory_id' for recall operation"
                     if status:
                         await status.error(error_msg)
-                    logger.error(f"Memory recall failed: {error_msg}")
+                    logger.info(f"Memory recall failed: {error_msg}")
                     return {"error": error_msg}
                 
                 memory_id = arguments["memory_id"]
@@ -843,7 +843,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     error_msg = "Missing required parameter 'query' for search operation"
                     if status:
                         await status.error(error_msg)
-                    logger.error(f"Memory search failed: {error_msg}")
+                    logger.info(f"Memory search failed: {error_msg}")
                     return {"error": error_msg}
                 
                 query = arguments["query"]
@@ -884,7 +884,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     error_msg = "Missing required parameter 'memory_id' for delete operation"
                     if status:
                         await status.error(error_msg)
-                    logger.error(f"Memory delete failed: {error_msg}")
+                    logger.info(f"Memory delete failed: {error_msg}")
                     return {"error": error_msg}
                 
                 memory_id = arguments["memory_id"]
@@ -909,7 +909,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     error_msg = "Missing required parameter 'memory_id' for update operation"
                     if status:
                         await status.error(error_msg)
-                    logger.error(f"Memory update failed: {error_msg}")
+                    logger.info(f"Memory update failed: {error_msg}")
                     return {"error": error_msg}
                 
                 memory_id = arguments["memory_id"]
@@ -938,7 +938,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         except (ValidationError, StorageError, ChromaDBError) as e:
             error_msg = str(e)
-            logger.error(f"Memory operation failed: {error_msg}")
+            logger.info(f"Memory operation failed: {error_msg}")
             if status:
                 await status.error(error_msg)
             return {"error": error_msg}
