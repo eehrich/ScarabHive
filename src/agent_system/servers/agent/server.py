@@ -46,6 +46,7 @@ class ConversationContext:
     main_token: CancellationToken
     context_reset_token: Any  # Token for resetting contextvars
     status_forwarder: 'StatusEventForwarder'  # Per-request forwarder instance
+    session_id: Optional[str] = None  # Session ID for session-scoped operations
 
 
 class Agent(MCPServer):
@@ -368,7 +369,13 @@ class Agent(MCPServer):
     # ------------------------------------------------------------------
     # Central prompt rendering utilities (using strategy pattern)
     # ------------------------------------------------------------------
-    def _render_prompts(self, usable_tools: List[str], max_steps: int, current_step: int) -> tuple[str, Optional[str]]:
+    def _render_prompts(
+        self, 
+        usable_tools: List[str], 
+        max_steps: int, 
+        current_step: int,
+        session_id: Optional[str] = None
+    ) -> tuple[str, Optional[str]]:
         """
         Render (system_prompt, tools_prompt) using strategy pattern.
 
@@ -376,6 +383,7 @@ class Agent(MCPServer):
             usable_tools: List of tool names available to the agent
             max_steps: Maximum steps allowed for the agent
             current_step: Current step number (1-indexed, for dynamic per-step rendering)
+            session_id: Optional session ID for session-scoped template vars
 
         Order of precedence:
           1. Subclass hook `get_custom_system_prompt`
@@ -386,6 +394,11 @@ class Agent(MCPServer):
         Returns:
             (system_prompt, tools_prompt_or_None)
         """
+        # Get session-scoped template vars if session_id provided
+        session_template_vars = None
+        if session_id and hasattr(self, '_session_tracker') and self._session_tracker:
+            session_template_vars = self._session_tracker.get_session_template_vars(session_id)
+        
         renderer = PromptRenderer()
         context = PromptContext(
             agent_name=self.name,
@@ -394,7 +407,8 @@ class Agent(MCPServer):
             available_tools=usable_tools,
             max_steps=max_steps,
             current_step=current_step,
-            agent_instance=self  # Pass self for hook access
+            agent_instance=self,  # Pass self for hook access
+            session_template_vars=session_template_vars  # Session-scoped vars (override agent_config)
         )
         return renderer.render(context)
 
@@ -912,7 +926,8 @@ class Agent(MCPServer):
 
         # Centralized prompt rendering (system + optional tools) using helper.
         # Initial render with step 0 (before loop starts)
-        system_msg, tools_msg = self._render_prompts(usable_tools, max_steps, current_step=0)
+        # Pass session_id to use session-scoped template vars
+        system_msg, tools_msg = self._render_prompts(usable_tools, max_steps, current_step=0, session_id=session_id)
 
         # Initialize conversation from persisted session history
         session_msgs = self._session_tracker.get_session_messages(session_id)
@@ -979,7 +994,8 @@ class Agent(MCPServer):
             max_steps=max_steps,
             main_token=main_token,
             context_reset_token=context_reset_token,
-            status_forwarder=status_forwarder
+            status_forwarder=status_forwarder,
+            session_id=session_id
         )
 
     async def _finalize_request(
@@ -1376,7 +1392,10 @@ class Agent(MCPServer):
             await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
             # Update system message with current step number
-            updated_system_msg, _ = self._render_prompts(context.available_tools, max_steps, current_step=step + 1)
+            # Pass session_id to use session-scoped template vars
+            updated_system_msg, _ = self._render_prompts(
+                context.available_tools, max_steps, current_step=step + 1, session_id=context.session_id
+            )
             messages[0] = ChatMessage(role="system", content=updated_system_msg)
 
             # Emit thinking event before LLM call (for UI step display)
