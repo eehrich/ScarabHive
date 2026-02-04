@@ -316,6 +316,77 @@ class GeminiSDKClient(LLMClient):
         """
         return extract_usage_from_metadata(usage_metadata)
 
+    def _dump_contents_for_debug(self, contents: List[types.Content], max_text_len: int = 200) -> str:
+        """Dump SDK contents to a JSON-like string for debugging 400 errors.
+        
+        Args:
+            contents: List of SDK Content objects
+            max_text_len: Max length for text fields (truncate longer)
+            
+        Returns:
+            JSON string representation of contents
+        """
+        import json
+        
+        def part_to_dict(part: types.Part) -> dict:
+            """Convert a Part to a debug dict."""
+            result = {}
+            
+            if hasattr(part, 'text') and part.text is not None:
+                text = part.text
+                if len(text) > max_text_len:
+                    result["text"] = f"{text[:max_text_len]}... ({len(text)} chars)"
+                else:
+                    result["text"] = text
+            
+            if hasattr(part, 'function_call') and part.function_call:
+                fc = part.function_call
+                result["function_call"] = {
+                    "name": fc.name,
+                    "args": dict(fc.args) if fc.args else {}
+                }
+            
+            if hasattr(part, 'function_response') and part.function_response:
+                fr = part.function_response
+                resp = fr.response if hasattr(fr, 'response') else None
+                result["function_response"] = {
+                    "name": fr.name if hasattr(fr, 'name') else None,
+                    "response_type": type(resp).__name__ if resp else None,
+                    "response_len": len(str(resp)) if resp else 0
+                }
+            
+            if hasattr(part, 'inline_data') and part.inline_data:
+                inline = part.inline_data
+                result["inline_data"] = {
+                    "mime_type": inline.mime_type,
+                    "data_len": len(inline.data) if inline.data else 0
+                }
+            
+            if hasattr(part, 'thought_signature') and part.thought_signature:
+                ts = part.thought_signature
+                result["thought_signature"] = f"bytes({len(ts)})" if isinstance(ts, bytes) else str(ts)[:50]
+            
+            # Check for empty part (no fields set)
+            if not result:
+                result["_empty_part"] = True
+            
+            return result
+        
+        contents_list = []
+        for content in contents:
+            parts_list = []
+            if content.parts:
+                for p in content.parts:
+                    parts_list.append(part_to_dict(p))
+            
+            contents_list.append({
+                "role": content.role,
+                "parts": parts_list,
+                "parts_count": len(parts_list)
+            })
+        
+        return json.dumps(contents_list, indent=2, default=str)
+
     async def _cancellable_stream(
         self,
         stream_coro,
@@ -1014,6 +1085,16 @@ class GeminiSDKClient(LLMClient):
                 # because Gemini has no "pending" turn to complete with a function call.
                 # Solution: Disable mode=ANY for the next retry by resetting got_malformed_function_call.
                 is_400_error = "400" in error_str or "INVALID_ARGUMENT" in error_str
+                
+                # Dump contents for debugging 400 errors (only on first occurrence per request)
+                if is_400_error and attempt == 0:
+                    logger.error("[GeminiSDK] 400 INVALID_ARGUMENT - Dumping request contents for debugging:")
+                    logger.error(f"[GeminiSDK] Model: {self.model}")
+                    logger.error(f"[GeminiSDK] System instruction: {len(system_instruction) if system_instruction else 0} chars")
+                    logger.error(f"[GeminiSDK] Tools: {sdk_tools is not None}")
+                    logger.error(f"[GeminiSDK] force_any_mode: {force_any_mode}")
+                    logger.error(f"[GeminiSDK] Contents ({len(contents)} messages):\n{self._dump_contents_for_debug(contents)}")
+                
                 if is_400_error and got_malformed_function_call and force_any_mode and attempt < self.max_retries:
                     wait_time = 1.0
                     logger.warning(
