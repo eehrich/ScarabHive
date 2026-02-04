@@ -1458,6 +1458,15 @@ def main() -> None:
             if hasattr(agent, '_session_tracker'):
                 agent._session_tracker.set_session_messages(actual_session_id, [])
 
+        # CRITICAL: Initialize session template_vars from agent_config for NEW sessions
+        # This ensures initial values (like workflow_phase: "planning") are available
+        # without requiring explicit set_context calls
+        if was_new_session and hasattr(agent, '_session_tracker') and hasattr(agent, 'agent_config'):
+            if agent.agent_config and agent.agent_config.template_vars:
+                initial_vars = agent.agent_config.template_vars.copy()
+                agent._session_tracker.set_session_template_vars(actual_session_id, initial_vars)
+                logger.debug(f"[cli] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
+
         return True, was_new_session  # Continue with task execution
 
     # Run session operations

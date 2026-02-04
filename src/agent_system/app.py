@@ -1425,6 +1425,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "agent_name": selected_agent.name,
                 "llm_profile": effective_llm_profile
             })
+            
+            # CRITICAL: Initialize session template_vars from agent_config for NEW sessions
+            # This ensures initial values (like workflow_phase: "planning") are available
+            # without requiring explicit set_context calls
+            if not session_exists:
+                # Copy initial template_vars from agent_config to session-scoped vars
+                if (hasattr(selected_agent, 'agent_config') and 
+                    selected_agent.agent_config and 
+                    selected_agent.agent_config.template_vars):
+                    initial_vars = selected_agent.agent_config.template_vars.copy()
+                    selected_agent._session_tracker.set_session_template_vars(session_id, initial_vars)
+                    logger.debug(f"[SESSION] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
 
         from .servers.agent.result_utils import collect_final_result
 
