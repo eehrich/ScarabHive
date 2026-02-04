@@ -200,6 +200,7 @@ class TaskSwitchServer(SchemaBasedMCPServer):
         status = params.get("_status")
         task_name = params.get("task_name", "").strip()
         agent = params.get("_agent")
+        session_id = params.get("_session_id")
         
         if not task_name:
             return {"status": "error", "error": "task_name is required"}
@@ -229,22 +230,28 @@ class TaskSwitchServer(SchemaBasedMCPServer):
                     "precondition_result": gate_result.get("precondition_result")
                 }
         
-        # Get agent_config from agent instance
-        agent_config = agent.agent_config if agent and hasattr(agent, 'agent_config') else None
-        
-        # Get previous task
+        # Get previous task from SESSION-SCOPED template vars (not agent_config!)
+        # CRITICAL: This ensures session isolation - multiple sessions won't contaminate each other
         previous_task = "init"
-        if agent_config and hasattr(agent_config, 'template_vars'):
-            if agent_config.template_vars is None:
-                agent_config.template_vars = {}
-            previous_task = agent_config.template_vars.get(self._task_var_name, "init")
-            agent_config.template_vars[self._task_var_name] = task_name
-            logger.debug(f"Task: {previous_task} -> {task_name}")
+        if session_id and agent and hasattr(agent, '_session_tracker') and agent._session_tracker:
+            session_vars = agent._session_tracker.get_session_template_vars(session_id)
+            previous_task = session_vars.get(self._task_var_name, "init")
+            # Update session-scoped template vars
+            agent._session_tracker.set_session_template_vars(session_id, {self._task_var_name: task_name})
+            logger.debug(f"Task: {previous_task} -> {task_name} (session-scoped)")
         else:
-            logger.warning("No agent_config - task switch won't affect prompts")
+            # Fallback: Try agent_config (for backwards compatibility, but log warning)
+            agent_config = agent.agent_config if agent and hasattr(agent, 'agent_config') else None
+            if agent_config and hasattr(agent_config, 'template_vars'):
+                if agent_config.template_vars is None:
+                    agent_config.template_vars = {}
+                previous_task = agent_config.template_vars.get(self._task_var_name, "init")
+                agent_config.template_vars[self._task_var_name] = task_name
+                logger.warning(f"Task switch using agent_config (no session isolation!): {previous_task} -> {task_name}")
+            else:
+                logger.warning("No session_tracker or agent_config - task switch won't affect prompts")
         
-        # Persist to session
-        session_id = params.get("_session_id")
+        # Persist to session storage (for session reload)
         persisted = False
         if session_id:
             await self._persist_context_vars(agent, session_id, {self._task_var_name: task_name})
@@ -267,14 +274,7 @@ class TaskSwitchServer(SchemaBasedMCPServer):
         """
         status = params.get("_status")
         agent = params.get("_agent")
-        
-        if not agent or not hasattr(agent, 'agent_config') or not agent.agent_config:
-            if status:
-                await status.error("No agent config available")
-            return {"status": "error", "error": "No agent config available"}
-        
-        if agent.agent_config.template_vars is None:
-            agent.agent_config.template_vars = {}
+        session_id = params.get("_session_id")
         
         # Extract user-provided context vars (ignore internal _ params)
         context_vars = {k: v for k, v in params.items() if not k.startswith('_')}
@@ -284,15 +284,32 @@ class TaskSwitchServer(SchemaBasedMCPServer):
                 await status.error("No context variables provided")
             return {"status": "error", "error": "No context variables provided"}
         
-        # Update template_vars
+        # Get previous values from SESSION-SCOPED template vars (not agent_config!)
+        # CRITICAL: This ensures session isolation - multiple sessions won't contaminate each other
         previous_values = {}
-        for key, value in context_vars.items():
-            previous_values[key] = agent.agent_config.template_vars.get(key)
-            agent.agent_config.template_vars[key] = value
-            logger.debug(f"Set context: {key} = {value} (was: {previous_values[key]})")
         
-        # Persist to session
-        session_id = params.get("_session_id")
+        if session_id and agent and hasattr(agent, '_session_tracker') and agent._session_tracker:
+            session_vars = agent._session_tracker.get_session_template_vars(session_id)
+            for key in context_vars:
+                previous_values[key] = session_vars.get(key)
+            # Update session-scoped template vars
+            agent._session_tracker.set_session_template_vars(session_id, context_vars)
+            logger.debug(f"Set context (session-scoped): {list(context_vars.keys())}")
+        else:
+            # Fallback: Try agent_config (for backwards compatibility, but log warning)
+            if agent and hasattr(agent, 'agent_config') and agent.agent_config:
+                if agent.agent_config.template_vars is None:
+                    agent.agent_config.template_vars = {}
+                for key, value in context_vars.items():
+                    previous_values[key] = agent.agent_config.template_vars.get(key)
+                    agent.agent_config.template_vars[key] = value
+                logger.warning(f"Set context using agent_config (no session isolation!): {list(context_vars.keys())}")
+            else:
+                if status:
+                    await status.error("No session_tracker or agent_config available")
+                return {"status": "error", "error": "No session_tracker or agent_config available"}
+        
+        # Persist to session storage (for session reload)
         persisted = False
         if session_id:
             await self._persist_context_vars(agent, session_id, context_vars)

@@ -55,6 +55,10 @@ class SessionTracker:
         # Session metadata: session_id -> Dict[str, Any] (user_id, etc.)
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
 
+        # Session template vars: session_id -> Dict[str, Any] (workflow_phase, book_id, etc.)
+        # CRITICAL: These are SESSION-SCOPED, not shared across sessions using same agent
+        self._session_template_vars: Dict[str, Dict[str, Any]] = {}
+
         # Request-to-session mapping: request_id -> session_id
         self._request_to_session: Dict[str, str] = {}
 
@@ -409,6 +413,43 @@ class SessionTracker:
         """
         return self._session_metadata.get(session_id)
 
+    def set_session_template_vars(self, session_id: str, template_vars: Dict[str, Any]) -> None:
+        """
+        Set session-scoped template variables (e.g., workflow_phase, book_id).
+        
+        CRITICAL: These are isolated per session, not shared across sessions
+        using the same agent singleton. This prevents cross-session contamination.
+
+        Args:
+            session_id: The session ID
+            template_vars: Template variables dict
+        """
+        if session_id not in self._session_template_vars:
+            self._session_template_vars[session_id] = {}
+        self._session_template_vars[session_id].update(template_vars)
+        logger.debug(f"Set session template vars for {session_id}: {list(template_vars.keys())}")
+
+    def get_session_template_vars(self, session_id: str) -> Dict[str, Any]:
+        """
+        Get session-scoped template variables.
+
+        Args:
+            session_id: The session ID
+
+        Returns:
+            Template variables dict (empty dict if not found)
+        """
+        return self._session_template_vars.get(session_id, {})
+
+    def clear_session_template_vars(self, session_id: str) -> None:
+        """
+        Clear session-scoped template variables.
+
+        Args:
+            session_id: The session ID
+        """
+        self._session_template_vars.pop(session_id, None)
+
     def has_session(self, session_id: str) -> bool:
         """
         Check if a session exists.
@@ -451,6 +492,9 @@ class SessionTracker:
         # Clear metadata to prevent memory leak
         self._session_metadata.pop(session_id, None)
         
+        # Clear session template vars to prevent memory leak
+        self._session_template_vars.pop(session_id, None)
+        
         # Clear session locks to prevent memory leak
         if session_id in self._session_lock_owners:
             del self._session_lock_owners[session_id]
@@ -475,5 +519,6 @@ class SessionTracker:
         self._appended_messages.clear()
         self._compacted_messages.clear()
         self._session_metadata.clear()
+        self._session_template_vars.clear()
         self._session_locks.clear()
         self._session_lock_owners.clear()

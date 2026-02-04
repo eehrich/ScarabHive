@@ -488,7 +488,7 @@ class TestSetContext:
             "_agent": None
         })
         assert result["status"] == "error"
-        assert "No agent config" in result["error"]
+        assert "agent_config" in result["error"] or "session_tracker" in result["error"]
 
     @pytest.mark.asyncio
     async def test_set_context_initializes_template_vars(self, server):
@@ -524,6 +524,8 @@ class TestSetContext:
         mock_status = AsyncMock()
         mock_agent = MagicMock()
         mock_agent.agent_config = None
+        # Also mock _session_tracker to None so fallback fails too
+        mock_agent._session_tracker = None
         
         result = await server.set_context({
             "book_id": "42",
@@ -533,7 +535,7 @@ class TestSetContext:
         assert result["status"] == "error"
         mock_status.error.assert_called_once()
         call_args = mock_status.error.call_args[0][0]
-        assert "No agent config" in call_args
+        assert "agent_config" in call_args or "session_tracker" in call_args
     
     @pytest.mark.asyncio
     async def test_set_context_no_vars_calls_status_error(self, server, mock_agent):
