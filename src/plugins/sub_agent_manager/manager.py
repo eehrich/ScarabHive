@@ -221,6 +221,14 @@ class SubAgentManager:
         if "sub_agents" not in session_data["metadata"]:
             session_data["metadata"]["sub_agents"] = {}
 
+        # Inherit context_vars from parent (can be overridden by sub-agent's set_context)
+        parent_context_vars = parent_data.get("context_vars", {})
+        if parent_context_vars:
+            session_data["context_vars"] = parent_context_vars.copy()
+            logger.debug(
+                f"Inherited context_vars from parent: {list(parent_context_vars.keys())}"
+            )
+
         await session_manager.save_session(session_data)
 
         logger.debug(f"Linked sub-session {sub_session_id} to parent {parent_session_id}, depth={child_depth}")

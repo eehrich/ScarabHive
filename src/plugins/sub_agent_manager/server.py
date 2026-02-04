@@ -431,6 +431,23 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 })
                 logger.debug(f"Set session metadata for sub-agent {sub_session_id}: user_id={user_id}")
 
+                # CRITICAL: Restore context_vars from sub-session to agent's template_vars
+                # This inherits book_id, workflow_phase, etc. from parent session
+                try:
+                    sub_session_data = await session_service.session_manager.load_session(
+                        user_id, sub_session_id
+                    )
+                    context_vars = sub_session_data.get("context_vars", {})
+                    if context_vars:
+                        if agent.agent_config.template_vars is None:
+                            agent.agent_config.template_vars = {}
+                        agent.agent_config.template_vars.update(context_vars)
+                        logger.debug(
+                            f"Inherited context_vars to sub-agent template_vars: {list(context_vars.keys())}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not load context_vars for sub-agent: {e}")
+
                 # Execute sub-agent with initial task (blocking)
                 if status:
                     await status.progress(f"Executing {agent_name} with initial task...")
@@ -1161,6 +1178,23 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "agent_name": agent_name,
                     "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
                 })
+
+                # CRITICAL: Restore context_vars from sub-session to agent's template_vars
+                # This inherits book_id, workflow_phase, etc. from parent session
+                try:
+                    sub_session_data = await session_service.session_manager.load_session(
+                        user_id, instance_id
+                    )
+                    context_vars = sub_session_data.get("context_vars", {})
+                    if context_vars:
+                        if agent.agent_config.template_vars is None:
+                            agent.agent_config.template_vars = {}
+                        agent.agent_config.template_vars.update(context_vars)
+                        logger.debug(
+                            f"Inherited context_vars to async sub-agent template_vars: {list(context_vars.keys())}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not load context_vars for async sub-agent: {e}")
 
                 # Execute (collect final result)
                 result_text = ""

@@ -77,6 +77,14 @@ class SessionService:
                 "llm_profile": session_data.get("llm_profile")
             })
 
+            # Restore context_vars to agent's template_vars (for task_switch persistence)
+            context_vars = session_data.get("context_vars", {})
+            if context_vars and hasattr(agent, 'agent_config') and agent.agent_config:
+                if agent.agent_config.template_vars is None:
+                    agent.agent_config.template_vars = {}
+                agent.agent_config.template_vars.update(context_vars)
+                logger.debug(f"[SESSION] Restored context_vars to template_vars: {list(context_vars.keys())}")
+
             logger.debug(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
 
