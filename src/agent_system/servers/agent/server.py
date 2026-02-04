@@ -2319,3 +2319,21 @@ class Agent(MCPServer):
 
         self._list_tools_cache = [tool]
         return self._list_tools_cache
+
+    async def call_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
+        """Call a tool by name with parameters.
+        
+        This is a convenience method that allows calling tools directly
+        without going through the full agent run loop. Useful for:
+        - Precondition checks (task_switch plugin)
+        - Direct tool invocations from sub-agents
+        - Testing individual tools
+        
+        Args:
+            tool_name: The full tool name (e.g., "writer_content_production_status")
+            params: Parameters to pass to the tool
+            
+        Returns:
+            The tool's result
+        """
+        return await self._tool_execution_manager._invoke_tool(tool_name, params)

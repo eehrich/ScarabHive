@@ -68,7 +68,20 @@ class ToolExecutionManager:
             mcp_integration = self._agent._mcp_integration_manager.mcp_integration
             if mcp_integration is not None:  # type: ignore[unreachable]
                 if mcp_integration.initialized:  # type: ignore[unreachable]
+                    # First try exact match (legacy behavior)
                     plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                    
+                    # If not found, try to extract server name from tool name
+                    # Tool names are typically: servername_toolname (e.g. writer_content_production_status)
+                    if not plugin_adapter:
+                        # Try progressively shorter prefixes
+                        parts = tool_name.split('_')
+                        for i in range(len(parts) - 1, 0, -1):
+                            server_name = '_'.join(parts[:i])
+                            plugin_adapter = mcp_integration.plugin_registry.get_server(server_name)
+                            if plugin_adapter:
+                                logger.debug(f"Found plugin adapter for {tool_name} via server name {server_name}")
+                                break
 
         if plugin_adapter:
             # Use the PluginMCPAdapter which handles tool routing and status forwarding correctly
