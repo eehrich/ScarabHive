@@ -1543,9 +1543,12 @@ class LayeredCompactionStrategy:
             if original_role == "assistant" and msg.get("tool_calls"):
                 archived_msg["tool_calls"] = msg["tool_calls"]
             
-            # Preserve tool_call_id for tool messages (required for pairing)
-            if original_role == "tool" and msg.get("tool_call_id"):
-                archived_msg["tool_call_id"] = msg["tool_call_id"]
+            # Preserve tool_call_id and name for tool messages (required for pairing and conversion)
+            if original_role == "tool":
+                if msg.get("tool_call_id"):
+                    archived_msg["tool_call_id"] = msg["tool_call_id"]
+                if msg.get("name"):
+                    archived_msg["name"] = msg["name"]
             
             messages[i] = archived_msg
             result.messages_archived += 1
