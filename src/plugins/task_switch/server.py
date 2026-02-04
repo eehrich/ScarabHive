@@ -135,13 +135,20 @@ class TaskSwitchServer(SchemaBasedMCPServer):
             logger.warning(f"Precondition for task '{task_name}' missing 'tool' field")
             return {"gate_open": True}
         
-        # Get template vars from agent config
+        # Get template vars from agent config (lowest priority)
         template_vars = {}
         if agent and hasattr(agent, 'agent_config') and agent.agent_config:
             template_vars = dict(agent.agent_config.template_vars or {})
         
-        # Also include session metadata if available (for runtime vars like book_id)
+        # Get session-scoped template vars (highest priority - includes book_id from set_context)
         session_id = params.get("_session_id") if params else None
+        if session_id and agent and hasattr(agent, '_session_tracker') and agent._session_tracker:
+            session_template_vars = agent._session_tracker.get_session_template_vars(session_id)
+            if session_template_vars:
+                template_vars.update(session_template_vars)
+                logger.debug(f"Added session template_vars to precondition check: {list(session_template_vars.keys())}")
+        
+        # Also include session metadata if available (for runtime vars)
         if session_id and agent and hasattr(agent, '_session_service') and agent._session_service:
             try:
                 session = await agent._session_service.get(session_id)
