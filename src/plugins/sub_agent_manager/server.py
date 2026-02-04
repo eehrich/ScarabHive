@@ -324,16 +324,32 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Build helpful error message
                 if phase_allowed:
                     current_phase = self._get_current_phase(params)
-                    raise ValueError(
+                    error_msg = (
                         f"Agent '{agent_name}' not allowed in current phase '{current_phase}'. "
                         f"Allowed agents for this phase: {', '.join(phase_allowed)}"
                     )
+                    logger.info(f"Phase filtering blocked agent: {error_msg}")
+                    if status:
+                        await status.error(error_msg)
+                    return {
+                        "status": "error",
+                        "error": error_msg,
+                        "error_type": "phase_blocked"
+                    }
                 else:
                     allowed_str = ', '.join(self.allowed_agents)
-                    raise ValueError(
+                    error_msg = (
                         f"Agent '{agent_name}' not allowed by this sub-agent manager. "
                         f"Allowed agents: {allowed_str}"
                     )
+                    logger.info(f"Agent filtering blocked agent: {error_msg}")
+                    if status:
+                        await status.error(error_msg)
+                    return {
+                        "status": "error",
+                        "error": error_msg,
+                        "error_type": "agent_blocked"
+                    }
 
             if status:
                 await status.progress(f"Creating sub-agent: {agent_name}")
