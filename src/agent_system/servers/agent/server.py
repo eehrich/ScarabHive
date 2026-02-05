@@ -1787,6 +1787,8 @@ class Agent(MCPServer):
                 # Check for repeated tool call patterns that indicate the agent is stuck
                 loop_result = self._loop_detector.record_batch_and_check(tool_calls, step)
                 
+                pending_intervention_msg: Optional[ChatMessage] = None
+
                 if loop_result.is_loop:
                     # Log the detection
                     logger.warning(
@@ -1795,14 +1797,12 @@ class Agent(MCPServer):
                         f"count={loop_result.repetition_count}"
                     )
                     
-                    # Inject intervention message to nudge the LLM
-                    intervention_msg = ChatMessage(
+                    # Prepare intervention message to nudge the LLM
+                    pending_intervention_msg = ChatMessage(
                         role="user",
                         content=loop_result.intervention,
                         timestamp=datetime.now(timezone.utc)
                     )
-                    messages.append(intervention_msg)
-                    context.messages = messages
                     
                     # Emit status event for visibility
                     await status_worker.progress(
@@ -1826,6 +1826,9 @@ class Agent(MCPServer):
                             # If all tools were blocked, continue to next iteration
                             # The intervention message will prompt the LLM to try something else
                             if not tool_calls:
+                                # No tool results will follow, so inject now to keep the loop warning.
+                                messages.append(pending_intervention_msg)
+                                context.messages = messages
                                 continue
                 
                 # Signal tool execution start
@@ -1916,6 +1919,9 @@ class Agent(MCPServer):
                 else:
                     # Normal case: no tool modified messages, just extend with tool results
                     messages.extend(tool_messages)
+
+                if pending_intervention_msg is not None:
+                    messages.append(pending_intervention_msg)
 
                 # Sync context.messages with the updated messages list
                 context.messages = messages
