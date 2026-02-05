@@ -93,6 +93,25 @@ class TestToolCallLoopDetector:
             result = detector.record_and_check(call, step=i)
             assert not result.is_loop
     
+    def test_no_loop_when_interleaved_with_other_tools(self):
+        """Test that same tool+args called multiple times with other tools
+        in between does NOT trigger exact match - only consecutive calls count."""
+        detector = ToolCallLoopDetector(
+            exact_match_threshold=3,
+            sequence_threshold=99  # Disable sequence detection for this test
+        )
+        
+        target_call = {"function": {"name": "set_task", "arguments": '{"task": "content"}'}}
+        other_call = {"function": {"name": "check_status", "arguments": '{"scope": "structure"}'}}
+        
+        # Pattern: set_task → check_status → set_task → check_status → set_task
+        # Total set_task calls = 3, but never more than 1 consecutive
+        for i in range(3):
+            result = detector.record_and_check(target_call, step=i * 2)
+            assert not result.is_loop, f"Should not trigger at call {i+1} (interleaved)"
+            if i < 2:
+                detector.record_and_check(other_call, step=i * 2 + 1)
+    
     def test_exact_match_loop_detected(self):
         """Test detection of identical repeated tool calls."""
         detector = ToolCallLoopDetector(exact_match_threshold=3)
@@ -167,11 +186,24 @@ class TestToolCallLoopDetector:
         result = detector.record_and_check(other_call, step=4)
         assert "tool_a" not in result.blocked_tools
     
-    def test_batch_check(self):
-        """Test checking multiple tool calls at once."""
+    def test_batch_check_consecutive_in_batch(self):
+        """Test that identical consecutive calls within batches are detected."""
         detector = ToolCallLoopDetector(exact_match_threshold=2)
         
-        # First batch
+        # Batch where same tool is called consecutively
+        batch = [
+            {"function": {"name": "tool_a", "arguments": '{"x": 1}'}},
+            {"function": {"name": "tool_a", "arguments": '{"x": 1}'}},
+        ]
+        result = detector.record_batch_and_check(batch, step=0)
+        assert result.is_loop
+        assert result.tool_name == "tool_a"
+    
+    def test_batch_check_non_consecutive_across_batches(self):
+        """Test that same tool in different batches with other tools in between does NOT trigger."""
+        detector = ToolCallLoopDetector(exact_match_threshold=2)
+        
+        # First batch has tool_a and tool_b
         batch1 = [
             {"function": {"name": "tool_a", "arguments": '{"x": 1}'}},
             {"function": {"name": "tool_b", "arguments": '{"y": 2}'}},
@@ -179,14 +211,13 @@ class TestToolCallLoopDetector:
         result1 = detector.record_batch_and_check(batch1, step=0)
         assert not result1.is_loop
         
-        # Second batch with repeated call
+        # Second batch has tool_a again, but tool_b was in between → NOT consecutive
         batch2 = [
             {"function": {"name": "tool_a", "arguments": '{"x": 1}'}},
             {"function": {"name": "tool_c", "arguments": '{"z": 3}'}},
         ]
         result2 = detector.record_batch_and_check(batch2, step=1)
-        assert result2.is_loop
-        assert result2.tool_name == "tool_a"
+        assert not result2.is_loop  # tool_b broke the consecutive chain
     
     def test_sequence_detection(self):
         """Test detection of repeated sequences of tool calls."""

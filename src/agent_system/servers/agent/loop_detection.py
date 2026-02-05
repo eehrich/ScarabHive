@@ -86,7 +86,9 @@ class ToolCallLoopDetector:
     """Detects and handles tool call loops in agent execution.
     
     Tracks recent tool calls and detects patterns that indicate the agent
-    is stuck in a loop. Provides intervention suggestions.
+    is stuck in a loop calling the same tool(s) **directly consecutively**
+    with identical arguments. Only consecutive repetitions count - 
+    calling the same tool with other tools in between does NOT trigger detection.
     
     Usage:
         detector = ToolCallLoopDetector()
@@ -111,9 +113,9 @@ class ToolCallLoopDetector:
         
         Args:
             history_size: Number of recent tool calls to track
-            exact_match_threshold: Trigger after N identical calls
+            exact_match_threshold: Trigger after N consecutive identical calls
             sequence_threshold: Trigger after N repeated sequences
-            block_after_threshold: Block tool after N repetitions
+            block_after_threshold: Block tool after N consecutive repetitions
             auto_unblock_after_steps: Unblock tools after N steps without that tool
         """
         self.history_size = history_size
@@ -124,7 +126,6 @@ class ToolCallLoopDetector:
         
         # State
         self._history: deque[ToolCallRecord] = deque(maxlen=history_size)
-        self._signature_counts: Dict[str, int] = {}
         self._blocked_tools: Dict[str, int] = {}  # tool_name -> step_when_blocked
         self._current_step: int = 0
         self._last_detection_step: int = -1
@@ -132,7 +133,6 @@ class ToolCallLoopDetector:
     def reset(self) -> None:
         """Reset all detection state."""
         self._history.clear()
-        self._signature_counts.clear()
         self._blocked_tools.clear()
         self._current_step = 0
         self._last_detection_step = -1
@@ -150,12 +150,31 @@ class ToolCallLoopDetector:
                 logger.info(f"Auto-unblocked tool '{tool_name}' after {self.auto_unblock_after_steps} steps")
         return current_blocked
     
+    def _count_consecutive_from_tail(self, signature: str) -> int:
+        """Count consecutive identical calls from the tail of history.
+        
+        Only counts calls directly adjacent from the end. Stops at the first
+        call with a different signature. This ensures the detector only triggers
+        for actual loops (same tool called repeatedly without doing anything else),
+        not for legitimate retries separated by other tool calls.
+        """
+        count = 0
+        for record in reversed(self._history):
+            if record.signature() == signature:
+                count += 1
+            else:
+                break
+        return count
+
     def record_and_check(
         self,
         tool_call: Dict[str, Any],
         step: int
     ) -> LoopDetectionResult:
         """Record a tool call and check for loops.
+        
+        Only detects loops when the same tool+args are called directly
+        consecutively (no other tool calls in between).
         
         Args:
             tool_call: The tool call dict from LLM response
@@ -171,9 +190,8 @@ class ToolCallLoopDetector:
         # Add to history
         self._history.append(record)
         
-        # Update signature counts
-        self._signature_counts[signature] = self._signature_counts.get(signature, 0) + 1
-        count = self._signature_counts[signature]
+        # Count consecutive identical calls from the tail of history
+        count = self._count_consecutive_from_tail(signature)
         
         result = LoopDetectionResult()
         result.tool_name = record.tool_name
