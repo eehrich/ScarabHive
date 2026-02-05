@@ -786,6 +786,11 @@ export class SessionManager {
     this.currentSessionId = null;
     sessionStorage.removeItem('lastSessionId');
     
+    // Notify Session Info panel of session change
+    if (window.AgentSystem.SessionInfo) {
+      window.AgentSystem.SessionInfo.onSessionChange(null);
+    }
+    
     // Clear chat UI
     const chatEl = document.getElementById('chat');
     if (chatEl) {
@@ -823,6 +828,11 @@ export class SessionManager {
       
       const session = await response.json();
       this.currentSessionId = sessionId;
+      
+      // Notify Session Info panel of session change
+      if (window.AgentSystem.SessionInfo) {
+        window.AgentSystem.SessionInfo.onSessionChange(sessionId);
+      }
       
       // Save to sessionStorage for page reload restoration (tab-specific)
       sessionStorage.setItem('lastSessionId', sessionId);
