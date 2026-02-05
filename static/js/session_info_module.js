@@ -266,6 +266,12 @@ window.AgentSystem.SessionInfo = {
       imageTokens: 0
     };
     
+    // System prompts are not stored in session messages (they're generated dynamically at runtime)
+    // but contribute to context window. Use estimated value based on typical system prompt size.
+    // Average system prompt with tools: ~1500 tokens
+    const estimatedSystemTokens = 1500;
+    let hasExplicitSystemMessage = false;
+    
     for (const msg of messages) {
       const role = msg.role;
       const content = msg.content || '';
@@ -274,6 +280,7 @@ window.AgentSystem.SessionInfo = {
       const tokens = Math.ceil(contentLen / 4);
       
       if (role === 'system') {
+        hasExplicitSystemMessage = true;
         stats.systemTokens += tokens;
       } else if (role === 'user') {
         stats.userMessages++;
@@ -303,6 +310,12 @@ window.AgentSystem.SessionInfo = {
       } else if (role === 'tool') {
         stats.toolResultTokens += tokens;
       }
+    }
+    
+    // If no explicit system message was found in the session, use estimated value
+    // (System prompts are generated dynamically at runtime and not persisted in sessions)
+    if (!hasExplicitSystemMessage) {
+      stats.systemTokens = estimatedSystemTokens;
     }
     
     stats.totalTokens = stats.systemTokens + stats.userTokens + stats.assistantTokens + 
