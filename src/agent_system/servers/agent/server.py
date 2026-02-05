@@ -28,6 +28,7 @@ from .components.status_forwarding import StatusEventForwarder
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
 from .prompt_strategies import PromptRenderer, PromptContext
+from .loop_detection import ToolCallLoopDetector
 from .tool_discovery import ToolDiscoveryService
 from .tool_schema_builder import ToolSchemaBuilder
 
@@ -238,6 +239,26 @@ class Agent(MCPServer):
         # Initialize hook integration manager
         from .components.hook_integration import HookIntegrationManager
         self._hook_manager = HookIntegrationManager(self)
+        
+        # Initialize tool call loop detector to prevent infinite tool loops
+        # Especially important for Gemini which tends to get stuck
+        # Read config from agent_config.loop_detection
+        loop_config = self.agent_config.loop_detection if self.agent_config else None
+        if loop_config and loop_config.enabled:
+            self._loop_detector = ToolCallLoopDetector(
+                history_size=loop_config.history_size,
+                exact_match_threshold=loop_config.exact_match_threshold,
+                sequence_threshold=loop_config.sequence_threshold,
+                block_after_threshold=loop_config.block_after_threshold,
+                auto_unblock_after_steps=loop_config.auto_unblock_after_steps
+            )
+        else:
+            # Create a disabled detector (never triggers)
+            self._loop_detector = ToolCallLoopDetector(
+                exact_match_threshold=9999  # Effectively disabled
+            )
+            if loop_config and not loop_config.enabled:
+                logger.debug(f"[{self.name}] Loop detection disabled via config")
 
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
@@ -942,6 +963,11 @@ class Agent(MCPServer):
         # Check if session is empty (new session), not just if it exists (setdefault creates it above)
         is_new_session = len(session_msgs) == 0
         if is_new_session:
+            # Reset loop detector for new sessions to avoid false positives
+            # from previous sessions
+            self._loop_detector.reset()
+            logger.debug(f"Reset loop detector for new session {session_id}")
+            
             modified_messages = await self._hook_manager.execute_session_start_hooks(
                 session_id, request_id, messages=messages
             )
@@ -1756,6 +1782,52 @@ class Agent(MCPServer):
             if tool_calls:
                 # Reset no-tool-calls counter
                 consecutive_no_tool_calls = 0
+                
+                # ===== TOOL CALL LOOP DETECTION =====
+                # Check for repeated tool call patterns that indicate the agent is stuck
+                loop_result = self._loop_detector.record_batch_and_check(tool_calls, step)
+                
+                if loop_result.is_loop:
+                    # Log the detection
+                    logger.warning(
+                        f"[{self.name}] Tool loop detected at step {step}: "
+                        f"type={loop_result.loop_type}, tool={loop_result.tool_name}, "
+                        f"count={loop_result.repetition_count}"
+                    )
+                    
+                    # Inject intervention message to nudge the LLM
+                    intervention_msg = ChatMessage(
+                        role="user",
+                        content=loop_result.intervention,
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    messages.append(intervention_msg)
+                    context.messages = messages
+                    
+                    # Emit status event for visibility
+                    await status_worker.progress(
+                        f"Loop detected: {loop_result.tool_name} ({loop_result.repetition_count}x)",
+                        meta={"step": step + 1, "loop_type": loop_result.loop_type}
+                    )
+                    
+                    # If tool should be blocked, filter it out
+                    if loop_result.should_block_tool:
+                        blocked_tools = loop_result.blocked_tools
+                        original_count = len(tool_calls)
+                        tool_calls = [
+                            tc for tc in tool_calls 
+                            if tc.get("function", {}).get("name") not in blocked_tools
+                        ]
+                        if len(tool_calls) < original_count:
+                            logger.warning(
+                                f"[{self.name}] Blocked {original_count - len(tool_calls)} tool calls "
+                                f"due to loop detection. Blocked tools: {blocked_tools}"
+                            )
+                            # If all tools were blocked, continue to next iteration
+                            # The intervention message will prompt the LLM to try something else
+                            if not tool_calls:
+                                continue
+                
                 # Signal tool execution start
                 await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
 

@@ -190,6 +190,20 @@ class TimeoutConfig(BaseModel):
     tool_cleanup_timeout: float = 30.0  # Timeout for tool cleanup during cancellation (seconds)
     
 
+class LoopDetectionConfig(BaseModel):
+    """Configuration for tool call loop detection.
+    
+    Prevents agents from getting stuck in infinite loops calling
+    the same tool(s) repeatedly with identical arguments.
+    """
+    enabled: bool = True  # Enable/disable loop detection
+    history_size: int = 20  # Number of recent tool calls to track
+    exact_match_threshold: int = 3  # Warn after N identical calls
+    sequence_threshold: int = 2  # Warn after N repeated sequences
+    block_after_threshold: int = 5  # Block tool after N repetitions
+    auto_unblock_after_steps: int = 3  # Unblock tools after N steps
+
+
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, first is default, others are available options
@@ -203,6 +217,7 @@ class AgentConfig(BaseModel):
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
     template_vars: Optional[Dict[str, Any]] = None  # Custom variables for Jinja2 template rendering
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)  # Timeout configuration for deadlock prevention
+    loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)  # Tool call loop detection
 
     @property
     def default_llm_profile(self) -> str:

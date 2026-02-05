@@ -1685,6 +1685,12 @@ class LayeredCompactionStrategy:
                 i for i, msg in enumerate(messages) if msg.get("role") == "system"
             }
         
+        # Find user message indices - we must keep at least one!
+        user_indices = [
+            i for i, msg in enumerate(messages) if msg.get("role") == "user"
+        ]
+        last_user_idx = user_indices[-1] if user_indices else None
+        
         # Collect indices to remove (oldest first, respecting tool call pairs)
         indices_to_remove: set[int] = set()
         
@@ -1698,6 +1704,12 @@ class LayeredCompactionStrategy:
             
             # Skip if already marked for removal
             if i in indices_to_remove:
+                i += 1
+                continue
+            
+            # CRITICAL: Never remove the LAST user message - this would break API calls
+            if i == last_user_idx:
+                logger.debug(f"Pre-Layer P: Protecting last user message at index {i}")
                 i += 1
                 continue
             
@@ -1748,6 +1760,10 @@ class LayeredCompactionStrategy:
         Gemini requires: user -> assistant (with tool_calls) -> tool responses
         If first non-system msg is assistant/tool, we remove until we hit a user msg.
         
+        CRITICAL: This function NEVER removes all user messages. At least one user
+        message must remain for a valid API request. If only one user message is
+        left and it's not at the start, we add a minimal fallback user message.
+        
         Note: This method rebuilds tool_map at each iteration since indices change after deletions.
         
         Args:
@@ -1776,6 +1792,26 @@ class LayeredCompactionStrategy:
             if first_msg.get("role") == "user":
                 break  # Good - first non-system message is user
             
+            # Check if we would remove ALL user messages by continuing
+            # Count remaining user messages
+            user_message_count = sum(1 for msg in messages if msg.get("role") == "user")
+            
+            if user_message_count == 0:
+                # CRITICAL: No user messages left at all - add a fallback
+                logger.warning(
+                    f"{caller}: No user messages remaining after pruning! "
+                    f"Adding fallback user message to prevent empty contents error."
+                )
+                # Insert a minimal user message at the appropriate position
+                fallback_msg = {
+                    "role": "user",
+                    "content": "Continue with the task."
+                }
+                # Insert after system messages
+                insert_idx = first_non_system_idx
+                messages.insert(insert_idx, fallback_msg)
+                break
+            
             # First non-system message is not user - need to remove it and related tool messages
             role = first_msg.get("role")
             indices_to_remove: set[int] = {first_non_system_idx}
@@ -1802,6 +1838,29 @@ class LayeredCompactionStrategy:
                 f"{caller}: removed {len(indices_to_remove)} more messages "
                 f"to ensure first non-system message is 'user'"
             )
+        
+        # Final safety check: ensure at least one user message exists
+        user_message_count = sum(1 for msg in messages if msg.get("role") == "user")
+        if user_message_count == 0:
+            logger.warning(
+                f"{caller}: Final check - no user messages! Adding fallback."
+            )
+            # Find position after system messages
+            insert_idx = 0
+            for i, msg in enumerate(messages):
+                if msg.get("role") != "system":
+                    insert_idx = i
+                    break
+            else:
+                insert_idx = len(messages)
+            
+            fallback_msg = {
+                "role": "user",
+                "content": "Continue with the task."
+            }
+            messages.insert(insert_idx, fallback_msg)
+        
+        return extra_removed
         
         return extra_removed
 
