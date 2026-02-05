@@ -13,6 +13,56 @@ from agent_system.services.session_manager import SessionPermissionError, Sessio
 logger = logging.getLogger(__name__)
 
 
+def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
+    """Estimate token count for a message.
+    
+    Uses ~4 chars per token approximation for text content.
+    Tool calls and multimodal content are handled separately.
+    
+    Args:
+        msg_dict: Message as dictionary
+        
+    Returns:
+        Estimated token count
+    """
+    tokens = 0
+    
+    # Content tokens
+    content = msg_dict.get('content') or ''
+    if isinstance(content, str):
+        tokens += len(content) // 4
+    elif isinstance(content, list):
+        # Multimodal content
+        for part in content:
+            if isinstance(part, dict):
+                if part.get('type') == 'text':
+                    tokens += len(part.get('text', '')) // 4
+                elif part.get('type') in ('image_url', 'image'):
+                    # Images cost ~1000 tokens (approximate)
+                    tokens += 1000
+            elif isinstance(part, str):
+                tokens += len(part) // 4
+    else:
+        # Fallback: serialize to JSON
+        import json
+        tokens += len(json.dumps(content)) // 4
+    
+    # Tool calls tokens (assistant messages with function calls)
+    tool_calls = msg_dict.get('tool_calls')
+    if tool_calls:
+        import json
+        for tc in tool_calls:
+            tc_str = json.dumps(tc) if isinstance(tc, dict) else str(tc)
+            tokens += len(tc_str) // 4
+    
+    # Reasoning content (if present)
+    reasoning = msg_dict.get('reasoning_content')
+    if reasoning:
+        tokens += len(reasoning) // 4
+    
+    return max(1, tokens)  # At least 1 token per message
+
+
 class SessionService:
     """Service for managing session loading, restoration, and saving."""
 
@@ -145,15 +195,21 @@ class SessionService:
 
             logger.debug(f"[SESSION] Saving session {session_id}, messages count: {len(messages_list)}")
 
-            # Convert ChatMessage objects to dicts
+            # Convert ChatMessage objects to dicts with token estimation
             messages_dicts = []
             for msg in messages_list:
                 if hasattr(msg, 'model_dump'):
-                    messages_dicts.append(msg.model_dump(mode='json'))
+                    msg_dict = msg.model_dump(mode='json')
                 elif hasattr(msg, 'dict'):
-                    messages_dicts.append(msg.dict())
+                    msg_dict = msg.dict()
                 else:
-                    messages_dicts.append(dict(msg))
+                    msg_dict = dict(msg)
+                
+                # Add estimated token count if not already present
+                if 'estimated_tokens' not in msg_dict:
+                    msg_dict['estimated_tokens'] = _estimate_message_tokens(msg_dict)
+                
+                messages_dicts.append(msg_dict)
 
             # Determine title from first user message
             title = self._extract_session_title(messages_dicts)
