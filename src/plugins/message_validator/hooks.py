@@ -21,7 +21,7 @@ Hook definitions are loaded from schema.yaml.
 """
 
 from pathlib import Path
-from typing import Any, List, Dict, Set
+from typing import Any, List, Dict, Optional, Set
 import logging
 import re
 from dataclasses import replace, dataclass
@@ -377,6 +377,50 @@ class InternalMessageValidator:
                     details={"next_index": i + 1}
                 ))
 
+        # Check for non-tool messages interleaved between assistant(tool_calls) and
+        # their tool responses.  The OpenAI/DeepSeek API requires that an assistant
+        # message containing tool_calls is *immediately* followed by all corresponding
+        # tool-role messages before any other role appears.
+        # Example of broken sequence:
+        #   assistant(tool_calls=[id1]) -> user("loop warning") -> tool(id1)
+        # Repair: move the interleaved message(s) to after the last tool response.
+        pending_tc_ids: Set[str] = set()
+        pending_tc_start: Optional[int] = None   # index of assistant msg that opened the block
+        for i, msg in enumerate(messages):
+            if msg.role == "assistant" and msg.tool_calls:
+                # Collect expected tool_call ids
+                for tc in msg.tool_calls:
+                    tc_id = getattr(tc, 'id', None) or (tc.get('id') if isinstance(tc, dict) else None)
+                    if tc_id:
+                        pending_tc_ids.add(tc_id)
+                pending_tc_start = i
+
+            elif pending_tc_ids:
+                if msg.role == "tool":
+                    tc_id = getattr(msg, 'tool_call_id', None)
+                    if not tc_id and hasattr(msg, 'model_dump'):
+                        tc_id = msg.model_dump().get('tool_call_id')
+                    pending_tc_ids.discard(tc_id)
+                    if not pending_tc_ids:
+                        pending_tc_start = None  # block complete, all responses received
+                else:
+                    # Non-tool message while we still expect tool responses
+                    issues.append(ValidationIssue(
+                        type="interleaved_message_in_tool_block",
+                        severity="error",
+                        message_index=i,
+                        description=(
+                            f"A '{msg.role}' message at index {i} appears between an assistant "
+                            f"tool_calls message (index {pending_tc_start}) and its pending tool "
+                            f"responses. This breaks the OpenAI message protocol."
+                        ),
+                        details={
+                            "interleaved_role": msg.role,
+                            "assistant_index": pending_tc_start,
+                            "pending_tool_call_ids": list(pending_tc_ids),
+                        }
+                    ))
+
         return issues
 
     def _apply_repairs(self, messages: List[ChatMessage], issues: List[ValidationIssue]) -> List[ChatMessage]:
@@ -391,6 +435,10 @@ class InternalMessageValidator:
 
         # Track consecutive assistant messages to merge (first_idx -> second_idx)
         consecutive_assistant_merges: Dict[int, int] = {}
+
+        # Track interleaved messages that must be relocated after their tool block
+        # List of (interleaved_msg_index, assistant_index_with_tool_calls)
+        interleaved_relocations: List[int] = []
 
         for issue in issues:
             if issue.type == "orphaned_tool_call":
@@ -412,6 +460,12 @@ class InternalMessageValidator:
 
             # Note: invalid_first_message is handled by the loop after all removals
             # (see "Ensure first non-system message is 'user'" section below)
+
+            elif issue.type == "interleaved_message_in_tool_block":
+                # Relocate: move the interleaved message to after the last tool
+                # response for its block.  We collect indices here and perform
+                # the actual relocation below.
+                interleaved_relocations.append(issue.message_index)
 
             elif issue.type == "consecutive_assistant_messages":
                 # Merge second assistant message into first
@@ -438,7 +492,30 @@ class InternalMessageValidator:
                     else:
                         remove_indices.add(msg_idx)
 
-        # FIRST: Merge consecutive assistant messages (before any removals)
+        # FIRST: Relocate interleaved messages out of tool-call blocks.
+        # We move them right after the last tool response that belongs to the
+        # same assistant tool_calls message.
+        if interleaved_relocations:
+            for src_idx in sorted(interleaved_relocations, reverse=True):
+                if 0 <= src_idx < len(repaired):
+                    msg = repaired.pop(src_idx)
+                    # Find the correct insertion point: after the last consecutive
+                    # tool message following `src_idx` (adjusted for the pop).
+                    insert_at = src_idx  # after pop, the next message is at src_idx
+                    while insert_at < len(repaired) and repaired[insert_at].role == "tool":
+                        insert_at += 1
+                    repaired.insert(insert_at, msg)
+                    logger.warning(
+                        f"Relocated interleaved '{msg.role}' message from index {src_idx} "
+                        f"to after tool responses at index {insert_at}"
+                    )
+            # After relocations the original indices used by other repairs may be
+            # stale.  Since relocations only move (not add/remove) messages and
+            # the other repair types reference messages that are *not* in tool
+            # blocks, the shift is at most ±1 for adjacent indices.  For safety
+            # we re-validate to pick up any remaining issues, but only once.
+
+        # NEXT: Merge consecutive assistant messages (before any removals)
         # Process in reverse order to handle multiple consecutive pairs correctly
         for first_idx in sorted(consecutive_assistant_merges.keys(), reverse=True):
             second_idx = consecutive_assistant_merges[first_idx]
