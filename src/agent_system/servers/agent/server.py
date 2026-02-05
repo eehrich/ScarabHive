@@ -1972,6 +1972,34 @@ class Agent(MCPServer):
             # No tool calls - check if we should treat this as the final answer
             # Track consecutive responses without tool calls
             consecutive_no_tool_calls += 1
+
+            # === CONTINUATION HOOK SIGNAL ===
+            # A post_llm_call hook (e.g. agent_continuation) may set
+            # metadata["continue"] = True to prevent treating a text-only
+            # response as the final answer.  This allows autonomous agents
+            # to keep working when they emit intermediate status reports.
+            if hook_metadata.get("continue") and content and content.strip():
+                cont_count = hook_metadata.get("continuation_count", "?")
+                cont_reason = hook_metadata.get("continuation_reason", "hook signal")
+                logger.info(
+                    f"[{self.name}] Continuation #{cont_count} at step {step}: {cont_reason}"
+                )
+                continuation_msg = ChatMessage(
+                    role="user",
+                    content=hook_metadata.get(
+                        "continue_message",
+                        "Continue with your task.",
+                    ),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                messages.append(continuation_msg)
+                context.messages = messages
+                await status_worker.progress(
+                    f"Auto-continue #{cont_count}: {cont_reason}",
+                    meta={"step": step + 1, "continuation": True},
+                )
+                consecutive_no_tool_calls = 0  # Reset — hook evaluated this
+                continue
             
             # If we have content AND it's not just whitespace, treat as final answer
             if content and content.strip():
