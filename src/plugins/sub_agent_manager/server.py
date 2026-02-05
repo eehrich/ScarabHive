@@ -1751,13 +1751,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         return False
 
     def _get_current_phase(self, params: dict[str, Any]) -> Optional[str]:
-        """Get current workflow phase from session template vars.
+        """Get current workflow phase from session template vars or agent config default.
         
         Args:
             params: Tool parameters with _agent reference
             
         Returns:
-            Current phase value or None
+            Current phase value (from session vars or agent config default) or None
         """
         if not self.phase_filtering_enabled:
             return None
@@ -1766,8 +1766,19 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             agent = params.get("_agent")
             session_id = params.get("_session_id")
             if agent and session_id and hasattr(agent, '_session_tracker'):
+                # First try session-scoped template vars (set via set_context)
                 session_vars = agent._session_tracker.get_session_template_vars(session_id)
-                return session_vars.get(self.phase_variable)
+                phase = session_vars.get(self.phase_variable)
+                if phase:
+                    return phase
+            
+            # Fallback to agent config default (e.g., workflow_phase: "planning" in yaml)
+            if agent and hasattr(agent, 'agent_config') and agent.agent_config:
+                if hasattr(agent.agent_config, 'template_vars') and agent.agent_config.template_vars:
+                    default_phase = agent.agent_config.template_vars.get(self.phase_variable)
+                    if default_phase:
+                        logger.debug(f"Using default phase from agent_config: {default_phase}")
+                        return default_phase
         except Exception as e:
             logger.debug(f"Could not get phase from session vars: {e}")
         

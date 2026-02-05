@@ -84,6 +84,15 @@ class SessionService:
             if context_vars:
                 agent._session_tracker.set_session_template_vars(session_id, context_vars)
                 logger.debug(f"[SESSION] Restored context_vars to session template_vars: {list(context_vars.keys())}")
+            else:
+                # No context_vars in session - initialize from agent config defaults
+                # This ensures defaults (e.g., workflow_phase: "planning") are available
+                if hasattr(agent, 'agent_config') and agent.agent_config:
+                    if hasattr(agent.agent_config, 'template_vars') and agent.agent_config.template_vars:
+                        default_vars = agent.agent_config.template_vars.copy()
+                        if default_vars:
+                            agent._session_tracker.set_session_template_vars(session_id, default_vars)
+                            logger.debug(f"[SESSION] Initialized session template_vars from agent config defaults: {list(default_vars.keys())}")
 
             logger.debug(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
@@ -170,7 +179,16 @@ class SessionService:
                 )
                 # Step 2: Add messages
                 session_data["messages"] = messages_dicts
-                # Step 3: Save back
+                
+                # Step 3: Initialize context_vars from agent config defaults if not already set
+                # This ensures defaults (e.g., workflow_phase: "planning") are persisted
+                if "context_vars" not in session_data or not session_data["context_vars"]:
+                    if hasattr(agent, 'agent_config') and agent.agent_config:
+                        if hasattr(agent.agent_config, 'template_vars') and agent.agent_config.template_vars:
+                            session_data["context_vars"] = agent.agent_config.template_vars.copy()
+                            logger.debug(f"[SESSION] Initialized context_vars from agent config: {list(session_data['context_vars'].keys())}")
+                
+                # Step 4: Save back
                 await self.session_manager.save_session(session_data)
             else:
                 logger.debug(f"[SESSION] Updating existing session {session_id} (owner: {actual_user_id})")
