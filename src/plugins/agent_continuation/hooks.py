@@ -216,6 +216,12 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
     ) -> Tuple[bool, str, bool]:
         """Rule-based evaluation.  Fast, deterministic, no LLM cost.
 
+        Keyword rules are collected across ALL rule blocks before making a
+        decision.  When both ``keyword_continue`` and ``keyword_final``
+        match the same response, ``keyword_continue`` wins — it is safer
+        to continue than to stop prematurely.  Structural rules
+        (``min_length``, ``step_check``) still short-circuit immediately.
+
         Returns
         -------
         (should_continue, reason, matched)
@@ -228,6 +234,12 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         rules: List[Dict[str, Any]] = agent_cfg.get("rules", [])
         content_lower = content.lower()
 
+        # Collect keyword matches from ALL rule blocks before deciding.
+        # This prevents rule-order from determining the outcome when both
+        # keyword_continue and keyword_final match the same text.
+        continue_matches: List[str] = []
+        final_matches: List[str] = []
+
         for rule in rules:
             rule_type = rule.get("type")
             use_regex = rule.get("regex", False)
@@ -237,29 +249,38 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                     if use_regex:
                         try:
                             if re.search(kw, content, re.IGNORECASE):
-                                return True, f"keyword_continue regex match: '{kw}'", True
+                                continue_matches.append(
+                                    f"keyword_continue regex match: '{kw}'"
+                                )
                         except re.error as e:
                             logger.warning(
                                 f"[AgentContinuation] Invalid regex '{kw}': {e}"
                             )
                     else:
                         if kw.lower() in content_lower:
-                            return True, f"keyword_continue match: '{kw}'", True
+                            continue_matches.append(
+                                f"keyword_continue match: '{kw}'"
+                            )
 
             elif rule_type == "keyword_final":
                 for kw in rule.get("keywords", []):
                     if use_regex:
                         try:
                             if re.search(kw, content, re.IGNORECASE):
-                                return False, f"keyword_final regex match: '{kw}'", True
+                                final_matches.append(
+                                    f"keyword_final regex match: '{kw}'"
+                                )
                         except re.error as e:
                             logger.warning(
                                 f"[AgentContinuation] Invalid regex '{kw}': {e}"
                             )
                     else:
                         if kw.lower() in content_lower:
-                            return False, f"keyword_final match: '{kw}'", True
+                            final_matches.append(
+                                f"keyword_final match: '{kw}'"
+                            )
 
+            # Structural rules still short-circuit (unambiguous signals)
             elif rule_type == "min_length":
                 min_chars = int(rule.get("min_chars", 200))
                 if len(content) < min_chars:
@@ -269,6 +290,24 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 min_steps = int(rule.get("min_steps", 3))
                 if context.step < min_steps:
                     return True, f"below min steps ({context.step} < {min_steps})", True
+
+        # Decide based on collected keyword matches.
+        # keyword_continue wins over keyword_final when both match.
+        if continue_matches and final_matches:
+            reason = (
+                f"{continue_matches[0]} (overrides {final_matches[0]}, "
+                f"continue wins when both match)"
+            )
+            logger.info(
+                f"[AgentContinuation] Both keyword_continue and keyword_final "
+                f"matched for '{agent_name}' — continue wins. "
+                f"continue={continue_matches}, final={final_matches}"
+            )
+            return True, reason, True
+        if continue_matches:
+            return True, continue_matches[0], True
+        if final_matches:
+            return False, final_matches[0], True
 
         # Default action when no rule matched
         default_action = agent_cfg.get("default", "final")

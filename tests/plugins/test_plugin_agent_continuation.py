@@ -6,10 +6,10 @@ stopping prematurely with intermediate status reports.
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 from plugins.agent_continuation.hooks import AgentContinuationPlugin
-from agent_system.hooks import HookContext, HookResult, HookType
+from agent_system.hooks import HookContext, HookType
 
 
 # --------------------------------------------------------------------------
@@ -276,7 +276,7 @@ class TestRuleEngine:
 
     @pytest.mark.asyncio
     async def test_keyword_continue_before_keyword_final(self):
-        """Rules are evaluated in order — first match wins."""
+        """When both keywords match same text, keyword_continue wins."""
         plugin = _make_plugin(
             strategy="rules",
             agent_rules={
@@ -294,8 +294,57 @@ class TestRuleEngine:
 
         result = await plugin.evaluate_completion(ctx)
 
-        # First rule wins — keyword_continue matched first
+        # keyword_continue wins — even when both match
         assert result.metadata.get("continue") is True
+
+    @pytest.mark.asyncio
+    async def test_keyword_continue_wins_over_final_regardless_of_order(self):
+        """When both keyword_continue and keyword_final match, continue wins."""
+        plugin = _make_plugin(
+            strategy="rules",
+            agent_rules={
+                "test_agent": {
+                    "default": "final",
+                    "rules": [
+                        # keyword_final is listed FIRST
+                        {"type": "keyword_final", "keywords": ["fertig"]},
+                        {"type": "keyword_continue", "keywords": ["problem"]},
+                    ],
+                },
+            },
+        )
+        # Contains both "fertig" and "problem"
+        ctx = _make_context(
+            content="Das Buch ist eigentlich fertig aber es gibt ein Problem."
+        )
+
+        result = await plugin.evaluate_completion(ctx)
+
+        assert result.metadata.get("continue") is True
+        reason = result.metadata.get("continuation_reason", "")
+        assert "overrides" in reason
+
+    @pytest.mark.asyncio
+    async def test_keyword_final_wins_when_continue_not_matched(self):
+        """keyword_final triggers when no keyword_continue matches."""
+        plugin = _make_plugin(
+            strategy="rules",
+            agent_rules={
+                "test_agent": {
+                    "default": "continue",
+                    "rules": [
+                        {"type": "keyword_final", "keywords": ["fertig"]},
+                        {"type": "keyword_continue", "keywords": ["problem"]},
+                    ],
+                },
+            },
+        )
+        # Contains only "fertig", not "problem"
+        ctx = _make_context(content="Das Buch ist fertig und approved.")
+
+        result = await plugin.evaluate_completion(ctx)
+
+        assert result.metadata.get("continue") is not True
 
     @pytest.mark.asyncio
     async def test_min_length_rule_short_response(self):
