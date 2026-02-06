@@ -370,9 +370,14 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 ],
                 cancellation_token=context.cancellation_token,
             )
-            answer = (
-                response.get("assistant", {}).get("content", "").strip().upper()
-            )
+            # llm.chat() returns str, not dict (unlike chat_tools)
+            if isinstance(response, str):
+                answer = response.strip().upper()
+            else:
+                # Fallback for dict response format
+                answer = (
+                    response.get("assistant", {}).get("content", "").strip().upper()
+                )
             if "CONTINUE" in answer:
                 logger.info(
                     f"[AgentContinuation] LLM evaluator says CONTINUE "
