@@ -221,6 +221,8 @@ class Agent(MCPServer):
 
         # Track current conversation messages for debugging
         self._current_messages: List[ChatMessage] = []
+        # Track current tool schemas for token estimation (set during conversation init)
+        self._current_tools_schema: List[Dict[str, Any]] = []
 
         # Initialize component managers for better code organization
         # Create request manager first (owns _active_requests dict)
@@ -1010,6 +1012,9 @@ class Agent(MCPServer):
             allowed_patterns=allowed_patterns,
             blocked_patterns=blocked_patterns
         )
+
+        # Track current tool schemas for token estimation by hooks
+        self._current_tools_schema = tools_schema
 
         # Return initialized context
         return ConversationContext(

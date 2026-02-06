@@ -12,7 +12,7 @@ from typing import Any, TYPE_CHECKING, Dict, List
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
-from agent_system.llm.token_utils import estimate_token_count
+from agent_system.llm.token_utils import estimate_token_count, estimate_tools_token_count
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -325,6 +325,17 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             # Calculate tokens - try to get actual tokens from context_usage_tracker first
             estimated_tokens = estimate_token_count(messages)
+
+            # Include tool definition tokens in estimation (they consume context window)
+            tool_definition_tokens = 0
+            if hasattr(agent, '_current_tools_schema') and isinstance(agent._current_tools_schema, list) and agent._current_tools_schema:
+                tool_definition_tokens = estimate_tools_token_count(agent._current_tools_schema)
+                estimated_tokens += tool_definition_tokens
+                logger.debug(
+                    f"[check_stats] Added {tool_definition_tokens} tool definition tokens "
+                    f"({len(agent._current_tools_schema)} tools)"
+                )
+
             actual_tokens = 0
 
             # Try to get actual tokens from context_usage_tracker (more accurate)
@@ -360,6 +371,8 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             if status:
                 status_msg = f"Context: {message_count} messages, ~{total_tokens} tokens "
+                if tool_definition_tokens > 0:
+                    status_msg += f"(incl. {tool_definition_tokens} tool def tokens) "
                 if actual_tokens > 0:
                     status_msg += f"(actual: {actual_tokens}, estimated: {estimated_tokens}) "
                 status_msg += f"({utilization:.1f}% of {context_window})"
@@ -371,6 +384,7 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                 "total_tokens": total_tokens,
                 "estimated_tokens": estimated_tokens,
                 "actual_tokens": actual_tokens,
+                "tool_definition_tokens": tool_definition_tokens,
                 "context_window": context_window,
                 "utilization_percentage": round(utilization, 1),
                 "trigger_threshold": round(trigger_threshold, 1),

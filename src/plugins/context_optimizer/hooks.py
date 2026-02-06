@@ -107,8 +107,17 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             # Calculate absolute token limit from percentage
             max_total_tokens = int(context_window * max_context_pct)
             
-            # Estimate current token usage
+            # Estimate current token usage (messages + tool definitions)
             estimated_current = estimate_token_count(messages)
+            
+            # Include tool definition tokens (they consume context window)
+            tool_definition_tokens = 0
+            if context.agent and hasattr(context.agent, '_current_tools_schema'):
+                tools_schema = context.agent._current_tools_schema
+                if tools_schema and isinstance(tools_schema, list):
+                    from agent_system.llm.token_utils import estimate_tools_token_count
+                    tool_definition_tokens = estimate_tools_token_count(tools_schema)
+                    estimated_current += tool_definition_tokens
             
             logger.info(
                 f"[ContextOptimizer] Context window check: "

@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.factory import resolve_llm_config_for_agent
+from agent_system.llm.token_utils import estimate_tools_token_count
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .tracker import UsageTracker
 from .web_endpoints import ContextUsageWebFactory
@@ -92,6 +93,17 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             agent_name = context.agent_name or "unknown"
             session_id = context.session_id or "unknown"
 
+            # Estimate tool definition tokens from agent's current tool schemas
+            tool_definition_tokens = 0
+            if context.agent and hasattr(context.agent, '_current_tools_schema'):
+                tools_schema = context.agent._current_tools_schema
+                if tools_schema and isinstance(tools_schema, list):
+                    tool_definition_tokens = estimate_tools_token_count(tools_schema)
+                    logger.debug(
+                        f"Estimated tool definition tokens: {tool_definition_tokens} "
+                        f"({len(tools_schema)} tools)"
+                    )
+
             # Record usage in tracker
             self.tracker.record_usage(
                 agent_id=agent_id,
@@ -103,6 +115,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 message_count=message_count,
                 context_window=context_window,
                 cached_tokens=cached_tokens,
+                tool_definition_tokens=tool_definition_tokens,
             )
 
             return HookResult(success=True, modified=False, context=context)

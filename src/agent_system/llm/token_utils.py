@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import List, Union, Any
+from typing import Any, Dict, List, Optional, Union
 from .models import ChatMessage
 
 
@@ -488,17 +488,83 @@ def count_multimodal_items(content: Union[str, List[Any], Any]) -> dict:
     return counts
 
 
-def estimate_token_count(messages: List[ChatMessage]) -> int:
+def estimate_tools_token_count(tools_schema: List[Dict[str, Any]]) -> int:
+    """Estimate token count for tool definitions/schemas sent to the LLM.
+
+    Tool definitions (function schemas) are sent with every LLM call and consume
+    significant context window space. This function estimates their token cost
+    based on name, description, and parameter schema sizes.
+
+    Based on empirical measurement against OpenAI's cl100k_base tokenizer:
+    - Each tool has ~10 tokens base overhead (type wrapper, function key, etc.)
+    - Function name: ~1 token per 4 characters
+    - Description: word-based estimation at 1.3 tokens/word (natural language)
+    - Parameters JSON schema: JSON-aware estimation (structural + content tokens)
+
+    Args:
+        tools_schema: List of OpenAI-format tool definitions, each like:
+            {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
+
+    Returns:
+        Estimated total token count for all tool definitions
+    """
+    if not tools_schema:
+        return 0
+
+    total = 0
+    for tool in tools_schema:
+        # Base overhead per tool: {"type": "function", "function": {...}} wrapper
+        tool_tokens = 10
+
+        func = tool.get("function", {}) if isinstance(tool, dict) else {}
+        if func:
+            # Function name
+            name = func.get("name", "")
+            if name:
+                tool_tokens += max(1, len(name) // 4)
+
+            # Description - use word-based estimation (natural language)
+            description = func.get("description", "")
+            if description:
+                words = len(description.split())
+                tool_tokens += int(words * 1.3)
+
+            # Parameters schema - JSON structure with keys, types, descriptions
+            params = func.get("parameters", {})
+            if params:
+                import json
+                try:
+                    params_str = json.dumps(params)
+                    tool_tokens += estimate_json_tokens(params_str)
+                except (TypeError, ValueError):
+                    # Fallback: rough estimate from string representation
+                    tool_tokens += len(str(params)) // 4
+
+            # Strict mode flag
+            if func.get("strict"):
+                tool_tokens += 2
+
+        total += tool_tokens
+
+    return total
+
+
+def estimate_token_count(
+    messages: List[ChatMessage],
+    tools: Optional[List[Dict[str, Any]]] = None
+) -> int:
     """Enhanced token count estimation with improved accuracy for different content types.
 
     Supports multimodal content (images, audio, video) in addition to text.
     Accepts both ChatMessage objects and dict messages for flexibility.
+    Optionally includes tool definition tokens when tools are provided.
 
     Args:
         messages: List of chat messages (ChatMessage or dict) to estimate tokens for
+        tools: Optional list of tool schemas to include in estimation
 
     Returns:
-        Estimated total token count
+        Estimated total token count (messages + tools if provided)
     """
     total_tokens = 0
 
@@ -584,6 +650,10 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
                 msg_tokens += estimate_tool_result_tokens(content)
 
         total_tokens += msg_tokens
+
+    # Add tool definition tokens if tools are provided
+    if tools:
+        total_tokens += estimate_tools_token_count(tools)
 
     return total_tokens
 

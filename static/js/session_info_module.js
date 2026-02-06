@@ -71,17 +71,31 @@ window.AgentSystem.SessionInfo = {
     }
     
     try {
-      // Fetch session data including context_vars
-      const response = await fetch(`/api/sessions/${sessionId}`, {
-        headers: window.AgentSystem.Auth?.getAuthHeaders() || {}
-      });
+      // Fetch session data and context usage tracker data in parallel
+      const headers = window.AgentSystem.Auth?.getAuthHeaders() || {};
       
-      if (!response.ok) {
-        throw new Error(`Failed to load session: ${response.status}`);
+      const [sessionResponse, usageResponse] = await Promise.all([
+        fetch(`/api/sessions/${sessionId}`, { headers }),
+        fetch(`/plugins/context_usage_tracker/usage?session_id=${encodeURIComponent(sessionId)}`, { headers }).catch(() => null)
+      ]);
+      
+      if (!sessionResponse.ok) {
+        throw new Error(`Failed to load session: ${sessionResponse.status}`);
       }
       
-      const data = await response.json();
-      body.innerHTML = this.renderContent(data);
+      const data = await sessionResponse.json();
+      
+      // Extract tool_definition_tokens from context_usage_tracker if available
+      let trackerData = null;
+      if (usageResponse && usageResponse.ok) {
+        try {
+          trackerData = await usageResponse.json();
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+      
+      body.innerHTML = this.renderContent(data, trackerData);
       
     } catch (error) {
       console.error('Failed to load session info:', error);
@@ -99,17 +113,17 @@ window.AgentSystem.SessionInfo = {
     `;
   },
   
-  renderContent: function(data) {
+  renderContent: function(data, trackerData) {
     const contextVars = data.context_vars || {};
     const messages = data.messages || [];
     
     // Calculate context distribution
-    const stats = this.calculateContextStats(messages);
+    const stats = this.calculateContextStats(messages, trackerData);
     
     return `
       <div class="session-info-content">
         ${this.renderContextVarsSection(contextVars)}
-        ${this.renderContextWindowSection(stats)}
+        ${this.renderContextWindowSection(stats, trackerData)}
         ${this.renderMessagesSection(stats)}
       </div>
     `;
@@ -173,9 +187,15 @@ window.AgentSystem.SessionInfo = {
     `;
   },
   
-  renderContextWindowSection: function(stats) {
+  renderContextWindowSection: function(stats, trackerData) {
     const total = stats.totalTokens;
-    const maxContext = 128000; // Approximate, could be fetched from config
+    
+    // Get context_window from tracker data if available, otherwise use default
+    let maxContext = 128000;
+    if (trackerData?.latest?.context_window && trackerData.latest.context_window > 0) {
+      maxContext = trackerData.latest.context_window;
+    }
+    
     const usagePercent = Math.min(100, (total / maxContext) * 100);
     
     // Color based on usage
@@ -199,6 +219,7 @@ window.AgentSystem.SessionInfo = {
         </div>
         <div class="si-breakdown">
           ${this.renderBreakdownItem('System', stats.systemTokens, total, '#569cd6')}
+          ${this.renderBreakdownItem('Tool Definitions', stats.toolDefinitionTokens, total, '#d7ba7d')}
           ${this.renderBreakdownItem('User', stats.userTokens, total, '#4ec9b0')}
           ${this.renderBreakdownItem('Assistant', stats.assistantTokens, total, '#dcdcaa')}
           ${this.renderBreakdownItem('Tool Calls', stats.toolCallTokens, total, '#c586c0')}
@@ -250,7 +271,7 @@ window.AgentSystem.SessionInfo = {
     `;
   },
   
-  calculateContextStats: function(messages) {
+  calculateContextStats: function(messages, trackerData) {
     let stats = {
       messageCount: messages.length,
       userMessages: 0,
@@ -263,14 +284,20 @@ window.AgentSystem.SessionInfo = {
       assistantTokens: 0,
       toolCallTokens: 0,
       toolResultTokens: 0,
+      toolDefinitionTokens: 0,
       imageTokens: 0
     };
     
     // System prompts are not stored in session messages (they're generated dynamically at runtime)
     // but contribute to context window. Use estimated value based on typical system prompt size.
-    // Average system prompt with tools: ~1500 tokens
-    const estimatedSystemTokens = 1500;
+    // Average system prompt WITHOUT tools: ~500 tokens (tools are now tracked separately)
+    const estimatedSystemTokens = 500;
     let hasExplicitSystemMessage = false;
+    
+    // Get tool definition tokens from context_usage_tracker if available
+    if (trackerData?.latest?.tool_definition_tokens && trackerData.latest.tool_definition_tokens > 0) {
+      stats.toolDefinitionTokens = trackerData.latest.tool_definition_tokens;
+    }
     
     for (const msg of messages) {
       const role = msg.role;
@@ -343,7 +370,7 @@ window.AgentSystem.SessionInfo = {
       stats.systemTokens = estimatedSystemTokens;
     }
     
-    stats.totalTokens = stats.systemTokens + stats.userTokens + stats.assistantTokens + 
+    stats.totalTokens = stats.systemTokens + stats.toolDefinitionTokens + stats.userTokens + stats.assistantTokens + 
                         stats.toolCallTokens + stats.toolResultTokens + stats.imageTokens;
     
     return stats;

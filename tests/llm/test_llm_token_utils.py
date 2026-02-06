@@ -7,6 +7,7 @@ from agent_system.llm.token_utils import (
     estimate_json_tokens,
     estimate_tool_result_tokens,
     estimate_inline_data_tokens,
+    estimate_tools_token_count,
     is_code_content,
     is_structured_data,
 )
@@ -960,6 +961,243 @@ class TestEstimateTokenCountDictSupport:
         
         # Should work with mixed types
         assert tokens > 10
+
+
+class TestToolsTokenEstimation:
+    """Test token estimation for tool definitions/schemas."""
+
+    def test_estimate_tools_token_count_empty(self):
+        """Test estimation for empty tools list."""
+        assert estimate_tools_token_count([]) == 0
+
+    def test_estimate_tools_token_count_none(self):
+        """Test estimation for None tools."""
+        assert estimate_tools_token_count(None) == 0
+
+    def test_estimate_tools_token_count_single_tool(self):
+        """Test estimation for a single tool with name, description, and parameters."""
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "The city and state, e.g. San Francisco, CA"
+                        },
+                        "unit": {
+                            "type": "string",
+                            "enum": ["celsius", "fahrenheit"]
+                        }
+                    },
+                    "required": ["location"]
+                }
+            }
+        }]
+        tokens = estimate_tools_token_count(tools)
+        # Should have: 10 base + name tokens + description tokens + params JSON tokens
+        assert tokens > 30
+        assert tokens < 300  # Reasonable upper bound for a single tool
+
+    def test_estimate_tools_token_count_multiple_tools(self):
+        """Test estimation scales with number of tools."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": f"tool_{i}",
+                    "description": f"This is tool number {i} that does something useful",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "input": {"type": "string", "description": "The input value"}
+                        },
+                        "required": ["input"]
+                    }
+                }
+            }
+            for i in range(10)
+        ]
+        tokens = estimate_tools_token_count(tools)
+        # 10 tools should be significantly more than 1 tool
+        single_tool_tokens = estimate_tools_token_count(tools[:1])
+        assert tokens > single_tool_tokens * 5  # Not exactly 10x due to varying name lengths
+
+    def test_estimate_tools_token_count_no_parameters(self):
+        """Test estimation for tool without parameters."""
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "ping",
+                "description": "Ping the server"
+            }
+        }]
+        tokens = estimate_tools_token_count(tools)
+        # Minimal tool: 10 base + name + description
+        assert tokens > 10
+        assert tokens < 30
+
+    def test_estimate_tools_token_count_complex_schema(self):
+        """Test estimation for tool with complex nested parameters."""
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "create_document",
+                "description": "Create a new document with structured content including title, body, metadata, and tags",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Document title"},
+                        "body": {"type": "string", "description": "Document body content"},
+                        "metadata": {
+                            "type": "object",
+                            "properties": {
+                                "author": {"type": "string"},
+                                "created_at": {"type": "string", "format": "date-time"},
+                                "category": {"type": "string", "enum": ["tech", "science", "art"]},
+                                "priority": {"type": "integer", "minimum": 1, "maximum": 5}
+                            },
+                            "required": ["author"]
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 10
+                        }
+                    },
+                    "required": ["title", "body"]
+                }
+            }
+        }]
+        tokens = estimate_tools_token_count(tools)
+        # Complex schema should be significantly more tokens
+        assert tokens > 80
+
+    def test_estimate_tools_token_count_empty_function(self):
+        """Test estimation for tool with empty function definition."""
+        tools = [{"type": "function", "function": {}}]
+        tokens = estimate_tools_token_count(tools)
+        # Should still count base overhead
+        assert tokens == 10
+
+    def test_estimate_tools_token_count_non_function_tool(self):
+        """Test estimation for tool without function key."""
+        tools = [{"type": "other_type"}]
+        tokens = estimate_tools_token_count(tools)
+        # Base overhead only, skips function parsing
+        assert tokens == 10
+
+    def test_estimate_tools_token_count_with_strict(self):
+        """Test estimation includes strict mode flag."""
+        tools_no_strict = [{
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "A test tool"
+            }
+        }]
+        tools_strict = [{
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "A test tool",
+                "strict": True
+            }
+        }]
+        tokens_no_strict = estimate_tools_token_count(tools_no_strict)
+        tokens_strict = estimate_tools_token_count(tools_strict)
+        assert tokens_strict == tokens_no_strict + 2
+
+    def test_estimate_token_count_with_tools(self):
+        """Test that estimate_token_count includes tool tokens when tools parameter is provided."""
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "get_info",
+                "description": "Get information about a topic",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {"type": "string"}
+                    },
+                    "required": ["topic"]
+                }
+            }
+        }]
+        
+        tokens_without_tools = estimate_token_count(messages)
+        tokens_with_tools = estimate_token_count(messages, tools=tools)
+        
+        # With tools should be strictly more than without
+        assert tokens_with_tools > tokens_without_tools
+        
+        # The difference should equal the tool token estimation
+        tool_tokens = estimate_tools_token_count(tools)
+        assert tokens_with_tools == tokens_without_tools + tool_tokens
+
+    def test_estimate_token_count_tools_none(self):
+        """Test that estimate_token_count works when tools is None (default)."""
+        messages = [ChatMessage(role="user", content="Hello")]
+        tokens_default = estimate_token_count(messages)
+        tokens_none = estimate_token_count(messages, tools=None)
+        assert tokens_default == tokens_none
+
+    def test_realistic_agent_tools(self):
+        """Test estimation with a realistic set of agent tools (20+ tools)."""
+        tools = []
+        descriptions = [
+            "Search the web for information using DuckDuckGo",
+            "Read the contents of a file from the workspace",
+            "Write content to a file in the workspace",
+            "Execute a terminal command and return output",
+            "Create a new directory in the workspace",
+            "List files in a directory",
+            "Search for text patterns in files using regex",
+            "Get the current date and time",
+            "Manage a todo list with add, remove, and list operations",
+            "Store and retrieve persistent memories across sessions",
+            "Scrape and parse web page content from a URL",
+            "Execute SQL queries against a SQLite database",
+            "Send a message to a sub-agent for parallel processing",
+            "Summarize the current conversation context",
+            "Check the current context window utilization stats",
+            "Search code repositories for relevant snippets",
+            "Compile and run code in a sandboxed environment",
+            "Generate images using ComfyUI workflows",
+            "Record and manage audio conversations",
+            "Query financial market data and trading signals",
+        ]
+        for i, desc in enumerate(descriptions):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": f"tool_{i}_{desc.split()[0].lower()}",
+                    "description": desc,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The input query"},
+                            "options": {
+                                "type": "object",
+                                "properties": {
+                                    "limit": {"type": "integer", "default": 10},
+                                    "format": {"type": "string", "enum": ["json", "text", "html"]}
+                                }
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            })
+        
+        tokens = estimate_tools_token_count(tools)
+        # 20 tools with moderate schemas should be in the thousands
+        assert tokens > 1000
+        assert tokens < 20000  # But not unreasonably large
 
 
 if __name__ == "__main__":
