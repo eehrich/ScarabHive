@@ -1998,6 +1998,14 @@ class Agent(MCPServer):
                     f"Auto-continue #{cont_count}: {cont_reason}",
                     meta={"step": step + 1, "continuation": True},
                 )
+                # Yield event so frontend can display the injected message
+                yield {
+                    "type": "continuation",
+                    "message": continuation_msg.content,
+                    "count": cont_count,
+                    "reason": cont_reason,
+                    "step": step + 1,
+                }
                 consecutive_no_tool_calls = 0  # Reset — hook evaluated this
                 continue
             
