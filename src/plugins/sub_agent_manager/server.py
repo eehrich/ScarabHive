@@ -474,6 +474,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     )
                     context_vars = sub_session_data.get("context_vars", {})
                     if context_vars:
+                        # Set session-scoped template vars (preferred, session-isolated)
+                        agent._session_tracker.set_session_template_vars(sub_session_id, context_vars)
+                        # Also set agent-level template_vars for backward compatibility
                         if agent.agent_config.template_vars is None:
                             agent.agent_config.template_vars = {}
                         agent.agent_config.template_vars.update(context_vars)
@@ -1241,6 +1244,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     )
                     context_vars = sub_session_data.get("context_vars", {})
                     if context_vars:
+                        # Set session-scoped template vars (preferred, session-isolated)
+                        agent._session_tracker.set_session_template_vars(instance_id, context_vars)
+                        # Also set agent-level template_vars for backward compatibility
                         if agent.agent_config.template_vars is None:
                             agent.agent_config.template_vars = {}
                         agent.agent_config.template_vars.update(context_vars)
