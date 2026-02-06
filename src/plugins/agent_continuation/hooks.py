@@ -162,7 +162,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             )
         elif strategy == "llm":
             should_continue, reason = await self._evaluate_llm(
-                content, agent_name, context
+                content, agent_name, context, agent_cfg
             )
         elif strategy == "hybrid":
             should_continue, reason, matched = self._evaluate_rules(
@@ -170,8 +170,12 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             )
             if not matched:
                 # No keyword matched — let LLM decide
+                logger.info(
+                    f"[AgentContinuation] No keyword matched for '{agent_name}' "
+                    f"— falling back to LLM evaluation"
+                )
                 should_continue, reason = await self._evaluate_llm(
-                    content, agent_name, context
+                    content, agent_name, context, agent_cfg
                 )
 
         logger.debug(
@@ -324,18 +328,38 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         content: str,
         agent_name: str,
         context: HookContext,
+        agent_cfg: Dict[str, Any] | None = None,
     ) -> Tuple[bool, str]:
         """Call a lightweight LLM to classify the response."""
 
         llm = self._get_evaluator_llm(context)
         if llm is None:
+            logger.warning(
+                f"[AgentContinuation] No evaluator LLM available for '{agent_name}' "
+                f"— defaulting to FINAL"
+            )
             return False, "no evaluator LLM available"
 
-        prompt = self._llm_prompt_template
+        # Resolve prompt: per-agent hook_config overrides plugin-level default
+        prompt = (
+            (agent_cfg or {}).get("llm_prompt")
+            or self._llm_prompt_template
+        )
+        if not prompt or not prompt.strip():
+            logger.warning(
+                f"[AgentContinuation] No llm_prompt configured for '{agent_name}' "
+                f"— cannot evaluate via LLM, defaulting to FINAL"
+            )
+            return False, "no llm_prompt configured"
+
         prompt = prompt.replace("{{ agent_name }}", agent_name)
         prompt = prompt.replace("{{ response }}", content[:3000])
 
         try:
+            logger.debug(
+                f"[AgentContinuation] Calling evaluator LLM for '{agent_name}' "
+                f"(prompt_len={len(prompt)}, content_len={len(content)})"
+            )
             response = await llm.chat(
                 messages=[
                     ChatMessage(
@@ -350,7 +374,15 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 response.get("assistant", {}).get("content", "").strip().upper()
             )
             if "CONTINUE" in answer:
+                logger.info(
+                    f"[AgentContinuation] LLM evaluator says CONTINUE "
+                    f"for '{agent_name}' (raw='{answer[:50]}')"
+                )
                 return True, "LLM evaluation: CONTINUE"
+            logger.info(
+                f"[AgentContinuation] LLM evaluator says FINAL "
+                f"for '{agent_name}' (raw='{answer[:50]}')"
+            )
             return False, "LLM evaluation: FINAL"
         except Exception as e:
             logger.warning(f"[AgentContinuation] LLM evaluation failed: {e}")
