@@ -79,6 +79,13 @@ config:
     minimum: 0.1
     maximum: 0.95
 
+  max_messages:
+    type: integer
+    default: 0
+    description: "Trigger summarization when message count exceeds this limit (0 = disabled, token-based only). When both max_messages and token threshold are configured, summarization triggers when EITHER condition is met."
+    minimum: 0
+    maximum: 10000
+
   summarization_chunk_size:
     type: integer
     default: 10

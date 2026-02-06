@@ -381,6 +381,7 @@ plugins:
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
+        max_messages: 150
 
     context_optimizer:
       type: context_optimizer
