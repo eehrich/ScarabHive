@@ -611,3 +611,65 @@ class TestHookConfigExtraction:
         await registry.execute_hooks(HookType.PRE_LLM_CALL, ctx)
 
         assert received_config == {"strategy": "hybrid", "custom_key": 42}
+
+
+class TestTargetHookName:
+    """Tests for target_hook_name dispatch in the registry."""
+
+    @pytest.fixture
+    def registry(self):
+        return HookRegistry()
+
+    @pytest.mark.asyncio
+    async def test_target_hook_name_set_on_context(self, registry):
+        """Registry sets target_hook_name (short name) on HookContext."""
+        received_target = []
+
+        class CapturingHook(PluginHook):
+            def __init__(self):
+                super().__init__(name="cap", config={})
+
+            async def on_post_llm_call(self, context: HookContext) -> HookResult:
+                received_target.append(context.target_hook_name)
+                return HookResult(success=True, modified=False)
+
+        hook = CapturingHook()
+        await registry.register_hook(
+            HookType.POST_LLM_CALL, "my_plugin.my_hook", hook
+        )
+
+        ctx = HookContext(
+            hook_type=HookType.POST_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+        )
+        await registry.execute_hooks(HookType.POST_LLM_CALL, ctx)
+
+        assert received_target == ["my_hook"]
+
+    @pytest.mark.asyncio
+    async def test_target_hook_name_no_prefix(self, registry):
+        """If hook_name has no dot prefix, target_hook_name equals hook_name."""
+        received_target = []
+
+        class CapturingHook(PluginHook):
+            def __init__(self):
+                super().__init__(name="cap", config={})
+
+            async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+                received_target.append(context.target_hook_name)
+                return HookResult(success=True, modified=False)
+
+        hook = CapturingHook()
+        await registry.register_hook(
+            HookType.PRE_LLM_CALL, "standalone_hook", hook
+        )
+
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+        )
+        await registry.execute_hooks(HookType.PRE_LLM_CALL, ctx)
+
+        assert received_target == ["standalone_hook"]

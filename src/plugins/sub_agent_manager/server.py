@@ -697,6 +697,25 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 })
                 logger.debug(f"Set session metadata for continued sub-agent {instance_id}: user_id={user_id}")
 
+                # CRITICAL: Restore context_vars from sub-session to agent's template_vars
+                # Same pattern as _handle_create — inherits book_id, workflow_phase, etc.
+                # Without this, Jinja2 template variables in system prompts may be empty
+                # on continued sub-agents (e.g., workflow_phase guard, book_id references)
+                try:
+                    context_vars = sub_session_data.get("context_vars", {})
+                    if context_vars:
+                        # Set session-scoped template vars (preferred, session-isolated)
+                        agent._session_tracker.set_session_template_vars(instance_id, context_vars)
+                        # Also set agent-level template_vars for backward compatibility
+                        if agent.agent_config.template_vars is None:
+                            agent.agent_config.template_vars = {}
+                        agent.agent_config.template_vars.update(context_vars)
+                        logger.debug(
+                            f"Restored context_vars for continued sub-agent: {list(context_vars.keys())}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not restore context_vars for continued sub-agent: {e}")
+
                 if status:
                     await status.progress(f"Continuing {agent_type} with new message...")
 

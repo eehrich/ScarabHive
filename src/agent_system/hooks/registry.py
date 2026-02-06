@@ -260,6 +260,12 @@ class HookRegistry:
                     hook_context, hook_name
                 )
 
+                # Tell SchemaBasedPluginHook which specific hook to
+                # dispatch (strip plugin prefix to get the short name).
+                hook_context.target_hook_name = (
+                    hook_name.rsplit(".", 1)[-1] if "." in hook_name else hook_name
+                )
+
                 # Execute the appropriate hook method with timeout
                 start_time = asyncio.get_event_loop().time()
 

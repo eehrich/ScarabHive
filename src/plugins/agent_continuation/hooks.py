@@ -120,6 +120,11 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
 
         if tool_calls or not content.strip():
             # Has tool calls (loop continues anyway) or empty → skip
+            logger.debug(
+                f"[AgentContinuation] Skipping '{context.agent_name}' step {context.step}: "
+                f"tool_calls={bool(tool_calls)} ({len(tool_calls) if isinstance(tool_calls, list) else type(tool_calls).__name__}), "
+                f"content_empty={not content.strip()}"
+            )
             return HookResult(success=True, modified=False)
 
         agent_name = context.agent_name
@@ -142,6 +147,12 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         agent_cfg = self._get_agent_config(context)
         strategy = agent_cfg.get("strategy") or self._strategy
 
+        logger.debug(
+            f"[AgentContinuation] Evaluating '{agent_name}' step {context.step}, "
+            f"strategy={strategy}, content_len={len(content)}, "
+            f"hook_config_keys={list(agent_cfg.keys())}"
+        )
+
         should_continue = False
         reason = ""
 
@@ -162,6 +173,11 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 should_continue, reason = await self._evaluate_llm(
                     content, agent_name, context
                 )
+
+        logger.debug(
+            f"[AgentContinuation] Decision for '{agent_name}': "
+            f"should_continue={should_continue}, reason={reason}"
+        )
 
         if should_continue:
             self._continuation_counts[request_id] = count + 1

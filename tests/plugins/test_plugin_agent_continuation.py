@@ -1245,3 +1245,89 @@ class TestEndToEnd:
         # No keyword matched → default continue
         assert result.metadata.get("continue") is True
         assert "default action" in result.metadata.get("continuation_reason", "")
+
+
+# ===========================================================================
+# SchemaBasedPluginHook dispatch: target_hook_name
+# ===========================================================================
+
+class TestSchemaDispatchWithTargetHookName:
+    """Verify that on_post_llm_call dispatches correctly based on
+    target_hook_name, fixing the bug where enabled=false in schema
+    prevented the hook from firing even when the agent overrides it."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_with_target_hook_name_overrides_schema_enabled(self):
+        """Hook with enabled=false in schema fires when
+        target_hook_name is set (agent override via registry)."""
+        plugin = _make_plugin(
+            strategy="rules",
+            agent_rules={
+                "my_agent": {
+                    "default": "continue",
+                    "rules": [],
+                },
+            },
+        )
+
+        ctx = _make_context(
+            agent_name="my_agent",
+            content="Intermediate status report. What should I do next?",
+        )
+        # Simulate what the registry does: set target_hook_name
+        ctx.target_hook_name = "evaluate_completion"
+
+        result = await plugin.on_post_llm_call(ctx)
+
+        # The hook SHOULD have fired despite schema enabled=false
+        assert result.metadata.get("continue") is True
+
+    @pytest.mark.asyncio
+    async def test_dispatch_without_target_hook_name_uses_schema_enabled(self):
+        """Without target_hook_name, fallback to schema-level enabled
+        (backward compat). Since schema says enabled=false, hook does
+        NOT fire."""
+        plugin = _make_plugin(
+            strategy="rules",
+            agent_rules={
+                "my_agent": {
+                    "default": "continue",
+                    "rules": [],
+                },
+            },
+        )
+
+        ctx = _make_context(
+            agent_name="my_agent",
+            content="Intermediate status report. What should I do next?",
+        )
+        # No target_hook_name set → old behavior
+
+        result = await plugin.on_post_llm_call(ctx)
+
+        # Schema says enabled=false → hook should NOT fire
+        assert result.metadata.get("continue") is None or result.metadata.get("continue") is not True
+
+    @pytest.mark.asyncio
+    async def test_dispatch_target_hook_name_mismatched_skips(self):
+        """If target_hook_name doesn't match the hook name, it's skipped."""
+        plugin = _make_plugin(
+            strategy="rules",
+            agent_rules={
+                "my_agent": {
+                    "default": "continue",
+                    "rules": [],
+                },
+            },
+        )
+
+        ctx = _make_context(
+            agent_name="my_agent",
+            content="Intermediate status report.",
+        )
+        ctx.target_hook_name = "some_other_hook"
+
+        result = await plugin.on_post_llm_call(ctx)
+
+        # No matching hook → nothing fired
+        assert result.metadata.get("continue") is None or result.metadata.get("continue") is not True
