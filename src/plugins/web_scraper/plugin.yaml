@@ -1,7 +1,11 @@
 name: web_scraper
 version: 0.1.0
 author: Enrico Ehrich
-description: "Fetch and extract readable text and structured data (tables/forms/lists) from web pages."
+description: Fetch and extract readable text and structured data (tables/forms/lists)
+  from web pages.
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+- mcp-server
 category: tools
+requires:
+  agent_system: '>=0.4.0'

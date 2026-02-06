@@ -1,9 +1,9 @@
 # Software Architecture Document: Plugin Architecture
 
-**Document Type:** Software Architecture Document (SAD)  
-**Component:** Plugin System & Extensibility  
-**Version:** 1.1  
-**Last Updated:** 2025-01-15  
+**Document Type:** Software Architecture Document (SAD)
+**Component:** Plugin System & Extensibility
+**Version:** 1.1
+**Last Updated:** 2025-01-15
 **Status:** Active
 
 ---
@@ -102,7 +102,7 @@ from agent_system.mcp.base import MCPServer
 
 class WebSearchPlugin(MCPServer):
     """Provides web search tools."""
-    
+
     async def list_tools(self):
         return [
             {
@@ -117,7 +117,7 @@ class WebSearchPlugin(MCPServer):
                 }
             }
         ]
-    
+
     async def call_tool(self, tool_name: str, arguments: dict):
         if tool_name == "web_search":
             query = arguments["query"]
@@ -151,11 +151,11 @@ from agent_system.hooks import PluginHook, HookContext, HookResult
 
 class RequestLoggerPlugin(PluginHook):
     """Logs agent requests - NO tools provided."""
-    
+
     def __init__(self, name: str, config: dict = None):
         super().__init__(name, config or {})
         self.request_count = 0
-    
+
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         self.request_count += 1
         logger.info(f"Request #{self.request_count}")
@@ -164,7 +164,7 @@ class RequestLoggerPlugin(PluginHook):
             modified=False,
             context=context
         )
-    
+
     async def on_format_output(self, context: HookContext) -> HookResult:
         # Format output as markdown
         context.result = f"**Response:**\n\n{context.result}"
@@ -202,19 +202,19 @@ from agent_system.hooks import PluginHook, HookContext, HookResult
 
 class EnhancedSearchPlugin(MCPServer, PluginHook):
     """Provides search tools + optimizes search queries."""
-    
+
     # Tool functionality
     async def list_tools(self):
         return [{
             "name": "smart_search",
             "description": "AI-enhanced search"
         }]
-    
+
     async def call_tool(self, tool_name: str, arguments: dict):
         query = arguments["query"]
         results = await self._search(query)
         return {"results": results}
-    
+
     # Hook functionality
     async def on_pre_tool_call(self, context: HookContext) -> HookResult:
         # Optimize search queries before execution
@@ -307,14 +307,14 @@ class PluginRegistry:
         metadata: PluginMetadata
     ):
         """Register plugin factory"""
-    
+
     def create_instance(
         self,
         name: str,
         config: dict = None
     ) -> Union[MCPServer, PluginHook]:
         """Create plugin instance from factory"""
-    
+
     def list_plugins(self) -> List[PluginMetadata]:
         """List all registered plugins"""
 ```
@@ -333,9 +333,9 @@ class PluginRegistry:
 ```python
 def discover_all_plugins(config: AgentSystemConfig) -> PluginRegistry:
     """Discover and register all plugins"""
-    
+
     registry = PluginRegistry()
-    
+
     # 1. Discover filesystem plugins
     plugin_dirs = Path("src/plugins").iterdir()
     for plugin_dir in plugin_dirs:
@@ -347,7 +347,7 @@ def discover_all_plugins(config: AgentSystemConfig) -> PluginRegistry:
             factory=factory,
             metadata=metadata
         )
-    
+
     # 2. Discover config-based agents
     for agent_name, agent_def in config.agents.items():
         factory = create_config_agent_factory(agent_def)
@@ -360,7 +360,7 @@ def discover_all_plugins(config: AgentSystemConfig) -> PluginRegistry:
                 ...
             )
         )
-    
+
     return registry
 ```
 
@@ -383,13 +383,13 @@ class HookManager:
         context: HookContext
     ) -> HookContext:
         """Execute all hooks of given type"""
-        
+
         # Get hooks for this type
         hooks = self._get_hooks_for_type(hook_type)
-        
+
         # Sort by order (after/before directives)
         sorted_hooks = self._sort_hooks(hooks)
-        
+
         # Execute in order
         for hook in sorted_hooks:
             try:
@@ -399,7 +399,7 @@ class HookManager:
             except Exception as e:
                 logger.error(f"Hook {hook.name} failed: {e}")
                 # Continue with next hook (isolation)
-        
+
         return context
 ```
 
@@ -431,17 +431,18 @@ src/plugins/
 ```yaml
 name: basic_operations
 version: 1.0.0
-type: mcp_only  # mcp_only | hooks_only | hybrid_with_hooks
+type:
+  - mcp-server  # Can be: mcp-server, web, hooks, custom
 description: Basic file and system operations
 
-# Tool metadata (for mcp_only or hybrid)
+# Tool metadata (for mcp-server plugins)
 tools:
   - name: read_file
     description: Read file contents
   - name: write_file
     description: Write to file
 
-# Hook configuration (for hooks_only or hybrid)
+# Hook configuration (for hooks plugins)
 hooks:
   - name: log_requests
     type: pre_llm_call
@@ -515,23 +516,23 @@ agents:
 @dataclass
 class HookContext:
     """Context passed to hooks"""
-    
+
     # Common
     session_id: str
     request_id: str
     agent_name: str
-    
+
     # LLM hooks
     messages: Optional[List[dict]] = None
     llm_response: Optional[str] = None
-    
+
     # Tool hooks
     tool_call: Optional[dict] = None  # {"name": "...", "arguments": {...}}
     tool_result: Optional[dict] = None
-    
+
     # Output hooks
     result: Optional[str] = None
-    
+
     # Metadata
     metadata: dict = field(default_factory=dict)
 ```
@@ -562,7 +563,7 @@ hooks:
     order:
       after: ["begin"]  # Special marker for start
       before: ["context_optimizer"]
-  
+
   - name: context_optimizer
     type: pre_llm_call
     order:
@@ -603,7 +604,7 @@ agents:
 ```python
 def create_config_agent_factory(agent_def: ConfigAgentDefinition):
     """Create factory for config-based agent"""
-    
+
     def factory(name: str, config: dict = None):
         return Agent(
             name=name,
@@ -614,7 +615,7 @@ def create_config_agent_factory(agent_def: ConfigAgentDefinition):
             hooks_config=agent_def.hooks,
             metadata=agent_def.metadata
         )
-    
+
     return factory
 ```
 
@@ -642,8 +643,8 @@ def create_config_agent_factory(agent_def: ConfigAgentDefinition):
 
 ### ADR-001: Composition Over Inheritance
 
-**Context:** Need flexible plugin types  
-**Decision:** Independent `MCPServer` and `PluginHook` base classes  
+**Context:** Need flexible plugin types
+**Decision:** Independent `MCPServer` and `PluginHook` base classes
 **Rationale:**
 - Hook-only plugins don't need MCP methods
 - Tool-only plugins don't need hook methods
@@ -656,8 +657,8 @@ def create_config_agent_factory(agent_def: ConfigAgentDefinition):
 
 ### ADR-002: Factory Pattern for Plugins
 
-**Context:** Need plugin instantiation with config  
-**Decision:** Register factories, not instances  
+**Context:** Need plugin instantiation with config
+**Decision:** Register factories, not instances
 **Rationale:**
 - Lazy instantiation
 - Config injection at creation time
@@ -670,8 +671,8 @@ def create_config_agent_factory(agent_def: ConfigAgentDefinition):
 
 ### ADR-003: Auto-Discovery from Filesystem
 
-**Context:** Need plugin registration without manual steps  
-**Decision:** Scan `src/plugins/` at startup  
+**Context:** Need plugin registration without manual steps
+**Decision:** Scan `src/plugins/` at startup
 **Rationale:**
 - Developer-friendly (drop in folder)
 - No registration boilerplate
@@ -684,8 +685,8 @@ def create_config_agent_factory(agent_def: ConfigAgentDefinition):
 
 ### ADR-004: Hook Isolation
 
-**Context:** Hook errors shouldn't crash agent  
-**Decision:** Try/catch around each hook, continue on error  
+**Context:** Hook errors shouldn't crash agent
+**Decision:** Try/catch around each hook, continue on error
 **Rationale:**
 - Reliability (one bad hook doesn't break system)
 - Plugin independence
@@ -697,8 +698,8 @@ def create_config_agent_factory(agent_def: ConfigAgentDefinition):
 
 ### ADR-005: Config-Based Agents
 
-**Context:** Many agents differ only in prompts/tools  
-**Decision:** Support YAML-defined agents  
+**Context:** Many agents differ only in prompts/tools
+**Decision:** Support YAML-defined agents
 **Rationale:**
 - Lower barrier for non-developers
 - Faster prototyping

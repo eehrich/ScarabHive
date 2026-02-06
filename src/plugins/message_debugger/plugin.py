@@ -26,14 +26,15 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         
         plugin_dir = Path(__file__).parent
         
-        # Shared message history for both hooks and web UI
+        # Shared message history for both hooks and web UI (limited to prevent memory leak)
         self._message_history: List[Dict[str, Any]] = []
+        self._max_history_size = 500  # Keep last 500 messages
         
-        # Create hooks plugin with history tracking
-        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, message_history=self._message_history)
+        # Create hooks plugin with history tracking and config
+        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, message_history=self._message_history, mcp_config=mcp_config)
         
         # Create web UI factory with plugin name for dynamic routing
-        self.web_factory = MessageDebuggerWebFactory(self._message_history, name=name)
+        self.web_factory = MessageDebuggerWebFactory(self._message_history, name=name, server=self)
     
     # Hook interface - delegate to hooks plugin
     def get_hooks(self):
@@ -48,18 +49,6 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
     def get_web_router(self):
         """Return FastAPI router for web UI."""
         return self.web_factory.get_web_router()
-    
-    def get_static_assets(self):
-        """Return path to static assets."""
-        return self.web_factory.get_static_assets()
-    
-    def get_panels(self):
-        """Return UI panel definitions."""
-        return self.web_factory.get_panels()
-    
-    def create_panel(self):
-        """Create panel HTML."""
-        return self.web_factory.create_panel()
 
 
 PLUGIN_FACTORY = MessageDebuggerHybridPlugin

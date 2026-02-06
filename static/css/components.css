@@ -415,19 +415,44 @@ h1 {
   transform: rotate(180deg);
 }
 
-/* Dropdown panel */
+/* Dropdown panel - Portal mode (attached to body, not header) */
 .dropdown-menu-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
+  position: fixed; /* Fixed positioning, controlled by JS */
   min-width: 220px;
+  max-width: 90vw; /* Don't exceed viewport width */
   background: var(--bg-dark, #1a2129);
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  z-index: 1000;
-  overflow: hidden;
+  z-index: 9000; /* Above panels (1000-8999) and header (100) */
   display: none;
+}
+
+/* Multi-column layout wrapper */
+.dropdown-menu-panel-inner {
+  max-height: calc(100vh - 120px); /* Default max height */
+  overflow-y: auto; /* Scroll if needed */
+  overflow-x: hidden;
+}
+
+/* Active multi-column mode (added by JS when menu overflows) */
+.dropdown-menu-panel-inner.multi-column {
+  column-width: 220px;
+  column-gap: 0;
+  column-rule: 1px solid rgba(255,255,255,0.08);
+  overflow-y: hidden;
+  overflow-x: auto;
+}
+
+/* Prevent items from breaking across columns */
+.dropdown-menu-panel-inner.multi-column .dropdown-menu-section {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+}
+
+.dropdown-menu-panel-inner.multi-column .dropdown-menu-item {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
 }
 
 .dropdown-menu-panel.open {
@@ -444,12 +469,6 @@ h1 {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-/* Left-aligned menus */
-.dropdown-menu-container.align-left .dropdown-menu-panel {
-  right: auto;
-  left: 0;
 }
 
 /* Menu sections */

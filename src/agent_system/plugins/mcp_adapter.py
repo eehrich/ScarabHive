@@ -390,9 +390,10 @@ class PluginMCPRegistry:
         if name not in self.plugin_factories:
             raise Exception(f"Unknown plugin: {name}")
 
-        # Check if already registered
+        # Check if already registered (by bootstrap_servers)
         if name in self.plugin_servers:
-            logger.warning(f"Plugin {name} already registered in MCP registry. Re-registering.")
+            logger.debug(f"Plugin {name} already registered, skipping duplicate instantiation")
+            return  # CRITICAL: Don't re-instantiate! Bootstrap already created it.
 
         # Create plugin instance with modern factory signature: (name, system_config, mcp_config)
         factory = self.plugin_factories[name]

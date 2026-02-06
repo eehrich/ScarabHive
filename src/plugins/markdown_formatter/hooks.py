@@ -6,9 +6,10 @@ Injects system prompt to guide LLM to generate Markdown output.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import re
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 from agent_system.hooks import HookContext, HookResult
 from agent_system.hooks.schema_based import SchemaBasedPluginHook
@@ -20,16 +21,21 @@ logger = logging.getLogger(__name__)
 class MarkdownFormatterPlugin(SchemaBasedPluginHook):
     """Hook plugin for Markdown formatting and HTML conversion."""
     
-    def __init__(self, plugin_dir: Path):
+    def __init__(self, plugin_dir: Path, mcp_config: Any = None):
         """Initialize the markdown formatter plugin.
         
         Args:
             plugin_dir: Directory containing plugin configuration files
+            mcp_config: MCP configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
         
-        # Get config from schema with proper dict handling
+        # Get config from schema defaults
         config = self.config or {}
+        
+        # Merge with mcp_config.config if provided (overrides schema defaults)
+        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
+            config.update(mcp_config.config)
         
         def get_config_value(key: str, default):
             val = config.get(key, default)
@@ -68,6 +74,10 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 # Use fenced_code with Prism.js-compatible class names
                 # Note: Do NOT use 'codehilite' - it generates incompatible CSS classes
                 extensions.append('fenced_code')
+            
+            # Add nl2br to convert newlines to <br> tags
+            # This ensures list items appear on separate lines
+            extensions.append('nl2br')
             
             # Configure fenced_code to use 'language-' prefix for Prism.js
             extension_configs = {
@@ -245,6 +255,15 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 # Convert Markdown to HTML
                 html_content = self.markdown_converter.convert(output)
                 
+                # Fix list rendering: ensure lists have proper line breaks
+                # Markdown requires blank line before lists, but LLMs often forget this
+                html_content = self._fix_list_formatting(html_content)
+                
+                # Remove inline style attributes from table elements
+                # The Python markdown 'tables' extension adds style="text-align: ..." attributes
+                # which can interfere with CSS styling in the frontend
+                html_content = self._remove_table_inline_styles(html_content)
+                
                 # Sanitize HTML if enabled
                 if self.sanitize_html:
                     html_content = self._sanitize_html(html_content)
@@ -267,20 +286,60 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 )
             
             elif target_format == 'ansi':
-                # For ANSI output, return the markdown content as-is
-                # The CLI will render it directly with Rich Console
-                # Input is ALWAYS markdown from LLM (thanks to system prompt)
+                # For ANSI output, prepare content for Rich Console rendering in CLI
+                # Input may be Markdown (from LLM) OR HTML (from earlier format_output hook with html target)
                 
-                logger.info(f"Preparing markdown for ANSI rendering (length: {len(output)})")
+                logger.info(f"Preparing content for ANSI rendering (length: {len(output)})")
                 
-                # Just return the markdown - no conversion needed!
-                # Rich Markdown will handle the syntax highlighting
-                updated_context = replace(context, output=output)
+                # Check if input is HTML (from earlier format_output hook that converted for web/storage)
+                if output.strip().startswith('<') and ('</p>' in output or '</h1>' in output or '</h2>' in output):
+                    logger.info("Detected HTML input for ANSI, converting back to Markdown for Rich rendering")
+                    try:
+                        # Convert HTML back to Markdown so Rich Console can render it properly
+                        from markdownify import markdownify as md_convert
+                        markdown_content = md_convert(output, heading_style="ATX")
+                        
+                        logger.debug(f"HTML->Markdown conversion: {len(output)} -> {len(markdown_content)} chars")
+                        
+                        return HookResult(
+                            success=True,
+                            modified=True,
+                            context=replace(context, output=markdown_content),
+                            metadata={
+                                'content_format': 'ansi',
+                                'converted_from': 'html',
+                                'original_length': len(output),
+                                'markdown_length': len(markdown_content),
+                                'render_with_rich': True
+                            }
+                        )
+                    except ImportError:
+                        logger.warning("markdownify not available for HTML->Markdown conversion, stripping HTML tags")
+                        # Fallback: strip HTML tags to get plain text
+                        import re
+                        text_content = re.sub(r'<[^>]+>', '', output).strip()
+                        return HookResult(
+                            success=True,
+                            modified=True,
+                            context=replace(context, output=text_content),
+                            metadata={
+                                'content_format': 'ansi',
+                                'converted_from': 'html_stripped',
+                                'original_length': len(output),
+                                'text_length': len(text_content)
+                            }
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to convert HTML for ANSI: {e}")
+                        # Return as-is and let CLI handle it
+                
+                # Input is already Markdown - return as-is for Rich Console rendering
+                logger.debug(f"Markdown content ready for ANSI rendering (length: {len(output)})")
                 
                 return HookResult(
                     success=True,
-                    modified=False,  # We're not modifying, just passing through
-                    context=updated_context,
+                    modified=False,
+                    context=replace(context, output=output),
                     metadata={
                         'content_format': 'ansi',
                         'original_length': len(output),
@@ -400,5 +459,76 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
         
         # Simple tag whitelist (more sophisticated solutions would use bleach library)
         # For now, we trust markdown library's output and just remove obvious threats
+        
+        return html
+    
+    def _fix_list_formatting(self, html: str) -> str:
+        """Fix inline list items that should be on separate lines.
+        
+        When markdown lists are not properly separated by blank lines,
+        they get rendered inline. This fixes that by ensuring list items
+        appear on separate lines.
+        
+        Args:
+            html: HTML content that may contain inline list items
+            
+        Returns:
+            HTML with properly formatted lists
+        """
+        # Pattern: text followed by list items rendered inline (without proper <ul>/<ol>)
+        # Example: "<p>Text - Item 1 - Item 2 - Item 3</p>"
+        # Should be: "<p>Text</p><ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul>"
+        
+        # Find paragraphs containing multiple "- " or "• " list markers
+        def fix_inline_list(match):
+            content = match.group(1)
+            
+            # Check if this looks like an inline list (multiple - or • on one line)
+            if content.count(' - ') >= 2 or content.count(' • ') >= 2:
+                # Split by list markers
+                parts = re.split(r'\s[-•]\s', content)
+                
+                # First part might be intro text
+                intro = parts[0].strip()
+                items = [p.strip() for p in parts[1:] if p.strip()]
+                
+                # Build proper list HTML
+                html_parts = []
+                if intro:
+                    html_parts.append(f'<p>{intro}</p>')
+                if items:
+                    html_parts.append('<ul>')
+                    for item in items:
+                        html_parts.append(f'<li>{item}</li>')
+                    html_parts.append('</ul>')
+                
+                return ''.join(html_parts)
+            
+            # Not an inline list, return as-is
+            return match.group(0)
+        
+        # Apply fix to paragraphs
+        html = re.sub(r'<p>(.*?)</p>', fix_inline_list, html, flags=re.DOTALL)
+        
+        return html
+
+    def _remove_table_inline_styles(self, html: str) -> str:
+        """Remove inline style attributes from table elements.
+        
+        The Python markdown 'tables' extension adds style="text-align: ..." attributes
+        to <th> and <td> elements based on the alignment specified in the markdown (: --- :).
+        These inline styles have higher CSS specificity and can interfere with our
+        responsive CSS styling. This method removes them so CSS can control alignment.
+        
+        Args:
+            html: HTML content that may contain tables with inline styles
+            
+        Returns:
+            HTML with style attributes removed from table elements
+        """
+        # Remove style attributes from <th> and <td> elements
+        # Pattern: style="..." within table header or data cells
+        html = re.sub(r'(<th[^>]*)\s+style="[^"]*"', r'\1', html)
+        html = re.sub(r'(<td[^>]*)\s+style="[^"]*"', r'\1', html)
         
         return html

@@ -86,20 +86,17 @@ body {
     border: 1px solid #3e3e42;
     border-radius: 6px;
     padding: 15px;
-    text-align: center;
 }
 
 .stat-label {
     font-size: 12px;
     color: #858585;
     margin-bottom: 5px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 
 .stat-value {
     font-size: 28px;
-    font-weight: 700;
+    font-weight: 600;
     color: #4ec9b0;
 }
 
@@ -156,14 +153,14 @@ body {
 .snapshots-list {
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    gap: 8px;
 }
 
 .snapshot-card {
     background: #252526;
     border: 1px solid #3e3e42;
     border-radius: 6px;
-    padding: 20px;
+    padding: 10px;
     cursor: pointer;
     transition: all 0.2s;
 }
@@ -177,7 +174,7 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 6px;
 }
 
 .snapshot-title {
@@ -242,6 +239,57 @@ body {
     display: block;
 }
 
+.snapshot-filters {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 12px;
+    padding: 10px;
+    background: #252526;
+    border-radius: 4px;
+}
+
+.snapshot-role-filter {
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    color: #d4d4d4;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    min-width: 100px;
+}
+
+.snapshot-role-filter:focus {
+    outline: none;
+    border-color: #569cd6;
+}
+
+.snapshot-search {
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    color: #d4d4d4;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    flex: 1;
+    min-width: 150px;
+}
+
+.snapshot-search:focus {
+    outline: none;
+    border-color: #569cd6;
+}
+
+.snapshot-search::placeholder {
+    color: #6e6e6e;
+}
+
+.snapshot-filter-count {
+    font-size: 11px;
+    color: #858585;
+    white-space: nowrap;
+}
+
 .messages-container {
     max-height: 600px;
     overflow-y: auto;
@@ -259,6 +307,12 @@ body {
     margin-bottom: 12px;
     font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
     font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.message-item:hover {
+    background: #2a2a2d;
 }
 
 .message-item.user {
@@ -281,9 +335,29 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 8px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid #3e3e42;
+}
+
+.message-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.message-expand-icon {
+    font-size: 10px;
+    color: #858585;
+    flex-shrink: 0;
+    width: 12px;
+}
+
+.message-role-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
 }
 
 .message-role {
@@ -292,6 +366,18 @@ body {
     font-size: 11px;
     letter-spacing: 1px;
     color: #d4d4d4;
+    flex-shrink: 0;
+}
+
+.message-preview {
+    font-size: 11px;
+    color: #858585;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: monospace;
+    min-width: 0;
+    flex: 1;
 }
 
 .message-tokens {
@@ -300,6 +386,18 @@ body {
     background: #2d2d30;
     padding: 2px 8px;
     border-radius: 10px;
+    flex-shrink: 0;
+}
+
+.message-details {
+    display: none;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #3e3e42;
+}
+
+.message-item.expanded .message-details {
+    display: block;
 }
 
 .message-content {

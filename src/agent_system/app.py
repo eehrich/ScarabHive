@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import asyncio  # noqa: F401 - used in nested closures in event_stream() and lifespan
 import json
-import asyncio
 import logging
 import os
 import time
+from datetime import datetime  # noqa: F401 - used in health endpoint
 from .utils.id import short_id
 import yaml
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable, Any
+from typing import Optional, Any
 
 import uvicorn
-from fastapi import FastAPI, Request, Query, Header, HTTPException
+from fastapi import FastAPI, Request, Query, Header, HTTPException, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
@@ -25,10 +25,16 @@ from .mcp.base import MCPRegistry
 from .utils.logging import setup_logging
 from .mcp.status import get_status_metrics
 from .mcp.integration import initialize_mcp, shutdown_mcp
+from .llm.batch.initialization import init_batch_system, shutdown_batch_system, start_batch_queue_manager
 
 # Import services
 from .services import ConfigService, MCPService, ToolService, AgentService
 from .services.session_manager import SessionManager, SessionPermissionError
+from .services.background_job_manager import (
+    BackgroundJob,
+    JobStatus,
+    get_background_job_manager,
+)
 
 
 # Global registry for MCP endpoints access
@@ -49,6 +55,9 @@ _session_service: Optional[Any] = None  # SessionService, imported at runtime to
 # Security: Track request_id -> user_id mapping for status stream authorization
 _request_user_map: dict[str, str] = {}  # request_id -> user_id
 
+# Shutdown event for graceful stream termination
+_shutdown_event: Optional[asyncio.Event] = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -58,6 +67,11 @@ async def lifespan(app: FastAPI):
 
     # Startup: Initialize MCP integration
     global _mcp_integration, _mcp_service, _tool_service, _session_manager, _session_service
+    
+    # Initialize background job manager and start cleanup loop
+    job_manager = get_background_job_manager()
+    asyncio.create_task(job_manager.cleanup_loop())
+    logger.info("BackgroundJobManager initialized")
 
     # Get config from global service
     if _config_service is None:
@@ -126,11 +140,60 @@ async def lifespan(app: FastAPI):
 
 
 # Module level templates and static path setup
-templates = Jinja2Templates(directory=str(Path(__file__).parents[2] / "templates"))
-static_path = Path(__file__).parents[2] / "static"
+# For installed packages, templates/static must be in package root
+# Check multiple locations: package data > development paths
+def _find_resource_dir(name: str) -> Path:
+    """Find templates or static directory in various install scenarios."""
+    # Try 1: Installed package data in site-packages
+    try:
+        import agent_system
+        pkg_dir = Path(agent_system.__file__).parent
+        resource_path = pkg_dir / name
+        if resource_path.exists():
+            return resource_path
+    except Exception:
+        pass
+    
+    # Try 2: Development - relative to this file
+    dev_path = Path(__file__).parents[2] / name
+    if dev_path.exists():
+        return dev_path
+    
+    # Try 3: Current working directory (last resort)
+    cwd_path = Path.cwd() / name
+    if cwd_path.exists():
+        return cwd_path
+    
+    # Fallback to dev path (will fail later with clear error)
+    return dev_path
+
+templates = Jinja2Templates(directory=str(_find_resource_dir("templates")))
+static_path = _find_resource_dir("static")
 
 # Global application state
 _app_start_time = None
+
+# Batch queue manager - uses centralized initialization from llm.batch.initialization
+
+
+async def _init_batch_queue_manager(config, logger):
+    """Initialize batch queue manager if any model has batch enabled.
+    
+    Delegates to the centralized init_batch_system() utility function
+    which can be reused by CLI and other entry points.
+    """
+    await init_batch_system(config, custom_logger=logger)
+
+
+# Note: _register_batch_clients is now in llm.batch.initialization module
+
+
+async def _shutdown_batch_queue_manager(logger):
+    """Stop the batch queue manager during shutdown.
+    
+    Delegates to the centralized shutdown_batch_system() utility function.
+    """
+    await shutdown_batch_system(custom_logger=logger)
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
@@ -143,16 +206,53 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     else:
         cfg_path = config_path
 
+    # Setup early logging BEFORE config loading so YAML errors are captured
+    # This ensures config parsing errors appear in the log file
+    early_log_file = Path(__file__).parents[2] / "logs" / "api.log"
+    early_log_file.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",  # Match Uvicorn format
+        handlers=[
+            logging.FileHandler(str(early_log_file), encoding="utf-8"),
+            logging.StreamHandler()
+        ],
+        force=True  # Override any existing config
+    )
+    early_logger = logging.getLogger(__name__)
+    early_logger.debug(f"Early logging initialized, loading config from {cfg_path}")
+
     # Create ConfigService
     global _config_service
     _config_service = ConfigService()
     config = _config_service.load_config(config_path=cfg_path)
 
-    # Setup logging via ConfigService
+    # Setup full logging via ConfigService (may reconfigure handlers)
     _config_service.setup_logging()
+    
+    # Get logger AFTER logging is configured
+    logger = logging.getLogger(__name__)
+    
+    # Log startup marker for log analysis and debugging
+    startup_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logger.info("═" * 80)
+    logger.info(f"║  AgentSystem API Server STARTING - {startup_time}")
+    logger.info(f"║  Version: {config.version}")
+    logger.info(f"║  Config: {cfg_path}")
+    logger.info("═" * 80)
+
+    # Store config for lazy batch queue manager initialization
+    # This allows LLMFactory to create the manager on first use
+    from .llm.factory import set_batch_config
+    set_batch_config(config)
+
+    # Configure status bus with config values
+    from .mcp.status import status_bus
+    if hasattr(config, 'status') and config.status:
+        status_bus.default_queue_maxsize = config.status.queue_maxsize
+        logger.debug(f"Status bus configured: queue_maxsize={config.status.queue_maxsize}")
 
     # Log configuration status
-    logger = logging.getLogger(__name__)
     logger.info(f"Loading configuration from: {cfg_path}")
     if config.llm_system:
         logger.debug(f"LLM system loaded with {len(config.llm_system.profiles)} profiles")
@@ -182,6 +282,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger = logging.getLogger(__name__)
         logger.info("Starting MCP integration initialization...")
         try:
+            # Start the Batch Queue Manager (async operations: register providers, start background tasks)
+            # The manager was already created and registered in build_app() sync section
+            await start_batch_queue_manager(config, custom_logger=logger)
+            
             mcp_integration = await initialize_mcp(config, app)
             _mcp_integration = mcp_integration
 
@@ -213,10 +317,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             logger.info("MCP integration and services initialized for API")
 
-            # Apply plugin web capabilities
+            # Apply plugin web capabilities with security
             from .plugins.web_adapter import plugin_web_registry
-            plugin_web_registry.apply_to_app(app)
-            logger.info("Plugin web capabilities applied to app")
+            plugin_web_registry.apply_to_app(app, auth_config=config.auth)
+            logger.info("Plugin web capabilities applied to app with security enforcement")
 
         except Exception as e:
             logger.exception("Failed to initialize MCP integration for API: %s", e)
@@ -225,23 +329,98 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @asynccontextmanager
     async def custom_lifespan(app: FastAPI):
         # Startup
-        global _app_start_time
+        global _app_start_time, _shutdown_event
         _app_start_time = time.time()
 
         logger = logging.getLogger(__name__)
+        
+        # Configure named thread pool for asyncio default executor
+        # This gives better thread names in profiler/debugger
+        import asyncio as _asyncio
+        import concurrent.futures
+        loop = _asyncio.get_running_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=None,  # Use default (min(32, cpu_count + 4))
+            thread_name_prefix="app_asyncio"
+        )
+        loop.set_default_executor(executor)
+        logger.info("Configured asyncio default executor with thread_name_prefix='asyncio_worker'")
+        
+        # Create shutdown event for graceful SSE stream termination
+        _shutdown_event = _asyncio.Event()
+        logger.info("Configured asyncio default executor with thread_name_prefix='asyncio_worker'")
+        
         logger.info("Lifespan startup: Initializing MCP integration...")
         await _init_mcp_for_app(app)
         logger.info("MCP integration initialized during lifespan startup")
+        
+        # Log startup complete marker
+        logger.info("═" * 80)
+        logger.info("║  AgentSystem API Server READY - accepting connections")
+        logger.info("═" * 80)
+        
+        # Start profiling if enabled
+        from .utils.profiling import start_profiling, stop_profiling, PROFILING_ENABLED
+        if PROFILING_ENABLED:
+            await start_profiling()
+            logger.info("Performance profiling started")
+        
+        # Start memory profiling if enabled
+        from .utils.memory_profiling import (
+            start_memory_profiling, stop_memory_profiling, MEMORY_PROFILING_ENABLED
+        )
+        if MEMORY_PROFILING_ENABLED:
+            # Setup profiling logger if not already done (e.g., if only memory profiling enabled)
+            if not PROFILING_ENABLED:
+                from .utils.profiling import setup_profiling_logger
+                setup_profiling_logger()
+            await start_memory_profiling()
+            logger.info("Memory profiling started")
+        
         yield
         # Shutdown
+        logger.info("═" * 80)
+        logger.info("║  AgentSystem API Server SHUTTING DOWN")
+        logger.info("═" * 80)
+        
         try:
+            # Signal all SSE streams to terminate gracefully
+            if _shutdown_event:
+                logger.info("Signaling SSE streams to terminate...")
+                _shutdown_event.set()
+                # Give streams a brief moment to notice and exit
+                await asyncio.sleep(0.1)
+            
+            # Stop profiling
+            if PROFILING_ENABLED:
+                await stop_profiling()
+                logger.info("Performance profiling stopped")
+            
+            # Stop memory profiling
+            if MEMORY_PROFILING_ENABLED:
+                await stop_memory_profiling()
+                logger.info("Memory profiling stopped")
+            
+            # Shutdown batch queue manager first
+            await _shutdown_batch_queue_manager(logger)
+            
             await shutdown_mcp()
             logger.info("MCP integration shut down during lifespan")
+            
+            logger.info("═" * 80)
+            logger.info("║  AgentSystem API Server STOPPED")
+            logger.info("═" * 80)
         except Exception as e:
             logger.exception("Error shutting down MCP integration during lifespan: %s", e)
 
     # Create FastAPI app
     app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
+
+    # Initialize security enforcer (always created, respects auth.enabled)
+    from .auth.enforcement import EndpointSecurityEnforcer, AnonymousUser
+    _security_enforcer = EndpointSecurityEnforcer(config.auth)
+    logger.info(f"Security enforcer initialized: auth.enabled={config.auth.enabled}, "
+                f"anonymous_access={config.auth.anonymous_access.enabled}")
 
     # Helper function for optional user authentication
     async def _get_current_user_optional(request: Request) -> Optional[Any]:
@@ -296,22 +475,95 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.debug(f"[AUTH_DEBUG] ❌ Authentication failed: {e}")
             return None
 
+    async def _enforce_endpoint_security(request: Request) -> Any:
+        """Enforce security for an endpoint and return the user.
+        
+        This is the central security enforcement function that should be called
+        at the start of protected endpoints. It:
+        1. Checks if auth is required for this endpoint
+        2. Validates user authentication
+        3. Checks role permissions
+        4. Returns user (or AnonymousUser if permitted)
+        
+        Raises:
+            HTTPException: 401 if auth required but not provided
+            HTTPException: 403 if user lacks required role
+        
+        Returns:
+            User object or AnonymousUser
+        """
+        return await _security_enforcer.enforce_endpoint_security(
+            request,
+            _get_current_user_optional
+        )
+
+    def _validate_llm_access(user: Any, is_llm_request: bool = False) -> None:
+        """Validate that user is allowed to make LLM requests.
+        
+        Args:
+            user: User object (User or AnonymousUser)
+            is_llm_request: Whether this is an LLM API call
+        
+        Raises:
+            HTTPException: 403 if user not allowed LLM access
+        """
+        if not is_llm_request:
+            return
+        
+        if not config.auth.enabled:
+            return
+        
+        llm_security = config.auth.llm_security
+        
+        if not llm_security.require_valid_user:
+            return
+        
+        # Check if anonymous user
+        if isinstance(user, AnonymousUser) or (user and not getattr(user, 'is_authenticated', True)):
+            if llm_security.max_requests_per_hour_anonymous == 0:
+                logger.warning("[SECURITY] Anonymous LLM request blocked")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Anonymous users are not allowed to make LLM requests. Please log in."
+                )
+        
+        if user is None:
+            logger.warning("[SECURITY] LLM request without user context blocked")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="LLM requests require authentication"
+            )
+
     # Mount static files
     if static_path.exists():
         static_files = StaticFiles(directory=str(static_path))
         app.mount("/static", static_files, name="static")
 
         # Add no-cache headers for static files when cache is disabled
+        # NOTE: We add headers in StaticFiles response hook instead of middleware
+        # to avoid BaseHTTPMiddleware overhead (100ms+ per request)
         if config.network.disable_cache:
-            @app.middleware("http")
-            async def _no_cache_static_middleware(request: Request, call_next: Callable):
-                if request.url.path.startswith("/static"):
-                    response = await call_next(request)
-                    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                    response.headers["Pragma"] = "no-cache"
-                    response.headers["Expires"] = "0"
-                    return response
-                return await call_next(request)
+            original_static_call = static_files.__call__
+            
+            async def static_with_no_cache(scope, receive, send):
+                if scope["type"] != "http":
+                    await original_static_call(scope, receive, send)
+                    return
+                
+                async def send_with_no_cache(message):
+                    if message["type"] == "http.response.start":
+                        headers = list(message.get("headers", []))
+                        headers.extend([
+                            (b"cache-control", b"no-cache, no-store, must-revalidate"),
+                            (b"pragma", b"no-cache"),
+                            (b"expires", b"0"),
+                        ])
+                        message = {**message, "headers": headers}
+                    await send(message)
+                
+                await original_static_call(scope, receive, send_with_no_cache)
+            
+            static_files.__call__ = static_with_no_cache
 
     # Initialize logging with role-specific logfile
     def _role_logfile(base: str, role: str) -> str:
@@ -337,7 +589,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logging.getLogger(__name__).info("Overriding log level from environment: %s", env_level)
         config.logging.level = env_level
 
-    log_file = setup_logging(config.logging.enabled, level_to_use, log_path)
+    log_file = setup_logging(
+        config.logging.enabled, 
+        level_to_use, 
+        log_path,
+        rotation_enabled=config.logging.rotation_enabled,
+        max_bytes=config.logging.max_bytes,
+        backup_count=config.logging.backup_count
+    )
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
 
@@ -351,6 +610,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Bootstrap MCP servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
+    # Note: Batch queue manager is created lazily by LLMFactory when first needed
     registry = MCPRegistry()
     if not _mcp_integration or not _mcp_integration.servers_bootstrapped:
         # Use InitializationService for consistent bootstrap + injection
@@ -371,7 +631,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if server_adapter and hasattr(server_adapter, 'plugin_server'):
                 registry.register(server_name, server_adapter.plugin_server)
         logging.getLogger(__name__).debug(f"Populated local registry with {len(registry.list())} servers from plugin_registry")
-        
+
         # Inject session_service into local registry agents
         from .services.agent_injection import inject_session_service_into_agents
         inject_session_service_into_agents(registry, _session_service)
@@ -503,7 +763,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Store agent and registry in app state for dependency injection
     app.state.agent = agent
     app.state.mcp_registry = registry
-    logger.info("Default agent and registry stored in app.state for dependency injection")
+    app.state.config = config
+    logger.info("Default agent, registry, and config stored in app.state for dependency injection")
 
     # Store registry and config globally
     global _app_registry, _app_config, _mcp_server_handler
@@ -528,6 +789,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Include API router
     app.include_router(api_router)
 
+    # Include debug/profiling router (available when AGENT_ENABLE_PROFILING=1)
+    from .api.debug_endpoints import router as debug_router
+    app.include_router(debug_router)
+
+    # Add profiling middleware if enabled (must be done synchronously before app starts)
+    from .utils.profiling import PROFILING_ENABLED, add_profiling_middleware
+    if PROFILING_ENABLED:
+        add_profiling_middleware(app)
+        logger.info("Profiling middleware installed")
+
     # Initialize authentication system if enabled
     if config.auth and config.auth.enabled:
         logger.info("Multi-user authentication enabled, initializing auth system...")
@@ -543,7 +814,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         set_jwt_config(
             secret_key=config.auth.secret_key,
             algorithm=config.auth.algorithm,
-            expire_minutes=config.auth.access_token_expire_minutes
+            expire_minutes=config.auth.access_token_expire_minutes,
+            refresh_expire_days=config.auth.refresh_token_expire_days
         )
 
         # Setup database
@@ -614,10 +886,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Configure security middleware
         configure_security_middleware(
             app,
+            auth_config=config.auth,
             rate_limit_enabled=config.auth.rate_limit_enabled,
             requests_per_minute=config.auth.requests_per_minute,
             security_headers_enabled=config.auth.security_headers_enabled,
             trusted_hosts=config.auth.trusted_hosts,
+            audit_enabled=config.auth.endpoint_security.audit_enabled,
         )
 
         # Include auth and admin routers
@@ -652,13 +926,111 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to load config for health check: {e}")
 
+        # Get Python version
+        import sys
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        
+        # Get key package versions
+        packages = {}
+        try:
+            import fastapi
+            import anthropic
+            import openai
+            import uvicorn
+            import pydantic
+            
+            packages["fastapi"] = getattr(fastapi, "__version__", "unknown")
+            packages["anthropic"] = getattr(anthropic, "__version__", "unknown")
+            packages["openai"] = getattr(openai, "__version__", "unknown")
+            packages["uvicorn"] = getattr(uvicorn, "__version__", "unknown")
+            packages["pydantic"] = getattr(pydantic, "__version__", "unknown")
+            
+            # Try to get Google Gemini version
+            try:
+                from google import genai
+                packages["google-genai"] = getattr(genai, "__version__", "unknown")
+            except ImportError:
+                pass
+                
+            # Try to get httpx version
+            try:
+                import httpx
+                packages["httpx"] = getattr(httpx, "__version__", "unknown")
+            except ImportError:
+                pass
+            
+            # Try to get chromadb version
+            try:
+                import chromadb
+                packages["chromadb"] = getattr(chromadb, "__version__", "unknown")
+            except ImportError:
+                pass
+                
+        except Exception as e:
+            logger.debug(f"Failed to get package versions: {e}")
+
         return {
             "status": "ok",
             "version": agent_config.get("version", "unknown"),
             "name": agent_config.get("name", "AgentSystem"),
             "uptime_seconds": round(uptime_seconds, 2),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "python_version": python_version,
+            "packages": packages
         }
+
+    async def _format_and_yield_event(
+        ev: dict,
+        selected_agent,
+        request_id: str,
+        session_id: str,
+        user_id: str,
+        agent_name: Optional[str],
+        llm_profile: Optional[str],
+        was_new_session: bool
+    ) -> str:
+        """Format event payload and return SSE data string."""
+        if hasattr(ev, 'to_dict'):
+            payload = ev.to_dict()
+        else:
+            payload = ev
+
+        # Format output for final event and thinking_complete event
+        if selected_agent._hook_manager:
+            # Format final event summary to HTML
+            if ev.get("type") == "final" and ev.get("summary"):
+                try:
+                    formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                        output=payload["summary"],
+                        request_id=request_id,
+                        session_id=session_id,
+                        output_format='html'
+                    )
+                    payload["summary"] = formatted_summary
+                    payload["content_format"] = content_format
+                except Exception as e:
+                    logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+
+            # Also format thinking_complete content to HTML (for streaming)
+            elif ev.get("type") == "thinking_complete" and ev.get("assistant", {}).get("content"):
+                try:
+                    formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                        output=payload["assistant"]["content"],
+                        request_id=request_id,
+                        session_id=session_id,
+                        output_format='html'
+                    )
+                    payload["assistant"]["content"] = formatted_content
+                    payload["content_format"] = content_format
+                except Exception as e:
+                    logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
+
+        try:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except (TypeError, ValueError) as e:
+            logger.error("Failed to serialize event %s: %s", ev, e)
+            error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
+            return f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
 
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
         """Get agent instance with optional overrides.
@@ -689,32 +1061,43 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent._session_service = _session_service
                 logger.debug(f"Injected SessionService into agent '{agent_name}' via /run endpoint")
             except KeyError:
-                raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
+                # Agent not found - fallback to default_agent
+                default_agent_name = config.default_agent
+                logger.warning(f"Agent '{agent_name}' not found, falling back to default_agent '{default_agent_name}'")
+                try:
+                    selected_agent = _app_registry.get(default_agent_name)  # type: ignore[attr-defined]
+                    from .servers.agent.server import Agent as _Agent
+                    if not isinstance(selected_agent, _Agent):
+                        raise HTTPException(status_code=500, detail=f"Default agent '{default_agent_name}' is not an agent")
+                    selected_agent._session_service = _session_service
+                    logger.debug(f"Using default_agent '{default_agent_name}' and injected SessionService")
+                except KeyError:
+                    raise HTTPException(status_code=500, detail=f"Neither agent '{agent_name}' nor default_agent '{default_agent_name}' found")
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
 
         # Create LLM override if profile specified
         if llm_profile and config.llm_system and config.llm_system.profiles:
             if llm_profile not in config.llm_system.profiles:
-                raise HTTPException(status_code=400, detail=f"LLM profile '{llm_profile}' not found")
+                # LLM profile not found - fallback to default profile
+                default_profile = config.llm_system.default_profile
+                logger.warning(f"LLM profile '{llm_profile}' not found, falling back to default profile '{default_profile}'")
+                llm_profile = default_profile
 
             try:
-                # Resolve profile to model config using the factory
-                from .llm.factory import resolve_llm_config_for_agent
+                # Use factory function that properly handles batch mode
+                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
                 from .config.models import AgentConfig
 
-                # Create temporary agent config with override profile
-                temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-
-                # Create new LLM with resolved config, including SSL verification setting
-                from .llm.clients import make_llm
-                llm_override = make_llm(
-                    **llm_kwargs,
+                llm_override = create_llm_from_profile(
+                    config=config,
+                    llm_profile=llm_profile,
                     ssl_verify=getattr(config.network, "ssl_verify", None)
                 )
 
-                # Build profile info string for status display (matching agent's format)
+                # Get profile info for status display
+                temp_agent_config = AgentConfig(llm_profile=llm_profile)
+                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
                 llm_profile_info = f"{llm_profile}:{provider}/{model}"
@@ -724,8 +1107,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         return selected_agent, llm_override, llm_profile_info
 
-    @app.get("/config")
+    @app.get("/admin/config")
     def get_config():
+        """Return the full system configuration (admin only)."""
         return config.model_dump()
 
     @app.get("/agents")
@@ -755,7 +1139,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     continue
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
-        return {"agents": agents}
+        return {"agents": sorted(agents), "default": config.default_agent}
 
     @app.get("/llm/profiles")
     def list_llm_profiles():
@@ -775,7 +1159,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to list LLM profiles: {e}")
         return {
-            "profiles": profiles,
+            "profiles": sorted(profiles, key=lambda p: p["name"].lower()),
             "default": default_profile or "normal"
         }
 
@@ -791,18 +1175,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
         try:
-            available = await srv.list_usable_tools()
-            patterns = getattr(srv.agent_config, 'allowed_tools', None)
-            return {"agent": agent_name, "patterns": patterns or [], "available": sorted(available), "effective": sorted(available)}
+            available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
+            patterns = srv.agent_config.tools.allowed if srv.agent_config.tools else None
+            return {
+                "agent": agent_name, 
+                "patterns": patterns or [], 
+                "blocked_patterns": blocked_patterns or [],
+                "available": sorted(available), 
+                "effective": sorted(available)
+            }
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
 
-    @app.get("/agents/{agent_name}/allowed-tools/debug")
+    @app.get("/agents/debug/{agent_name}/allowed-tools")
     async def get_agent_allowed_tools_debug(agent_name: str):
         """Return detailed pattern match diagnostics for an agent's allowed tools.
 
-        Provides for each available tool server which allow pattern(s) matched.
-        If no allow list configured, returns an informational note.
+        Provides:
+        - Phase 1: Server-level filtering (which servers pass the allow patterns)
+        - Phase 2: Tool-level filtering (actual tools after expansion and blocked filtering)
+        
+        This shows the complete two-phase filtering process.
+        
+        Note: This endpoint is admin-only (requires admin role).
         """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
@@ -813,23 +1208,75 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
         try:
-            patterns = getattr(srv.agent_config, 'allowed_tools', None)
-            available = await srv.list_usable_tools()
-            diagnostics = []
+            patterns = srv.agent_config.tools.allowed if srv.agent_config.tools else None
+            available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
+            
+            # Phase 1: Server-level diagnostics (which servers matched which patterns)
+            server_diagnostics = []
             if patterns:
                 for tool in available:
                     matched_by = []
                     for pat in patterns:
                         if srv._is_tool_allowed(tool, [pat]):  # type: ignore[attr-defined]
                             matched_by.append(pat)
-                    diagnostics.append({"tool": tool, "matched_patterns": matched_by})
+                    server_diagnostics.append({"server": tool, "matched_patterns": matched_by})
             else:
-                diagnostics = [{"tool": t, "matched_patterns": ["<implicit:all>"]} for t in available]
-            return {"agent": agent_name, "patterns": patterns or [], "diagnostics": diagnostics}
+                server_diagnostics = [{"server": t, "matched_patterns": ["<implicit:all>"]} for t in available]
+            
+            # Phase 2: Get actual expanded and filtered tools via ToolSchemaBuilder
+            final_tools = []
+            tool_details = []
+            try:
+                from .servers.agent.tool_schema_builder import ToolSchemaBuilder
+                
+                # Create tool schema builder (same as used during chat)
+                tool_builder = ToolSchemaBuilder(
+                    agent_name=agent_name,
+                    mcp_integration_manager=srv._mcp_integration_manager,
+                    server_getter_func=srv._get_server_from_any_registry
+                )
+                
+                # Build schemas with filtering applied
+                tools_schema, tool_name_mapping, usable_tools, display_tools = await tool_builder.build_schemas(
+                    available_tools=available,
+                    allowed_patterns=allowed_patterns,
+                    blocked_patterns=blocked_patterns
+                )
+                
+                # Extract final tool names from schemas
+                for schema in tools_schema:
+                    if schema.get("type") == "function" and "function" in schema:
+                        func = schema["function"]
+                        tool_name = func.get("name", "")
+                        server_name = tool_name_mapping.get(tool_name, "")
+                        final_tools.append(tool_name)
+                        tool_details.append({
+                            "tool": tool_name,
+                            "server": server_name,
+                            "full_path": f"{server_name}/{tool_name}" if server_name else tool_name
+                        })
+            except Exception as e:
+                logger.warning(f"Failed to build tool schemas for debug: {e}")
+                tool_details = [{"error": str(e)}]
+            
+            return {
+                "agent": agent_name,
+                "allowed_patterns": patterns or [],
+                "blocked_patterns": blocked_patterns or [],
+                "phase1_server_filtering": {
+                    "description": "Servers that passed allowed pattern matching",
+                    "servers": server_diagnostics
+                },
+                "phase2_tool_filtering": {
+                    "description": "Final tools after expansion and blocked pattern filtering",
+                    "total_tools": len(final_tools),
+                    "tools": tool_details
+                }
+            }
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
 
-    @app.get("/agents/{agent_name}/system-prompt")
+    @app.get("/agents/debug/{agent_name}/system-prompt")
     async def get_agent_system_prompt(agent_name: str):
         """Return the currently rendered system & tools prompt for the agent.
 
@@ -837,6 +1284,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
           - allowed tool filtering
           - max_steps (minus one for planning budget inside prompt)
           - datetime context (if enabled)
+        
+        Note: This endpoint is admin-only (requires admin role).
         """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
@@ -870,9 +1319,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        
+        Security:
+        - Requires authentication when auth.enabled=true
+        - Validates LLM request permissions
+        - Enforces session ownership
         """
         logger = logging.getLogger(__name__)
         request_id = short_id()
+
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        
+        # SECURITY: Validate LLM access (this is an LLM-consuming endpoint)
+        _validate_llm_access(current_user, is_llm_request=True)
+        
+        # Determine user_id for session management
+        user_id = current_user.username if current_user else "anonymous"
 
         # Try to parse task and files from the request in a flexible way
         task = None
@@ -928,14 +1393,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if query_task:
                 task = query_task
 
-        logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s",
-                   task, len(upload_files), request_id, session_id, agent_name or "default", llm_profile or "default")
-
-        # Get current user (optional authentication)
-        current_user = await _get_current_user_optional(request)
-
-        # Determine user_id for session management
-        user_id = current_user.username if current_user else "anonymous"
+        logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user=%s",
+                   task, len(upload_files), request_id, session_id, agent_name or "default", 
+                   llm_profile or "default", user_id)
 
         # Register request ownership for status stream security
         _request_user_map[request_id] = user_id
@@ -959,12 +1419,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # CRITICAL: Always set/update session metadata (even for existing sessions)
         # This ensures user_id is available for tool execution AND respects llm_profile overrides
         if session_id:
-            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
             selected_agent._session_tracker.set_session_metadata(session_id, {
                 "user_id": user_id,
                 "agent_name": selected_agent.name,
                 "llm_profile": effective_llm_profile
             })
+            
+            # CRITICAL: Initialize session template_vars from agent_config for NEW sessions
+            # This ensures initial values (like workflow_phase: "planning") are available
+            # without requiring explicit set_context calls
+            if not session_exists:
+                # Copy initial template_vars from agent_config to session-scoped vars
+                if (hasattr(selected_agent, 'agent_config') and 
+                    selected_agent.agent_config and 
+                    selected_agent.agent_config.template_vars):
+                    initial_vars = selected_agent.agent_config.template_vars.copy()
+                    selected_agent._session_tracker.set_session_template_vars(session_id, initial_vars)
+                    logger.debug(f"[SESSION] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
 
         from .servers.agent.result_utils import collect_final_result
 
@@ -999,7 +1471,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 # Save session after execution (if session_id was provided or created)
                 if session_id and _session_service:
-                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                    effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                     was_new_session = not session_exists
                     await _session_service.save_session(
                         selected_agent,
@@ -1009,7 +1481,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         effective_llm_profile,
                         was_new_session
                     )
-                    logger.debug(f"[SESSION_SAVE] Saved session {session_id} after /run (text-only)")
 
                 return result
             finally:
@@ -1018,23 +1489,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # Process uploaded files for multimodal input
         from .llm.capabilities import get_model_capabilities
-        from .utils.image_processor import create_multimodal_message, ImageProcessingError
+        from .utils.multimodal_processor import (
+            create_multimodal_message_extended,
+            ImageProcessingError, 
+            AudioProcessingError, 
+            TextFileProcessingError,
+            detect_file_type
+        )
         import tempfile
         from pathlib import Path
 
-        # Validate model supports images
-        model_name = selected_agent.llm.model if hasattr(selected_agent.llm, 'model') else None
-        if model_name:
-            caps = get_model_capabilities(model_name)
-            if not caps.image_input:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Model {model_name} does not support image input"
-                )
-
-        # Save uploaded files to temp directory
-        temp_files = []
+        # Categorize uploaded files by type
         image_paths = []
+        audio_paths = []
+        text_paths = []
+        temp_files = []
+        
         try:
             temp_dir = Path(tempfile.mkdtemp())
 
@@ -1044,15 +1514,59 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     content = await upload_file.read()
                     f.write(content)
                 temp_files.append(temp_path)
-                image_paths.append(str(temp_path))
-                logger.debug("Saved uploaded file %s (%d bytes) -> %s", upload_file.filename, len(content), temp_path)
+                
+                # Categorize by file type
+                file_type = detect_file_type(temp_path)
+                if file_type == 'image':
+                    image_paths.append(str(temp_path))
+                elif file_type == 'audio':
+                    audio_paths.append(str(temp_path))
+                elif file_type == 'text':
+                    text_paths.append(str(temp_path))
+                else:
+                    logger.warning("Unsupported file type for %s, skipping", upload_file.filename)
+                    
+                logger.debug("Saved uploaded file %s (%d bytes) -> %s [%s]", 
+                           upload_file.filename, len(content), temp_path, file_type)
 
-            # Create multimodal message
+            # Get model name for capability checks (use override if provided)
+            if llm_override and hasattr(llm_override, 'model'):
+                model_name = llm_override.model
+            else:
+                model_name = selected_agent.llm.model if hasattr(selected_agent.llm, 'model') else None
+
+            # Validate model supports images if we have any
+            if image_paths and model_name:
+                caps = get_model_capabilities(model_name)
+                if not caps.image_input:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model {model_name} does not support image input"
+                    )
+
+            # Validate model supports audio if we have any
+            if audio_paths and model_name:
+                caps = get_model_capabilities(model_name)
+                if not caps.audio_input:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model {model_name} does not support audio input"
+                    )
+
+            # Create multimodal message with all file types
             try:
-                multimodal_msg = create_multimodal_message(task, image_paths)
-                logger.info("Created multimodal message with %d image(s)", len(image_paths))
-            except ImageProcessingError as e:
-                logger.exception("Image processing failed while creating multimodal message: %s", e)
+                multimodal_msg = create_multimodal_message_extended(
+                    text=task,
+                    image_paths=image_paths if image_paths else None,
+                    audio_paths=audio_paths if audio_paths else None,
+                    text_file_paths=text_paths if text_paths else None
+                )
+                logger.info(
+                    "Created multimodal message with %d image(s), %d audio(s), %d text file(s)", 
+                    len(image_paths), len(audio_paths), len(text_paths)
+                )
+            except (ImageProcessingError, AudioProcessingError, TextFileProcessingError) as e:
+                logger.exception("File processing failed while creating multimodal message: %s", e)
                 raise HTTPException(status_code=400, detail=str(e))
 
             # Stream events for multimodal message (same as /events endpoint)
@@ -1070,15 +1584,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
-                            old_session_id = actual_session_id
                             actual_session_id = event["session_id"]
-                            logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
 
-                        # CRITICAL: Set session metadata for newly created sessions
-                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
-                        if was_new_session:
+                        # CRITICAL: Always set/update session metadata (even for existing sessions)
+                        # This ensures user_id is available for tool execution AND respects llm_profile overrides
+                        if was_new_session or event_type == "start":
                             # Use override llm_profile if provided, otherwise agent's default
-                            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                             selected_agent._session_tracker.set_session_metadata(actual_session_id, {
                                 "user_id": user_id,
                                 "agent_name": selected_agent.name,
@@ -1105,7 +1617,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Save session after completion
                     if _session_service and actual_session_id:
                         # Use actual agent name and effective llm_profile (respecting overrides)
-                        effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                         await _session_service.save_session(
                             selected_agent,
                             user_id,
@@ -1145,7 +1657,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         session_id: Optional[str] = Query(default=None),
         agent: Optional[str] = Query(default=None, alias="agent"),  # Accept both 'agent' and 'agent_name'
         agent_name: Optional[str] = Query(default=None),
-        llm_profile: Optional[str] = Query(default=None)
+        llm_profile: Optional[str] = Query(default=None),
+        request_id: Optional[str] = Query(default=None)  # For reconnecting to existing job
     ):
         """Stream agent events for a task.
 
@@ -1154,33 +1667,145 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent or agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        - request_id: Optional request ID to reconnect to an existing running job
 
-        Authentication:
+        Security:
+        - Requires authentication when auth.enabled=true
+        - Validates LLM request permissions
         - If user is authenticated (JWT token or API key), sessions are saved to their account
-        - If not authenticated, sessions use "anonymous" user_id
+        - If not authenticated (when anonymous allowed), sessions use "anonymous" user_id
         """
         logger = logging.getLogger(__name__)
-        request_id = short_id()
 
         # Prioritize 'agent' parameter over 'agent_name' for backwards compatibility
         agent_name = agent or agent_name
 
-        # Get current user (optional authentication)
-        current_user = await _get_current_user_optional(request)
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        
+        # SECURITY: Validate LLM access (this is an LLM-consuming endpoint)
+        _validate_llm_access(current_user, is_llm_request=True)
 
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"
 
+        # Check if reconnecting to an existing job
+        job_manager = get_background_job_manager()
+        existing_job: Optional[BackgroundJob] = None
+        if request_id:
+            existing_job = await job_manager.get_job(request_id)
+            if existing_job:
+                # Verify user owns this job
+                if existing_job.user_id != user_id:
+                    raise HTTPException(status_code=403, detail="Access denied to this request")
+                logger.info(f"Client reconnecting to job {request_id}")
+                # Use the agent_name from the original job, not from query params
+                agent_name = existing_job.agent_name
+        
+        # Generate new request_id if not reconnecting
+        if not existing_job:
+            request_id = short_id()
+            
         # Register request ownership for status stream security
         _request_user_map[request_id] = user_id
 
-        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s",
-                   task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id)
+        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s, reconnect=%s",
+                   task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id, existing_job is not None)
 
+        # FAST PATH: For reconnecting clients, skip all setup and go straight to streaming
+        if existing_job:
+            # Load agent for event formatting (needed for HTML conversion via hooks)
+            # Start with the global default agent from build_app()
+            reconnect_agent = app.state.agent  # Global agent from build_app
+            
+            # Try to load the specific agent if it's different from the default
+            if existing_job.agent_name and existing_job.agent_name != reconnect_agent.name:
+                try:
+                    reconnect_agent = _app_registry.get(existing_job.agent_name)  # type: ignore[attr-defined]
+                except Exception as e:
+                    logger.warning(f"Could not load agent '{existing_job.agent_name}': {e}, using default")
+            
+            async def reconnect_event_stream():
+                """Simplified event stream for reconnecting clients."""
+                import asyncio as _asyncio
+                
+                # Send immediate :ok to establish connection
+                yield ":ok\n\n"
+                
+                # Increment client count
+                await job_manager.increment_sse_client(request_id)
+                
+                # Send reconnect event
+                reconnect_payload = {
+                    "type": "reconnect",
+                    "request_id": request_id,
+                    "session_id": existing_job.actual_session_id or existing_job.session_id,
+                    "agent_name": existing_job.agent_name,
+                    "llm_profile": existing_job.llm_profile,
+                    "status": existing_job.status.value,
+                    "task": existing_job.task_description,
+                    "created_at": existing_job.created_at,
+                    "message": f"Reconnected to running job (started {int(time.time() - existing_job.created_at)}s ago)"
+                }
+                if existing_job.last_status_message:
+                    reconnect_payload["last_status"] = existing_job.last_status_message
+                yield f"data: {json.dumps(reconnect_payload, ensure_ascii=False)}\n\n"
+                
+                keepalive_interval = config.status.sse_keepalive_interval
+                actual_session_id = existing_job.actual_session_id or existing_job.session_id
+                
+                try:
+                    while True:
+                        if existing_job.status != JobStatus.RUNNING:
+                            # Drain remaining events
+                            while not existing_job.event_queue.empty():
+                                try:
+                                    ev = existing_job.event_queue.get_nowait()
+                                    if ev is not None:
+                                        yield await _format_and_yield_event(
+                                            ev, reconnect_agent, request_id, actual_session_id or "unknown",
+                                            user_id, existing_job.agent_name, llm_profile, False
+                                        )
+                                except Exception:
+                                    break
+                            break
+                        
+                        try:
+                            ev = await _asyncio.wait_for(existing_job.event_queue.get(), timeout=keepalive_interval)
+                        except _asyncio.TimeoutError:
+                            yield ":keepalive\n\n"
+                            continue
+                        
+                        if ev is None:
+                            break
+                        
+                        # Track status for future reconnects
+                        if ev.get("type") == "status" and ev.get("message"):
+                            existing_job.last_status_message = ev["message"]
+                        
+                        yield await _format_and_yield_event(
+                            ev, reconnect_agent, request_id, actual_session_id or "unknown",
+                            user_id, existing_job.agent_name, llm_profile, False
+                        )
+                        
+                except _asyncio.CancelledError:
+                    raise
+                finally:
+                    await job_manager.decrement_sse_client(request_id)
+            
+            return StreamingResponse(
+                reconnect_event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        # NORMAL PATH: For new requests, do full setup
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
-        # Load existing session if session_id provided
+        # Load existing session if session_id provided (only for new jobs)
         session_exists = False
         if session_id and _session_service:
             try:
@@ -1198,7 +1823,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # load_and_restore_session sets metadata from disk, but we need to override with current request's llm_profile
         if session_id:
             # Use override llm_profile if provided, otherwise agent's default
-            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
             selected_agent._session_tracker.set_session_metadata(session_id, {
                 "user_id": user_id,
                 "agent_name": selected_agent.name,
@@ -1206,80 +1831,108 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             })
 
         async def event_stream():
+            nonlocal job_manager
+            
+            # Check if server is already shutting down
+            if _shutdown_event and _shutdown_event.is_set():
+                yield ":server_shutdown\n\n"
+                return
+            
             yield ":ok\n\n"
 
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
 
+            # Keep-alive mechanism
+            keepalive_interval = config.status.sse_keepalive_interval
+            
+            import asyncio as _asyncio
+            CancelledError = _asyncio.CancelledError
+            
+            # Create new background job (reconnects use the fast path above)
+            async def agent_runner():
+                """Run the agent and yield events"""
+                async for ev in selected_agent.run_events(
+                    task, request_id, actual_session_id, 
+                    llm_override=llm_override, llm_profile_info_override=llm_profile_info
+                ):
+                    yield ev
+            
+            job = await job_manager.create_job(
+                request_id=request_id,
+                user_id=user_id,
+                agent_name=agent_name or "default",
+                session_id=session_id,
+                agent_runner=agent_runner,
+                llm_profile=llm_profile,
+            )
+            # Store task description for reconnect
+            job.task_description = task
+
             try:
-                async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
-                    logger.debug("SSE event: %s", ev.get("type"))
-
-                    if ev.get("type") == "start" and ev.get("session_id"):
-                        old_session_id = actual_session_id
-                        actual_session_id = ev["session_id"]
-                        logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
-
-                        # CRITICAL: Set session metadata for newly created sessions
-                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
-                        if was_new_session:
-                            selected_agent._session_tracker.set_session_metadata(actual_session_id, {
-                                "user_id": user_id,
-                                "agent_name": agent_name or "default",
-                                "llm_profile": llm_profile or "normal"
-                            })
-                            logger.debug(f"[SESSION] Set metadata for new session {actual_session_id}: user_id={user_id}")
-
-                    if hasattr(ev, 'to_dict'):
-                        payload = ev.to_dict()
-                    else:
-                        payload = ev
-
-                    # Format output for final event and thinking_complete event
-                    if selected_agent._hook_manager:
-                        # Format final event summary to HTML
-                        if ev.get("type") == "final" and ev.get("summary"):
+                # Read events from job's event queue
+                while True:
+                    # Check if job is done
+                    if job.status != JobStatus.RUNNING:
+                        # Job finished - drain remaining events
+                        while not job.event_queue.empty():
                             try:
-                                formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                                    output=payload["summary"],
-                                    request_id=request_id,
-                                    session_id=actual_session_id or "unknown",
-                                    output_format='html'
-                                )
-                                payload["summary"] = formatted_summary
-                                payload["content_format"] = content_format
-                            except Exception as e:
-                                logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
-
-                        # Also format thinking_complete content to HTML (for streaming)
-                        elif ev.get("type") == "thinking_complete" and ev.get("assistant", {}).get("content"):
-                            try:
-                                formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                                    output=payload["assistant"]["content"],
-                                    request_id=request_id,
-                                    session_id=actual_session_id or "unknown",
-                                    output_format='html'
-                                )
-                                payload["assistant"]["content"] = formatted_content
-                                payload["content_format"] = content_format
-                            except Exception as e:
-                                logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
-
+                                ev = job.event_queue.get_nowait()
+                                if ev is not None:
+                                    yield await _format_and_yield_event(
+                                        ev, selected_agent, request_id, actual_session_id or "unknown",
+                                        user_id, agent_name, llm_profile, was_new_session
+                                    )
+                            except Exception:
+                                break
+                        break
+                    
+                    # Try to get next event from queue with timeout
                     try:
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                    except (TypeError, ValueError) as e:
-                        logger.error("Failed to serialize event %s: %s", ev, e)
-                        error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
-                        yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
-            except asyncio.CancelledError:
-                # Stream was cancelled - send cancellation event to WebUI
-                logger.info(f"Stream cancelled for request {request_id}, sending cancellation event")
-                cancelled_payload = {"type": "cancelled", "request_id": request_id, "message": "Request cancelled by user"}
+                        ev = await _asyncio.wait_for(job.event_queue.get(), timeout=keepalive_interval)
+                    except _asyncio.TimeoutError:
+                        # No event received within keepalive interval - send keepalive
+                        yield ":keepalive\n\n"
+                        continue
+                    
+                    if ev is None:
+                        # Job finished signal
+                        break
+                    
+                    # Track session_id from start event
+                    if ev.get("type") == "start" and ev.get("session_id"):
+                        actual_session_id = ev["session_id"]
+                        # Store in job for reconnect support
+                        job.actual_session_id = actual_session_id
+                    
+                    # Track status messages for reconnect
+                    if ev.get("type") == "status" and ev.get("message"):
+                        job.last_status_message = ev["message"]
+
+                    # Update session metadata
+                    if was_new_session or ev.get("type") == "start":
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                        selected_agent._session_tracker.set_session_metadata(actual_session_id, {
+                            "user_id": user_id,
+                            "agent_name": agent_name or "default",
+                            "llm_profile": effective_llm_profile
+                        })
+
+                    # Format and yield event
+                    yield await _format_and_yield_event(
+                        ev, selected_agent, request_id, actual_session_id or "unknown",
+                        user_id, agent_name, llm_profile, was_new_session
+                    )
+                    
+            except CancelledError:
+                # SSE connection cancelled (client disconnect)
+                # Send cancellation event to client (if possible)
+                cancelled_payload = {"type": "disconnected", "request_id": request_id, "message": "SSE connection closed, job continues in background"}
                 try:
                     yield f"data: {json.dumps(cancelled_payload, ensure_ascii=False)}\n\n"
-                except Exception as e:
-                    logger.warning(f"Failed to send cancellation event: {e}")
-                raise  # Re-raise to ensure proper cleanup
+                except Exception:
+                    pass
+                raise
             except Exception as e:
                 # Other errors - send error event
                 logger.error(f"Error in event stream for request {request_id}: {e}", exc_info=True)
@@ -1287,25 +1940,31 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 try:
                     yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
                 except Exception:
-                    pass  # Best effort
+                    pass
                 raise
             finally:
-                # ALWAYS persist session after streaming, even if client disconnects
-                logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
-                if actual_session_id and _session_service:
-                    # Use actual agent name and effective llm_profile (respecting overrides)
-                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
-                    await _session_service.save_session(
-                        selected_agent,
-                        user_id,
-                        actual_session_id,
-                        selected_agent.name,
-                        effective_llm_profile,
-                        was_new_session
-                    )
+                # Decrement SSE client count
+                await job_manager.decrement_sse_client(request_id)
+                
+                # NOTE: We do NOT cancel the job here! The job continues running in background.
+                # The job will be cancelled only via explicit /cancel endpoint.
+                
+                # Persist session if job is completed
+                if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+                    if actual_session_id and _session_service:
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                        await _session_service.save_session(
+                            selected_agent,
+                            user_id,
+                            actual_session_id,
+                            selected_agent.name,
+                            effective_llm_profile,
+                            was_new_session
+                        )
 
-                # Cleanup: Remove request_id from ownership map to prevent memory leak
-                _request_user_map.pop(request_id, None)
+                # Cleanup: Remove request_id from ownership map only if job is done
+                if job.status != JobStatus.RUNNING:
+                    _request_user_map.pop(request_id, None)
 
         return StreamingResponse(
             event_stream(),
@@ -1313,14 +1972,72 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    @app.post("/cancel/{request_id}")
-    async def cancel_request(request_id: str):
-        """Cancel an active request by its ID."""
-        logger = logging.getLogger(__name__)
-        logger.info("Cancel request received for request_id=%s", request_id)
+    @app.get("/api/requests/{request_id}/status")
+    async def get_request_status(request_id: str):
+        """Get the status of a request for reconnection purposes.
+        
+        Used by the WebUI to poll for request completion when SSE connection is lost.
+        Returns whether the request is still running or completed.
+        """
+        # First check BackgroundJobManager for more accurate status
+        job_manager = get_background_job_manager()
+        job = await job_manager.get_job(request_id)
+        if job:
+            return {
+                "request_id": request_id,
+                "status": job.status.value,
+                "completed": job.status != JobStatus.RUNNING,
+                "error": job.error_message,
+                "sse_clients": job.sse_client_count,
+                "events_buffered": job.event_queue.qsize() if job.event_queue else 0
+            }
+        
+        # Fallback to session tracker
+        is_active = await agent._session_tracker.is_request_active(request_id)
+        
+        if is_active:
+            return {
+                "request_id": request_id,
+                "status": "running",
+                "completed": False
+            }
+        
+        # Request not active - it either completed or was never started
+        return {
+            "request_id": request_id,
+            "status": "completed",
+            "completed": True,
+            "message": "Request finished - check session for results"
+        }
 
-        success = await agent.cancel_request(request_id)
-        if success:
+    @app.post("/api/requests/{request_id}/cancel")
+    async def cancel_request(request_id: str, force: bool = Query(default=False)):
+        """Cancel an active request by its ID.
+        
+        Performs graceful cancellation:
+        1. Sets cancellation tokens (agent detects via is_cancelled() and shuts down cleanly)
+        2. Agent can save session, send status events, yield "cancelled" event
+        3. If force=True, waits 5s then force-cancels task if still running
+        
+        Args:
+            request_id: The request ID to cancel
+            force: If True, force-cancel after 5s if agent doesn't respond to graceful cancel
+        """
+        logger = logging.getLogger(__name__)
+        logger.info("Cancel request received for request_id=%s (force=%s)", request_id, force)
+
+        # Use BackgroundJobManager for graceful cancellation
+        # This sets cancellation tokens - agent will detect and shutdown cleanly
+        job_manager = get_background_job_manager()
+        force_timeout = 5.0 if force else 0.0
+        job_success = await job_manager.cancel_job(request_id, force_timeout=force_timeout)
+        
+        # ALWAYS also call agent.cancel_request for belt-and-suspenders
+        # This ensures the agent's internal request tracking is updated
+        agent_success = await agent.cancel_request(request_id)
+        
+        if job_success or agent_success:
+            logger.info(f"Cancel successful: job_manager={job_success}, agent={agent_success}")
             return {"status": "cancelled", "request_id": request_id}
         else:
             return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}
@@ -1331,9 +2048,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         If `session_id` query parameter is provided, append directly to session.
         Body: { "content": "the user message" }
+        
+        Note: When appending to a session (not an active request), the session is
+        persisted to disk automatically.
         """
         logger = logging.getLogger(__name__)
         from fastapi import HTTPException
+        
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        
         try:
             body = await request.json()
         except Exception as e:
@@ -1344,12 +2071,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
+        async def _persist_session(sid: str) -> None:
+            """Helper to persist session to disk after append."""
+            if _session_service:
+                metadata = agent._session_tracker.get_session_metadata(sid)
+                agent_name_for_session = metadata.get("agent_name", agent.name) if metadata else agent.name
+                llm_profile_for_session = metadata.get("llm_profile", agent.agent_config.default_llm_profile) if metadata else agent.agent_config.default_llm_profile
+                await _session_service.save_session(
+                    agent,
+                    user_id,
+                    sid,
+                    agent_name_for_session,
+                    llm_profile_for_session,
+                    was_new_session=False
+                )
+                logger.debug("Session %s persisted to disk after append", sid)
+
         if session_id:
             # Append directly to persisted session using agent method
             logger.debug("Appending to session %s: %.120s", session_id, content)
             success = await agent.append_to_session(session_id, content)
             if not success:
                 raise HTTPException(status_code=404, detail="Session not found")
+            # Persist to disk
+            await _persist_session(session_id)
             return {"status": "appended", "session_id": session_id}
 
         logger.debug("Append request received for request_id=%s: %.120s", request_id, content)
@@ -1363,6 +2108,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
         if appended:
+            # Active request - will be persisted when request completes
             return {"status": "appended", "request_id": request_id}
 
         # If request not found/finished, try to append into the persisted session for this request
@@ -1371,6 +2117,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.debug("Request %s already finished; appending to session %s", request_id, sid)
             success = await agent.append_to_session(sid, content)
             if success:
+                # Persist to disk
+                await _persist_session(sid)
                 return {"status": "appended", "session_id": sid}
 
         raise HTTPException(status_code=404, detail="Request not found or already completed")
@@ -1385,8 +2133,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/sessions/{session_id}/append")
     async def append_to_session_endpoint(session_id: str, request: Request):
-        """Append a user message directly to a session (no active request required)."""
+        """Append a user message directly to a session (no active request required).
+        
+        This endpoint adds a user message to an existing session and persists it to disk.
+        """
         logger = logging.getLogger(__name__)
+        
+        # ========================================
+        # SECURITY: Enforce endpoint authentication
+        # ========================================
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        
         try:
             body = await request.json()
             content = body.get('content')
@@ -1395,10 +2153,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
             logger.debug("Session append request for session_id=%s: %.120s", session_id, content)
+            
+            # First, append to in-memory session
             success = await agent.append_to_session(session_id, content)
             if not success:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=404, detail="Session not found")
+
+            # Persist the session to disk
+            if _session_service:
+                # Get session metadata to determine agent_name and llm_profile
+                metadata = agent._session_tracker.get_session_metadata(session_id)
+                agent_name_for_session = metadata.get("agent_name", agent.name) if metadata else agent.name
+                llm_profile_for_session = metadata.get("llm_profile", agent.agent_config.default_llm_profile) if metadata else agent.agent_config.default_llm_profile
+                
+                await _session_service.save_session(
+                    agent,
+                    user_id,
+                    session_id,
+                    agent_name_for_session,
+                    llm_profile_for_session,
+                    was_new_session=False
+                )
+                logger.debug("Session %s persisted to disk after append", session_id)
 
             return {"status": "appended", "session_id": session_id}
         except Exception as e:
@@ -1752,7 +2529,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug(f"Prompts not available: {e}")
 
                 # 3. Keep connection alive with periodic heartbeats
+                # Get heartbeat interval from server_mode config (default 30s if not configured)
+                heartbeat_interval = 30.0  # Default fallback
+                if config.server_mode and hasattr(config.server_mode, 'sse_heartbeat_interval'):
+                    heartbeat_interval = config.server_mode.sse_heartbeat_interval
+                
                 while True:
+                    # Check if server is shutting down
+                    if _shutdown_event and _shutdown_event.is_set():
+                        logger.debug("MCP SSE stream terminating due to server shutdown")
+                        break
+                    
                     # Check if client disconnected
                     if await request.is_disconnected():
                         logger.debug("MCP SSE client disconnected")
@@ -1768,8 +2555,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     }
                     yield f"event: message\ndata: {json.dumps(heartbeat_message, ensure_ascii=False)}\n\n"
 
-                    # Wait before next heartbeat (30 seconds)
-                    await asyncio.sleep(30)
+                    # Wait before next heartbeat
+                    await asyncio.sleep(heartbeat_interval)
 
             except asyncio.CancelledError:
                 logger.debug("MCP SSE stream cancelled")

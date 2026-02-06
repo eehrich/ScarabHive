@@ -14,9 +14,9 @@
   /* Allow panels to be resized up to viewport limits with buffer */
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 100px);
-  background: linear-gradient(180deg, var(--bg-darkest), var(--bg-dark));
-  border: 1px solid var(--border-normal);
-  border-radius: 10px;
+  background: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 6px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.6);
   z-index: 1000;
   display: flex;
@@ -58,10 +58,10 @@
   outline: none !important;
 }
 
-/* Status panel specific positioning - smaller and on the right */
+/* Status panel specific positioning - medium size on the right */
 #floatingStatusPanel {
-  width: 400px;
-  height: 700px;
+  width: 450px;
+  height: 650px;
   right: 24px;
   left: auto;
   top: 80px;
@@ -82,8 +82,8 @@
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: linear-gradient(180deg, var(--bg-darkest), var(--bg-dark));
-  border-bottom: 1px solid var(--border-subtle);
+  background: #252526;
+  border-bottom: 1px solid #3e3e42;
   cursor: grab;
   flex-shrink: 0;
 }
@@ -99,19 +99,28 @@
   justify-content: center;
   width: 36px;
   height: 36px;
-  background: var(--bg-darkest);
-  border: 1px solid var(--border-normal);
-  color: #9ab;
+  background: #0e639c;
+  border: none;
+  color: white;
   padding: 6px;
-  border-radius: 10px;
+  border-radius: 4px;
   cursor: pointer;
   margin-right: 8px;
   transition: background 150ms ease, transform 120ms ease;
 }
 
 .floating-panel-header .icon-btn:hover {
-  background: var(--bg-dark);
+  background: #1177bb;
   transform: translateY(-1px);
+}
+
+/* Active state for icon buttons (auto-refresh toggle) */
+.floating-panel-header .icon-btn.active {
+  background: #16825d;
+}
+
+.floating-panel-header .icon-btn.active:hover {
+  background: #1a9970;
 }
 
 .floating-panel-header .icon-btn:active {
@@ -166,6 +175,65 @@
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  max-height: 100%;
+}
+
+/* Remove padding from body when it contains an iframe (plugin panels) */
+.floating-panel-body:has(> .panel-content > iframe) {
+  padding: 0;
+}
+
+/* Fix iframe height in flex container - prevent 1px overflow */
+.floating-panel-body .panel-content iframe {
+  display: block;
+  height: 100%;
+  max-height: 100%;
+  width: 100%;
+  border: none;
+}
+
+/* Hide scrollbar by default in Chrome/Safari, show on hover */
+.floating-panel-body::-webkit-scrollbar,
+.floating-panel-body .panel-content::-webkit-scrollbar {
+  width: 10px;
+  background: transparent;
+}
+
+.floating-panel-body::-webkit-scrollbar-track,
+.floating-panel-body .panel-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.floating-panel-body::-webkit-scrollbar-thumb,
+.floating-panel-body .panel-content::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.floating-panel-body:hover::-webkit-scrollbar-thumb,
+.floating-panel-body .panel-content:hover::-webkit-scrollbar-thumb {
+  background: rgba(121, 121, 121, 0.4);
+  background-clip: padding-box;
+}
+
+.floating-panel-body::-webkit-scrollbar-thumb:hover,
+.floating-panel-body .panel-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 100, 100, 0.7);
+  background-clip: padding-box;
+}
+
+/* Firefox scrollbar - thin and only visible when needed */
+.floating-panel-body,
+.floating-panel-body .panel-content {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.floating-panel-body:hover,
+.floating-panel-body .panel-content:hover {
+  scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
 }
 
 /* Resize handle for floating panels */
@@ -284,4 +352,77 @@
   outline: none;
   box-shadow: 0 0 0 3px rgba(12,56,72,0.12);
   border-color: #1f9bb5;
+}
+
+/* ==========================================
+   RESPONSIVE STYLES - Panels
+   ========================================== */
+
+@media (max-width: 768px) {
+  /* Panels take full width on mobile */
+  .floating-panel {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 100% !important;
+    height: 70vh !important;
+    min-height: 50vh !important;
+    max-height: 85vh !important;
+    border-radius: 16px 16px 0 0;
+    z-index: 1000 !important;
+  }
+  
+  /* Disable drag on mobile - panels are fixed to bottom */
+  .floating-panel-header {
+    cursor: default;
+  }
+  
+  /* Larger touch targets */
+  .floating-panel-header .icon-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+  
+  /* Hide resize handle on mobile */
+  .resize-handle {
+    display: none;
+  }
+  
+  /* Panel title smaller */
+  .floating-panel-header span {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Even more compact on small phones */
+  .floating-panel {
+    height: 80vh !important;
+    max-height: 90vh !important;
+  }
+  
+  .floating-panel-body {
+    padding: 8px;
+  }
+  
+  /* Smaller toggle switches */
+  .toggle-track {
+    width: 36px;
+    height: 18px;
+  }
+  
+  .toggle-knob {
+    width: 14px;
+    height: 14px;
+  }
+  
+  .toggle-track.active .toggle-knob {
+    transform: translateX(16px);
+  }
 }

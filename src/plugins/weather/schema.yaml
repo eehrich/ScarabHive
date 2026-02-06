@@ -40,3 +40,6 @@ tools:
             description: "Include solar radiation data when available"
         required: [location]
         additionalProperties: false
+
+config:
+  ssl_verify: true

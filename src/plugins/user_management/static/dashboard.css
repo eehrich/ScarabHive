@@ -13,80 +13,73 @@
 }
 
 body {
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    background: #111820;  /* --bg-darkest from main site */
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    background: #1e1e1e;
     min-height: 100vh;
     padding: 20px;
-    color: #e6edf3;
+    color: #d4d4d4;
 }
 
 /* ============================================================================
    CONTAINER & LAYOUT
    ============================================================================ */
 .container {
-    max-width: 1400px;
+    max-width: 1200px;
     margin: 0 auto;
-    background: #1a2129;  /* --bg-dark */
-    border-radius: 12px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.08);  /* --border-normal */
 }
 
 /* ============================================================================
    HEADER
    ============================================================================ */
-.header {
-    background: #313845;  /* --bg-light */
-    color: white;
-    padding: 30px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+h1 {
+    font-size: 24px;
+    font-weight: 400;
+    color: #569cd6;
+    margin-bottom: 20px;
 }
 
-.header h1 {
-    font-size: 28px;
-    font-weight: 600;
-    color: #e6edf3;
-}
-
-.header .stats {
-    display: flex;
-    gap: 20px;
+.stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 30px;
 }
 
 .stat-box {
-    background: rgba(255, 255, 255, 0.08);
-    padding: 10px 20px;
-    border-radius: 8px;
-    text-align: center;
-    border: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.stat-box .number {
-    font-size: 24px;
-    font-weight: 700;
-    color: #58a6ff;  /* Blue accent */
+    background: #252526;
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid #3e3e42;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .stat-box .label {
-    font-size: 12px;
-    opacity: 0.7;
-    color: #e6edf3;
+    font-size: 11px;
+    color: #858585;
+    margin-bottom: 5px;
+    white-space: nowrap;
+}
+
+.stat-box .number {
+    font-size: clamp(12px, 3vw, 22px);
+    font-weight: 600;
+    color: #4ec9b0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* ============================================================================
    TOOLBAR & SEARCH
    ============================================================================ */
 .toolbar {
-    padding: 20px 30px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 20px 0;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #3e3e42;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: #1e242d;  /* --bg-medium */
 }
 
 .search-box {
@@ -98,18 +91,18 @@ body {
 .search-box input {
     width: 100%;
     padding: 10px 15px 10px 40px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
+    border: 1px solid #3e3e42;
+    border-radius: 6px;
     font-size: 14px;
     transition: all 0.3s;
-    background: #1a2129;
-    color: #e6edf3;
+    background: #1e1e1e;
+    color: #d4d4d4;
 }
 
 .search-box input:focus {
     outline: none;
-    border-color: #58a6ff;
-    background: #1e242d;
+    border-color: #569cd6;
+    background: #252526;
 }
 
 .search-box::before {
@@ -135,14 +128,14 @@ body {
 }
 
 .btn-primary {
-    background: #58a6ff;
-    color: #0d1117;
+    background: #0e639c;
+    color: white;
 }
 
 .btn-primary:hover {
-    background: #79c0ff;
+    background: #1177bb;
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.4);
+    box-shadow: 0 4px 12px rgba(14, 99, 156, 0.4);
 }
 
 .btn-danger {
@@ -169,14 +162,14 @@ body {
 }
 
 .btn-secondary {
-    background: #313845;
-    color: #e6edf3;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: #3e3e42;
+    color: #d4d4d4;
+    border: 1px solid #3e3e42;
 }
 
 .btn-secondary:hover {
-    background: #3d4553;
-    border-color: rgba(255, 255, 255, 0.2);
+    background: #505050;
+    border-color: #505050;
 }
 
 /* ============================================================================
@@ -200,15 +193,15 @@ body {
 }
 
 .modal-content {
-    background-color: #1a2129;  /* --bg-dark */
+    background-color: #252526;
     margin: 5% auto;
     padding: 0;
-    border-radius: 12px;
+    border-radius: 6px;
     width: 90%;
     max-width: 500px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     animation: slideDown 0.3s;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid #569cd6;
 }
 
 @keyframes slideDown {
@@ -224,21 +217,21 @@ body {
 
 .modal-header {
     padding: 20px 30px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid #3e3e42;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: #1e242d;
+    background: #1e1e1e;
 }
 
 .modal-header h2 {
     margin: 0;
     font-size: 24px;
-    color: #e6edf3;
+    color: #569cd6;
 }
 
 .close {
-    color: #8b949e;
+    color: #858585;
     font-size: 28px;
     font-weight: bold;
     cursor: pointer;
@@ -246,7 +239,7 @@ body {
 }
 
 .close:hover {
-    color: #e6edf3;
+    color: #d4d4d4;
 }
 
 .modal-content form {
@@ -264,7 +257,7 @@ body {
     display: block;
     margin-bottom: 8px;
     font-weight: 600;
-    color: #e6edf3;
+    color: #d4d4d4;
 }
 
 .form-group input[type="text"],
@@ -273,25 +266,25 @@ body {
 .form-group select {
     width: 100%;
     padding: 10px 15px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
+    border: 1px solid #3e3e42;
+    border-radius: 6px;
     font-size: 14px;
     transition: all 0.3s;
-    background: #1e242d;
-    color: #e6edf3;
+    background: #1e1e1e;
+    color: #d4d4d4;
 }
 
 .form-group input:focus,
 .form-group select:focus {
     outline: none;
-    border-color: #58a6ff;
-    background: #1a2129;
+    border-color: #569cd6;
+    background: #252526;
 }
 
 .form-group input[readonly] {
-    background: #313845 !important;
+    background: #3e3e42 !important;
     cursor: not-allowed;
-    color: #8b949e;
+    color: #858585;
 }
 
 /* Fix autofill background */
@@ -299,15 +292,15 @@ body {
 .form-group input:-webkit-autofill:hover,
 .form-group input:-webkit-autofill:focus,
 .form-group input:-webkit-autofill:active {
-    -webkit-box-shadow: 0 0 0 30px #1e242d inset !important;
-    -webkit-text-fill-color: #e6edf3 !important;
+    -webkit-box-shadow: 0 0 0 30px #1e1e1e inset !important;
+    -webkit-text-fill-color: #d4d4d4 !important;
     transition: background-color 5000s ease-in-out 0s;
 }
 
 .form-group small {
     display: block;
     margin-top: 5px;
-    color: #8b949e;
+    color: #858585;
     font-size: 12px;
 }
 
@@ -316,7 +309,7 @@ body {
     gap: 10px;
     justify-content: flex-end;
     padding-top: 20px;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    border-top: 1px solid #3e3e42;
     margin-top: 20px;
 }
 
@@ -324,9 +317,11 @@ body {
    TABLE STYLES
    ============================================================================ */
 .table-container {
-    padding: 30px;
+    background: #252526;
+    border: 1px solid #3e3e42;
+    border-radius: 6px;
+    padding: 20px;
     overflow-x: auto;
-    background: #1a2129;
 }
 
 table {
@@ -335,24 +330,24 @@ table {
 }
 
 thead {
-    background: #1e242d;
+    background: #1e1e1e;
 }
 
 th {
-    padding: 15px;
+    padding: 10px 12px;
     text-align: left;
     font-weight: 600;
-    color: #8b949e;
-    font-size: 13px;
+    color: #858585;
+    font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid #3e3e42;
 }
 
 td {
-    padding: 15px;
-    border-top: 1px solid rgba(255, 255, 255, 0.04);
-    color: #e6edf3;
+    padding: 10px 12px;
+    border-top: 1px solid #2d2d30;
+    color: #d4d4d4;
+    font-size: 13px;
 }
 
 tbody tr {
@@ -360,7 +355,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-    background: #1e242d;
+    background: #2a2a2a;
 }
 
 /* ============================================================================
@@ -376,24 +371,24 @@ tbody tr:hover {
 
 .badge-admin {
     background: rgba(248, 81, 73, 0.15);
-    color: #ff7066;
+    color: #f48771;
     border: 1px solid rgba(248, 81, 73, 0.3);
 }
 
 .badge-user {
-    background: rgba(88, 166, 255, 0.15);
-    color: #79c0ff;
-    border: 1px solid rgba(88, 166, 255, 0.3);
+    background: rgba(86, 156, 214, 0.15);
+    color: #569cd6;
+    border: 1px solid rgba(86, 156, 214, 0.3);
 }
 
 .badge-guest {
-    background: rgba(139, 148, 158, 0.15);
-    color: #8b949e;
-    border: 1px solid rgba(139, 148, 158, 0.3);
+    background: rgba(133, 133, 133, 0.15);
+    color: #858585;
+    border: 1px solid rgba(133, 133, 133, 0.3);
 }
 
 .status-active {
-    color: #3fb950;
+    color: #4ec9b0;
     font-weight: 600;
 }
 
@@ -413,44 +408,44 @@ tbody tr:hover {
 .icon-btn {
     padding: 6px 10px;
     border: none;
-    border-radius: 6px;
+    border-radius: 4px;
     cursor: pointer;
     font-size: 14px;
     transition: all 0.2s;
-    background: #313845;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #3e3e42;
+    border: 1px solid #3e3e42;
 }
 
 .icon-btn:hover {
     transform: scale(1.1);
-    border-color: rgba(255, 255, 255, 0.2);
+    border-color: #505050;
 }
 
 .icon-btn.edit {
-    background: rgba(88, 166, 255, 0.15);
-    border-color: rgba(88, 166, 255, 0.3);
+    background: rgba(86, 156, 214, 0.15);
+    border-color: rgba(86, 156, 214, 0.3);
 }
 
 .icon-btn.edit:hover {
-    background: rgba(88, 166, 255, 0.25);
+    background: rgba(86, 156, 214, 0.25);
 }
 
 .icon-btn.delete {
-    background: rgba(248, 81, 73, 0.15);
-    border-color: rgba(248, 81, 73, 0.3);
+    background: rgba(244, 135, 113, 0.15);
+    border-color: rgba(244, 135, 113, 0.3);
 }
 
 .icon-btn.delete:hover {
-    background: rgba(248, 81, 73, 0.25);
+    background: rgba(244, 135, 113, 0.25);
 }
 
 .icon-btn.toggle {
-    background: rgba(210, 153, 34, 0.15);
-    border-color: rgba(210, 153, 34, 0.3);
+    background: rgba(220, 220, 170, 0.15);
+    border-color: rgba(220, 220, 170, 0.3);
 }
 
 .icon-btn.toggle:hover {
-    background: rgba(210, 153, 34, 0.25);
+    background: rgba(220, 220, 170, 0.25);
 }
 
 /* ============================================================================
@@ -459,19 +454,19 @@ tbody tr:hover {
 .loading {
     text-align: center;
     padding: 40px;
-    color: #8b949e;
+    color: #858585;
 }
 
 .empty-state {
     text-align: center;
     padding: 60px 20px;
-    color: #8b949e;
+    color: #858585;
 }
 
 .empty-state h2 {
     font-size: 24px;
     margin-bottom: 10px;
-    color: #e6edf3;
+    color: #d4d4d4;
 }
 
 /* ============================================================================
@@ -479,5 +474,5 @@ tbody tr:hover {
    ============================================================================ */
 .api-key-indicator {
     font-size: 12px;
-    color: #3fb950;
+    color: #4ec9b0;
 }

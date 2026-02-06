@@ -14,6 +14,7 @@ Key features:
 - Progress metrics and filtering
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, UTC
@@ -187,10 +188,15 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         self._auto_save = bool(getattr(mcp_config, "auto_save", True))
 
         # In-memory cache: session_id → TaskCollection
+        # Limited to prevent memory leaks - sessions are persisted to disk
         self._sessions: Dict[str, TaskCollection] = {}
+        self._max_cache_size = int(getattr(mcp_config, 'max_cache_size', 50))
 
         # Task ID counter per session
         self._task_counters: Dict[str, int] = {}
+
+        # Session locks to prevent concurrent access issues
+        self._session_locks: Dict[str, asyncio.Lock] = {}
 
         # Create storage directory
         self._storage_path.mkdir(parents=True, exist_ok=True)
@@ -250,6 +256,31 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         # Fallback: generate session ID
         return f"session_{uuid4().hex[:12]}"
 
+    def _evict_cache_if_needed(self) -> None:
+        """Evict oldest sessions from cache if over limit.
+        
+        Sessions are persisted to disk, so eviction only removes from memory.
+        They will be reloaded on next access.
+        """
+        if len(self._sessions) < self._max_cache_size:
+            return
+        
+        # Find sessions to evict (oldest by updated_at)
+        sessions_by_time = sorted(
+            self._sessions.items(),
+            key=lambda x: x[1].updated_at or datetime.min.replace(tzinfo=UTC)
+        )
+        
+        # Evict oldest half when over limit
+        evict_count = len(self._sessions) - (self._max_cache_size // 2)
+        for session_id, _ in sessions_by_time[:evict_count]:
+            del self._sessions[session_id]
+            self._task_counters.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
+            logger.debug(f"Evicted session {session_id} from cache (LRU)")
+        
+        logger.info(f"TodoServer: Evicted {evict_count} sessions from cache")
+
     def _load_session(self, session_id: str) -> TaskCollection:
         """
         Load task collection from storage (lazy loading).
@@ -266,6 +297,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         # Check cache first
         if session_id in self._sessions:
             return self._sessions[session_id]
+
+        # Evict old entries before adding new one
+        self._evict_cache_if_needed()
 
         # Load from disk
         file_path = self._get_storage_path(session_id)
@@ -320,7 +354,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Write atomically (write to temp, then rename)
-            temp_path = file_path.with_suffix(".tmp")
+            # Use unique temp file to avoid race conditions between parallel saves
+            import time
+            temp_path = file_path.with_suffix(f".tmp.{int(time.time() * 1000000)}")
 
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(
@@ -331,13 +367,15 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 )
 
             # On Windows, replace can fail if file is still open - retry a few times
-            import time
             max_retries = 3
             for attempt in range(max_retries):
                 try:
+                    # Verify temp file still exists before replacing
+                    if not temp_path.exists():
+                        raise FileNotFoundError(f"Temp file disappeared: {temp_path}")
                     temp_path.replace(file_path)
                     break
-                except PermissionError:
+                except (PermissionError, FileNotFoundError):
                     if attempt < max_retries - 1:
                         time.sleep(0.01)  # 10ms delay
                     else:
@@ -348,9 +386,33 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             )
 
         except Exception as e:
+            # Clean up temp file if it still exists
+            try:
+                if 'temp_path' in locals() and temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
             raise StorageError(
                 f"Failed to save session {session_id}: {e}"
             ) from e
+
+    async def _load_session_async(self, session_id: str) -> TaskCollection:
+        """Async wrapper for _load_session - runs in thread pool with locking."""
+        # Get or create lock for this session
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        
+        async with self._session_locks[session_id]:
+            return await asyncio.to_thread(self._load_session, session_id)
+
+    async def _save_session_async(self, session_id: str) -> None:
+        """Async wrapper for _save_session - runs in thread pool with locking."""
+        # Get or create lock for this session
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        
+        async with self._session_locks[session_id]:
+            await asyncio.to_thread(self._save_session, session_id)
 
     def _get_storage_path(self, session_id: str) -> Path:
         """Get file path for session storage"""
@@ -614,8 +676,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     # Tool Implementations (Multi-Mode)
     # =========================================================================
 
-    async def todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
+        Main tool entry point - called when tool name matches server name ({{name}}).
+
         Multi-mode task management tool with explicit operation parameter.
 
         Operations:
@@ -832,8 +896,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         status = context.get("_status") if context else None
 
         try:
-            # Load session
-            collection = self._load_session(session_id)
+            # Load session (async to avoid blocking event loop)
+            collection = await self._load_session_async(session_id)
 
             # Check for idempotency key
             if idempotency_key:
@@ -971,7 +1035,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Save
             if self._auto_save:
-                self._save_session(session_id)
+                await self._save_session_async(session_id)
 
             # Short status message
             if status:
@@ -1034,7 +1098,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Find task
             if task_id not in collection.tasks:
@@ -1286,7 +1350,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Save
             if self._auto_save:
-                self._save_session(session_id)
+                await self._save_session_async(session_id)
 
             # Calculate is_blocked for response
             is_blocked = self._is_blocked(task, collection)
@@ -1370,7 +1434,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Start with all tasks
             tasks = list(collection.tasks.values())
@@ -1492,7 +1556,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Find task
             if task_id not in collection.tasks:
@@ -1607,7 +1671,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             # Find task
             if task_id not in collection.tasks:
@@ -1667,7 +1731,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Save
             if self._auto_save:
-                self._save_session(session_id)
+                await self._save_session_async(session_id)
 
             # Short status message
             if status:
@@ -1707,7 +1771,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         try:
             # Load session
-            collection = self._load_session(session_id)
+            collection = await self._load_session_async(session_id)
 
             if not collection.tasks:
                 if status:
@@ -1936,10 +2000,12 @@ Example: `todo(operation="create", title="Analyze data and create report", prior
         return labels.get(priority, priority.upper())
 
     def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert task list (after first system message)."""
+        """Find position to insert task list (after all consecutive system messages at start)."""
+        # Find the end of consecutive system messages at the beginning
+        position = 0
         for i, msg in enumerate(messages):
             if msg.role == "system":
-                return i + 1
-
-        # No system message found, insert at beginning
-        return 0
+                position = i + 1  # Keep moving past system messages
+            else:
+                break  # Stop at first non-system message
+        return position

@@ -103,7 +103,7 @@ class LogStatusHandler(StatusHandler):
     
     async def process(self, event: StatusEvent) -> None:
         """Log the status event"""
-        logger.info(f"Status: {event.server} [{event.phase.value}] {event.message}")
+        logger.debug(f"Status: {event.server} [{event.phase.value}] {event.message}")
 
 
 class QueueStatusHandler(StatusHandler):
@@ -115,7 +115,20 @@ class QueueStatusHandler(StatusHandler):
     async def process(self, event: StatusEvent) -> None:
         """Forward event to queue for subscriber"""
         try:
-            await self.queue.put(event)
+            # Try non-blocking put first to avoid timeout overhead for normal case
+            self.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Queue is full - drop oldest event and add new one
+            # This prevents memory exhaustion with slow consumers
+            try:
+                dropped = self.queue.get_nowait()
+                logger.warning(
+                    f"Status queue full - dropping oldest event (server={dropped.server}, "
+                    f"phase={dropped.phase.value}) to make room for new event"
+                )
+                self.queue.put_nowait(event)
+            except Exception as e:
+                logger.error(f"Failed to drop-and-add status to queue: {e}")
         except Exception as e:
             logger.error(f"Failed to forward status to queue: {e}")
 
@@ -128,6 +141,8 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
         super().__init__(queue)
         self.server_filter = server_filter
         self.request_id_filter = request_id_filter
+        self._drop_counter = 0  # Track drops for throttled logging
+        self._last_warning_time = 0.0
     
     async def process(self, event: StatusEvent) -> None:
         """Forward event to queue if it matches filters"""
@@ -140,7 +155,31 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
             return
         
         try:
-            await self.queue.put(event)
+            # Try non-blocking put first to avoid timeout overhead for normal case
+            self.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Queue is full - drop oldest event and add new one
+            # This prevents memory exhaustion with slow consumers
+            try:
+                dropped = self.queue.get_nowait()
+                self._drop_counter += 1
+                
+                # Throttle warnings: Only log every 50 drops or every 10 seconds
+                import time
+                current_time = time.time()
+                should_warn = (self._drop_counter % 50 == 1) or (current_time - self._last_warning_time > 10.0)
+                
+                if should_warn:
+                    logger.warning(
+                        f"Filtered status queue full - dropped {self._drop_counter} events so far "
+                        f"(latest: server={dropped.server}, phase={dropped.phase.value}, "
+                        f"request_id={dropped.request_id}). Client may be disconnected or slow."
+                    )
+                    self._last_warning_time = current_time
+                
+                self.queue.put_nowait(event)
+            except Exception as e:
+                logger.error(f"Failed to drop-and-add filtered status to queue: {e}")
         except Exception as e:
             logger.error(f"Failed to forward filtered status to queue: {e}")
 
@@ -148,12 +187,15 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
 class StatusBus:
     """Central status event bus with guaranteed delivery"""
     
-    def __init__(self):
+    def __init__(self, default_queue_maxsize: int = 1000):
         self.handlers: List[StatusHandler] = []
         self.sequence_counter = 0
         self._lock = asyncio.Lock()
         # Track handlers by queue for unsubscribe support
         self._queue_handlers: Dict[asyncio.Queue, StatusHandler] = {}
+        
+        # Configuration
+        self.default_queue_maxsize = default_queue_maxsize
         
         # Metrics tracking
         self.publish_attempted = 0
@@ -170,6 +212,7 @@ class StatusBus:
     
     async def publish(self, event: StatusEvent) -> None:
         """Publish a status event with guaranteed delivery to all handlers"""
+        # Prepare event metadata under lock (fast operations only)
         async with self._lock:
             # Track metrics
             self.publish_attempted += 1
@@ -188,37 +231,51 @@ class StatusBus:
                 event.child_count = len(node.children)
                 event.is_leaf = len(node.children) == 0
             
-            # Deliver to all handlers - guaranteed processing
-            for handler in self.handlers:
-                try:
-                    await handler.process(event)
+            # Copy handler list to avoid holding lock during I/O
+            handlers_snapshot = self.handlers.copy()
+        
+        # Deliver to all handlers OUTSIDE the lock (prevent cross-session blocking)
+        for handler in handlers_snapshot:
+            try:
+                await handler.process(event)
+                async with self._lock:
                     self.delivered += 1
-                except Exception as e:
-                    logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
+            except Exception as e:
+                logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
     
     def get_status_metrics(self) -> dict:
         """Get status bus metrics"""
+        # Count all handlers that forward events (exclude LogStatusHandler which only logs)
+        # This includes: QueueStatusHandler, FilteredQueueStatusHandler, DirectStatusHandler, SSEStatusHandler
+        subscribers_count = len([h for h in self.handlers if not isinstance(h, LogStatusHandler)])
+        
         return {
             "handlers_count": len(self.handlers),
             "sequence_counter": self.sequence_counter,
             "handler_types": [h.__class__.__name__ for h in self.handlers],
-            "subscribers": len([h for h in self.handlers if isinstance(h, (QueueStatusHandler, FilteredQueueStatusHandler))]),
+            "subscribers": subscribers_count,
             "publish_attempted": self.publish_attempted,
             "delivered": self.delivered,
         }
     
     async def subscribe(self, server: Optional[str] = None, 
-                  request_id: Optional[str] = None) -> asyncio.Queue:
+                  request_id: Optional[str] = None,
+                  maxsize: Optional[int] = None) -> asyncio.Queue:
         """Subscribe to status events with optional filtering
         
         Args:
             server: Only receive events from this server (optional)
             request_id: Only receive events with this request_id (optional)
+            maxsize: Maximum queue size. If None, uses default_queue_maxsize from config.
+                    Prevents memory exhaustion with slow consumers. When full, oldest events
+                    are dropped (see drop_oldest_when_full behavior in handlers).
             
         Returns:
             Queue that will receive filtered StatusEvent objects
         """
-        queue: asyncio.Queue = asyncio.Queue()
+        # Use provided maxsize or fall back to configured default
+        queue_maxsize = maxsize if maxsize is not None else self.default_queue_maxsize
+        queue: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
         handler = FilteredQueueStatusHandler(queue, server, request_id)
         self.add_handler(handler)
         # Track the handler for unsubscribe

@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from plugins.memory.server import MemoryServer
 from plugins.memory.plugin import PLUGIN_FACTORY, MemoryManagementHybridPlugin
-from agent_system.config import AgentSystemConfig, MCPConfig
 
 
 async def validate_e2e():

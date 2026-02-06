@@ -81,10 +81,19 @@ class MCPIntegration:
         """Bootstrap MCP servers and agents using bootstrap_servers().
         
         This is called once during initialization. If bootstrap_servers()
-        was already called externally (e.g., by build_mcp_app), skip it.
+        was already called externally (e.g., by InitializationService), skip it.
         """
         if self.servers_bootstrapped:
-            logger.debug("Servers already bootstrapped, skipping")
+            logger.debug("Servers already bootstrapped (flag set), skipping")
+            return
+        
+        # Check if plugin_registry already has servers (bootstrapped elsewhere)
+        if self.plugin_registry.plugin_servers:
+            logger.debug(
+                f"Servers already bootstrapped externally "
+                f"({len(self.plugin_registry.plugin_servers)} servers in plugin_registry), skipping"
+            )
+            self.servers_bootstrapped = True
             return
         
         from ..mcp.base import MCPRegistry
@@ -102,11 +111,12 @@ class MCPIntegration:
 
     async def _discover_and_register_plugins(self, config: AgentSystemConfig) -> None:
         """Discover and register enabled plugins."""
-        plugin_dirs = ['src/plugins']  # Default plugin directory
+        # Use plugin_dirs from config, fallback to default
+        plugin_dirs = config.plugins.plugin_dirs if config.plugins and config.plugins.plugin_dirs else ['src/plugins']
         
         # Check if plugins are already discovered (singleton registry)
         if not self.plugin_registry.plugin_factories:
-            logger.debug("Discovering plugins for the first time")
+            logger.debug(f"Discovering plugins for the first time from dirs: {plugin_dirs}")
             self.plugin_registry.discover_plugins(plugin_dirs)
         else:
             logger.debug(
@@ -213,6 +223,8 @@ class MCPIntegration:
             if config.external_servers and config.external_servers.connection
             else 30.0
         )
+        connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
+        connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
         
         for server_name, server_config in remote_servers.items():
             if not server_config.enabled:
@@ -224,7 +236,9 @@ class MCPIntegration:
                     server_name, 
                     server_config, 
                     ssl_verify=ssl_verify, 
-                    timeout=timeout
+                    timeout=timeout,
+                    connection_limit=connection_limit,
+                    connection_limit_per_host=connection_limit_per_host
                 )
                 logger.info(f"Connected to external MCP server: {server_name}")
             except Exception as e:
@@ -262,8 +276,17 @@ class MCPIntegration:
                 self.config.external_servers and 
                 self.config.external_servers.connection
             ) else 30.0
+            connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
+            connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
             
-            await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
+            await self.client_manager.add_client(
+                server_name, 
+                server_config, 
+                ssl_verify=ssl_verify, 
+                timeout=timeout,
+                connection_limit=connection_limit,
+                connection_limit_per_host=connection_limit_per_host
+            )
             logger.info(f"Successfully reconnected to external MCP server: {server_name}")
             
             # Invalidate tools cache to pick up new tools
@@ -425,7 +448,17 @@ class MCPIntegration:
             self.config.external_servers and 
             self.config.external_servers.connection
         ) else 30.0
-        await self.client_manager.add_client(name, config, ssl_verify=ssl_verify, timeout=timeout)
+        connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
+        connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
+        
+        await self.client_manager.add_client(
+            name, 
+            config, 
+            ssl_verify=ssl_verify, 
+            timeout=timeout,
+            connection_limit=connection_limit,
+            connection_limit_per_host=connection_limit_per_host
+        )
         # Update local config storage
         self.configured_external_servers[name] = config
         # Invalidate tools cache

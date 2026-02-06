@@ -10,6 +10,9 @@ from typing import List
 from pathlib import Path
 import tempfile
 
+# Disable WAL mode for writer plugins in tests (avoids Windows file locking issues)
+os.environ["WRITER_DISABLE_WAL"] = "true"
+
 # Set test session storage path BEFORE any imports of agent_system
 # This ensures all tests use a temporary directory for sessions
 _TEST_SESSION_DIR = Path(tempfile.mkdtemp(prefix="agent_test_sessions_"))
@@ -19,24 +22,24 @@ os.environ["AGENT_SESSION_STORAGE_PATH"] = str(_TEST_SESSION_DIR)
 # This must happen before agent_system is imported
 def _patch_session_manager():
     """Monkey-patch SessionManager.__init__ to use test storage path.
-    
+
     If a test explicitly provides storage_path, we use it (for unit tests).
     Otherwise, create a unique tmp directory (for integration tests).
     """
     try:
         from agent_system.services.session_manager import SessionManager
         _original_init = SessionManager.__init__
-        
+
         def _test_init(self, storage_path=None, *args, **kwargs):
             # If test explicitly provides a path, use it
             if storage_path is not None:
                 return _original_init(self, storage_path=storage_path, *args, **kwargs)
-            
+
             # Otherwise, create unique tmp directory for this instance
             import tempfile
             test_path = Path(tempfile.mkdtemp(prefix="agent_test_session_"))
             return _original_init(self, storage_path=str(test_path), *args, **kwargs)
-        
+
         SessionManager.__init__ = _test_init
         print("[conftest] Patched SessionManager to use unique tmp directories per instance")
     except Exception as e:
@@ -45,22 +48,78 @@ def _patch_session_manager():
 # Apply the patch
 _patch_session_manager()
 
+
+# Configure logging for tests: use NullHandler to prevent file I/O
+# This ensures tests don't write to production logs (logs/api.log)
+def _configure_test_logging():
+    """Configure logging to suppress file output during tests.
+    
+    This prevents test runs from writing to production log files like logs/api.log.
+    pytest's caplog fixture will still capture logs for assertions.
+    """
+    import logging
+    
+    # Set environment variable to indicate test mode
+    os.environ["AGENT_SYSTEM_TEST_MODE"] = "1"
+    
+    # Get root logger and remove any existing handlers
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        try:
+            # Only remove file handlers to preserve pytest's capturing
+            if isinstance(handler, (logging.FileHandler, logging.handlers.RotatingFileHandler)):
+                root.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
+    # Set default level to allow caplog to capture all levels
+    root.setLevel(logging.DEBUG)
+    
+    # Add NullHandler to prevent "No handler found" warnings
+    if not any(isinstance(h, logging.NullHandler) for h in root.handlers):
+        root.addHandler(logging.NullHandler())
+    
+    # Suppress specific noisy loggers during tests
+    for logger_name in ['httpcore', 'httpx', 'asyncio', 'urllib3', 'filelock']:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+# Import logging.handlers for RotatingFileHandler check
+import logging.handlers
+
+# Apply test logging configuration early
+_configure_test_logging()
+
+
 # Ensure any subprocess.Popen calls that open text streams default to UTF-8
 # to avoid UnicodeDecodeError in the subprocess reader threads on Windows
 # where the locale encoding can be cp1252. We wrap Popen early so it affects
 # tests that don't explicitly provide an encoding.
 _original_popen = subprocess.Popen
 
-def _popen_force_utf8(*args, **kwargs):
-    # If text mode is requested but no encoding provided, force UTF-8 with replace
-    if kwargs.get("text") and "encoding" not in kwargs:
-        kwargs["encoding"] = "utf-8"
-        kwargs.setdefault("errors", "replace")
-    return _original_popen(*args, **kwargs)
+class _PopenForceUtf8:
+    """Wrapper around subprocess.Popen that forces UTF-8 encoding in text mode.
+    
+    This is a class wrapper instead of a function to preserve __class_getitem__
+    support for type annotations like subprocess.Popen[bytes] used by mcp library.
+    """
+    def __new__(cls, *args, **kwargs):
+        # If text mode is requested but no encoding provided, force UTF-8 with replace
+        if kwargs.get("text") and "encoding" not in kwargs:
+            kwargs["encoding"] = "utf-8"
+            kwargs.setdefault("errors", "replace")
+        return _original_popen(*args, **kwargs)
+    
+    def __class_getitem__(cls, item):
+        # Support type annotations like Popen[bytes]
+        return _original_popen.__class_getitem__(item)
 
 # Replace subprocess.Popen with our wrapper for the test session
 # Keep subprocess wrapper installed
-subprocess.Popen = _popen_force_utf8
+subprocess.Popen = _PopenForceUtf8
 
 # --- Test-only LLM factory stub ---------------------------------------------
 # During bootstrap the code may call `make_llm()` to construct LLM clients which
@@ -104,19 +163,19 @@ try:
                 return resp
             return "ok"
 
-        async def chat_tools(self, messages, tools, cancellation_token=None):
+        async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
             # Provide the minimal shape expected by callers: a dict with assistant content
             txt = await self.chat(messages, cancellation_token=cancellation_token)
             return {"assistant": {"content": txt}}
 
-        async def chat_tools_streaming(self, messages, tools, cancellation_token=None):
+        async def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
             # Streaming version: yield chunks that mimic real LLM streaming responses
             txt = await self.chat(messages, cancellation_token=cancellation_token)
             # Yield a single chunk with the full response
             yield {"delta": {"content": txt}, "done": False}
             yield {"delta": {}, "done": True}
 
-    def _fake_make_llm(provider, model, openai_api_key, ollama_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None, capabilities=None):
+    def _fake_make_llm(provider, model, api_key=None, base_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None, capabilities=None, parallel_tool_calls=True, include_thoughts=None, thinking_budget=None, **kwargs):
         return _FakeLLMClient(provider=provider, model=model, context_window=context_window)
 
     # Preserve original for debugging if needed
@@ -252,21 +311,21 @@ def _find_project_python_pids() -> List[int]:
         try:
             repo_lower = repo_root.lower().replace('\\', '\\\\')
             ps_script = f'''
-            Get-CimInstance Win32_Process | Where-Object {{ $_.Name -match "python(\\.exe|w\\.exe)?" }} | 
-            ForEach-Object {{ 
-                $cmd = $_.CommandLine; 
-                if ($cmd) {{ 
-                    $lc = $cmd.ToLower(); 
-                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.app*" -or $lc -like "*agent_system*") {{ 
-                        Write-Output $_.ProcessId 
-                    }} 
-                }} 
+            Get-CimInstance Win32_Process | Where-Object {{ $_.Name -match "python(\\.exe|w\\.exe)?" }} |
+            ForEach-Object {{
+                $cmd = $_.CommandLine;
+                if ($cmd) {{
+                    $lc = $cmd.ToLower();
+                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.app*" -or $lc -like "*agent_system*") {{
+                        Write-Output $_.ProcessId
+                    }}
+                }}
             }}
             '''
             out = subprocess.check_output([
                 "powershell", "-NoProfile", "-Command", ps_script
             ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
-            
+
             for line in out.strip().splitlines():
                 if line.strip():
                     try:
@@ -279,8 +338,8 @@ def _find_project_python_pids() -> List[int]:
                 # Get all python processes and their command lines
                 out = subprocess.check_output([
                     "powershell", "-NoProfile", "-Command",
-                    '''Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object { 
-                        try { 
+                    '''Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object {
+                        try {
                             $cmdline = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine;
                             if ($cmdline -and ($cmdline.ToLower() -like "*agent_system*" -or $cmdline.ToLower() -like "*interface_api*" -or $cmdline.ToLower() -like "*.venv\\*")) {
                                 Write-Output $_.Id
@@ -288,7 +347,7 @@ def _find_project_python_pids() -> List[int]:
                         } catch { }
                     }'''
                 ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
-                
+
                 for line in out.strip().splitlines():
                     if line.strip():
                         try:
@@ -306,32 +365,70 @@ def _find_project_python_pids() -> List[int]:
             return matches
 
         for line in out.splitlines():
-            if not line.strip():
+                if not line.strip():
+                    continue
+                try:
+                    pid_str, args = line.strip().split(None, 1)
+                    pid = int(pid_str)
+                except Exception:
+                    continue
+                low = args.lower()
+                if "python" in low and (repo_root.lower() in low or "-m agent_system.app" in low or ".venv/" in low):
+                    matches.append(pid)
+
+        # Filter matches to avoid killing the current pytest process or its parent
+        filtered: List[int] = []
+        current_pid = os.getpid()
+        parent_pid = os.getppid()
+        for pid in dict.fromkeys(matches):  # preserve order, remove duplicates
+            if pid in (current_pid, parent_pid):
+                # Never consider the running test process or its immediate parent
                 continue
             try:
-                pid_str, args = line.strip().split(None, 1)
-                pid = int(pid_str)
-            except Exception:
-                continue
-            low = args.lower()
-            if "python" in low and (repo_root.lower() in low or "-m agent_system.app" in low or ".venv/" in low):
-                matches.append(pid)
+                # Try to inspect the command line for the pid to avoid false positives
+                cmd = None
+                try:
+                    with open(f"/proc/{pid}/cmdline", "r", encoding="utf-8", errors="ignore") as f:
+                        raw = f.read().replace('\x00', ' ').strip()
+                        cmd = raw.lower()
+                except Exception:
+                    # Fallback to ps if /proc is not available
+                    try:
+                        out2 = subprocess.check_output(["ps", "-p", str(pid), "-o", "args="], text=True, stderr=subprocess.DEVNULL)
+                        cmd = out2.strip().lower()
+                    except Exception:
+                        cmd = None
 
-    return matches
+                if cmd:
+                    # Avoid killing pytest runner or py.test
+                    if "pytest" in cmd or "py.test" in cmd:
+                        continue
+                    # Avoid matching ephemeral interactive python like 'python -'
+                    if cmd.endswith(" -") or cmd.endswith(" -c"):
+                        continue
+
+            except Exception:
+                # If anything goes wrong inspecting this pid, conservatively include it
+                pass
+
+            filtered.append(pid)
+
+        return filtered
+
 
 
 def _kill_pids(pids: List[int]) -> None:
     """Kill processes with retry logic and proper waiting."""
     if not pids:
         return
-    
+
     print(f"[conftest] Attempting to kill PIDs: {pids}")
-    
+
     if _is_windows():
         for pid in pids:
             try:
                 # Use taskkill with force and tree kill options
-                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"], 
+                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
                              check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 pass
@@ -342,27 +439,27 @@ def _kill_pids(pids: List[int]) -> None:
                 os.kill(pid, signal.SIGTERM)
             except Exception:
                 pass
-        
+
         # Wait a bit for graceful shutdown
         time.sleep(1.0)
-        
+
         # Force kill any remaining processes
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGKILL)
             except Exception:
                 pass
-    
+
     # Wait for processes to actually terminate
     time.sleep(1.5)
-    
+
     # Verify cleanup worked and retry if needed
     remaining = []
     for pid in pids:
         try:
             if _is_windows():
                 # Check if process still exists on Windows
-                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], 
+                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
                                       capture_output=True, text=True)
                 if result.stdout and str(pid) in result.stdout:
                     remaining.append(pid)
@@ -373,14 +470,14 @@ def _kill_pids(pids: List[int]) -> None:
         except (OSError, subprocess.CalledProcessError):
             # Process doesn't exist anymore, good
             pass
-    
+
     if remaining:
         print(f"[conftest] Retrying cleanup for remaining PIDs: {remaining}")
         # One more aggressive attempt
         if _is_windows():
             for pid in remaining:
                 try:
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"], 
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
                                  check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
@@ -420,7 +517,7 @@ def ensure_test_servers_terminated():
         print(f"[conftest] Cleanup attempt {attempt + 1}: terminating leftover project python processes:", post)
         _kill_pids(post)
         time.sleep(1.0)
-    
+
     # Final check
     final = _find_project_python_pids()
     if final:
@@ -447,6 +544,208 @@ def mock_mcp_config():
     from agent_system.config.models import MCPConfig, AgentConfig
     agent_config = AgentConfig()
     return MCPConfig(type="test", enabled=True, agent_config=agent_config)
+
+
+# ============================================================================
+# GLOBAL STATE RESET FIXTURES
+# These fixtures reset singleton/global state between tests to avoid cross-test
+# contamination when tests run in parallel or in different order.
+# ============================================================================
+
+def _reset_all_global_state():
+    """Helper function to reset all known global state."""
+    # Reset logging: remove file handlers added during test
+    try:
+        import logging
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            if isinstance(handler, (logging.FileHandler, logging.handlers.RotatingFileHandler)):
+                try:
+                    root.removeHandler(handler)
+                    handler.close()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    
+    # Reset auth database
+    try:
+        from agent_system.auth import database as auth_db_module
+        auth_db_module._db = None
+    except ImportError:
+        pass
+    
+    # Reset plugin registries
+    try:
+        from agent_system.plugins import mcp_adapter
+        mcp_adapter.plugin_mcp_registry = mcp_adapter.PluginMCPRegistry()
+    except ImportError:
+        pass
+    
+    try:
+        from agent_system.plugins import web_adapter
+        web_adapter.plugin_web_registry = web_adapter.PluginWebRegistry()
+        web_adapter._plugin_security_enforcer = None
+    except ImportError:
+        pass
+    
+    # Reset app registry and all app-level globals
+    try:
+        from agent_system import app as app_module
+        app_module._app_registry = None
+        app_module._app_config = None
+        app_module._mcp_integration = None
+        app_module._mcp_server_handler = None
+        app_module._config_service = None
+        app_module._mcp_service = None
+        app_module._tool_service = None
+        app_module._agent_service = None
+        app_module._initialization_service = None
+        app_module._session_manager = None
+        app_module._session_service = None
+        app_module._shutdown_event = None
+        app_module._app_start_time = None
+    except ImportError:
+        pass
+    
+    # Reset hook registry
+    try:
+        from agent_system.hooks import registry as hooks_registry_module
+        hooks_registry_module._global_hook_registry = None
+    except ImportError:
+        pass
+    
+    # Reset MCP service module state
+    try:
+        from agent_system.mcp import service as mcp_service_module
+        if hasattr(mcp_service_module, '_service'):
+            mcp_service_module._service = None
+        if hasattr(mcp_service_module, '_mcp_registry'):
+            mcp_service_module._mcp_registry = None
+    except ImportError:
+        pass
+    
+    # Reset MCP integration global instance
+    try:
+        from agent_system.mcp import integration as mcp_integration_module
+        mcp_integration_module.mcp_integration = None
+    except ImportError:
+        pass
+    
+    # Reset config service singleton
+    try:
+        from agent_system.services import config_service as config_service_module
+        if hasattr(config_service_module, '_config_service'):
+            config_service_module._config_service = None
+        if hasattr(config_service_module, '_cached_config'):
+            config_service_module._cached_config = None
+    except ImportError:
+        pass
+    
+    # Reset cancellation manager
+    try:
+        from agent_system.core import cancellation as cancellation_module
+        cancellation_module._cancellation_manager = None
+    except ImportError:
+        pass
+    
+    # Reset background job manager
+    try:
+        from agent_system.services import background_job_manager as bjm_module
+        bjm_module._background_job_manager = None
+    except ImportError:
+        pass
+    
+    # Reset profiling utils
+    try:
+        from agent_system.utils import profiling as profiling_module
+        profiling_module._request_profiler = None
+        profiling_module._task_monitor = None
+        profiling_module._loop_monitor = None
+    except ImportError:
+        pass
+    
+    # Reset memory profiling
+    try:
+        from agent_system.utils import memory_profiling as mem_module
+        mem_module._leak_detector = None
+        mem_module._reference_tracker = None
+        mem_module._snapshot_task = None
+        # Don't reset _profiling_executor as it may have active threads
+    except ImportError:
+        pass
+    
+    # Reset LLM batch components
+    try:
+        from agent_system.llm.batch import initialization as batch_init_module
+        batch_init_module._batch_queue_manager = None
+    except ImportError:
+        pass
+    
+    try:
+        from agent_system.llm.batch import job_tracker as job_tracker_module
+        job_tracker_module._job_tracker = None
+    except ImportError:
+        pass
+    
+    try:
+        from agent_system.llm import factory as llm_factory_module
+        llm_factory_module._batch_queue_manager = None
+        llm_factory_module._batch_manager_config = None
+    except ImportError:
+        pass
+    
+    # Reset config settings cache
+    try:
+        from agent_system.config import settings as settings_module
+        settings_module._plugins_cache = None
+        # Clear inheritance cache
+        if hasattr(settings_module, '_inheritance_cache'):
+            settings_module._inheritance_cache.clear()
+    except ImportError:
+        pass
+    
+    # Reset LLM capabilities registry
+    try:
+        from agent_system.llm import capabilities as capabilities_module
+        if hasattr(capabilities_module, '_capabilities_registry'):
+            capabilities_module._capabilities_registry.clear()
+    except ImportError:
+        pass
+    
+    # Reset plugin discovery shared modules
+    try:
+        from agent_system.plugins import discovery as discovery_module
+        if hasattr(discovery_module, '_registered_shared_modules'):
+            discovery_module._registered_shared_modules.clear()
+    except ImportError:
+        pass
+    
+    # Reset tool service locks
+    try:
+        from agent_system.services import tool_service as tool_service_module
+        if hasattr(tool_service_module, '_config_file_locks'):
+            tool_service_module._config_file_locks.clear()
+    except ImportError:
+        pass
+    
+    # Reset vector store backend cache
+    try:
+        from agent_system.utils import vector_store as vector_store_module
+        vector_store_module._VECTOR_BACKEND = None
+        vector_store_module._ONNX_PROVIDERS = None
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def reset_global_state():
+    """Reset all global state before and after each test."""
+    # Reset BEFORE test runs
+    _reset_all_global_state()
+    yield
+    # Reset AFTER test runs  
+    _reset_all_global_state()
 
 
 # End of conftest.py fixtures

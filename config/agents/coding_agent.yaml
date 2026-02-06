@@ -13,24 +13,33 @@ plugins:
       agent_config:
         llm_profile: normal
         max_steps: 15
-        system_template: "config/prompts/code_reviewer_prompt.yaml"
+        system_template: "config/agents/prompts/coding_agent_prompt.md"
         
         tools:
           allowed:
             - "script_interpreter/*"
-            - "log_viewer/*"
-            - "web_scraper/*"
             - "file_ops/*"
+            - "terminal/*"
+            
+            - "sequential_thinking/*"
+            - "cognitive_stack/*"
+            - "memory/*"
 
         hooks:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true            
-      
+            sequential_thinking.inject_active_sessions:
+              enabled: true
+            cognitive_stack.inject_stack_context:
+              enabled: true
+            memory.inject_memory_context:
+              enabled: true
+
       metadata:
-        author: "AgentSystem"
-        version: "1.1.0"
+        author: "Enrico Ehrich"
+        version: "2.0.0"
         tags: ["code", "review", "quality", "security"]
         category: "development"
         visibility: "both"

@@ -8,7 +8,7 @@ hooks:
     description: "Optimizes context before LLM calls by removing duplicates, truncating messages, and enforcing token limits"
     category: "context_optimization"
     order:
-      after: ["context_summarization"]
+      after: ["context_engineering", "context_summarization"]
       before: ["prompt_injection"]
     
   - name: log_context_stats
@@ -30,12 +30,31 @@ config:
     minimum: 0.1
     maximum: 1.0
   
-  max_message_length_chars:
+  max_message_length_tokens:
     type: integer
-    default: 50000
-    description: "Maximum length of individual messages in characters"
+    default: 8000
+    description: "Maximum length of individual messages in tokens (soft limit). Triggers optimization for oversized messages."
     minimum: 100
-    maximum: 500000
+    maximum: 100000
+  
+  hard_max_message_length_tokens:
+    type: integer
+    default: 16000
+    description: "Hard limit - force-truncate messages exceeding this token count even if JSON smart-truncation fails"
+    minimum: 1000
+    maximum: 100000
+  
+  max_json_string_length:
+    type: integer
+    default: 5000
+    description: "Maximum length for individual strings within JSON tool responses during smart truncation"
+    minimum: 100
+    maximum: 100000
+  
+  keep_string_end:
+    type: boolean
+    default: true
+    description: "When truncating strings, keep the end (newest data) instead of beginning"
   
   preserve_system_messages:
     type: boolean

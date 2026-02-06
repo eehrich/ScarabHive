@@ -30,7 +30,7 @@
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
 
-  function addUser(chatContainer, text, images = []) {
+  function addUser(chatContainer, text, images = [], audioFiles = [], textFiles = []) {
     // Ensure text is always a string
     const displayText = typeof text === 'string' ? text : String(text);
     const row = document.createElement('div');
@@ -67,6 +67,102 @@
       });
       
       msgDiv.appendChild(previewContainer);
+    }
+    
+    // Add audio previews if any
+    if (audioFiles && audioFiles.length > 0) {
+      const audioContainer = document.createElement('div');
+      audioContainer.className = 'user-audio-previews';
+      audioContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+      
+      audioFiles.forEach((file, index) => {
+        const audioWrapper = document.createElement('div');
+        audioWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+        
+        // Create object URL for the audio file
+        const audioUrl = URL.createObjectURL(file);
+        
+        // Create play button
+        const playBtn = document.createElement('button');
+        playBtn.textContent = '▶️ ' + file.name;
+        playBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;';
+        playBtn.title = 'Click to play';
+        
+        // Create hidden audio element
+        const audioEl = document.createElement('audio');
+        audioEl.src = audioUrl;
+        audioEl.style.display = 'none';
+        
+        let isPlaying = false;
+        playBtn.onclick = () => {
+          if (isPlaying) {
+            audioEl.pause();
+            playBtn.textContent = '▶️ ' + file.name;
+            isPlaying = false;
+          } else {
+            audioEl.play();
+            playBtn.textContent = '⏸️ ' + file.name;
+            isPlaying = true;
+          }
+        };
+        
+        audioEl.onended = () => {
+          playBtn.textContent = '▶️ ' + file.name;
+          isPlaying = false;
+        };
+        
+        audioWrapper.appendChild(playBtn);
+        audioWrapper.appendChild(audioEl);
+        audioContainer.appendChild(audioWrapper);
+      });
+      
+      msgDiv.appendChild(audioContainer);
+    }
+    
+    // Add text file previews if any
+    if (textFiles && textFiles.length > 0) {
+      const textContainer = document.createElement('div');
+      textContainer.className = 'user-text-file-previews';
+      textContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+      
+      textFiles.forEach((file, index) => {
+        const textWrapper = document.createElement('div');
+        textWrapper.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+        
+        // Create view button
+        const viewBtn = document.createElement('button');
+        viewBtn.textContent = '📄 ' + file.name;
+        viewBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; text-align: left;';
+        viewBtn.title = 'Click to view';
+        
+        // Create hidden content div
+        const contentDiv = document.createElement('pre');
+        contentDiv.style.cssText = 'display: none; margin: 0; padding: 10px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 0.85em; white-space: pre-wrap; word-wrap: break-word;';
+        
+        viewBtn.onclick = () => {
+          // Toggle content display
+          if (contentDiv.style.display === 'none') {
+            contentDiv.style.display = 'block';
+            viewBtn.textContent = '📄 ' + file.name + ' ▼';
+          } else {
+            contentDiv.style.display = 'none';
+            viewBtn.textContent = '📄 ' + file.name;
+          }
+        };
+        
+        // Read file content
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          contentDiv.textContent = e.target.result;
+        };
+        reader.readAsText(file);
+        
+        textWrapper.appendChild(viewBtn);
+        textWrapper.appendChild(contentDiv);
+        textContainer.appendChild(textWrapper);
+      });
+      
+      msgDiv.appendChild(textContainer);
     }
     
     row.appendChild(msgDiv);
@@ -553,72 +649,412 @@
   // Event source tracking (shared across init calls and cleanup)
   let currentEventSource = null;
   let currentStatusEventSource = null;
+  let closeEventSourceTimer = null; // Timer to delay closing EventSource after final/end
+  
+  // SSE Reconnection state for long-running requests
+  let sseReconnectAttempts = 0;
+  const SSE_MAX_RECONNECT_ATTEMPTS = 5;
+  const SSE_BASE_RECONNECT_DELAY_MS = 1000; // Start with 1s, doubles each retry
+  let sseReconnectTimer = null;
+  let sseReceivedFinalOrEnd = false; // Track if we've completed normally
   
   // Streaming state tracking
   let currentStreamingContent = '';
   let currentStreamingStep = null;
   
+  // DOM elements (set in init, shared across handlers)
+  let runBtn = null;
+  let stopBtn = null;
+  let chatContainer = null;
+  
   // Session and request tracking (shared across init and event listeners)
   let currentRequestId = null;
-  let currentSessionId = null;
+  // Initialize from sessionStorage to handle page refresh before session:loaded event fires
+  let currentSessionId = sessionStorage.getItem('lastSessionId') || null;
+  
+  // Store/retrieve active request ID for reconnect after browser refresh
+  // Using sessionStorage (not localStorage) so each tab has its own request ID
+  const ACTIVE_REQUEST_KEY = 'activeRequestId';
+  
+  function storeActiveRequest(requestId) {
+    if (requestId) {
+      sessionStorage.setItem(ACTIVE_REQUEST_KEY, requestId);
+    } else {
+      sessionStorage.removeItem(ACTIVE_REQUEST_KEY);
+    }
+  }
+  
+  function getStoredActiveRequest() {
+    return sessionStorage.getItem(ACTIVE_REQUEST_KEY);
+  }
+
+  // Helper functions to update UI displays (module-level for handleSSEEvent access)
+  function updateHeaderSessionId() {
+    const sessionElement = document.getElementById('headerSessionId');
+    if (sessionElement) {
+      const sessionId = currentSessionId || '';
+      // No 'Session:' prefix per design; leave empty when no session
+      sessionElement.textContent = sessionId;
+      const container = document.querySelector('.session-id-bottom');
+      if (container) {
+        container.style.display = currentSessionId ? 'block' : 'none';
+        // set title to full id so users can hover to see it
+        container.title = sessionId || '';
+      }
+    } else {
+      console.warn('headerSessionId element not found');
+    }
+  }
+  
+  function updateRequestId() {
+    if (currentRequestId) {
+      // Find the latest assistant message
+      const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
+      if (latestAssistant) {
+        // Avoid inserting duplicate request id elements
+        let existing = latestAssistant.querySelector('.message-request-id');
+        if (!existing) {
+          const requestIdElement = document.createElement('div');
+          requestIdElement.className = 'message-request-id';
+          requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
+          requestIdElement.title = `Request ID: ${currentRequestId}`;
+          latestAssistant.appendChild(requestIdElement);
+        } else {
+          existing.innerHTML = `Request: <span>${currentRequestId}</span>`;
+          existing.title = `Request ID: ${currentRequestId}`;
+        }
+      }
+    }
+
+    // Also update the global request display (keep for compatibility)
+    const requestElement = document.getElementById('currentRequestId');
+    const requestContainer = document.getElementById('requestIdDisplay');
+    if (requestElement && requestContainer) {
+      requestElement.textContent = currentRequestId || '--';
+      requestContainer.style.display = 'none'; // Hide the global one, we use per-message now
+    }
+  }
+
+  // Shared SSE event handler for both EventSource and manual fetch() parsing
+  // Module-level so it can be used by both normal requests and reconnect logic
+  function handleSSEEvent(data, blk) {
+    switch (data.type) {
+      case 'start':
+        currentRequestId = data.request_id;
+        currentSessionId = data.session_id;
+        // Store for reconnect after browser refresh
+        storeActiveRequest(currentRequestId);
+        // update exported values
+        try { global.currentSessionId = currentSessionId; } catch (e) {}
+        
+        // Notify session manager about new/updated session
+        if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
+          window.sessionManager.onSessionUpdated(currentSessionId);
+        }
+        
+        // Update header session ID display
+        updateHeaderSessionId();
+        
+        // Update request ID display  
+        updateRequestId();
+        break;
+      case 'reconnect':
+        // Reconnected to existing running job (after browser refresh)
+        currentRequestId = data.request_id;
+        currentSessionId = data.session_id;
+        // update exported values
+        try { global.currentSessionId = currentSessionId; } catch (e) {}
+        
+        // Update agent selector to match the job's agent
+        if (data.agent_name && window.selectorModule && typeof window.selectorModule.setAgent === 'function') {
+          window.selectorModule.setAgent(data.agent_name);
+        }
+        
+        // Update LLM profile selector to match the job's profile
+        if (data.llm_profile && window.selectorModule && typeof window.selectorModule.setLLMProfile === 'function') {
+          window.selectorModule.setLLMProfile(data.llm_profile);
+        }
+        
+        // Notify session manager about reconnected session
+        if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
+          window.sessionManager.onSessionUpdated(currentSessionId);
+        }
+        
+        // Update header session ID display
+        updateHeaderSessionId();
+        
+        // Update request ID display  
+        updateRequestId();
+        
+        // Show reconnect info in response area
+        showSection(blk.t);
+        blk.t.innerHTML = `<div class="response-text reconnect-info">🔄 ${data.message}${data.last_status ? '<br><em>Last status: ' + data.last_status + '</em>' : ''}</div>`;
+        break;
+      case 'heartbeat':
+        // Keep-alive heartbeat during long LLM calls - ignore but log in debug mode
+        if (window.DEBUG_MODE) {
+          console.log('Heartbeat received (step', data.step, ')');
+        }
+        break;
+      case 'thinking_delta':
+        // Real-time token streaming from LLM - stream directly to response box
+        if (data.step !== currentStreamingStep) {
+          // New step - reset accumulator
+          currentStreamingContent = '';
+          currentStreamingStep = data.step;
+        }
+        
+        // Update with accumulated content + cursor directly in response box
+        currentStreamingContent = data.accumulated || '';
+        showSection(blk.t);
+        blk.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
+        
+        // Auto-scroll to keep cursor visible
+        blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        break;
+      case 'thinking_complete':
+        // Final thinking event from streaming - remove cursor, keep content
+        currentStreamingContent = '';
+        currentStreamingStep = null;
+        
+        if (data.assistant && data.assistant.content) {
+          // Content was already displayed via thinking_delta
+          // Now show final formatted content (HTML from format_output hook)
+          const contentFormat = data.content_format || 'text';
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text">${formatContent(data.assistant.content, contentFormat)}</div>`;
+          
+          // Apply Prism.js syntax highlighting if available and content is HTML
+          if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+            Prism.highlightAllUnder(blk.t);
+          }
+        }
+        
+        // Note: Tool calls display is handled by the 'thinking' event to avoid duplicates
+        break;
+      case 'thinking':
+        // Complete thinking event (also handles backward compatibility)
+        // Only clear streaming state if this has actual content (final thinking event)
+        if (data.assistant) {
+          // Final thinking event with content - clear streaming state
+          currentStreamingContent = '';
+          currentStreamingStep = null;
+          if (blk.think) {
+            blk.think.classList.remove('streaming');
+            // Remove typing cursor if present
+            const cursor = blk.think.querySelector('.typing-cursor');
+            if (cursor) cursor.remove();
+          }
+          
+          // Create think section if not exists
+          if (!blk.think) {
+            blk.think = document.createElement('pre');
+            blk.think.className = 'think-section';
+            blk.r.appendChild(blk.think);
+          }
+          
+          if (data.assistant.content) {
+            blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
+          }
+          if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
+            blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+            data.assistant.tool_calls.forEach((tc, i) => {
+              const func = tc.function || {};
+              blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
+            });
+            blk.think.textContent += '\n';
+          }
+          showSection(blk.think);
+        } else {
+          // Step marker event (before LLM call) - don't interfere with streaming
+          // Just ensure think section exists
+          if (!blk.think) {
+            blk.think = document.createElement('pre');
+            blk.think.className = 'think-section';
+            blk.r.appendChild(blk.think);
+          }
+        }
+        break;
+      case 'status':
+        // Status events are now delivered through /events stream
+        // Show status events for this request AND all hierarchical children (sub-agents)
+        // e.g., if currentRequestId is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
+        if (blk && blk.status) {
+          const eventRequestId = data.request_id || '';
+          // Check if this event belongs to current request hierarchy
+          // Either exact match OR starts with current request_id followed by underscore (child operation)
+          const matches = eventRequestId === currentRequestId || 
+              (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+          
+          if (matches) {
+            addStatusEvent(blk.status, data);
+          }
+          // Otherwise silently ignore status from other requests/sessions
+        }
+        break;
+      case 'status_batch':
+        // Batched status events for efficiency (multiple events in one SSE message)
+        if (blk && blk.status && data.events && Array.isArray(data.events)) {
+          data.events.forEach(statusEvent => {
+            const eventRequestId = statusEvent.request_id || '';
+            const matches = eventRequestId === currentRequestId || 
+                (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+            
+            if (matches) {
+              addStatusEvent(blk.status, statusEvent);
+            }
+          });
+        }
+        break;
+      case 'continuation':
+        // Auto-continuation: system injected a user message to keep the agent working
+        // Display it in the chat as a system-injected user message
+        {
+          const contRow = document.createElement('div');
+          contRow.className = 'row';
+          const contMsg = document.createElement('div');
+          contMsg.className = 'msg user continuation-msg';
+          contMsg.innerHTML = `<div class="continuation-badge">🔄 Auto-Continue #${data.count || '?'}</div><div class="continuation-reason">${escapeHtml(data.reason || '')}</div><div class="continuation-text">${formatTextWithLineBreaks(data.message || '')}</div>`;
+          contRow.appendChild(contMsg);
+          chatContainer.appendChild(contRow);
+          // Create a new assistant block for the next response and update blk in-place
+          const newBlk = addAssistantBlock(chatContainer);
+          blk.row = newBlk.row;
+          blk.box = newBlk.box;
+          blk.t = newBlk.t;
+          blk.think = newBlk.think;
+          blk.status = newBlk.status;
+          blk.thinkingSection = newBlk.thinkingSection;
+          blk.statusSection = newBlk.statusSection;
+          blk.responseSection = newBlk.responseSection;
+          scrollBottom();
+        }
+        break;
+      case 'final':
+        // Mark completion for reconnect logic
+        sseReceivedFinalOrEnd = true;
+        sseReconnectAttempts = 0;
+        // Clear stored request (job finished)
+        storeActiveRequest(null);
+        
+        // Only show final if content box is still empty (no streaming happened)
+        // or if it's a different format
+        const finalContent = data.summary || data.content || '';
+        const finalContentFormat = data.content_format || 'text';
+        
+        if (!blk.t.innerHTML || blk.t.innerHTML.trim() === '') {
+          // No streaming happened, show final content
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text">${formatContent(finalContent, finalContentFormat)}</div>`;
+          
+          // Apply Prism.js syntax highlighting if available and content is HTML
+          if (finalContentFormat === 'html' && typeof Prism !== 'undefined') {
+            Prism.highlightAllUnder(blk.t);
+          }
+        }
+        // If streaming already filled the content, skip this (content already there)
+        break;
+      case 'end':
+        // Mark completion for reconnect logic
+        sseReceivedFinalOrEnd = true;
+        sseReconnectAttempts = 0;
+        // Clear stored request (job finished)
+        storeActiveRequest(null);
+        
+        // Close EventSource immediately to prevent auto-reconnect attempts
+        // EventSource will try to reconnect if the server closes the connection,
+        // which causes spurious "Connection failed" errors in the onerror handler
+        if (currentEventSource) {
+          currentEventSource.close();
+          currentEventSource = null;
+        }
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        
+        // Clear any pending reconnect timer
+        if (sseReconnectTimer) {
+          clearTimeout(sseReconnectTimer);
+          sseReconnectTimer = null;
+        }
+        
+        runBtn.style.display = 'block'; // Show run button
+        stopBtn.style.display = 'none'; // Hide stop button
+        // Reset stop button state
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        
+        // Reload sessions after conversation completes
+        if (window.sessionManager && typeof window.sessionManager.loadSessions === 'function') {
+          window.sessionManager.loadSessions();
+        }
+        break;
+      case 'error':
+        showSection(blk.t);
+        blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message)}</div>`;
+        // Clear any pending close timer
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        if (currentEventSource) {
+          currentEventSource.close();
+          currentEventSource = null;
+        }
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
+          currentStatusEventSource = null;
+        }
+        runBtn.style.display = 'block'; // Show run button
+        stopBtn.style.display = 'none'; // Hide stop button
+        // Reset stop button state
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        break;
+      case 'cancelled':
+        // Request was cancelled - clean up and reset UI
+        console.log('Request cancelled:', data.request_id, 'at step', data.step);
+        // Clear any pending close timer
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        if (currentEventSource) {
+          currentEventSource.close();
+          currentEventSource = null;
+        }
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
+          currentStatusEventSource = null;
+        }
+        // Show cancelled status with step number
+        showSection(blk.t);
+        const stepInfo = data.step ? ` at step ${data.step}` : '';
+        blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
+        runBtn.style.display = 'block'; // Show run button
+        stopBtn.style.display = 'none'; // Hide stop button
+        // Reset stop button state
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        break;
+    }
+    scrollBottom();
+  }
 
   // Public init function that wires the chat form behavior
   chatModule.init = function (opts) {
     const chatForm = document.getElementById('f');
     const taskInput = document.getElementById('task');
-    const runBtn = document.getElementById('runBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const chatContainer = document.getElementById('chat');
-    
-    // Helper functions to update UI displays
-    function updateHeaderSessionId() {
-      console.log('updateHeaderSessionId called, currentSessionId:', currentSessionId);
-      const sessionElement = document.getElementById('headerSessionId');
-      if (sessionElement) {
-        const sessionId = currentSessionId || '';
-        // No 'Session:' prefix per design; leave empty when no session
-        sessionElement.textContent = sessionId;
-        const container = document.querySelector('.session-id-bottom');
-        if (container) {
-          container.style.display = currentSessionId ? 'block' : 'none';
-          // set title to full id so users can hover to see it
-          container.title = sessionId || '';
-        }
-      } else {
-        console.warn('headerSessionId element not found');
-      }
-    }
-    
-    function updateRequestId() {
-      console.log('updateRequestId called, currentRequestId:', currentRequestId);
-
-      if (currentRequestId) {
-        // Find the latest assistant message
-        const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
-        if (latestAssistant) {
-          // Avoid inserting duplicate request id elements
-          let existing = latestAssistant.querySelector('.message-request-id');
-          if (!existing) {
-            const requestIdElement = document.createElement('div');
-            requestIdElement.className = 'message-request-id';
-            requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
-            requestIdElement.title = `Request ID: ${currentRequestId}`;
-            latestAssistant.appendChild(requestIdElement);
-          } else {
-            existing.innerHTML = `Request: <span>${currentRequestId}</span>`;
-            existing.title = `Request ID: ${currentRequestId}`;
-          }
-        }
-      }
-
-      // Also update the global request display (keep for compatibility)
-      const requestElement = document.getElementById('currentRequestId');
-      const requestContainer = document.getElementById('requestIdDisplay');
-      if (requestElement && requestContainer) {
-        requestElement.textContent = currentRequestId || '--';
-        requestContainer.style.display = 'none'; // Hide the global one, we use per-message now
-      }
-    }
+    runBtn = document.getElementById('runBtn');
+    stopBtn = document.getElementById('stopBtn');
+    chatContainer = document.getElementById('chat');
     
     // Expose current session id for other modules (fallback for UI)
     chatModule.getCurrentSessionId = function() { return currentSessionId; };
@@ -627,6 +1063,14 @@
     });
     // Also export to global window for older modules
     try { global.currentSessionId = currentSessionId; } catch (e) { /* ignore */ }
+    
+    // Clear session function (called on logout)
+    chatModule.clearSession = function() {
+      currentSessionId = null;
+      try { global.currentSessionId = null; } catch (e) { /* ignore */ }
+      sessionStorage.removeItem('lastSessionId');
+      updateHeaderSessionId();
+    };
     
     // Event sources are now declared at module level (above init function)
 
@@ -648,10 +1092,60 @@
         stopBtn.disabled = true;
         stopBtn.classList.add('cancelling');
 
+        // Timeout: Nach 60 Sekunden automatisch zurücksetzen falls Backend nicht antwortet
+        const timeoutId = setTimeout(() => {
+          console.warn('Cancel request timeout after 60 seconds');
+          stopBtn.setAttribute('title', 'Timeout');
+          stopBtn.setAttribute('aria-label', 'Timeout');
+          stopBtn.classList.remove('cancelling');
+          stopBtn.classList.add('cancel-failed');
+          
+          // Nach weiteren 2 Sekunden komplett zurücksetzen und UI wiederherstellen
+          setTimeout(() => {
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            
+            // Clear any pending close timer
+            if (closeEventSourceTimer) {
+              clearTimeout(closeEventSourceTimer);
+              closeEventSourceTimer = null;
+            }
+            
+            // UI zurücksetzen: Run-Button anzeigen, Stop-Button verstecken
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            currentRequestId = null;
+            currentEventSource = null;
+          }, 2000);
+        }, 60000); // 60 Sekunden
+
         try {
-          const response = await fetch(`/cancel/${currentRequestId}`, { method: 'POST' });
+          const response = await fetch(`/api/requests/${currentRequestId}/cancel`, { method: 'POST' });
           const result = await response.json();
           console.log('Cancel request result:', result);
+          
+          // Timeout abbrechen da Antwort erhalten
+          clearTimeout(timeoutId);
+
+          // Wenn Request nicht gefunden wurde (z.B. nach Server-Neustart), State clearen
+          if (result.status === 'not_found') {
+            console.warn('Request not found - clearing stale state (possible server restart)');
+            // Clear any pending close timer
+            if (closeEventSourceTimer) {
+              clearTimeout(closeEventSourceTimer);
+              closeEventSourceTimer = null;
+            }
+            currentRequestId = null;
+            currentEventSource = null;
+            // UI zurücksetzen
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            stopBtn.classList.remove('cancelling');
+            stopBtn.disabled = false;
+            return; // Frühzeitig beenden
+          }
 
           // Kurze Verzögerung für besseres UX-Feedback
           setTimeout(() => {
@@ -670,6 +1164,9 @@
 
         } catch (error) {
           console.error('Failed to cancel request:', error);
+          // Timeout abbrechen da Fehler erhalten
+          clearTimeout(timeoutId);
+          
           stopBtn.setAttribute('title', 'Failed');
           stopBtn.setAttribute('aria-label', 'Failed');
           stopBtn.classList.remove('cancelling');
@@ -699,16 +1196,13 @@
       // Require either task text or files
       if (!task && !hasFiles) return;
       
-      // Add user message to chat (with file indicator if files present)
-      let displayText = task || '(Image upload)';
-      if (files.length > 0) {
-        if (task) {
-          displayText += ` [${files.length} image${files.length > 1 ? 's' : ''}]`;
-        } else {
-          displayText = `[${files.length} image${files.length > 1 ? 's' : ''}]`;
-        }
-      }
-      addUser(chatContainer, displayText, files);
+      // Add user message to chat
+      let displayText = task || '';
+      // Get file breakdown by type from file upload module
+      const filesByType = window.fileUploadModule ? window.fileUploadModule.getFilesByType() : { images: [], audio: [], text: [] };
+      
+      // Pass images, audio and text files separately to addUser
+      addUser(chatContainer, displayText, filesByType.images, filesByType.audio, filesByType.text);
       taskInput.value = '';
       // Trigger input event so auto-resize logic recalculates height immediately
       try {
@@ -727,6 +1221,10 @@
           const blk = addAssistantBlock(chatContainer);
           runBtn.style.display = 'none';
           stopBtn.style.display = 'block';
+          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+          stopBtn.disabled = false;
+          stopBtn.setAttribute('title', 'Stop');
+          stopBtn.setAttribute('aria-label', 'Stop');
 
           const resp = await fetch(`/events/${encodeURIComponent(currentRequestId)}/append`, {
             method: 'POST',
@@ -754,224 +1252,11 @@
       const blk = addAssistantBlock(chatContainer);
       runBtn.style.display = 'none'; // Hide run button
       stopBtn.style.display = 'block'; // Show stop button
+      stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+      stopBtn.disabled = false;
+      stopBtn.setAttribute('title', 'Stop');
+      stopBtn.setAttribute('aria-label', 'Stop');
       currentRequestId = null; // Will be set when SSE 'start' event arrives
-
-      // Shared SSE event handler for both EventSource and manual fetch() parsing
-      const handleSSEEvent = (data, blk) => {
-        switch (data.type) {
-          case 'start':
-            currentRequestId = data.request_id;
-            currentSessionId = data.session_id;
-            // update exported values
-            try { global.currentSessionId = currentSessionId; } catch (e) {}
-            console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
-            
-            // Notify session manager about new/updated session
-            if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
-              window.sessionManager.onSessionUpdated(currentSessionId);
-            }
-            
-            // Update header session ID display
-            updateHeaderSessionId();
-            
-            // Update request ID display  
-            updateRequestId();
-            break;
-          case 'cancelled':
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
-            break;
-          case 'thinking_delta':
-            // Real-time token streaming from LLM - stream directly to response box
-            if (data.step !== currentStreamingStep) {
-              // New step - reset accumulator
-              currentStreamingContent = '';
-              currentStreamingStep = data.step;
-            }
-            
-            // Update with accumulated content + cursor directly in response box
-            currentStreamingContent = data.accumulated || '';
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
-            
-            // Auto-scroll to keep cursor visible
-            blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            break;
-          case 'thinking_complete':
-            // Final thinking event from streaming - remove cursor, keep content
-            currentStreamingContent = '';
-            currentStreamingStep = null;
-            
-            if (data.assistant && data.assistant.content) {
-              // Content was already displayed via thinking_delta
-              // Now show final formatted content (HTML from format_output hook)
-              const contentFormat = data.content_format || 'text';
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${formatContent(data.assistant.content, contentFormat)}</div>`;
-              
-              // Apply Prism.js syntax highlighting if available and content is HTML
-              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-                Prism.highlightAllUnder(blk.t);
-              }
-            }
-            
-            // Show tool calls in thinking section if any
-            if (data.assistant && data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-              if (!blk.think) {
-                blk.think = document.createElement('pre');
-                blk.think.className = 'think-section';
-                blk.r.appendChild(blk.think);
-              }
-              blk.think.textContent = `🧠 Step ${data.step || '?'}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
-              data.assistant.tool_calls.forEach((tc, i) => {
-                const func = tc.function || {};
-                blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-              });
-              showSection(blk.think);
-            }
-            break;
-          case 'thinking':
-            // Complete thinking event (also handles backward compatibility)
-            // Only clear streaming state if this has actual content (final thinking event)
-            if (data.assistant) {
-              // Final thinking event with content - clear streaming state
-              currentStreamingContent = '';
-              currentStreamingStep = null;
-              if (blk.think) {
-                blk.think.classList.remove('streaming');
-                // Remove typing cursor if present
-                const cursor = blk.think.querySelector('.typing-cursor');
-                if (cursor) cursor.remove();
-              }
-              
-              // Create think section if not exists
-              if (!blk.think) {
-                blk.think = document.createElement('pre');
-                blk.think.className = 'think-section';
-                blk.r.appendChild(blk.think);
-              }
-              
-              if (data.assistant.content) {
-                blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
-              }
-              if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-                blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
-                data.assistant.tool_calls.forEach((tc, i) => {
-                  const func = tc.function || {};
-                  blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-                });
-                blk.think.textContent += '\n';
-              }
-              showSection(blk.think);
-            } else {
-              // Step marker event (before LLM call) - don't interfere with streaming
-              // Just ensure think section exists
-              if (!blk.think) {
-                blk.think = document.createElement('pre');
-                blk.think.className = 'think-section';
-                blk.r.appendChild(blk.think);
-              }
-            }
-            break;
-          case 'status':
-            // Status events are now delivered through /events stream
-            // Show status events for this request AND all hierarchical children (sub-agents)
-            // e.g., if currentRequestId is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
-            if (blk && blk.status) {
-              const eventRequestId = data.request_id || '';
-              // Check if this event belongs to current request hierarchy
-              // Either exact match OR starts with current request_id followed by underscore (child operation)
-              const matches = eventRequestId === currentRequestId || 
-                  (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
-              
-              if (matches) {
-                addStatusEvent(blk.status, data);
-              }
-              // Otherwise silently ignore status from other requests/sessions
-            }
-            break;
-          case 'final':
-            // Only show final if content box is still empty (no streaming happened)
-            // or if it's a different format
-            const content = data.summary || data.content || '';
-            const contentFormat = data.content_format || 'text';
-            
-            if (!blk.t.innerHTML || blk.t.innerHTML.trim() === '') {
-              // No streaming happened, show final content
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-              
-              // Apply Prism.js syntax highlighting if available and content is HTML
-              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-                Prism.highlightAllUnder(blk.t);
-              }
-            }
-            // If streaming already filled the content, skip this (content already there)
-            break;
-          case 'end':
-            if (currentEventSource) {
-              currentEventSource.close();
-              currentEventSource = null;
-            }
-            // Don't close statusEs here - let status updates continue after response completion
-            runBtn.style.display = 'block'; // Show run button
-            stopBtn.style.display = 'none'; // Hide stop button
-            // Reset stop button state
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            
-            // Reload sessions after conversation completes
-            if (window.sessionManager && typeof window.sessionManager.loadSessions === 'function') {
-              window.sessionManager.loadSessions();
-            }
-            break;
-          case 'error':
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message)}</div>`;
-            if (currentEventSource) {
-              currentEventSource.close();
-              currentEventSource = null;
-            }
-            if (currentStatusEventSource) {
-              currentStatusEventSource.close();
-              currentStatusEventSource = null;
-            }
-            runBtn.style.display = 'block'; // Show run button
-            stopBtn.style.display = 'none'; // Hide stop button
-            // Reset stop button state
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            break;
-          case 'cancelled':
-            // Request was cancelled - clean up and reset UI
-            console.log('Request cancelled:', data.request_id, 'at step', data.step);
-            if (currentEventSource) {
-              currentEventSource.close();
-              currentEventSource = null;
-            }
-            if (currentStatusEventSource) {
-              currentStatusEventSource.close();
-              currentStatusEventSource = null;
-            }
-            // Show cancelled status with step number
-            showSection(blk.t);
-            const stepInfo = data.step ? ` at step ${data.step}` : '';
-            blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
-            runBtn.style.display = 'block'; // Show run button
-            stopBtn.style.display = 'none'; // Hide stop button
-            // Reset stop button state
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            break;
-        }
-        scrollBottom();
-      };
 
       // Use FormData for all requests (supports both text-only and multimodal)
       if (hasFiles) {
@@ -994,8 +1279,10 @@
         }
         
         // Add current session ID if exists (to continue existing session)
-        if (currentSessionId) {
-          formData.append('session_id', currentSessionId);
+        // Fallback to sessionStorage if currentSessionId not yet set (race condition on page load)
+        const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
+        if (effectiveSessionId) {
+          formData.append('session_id', effectiveSessionId);
         }
 
         try {
@@ -1029,6 +1316,11 @@
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
             runBtn.style.display = 'block';
             stopBtn.style.display = 'none';
+            // Reset stop button state
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
             return;
           }
 
@@ -1080,13 +1372,28 @@
         } catch (err) {
           showSection(blk.t);
           blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(err))}</div>`;
+          // Clear any pending close timer
+          if (closeEventSourceTimer) {
+            clearTimeout(closeEventSourceTimer);
+            closeEventSourceTimer = null;
+          }
           if (currentStatusEventSource) {
             currentStatusEventSource.close();
             currentStatusEventSource = null;
           }
         } finally {
+          // Clear any pending close timer
+          if (closeEventSourceTimer) {
+            clearTimeout(closeEventSourceTimer);
+            closeEventSourceTimer = null;
+          }
           runBtn.style.display = 'block';
           stopBtn.style.display = 'none';
+          // Reset stop button state
+          stopBtn.setAttribute('title', 'Stop');
+          stopBtn.setAttribute('aria-label', 'Stop');
+          stopBtn.disabled = false;
+          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           currentRequestId = null;
           currentEventSource = null;
         }
@@ -1096,14 +1403,25 @@
       // Text-only SSE-based request
       let sseOk = false;
       
+      // Reset reconnect state for new request
+      sseReceivedFinalOrEnd = false;
+      sseReconnectAttempts = 0;
+      if (sseReconnectTimer) {
+        clearTimeout(sseReconnectTimer);
+        sseReconnectTimer = null;
+      }
+      
       // Get current agent and LLM profile selections
       const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
       const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
       
+      // Fallback to sessionStorage if currentSessionId not yet set (race condition on page load)
+      const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
+      
       // Build event URL with agent and profile parameters
       let eventUrl = `/events?task=${encodeURIComponent(task)}`;
-      if (currentSessionId) {
-        eventUrl += `&session_id=${encodeURIComponent(currentSessionId)}`;
+      if (effectiveSessionId) {
+        eventUrl += `&session_id=${encodeURIComponent(effectiveSessionId)}`;
       }
       if (selectedAgent) {
         eventUrl += `&agent_name=${encodeURIComponent(selectedAgent)}`;
@@ -1145,13 +1463,31 @@
         if (!sseOk) {
           try {
             const r = await fetch('/run?task=' + encodeURIComponent(task), { method: 'POST' });
-            const j = await r.json();
-            const content = j.summary || JSON.stringify(j, null, 2);
-            const contentFormat = j.content_format || 'text';
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-            if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-              Prism.highlightAllUnder(blk.t);
+            if (!r.ok) {
+              // Extract error message from response
+              const errorText = await r.text();
+              let errorMsg = 'Request failed';
+              try {
+                const errorJson = JSON.parse(errorText);
+                errorMsg = errorJson.detail || errorJson.error || errorMsg;
+                // Add status code info if available
+                if (errorJson.status_code) {
+                  errorMsg = `${errorMsg} (${errorJson.status_code})`;
+                }
+              } catch (e) {
+                errorMsg = errorText || errorMsg;
+              }
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
+            } else {
+              const j = await r.json();
+              const content = j.summary || JSON.stringify(j, null, 2);
+              const contentFormat = j.content_format || 'text';
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+                Prism.highlightAllUnder(blk.t);
+              }
             }
           } catch (e) {
             showSection(blk.t);
@@ -1165,34 +1501,285 @@
           stopBtn.disabled = false;
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           // Keep currentRequestId and Request ID display visible
+          // Clear any pending close timer
+          if (closeEventSourceTimer) {
+            clearTimeout(closeEventSourceTimer);
+            closeEventSourceTimer = null;
+          }
           currentEventSource = null;
           es.close();
-          if (statusEs) {
-            statusEs.close();
+          if (currentStatusEventSource) {
+            currentStatusEventSource.close();
             currentStatusEventSource = null;
           }
         }
       }, 1500);
 
-      es.onerror = () => {
+      es.onerror = (event) => {
+        // Log connection error with available state information
+        const readyStateNames = ['CONNECTING', 'OPEN', 'CLOSED'];
+        const readyState = readyStateNames[es.readyState] || es.readyState;
+        console.warn('[SSE] Connection error, readyState:', readyState, 'event:', event, 'attempts:', sseReconnectAttempts);
+        
+        // Close current connection
         es.close();
-        if (statusEs) {
-          statusEs.close();
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
           currentStatusEventSource = null;
         }
-        runBtn.style.display = 'block'; // Show run button
-        stopBtn.style.display = 'none'; // Hide stop button
-        // Reset stop button state
+        
+        // Clear any pending close timer
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        
+        // If we've already received final/end, this is just cleanup - don't show error
+        if (sseReceivedFinalOrEnd) {
+          console.debug('[SSE] Connection closed after completion');
+          currentEventSource = null;
+          return;
+        }
+        
+        // Check if we should attempt reconnection (for long-running batch jobs)
+        // Only reconnect if:
+        // 1. We haven't exceeded max attempts
+        // 2. We have an active request ID (something is still running)
+        // 3. Connection was lost mid-stream (not initial connection failure)
+        const shouldReconnect = sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS 
+            && currentRequestId 
+            && sseOk; // sseOk means we received at least one event
+        
+        if (shouldReconnect) {
+          sseReconnectAttempts++;
+          const delay = SSE_BASE_RECONNECT_DELAY_MS * Math.pow(2, sseReconnectAttempts - 1);
+          console.debug(`[SSE] Will attempt reconnect #${sseReconnectAttempts} in ${delay}ms`);
+          
+          // Show reconnecting status
+          if (blk && blk.status) {
+            addStatusEvent(blk.status, {
+              type: 'status',
+              message: `Connection lost, reconnecting (attempt ${sseReconnectAttempts}/${SSE_MAX_RECONNECT_ATTEMPTS})...`,
+              request_id: currentRequestId,
+              timestamp: new Date().toISOString()
+            });
+          }
+          
+          // Schedule reconnect
+          sseReconnectTimer = setTimeout(() => {
+            if (!currentRequestId || sseReceivedFinalOrEnd) {
+              console.debug('[SSE] Reconnect cancelled - request completed');
+              return;
+            }
+            
+            console.debug(`[SSE] Attempting reconnect #${sseReconnectAttempts}`);
+            
+            // Create new EventSource to status endpoint for this request
+            // Note: We can't resume the original stream, but we can poll for completion
+            const statusUrl = `/api/requests/${currentRequestId}/status`;
+            fetch(statusUrl)
+              .then(r => r.json())
+              .then(status => {
+                if (status.completed) {
+                  // Request completed while we were disconnected
+                  console.debug('[SSE] Request completed during reconnect');
+                  sseReceivedFinalOrEnd = true;
+                  if (status.result) {
+                    showSection(blk.t);
+                    const content = status.result.summary || status.result.content || JSON.stringify(status.result);
+                    const contentFormat = status.result.content_format || 'text';
+                    blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+                  }
+                  runBtn.style.display = 'block';
+                  stopBtn.style.display = 'none';
+                  sseReconnectAttempts = 0;
+                } else if (status.error) {
+                  // Request failed
+                  console.warn('[SSE] Request failed:', status.error);
+                  showSection(blk.t);
+                  blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(status.error)}</div>`;
+                  runBtn.style.display = 'block';
+                  stopBtn.style.display = 'none';
+                  sseReconnectAttempts = 0;
+                } else {
+                  // Request still running - schedule another check
+                  console.debug('[SSE] Request still running, scheduling next poll');
+                  if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
+                    sseReconnectTimer = setTimeout(() => {
+                      // Trigger another onerror to continue polling
+                      es.onerror(event);
+                    }, SSE_BASE_RECONNECT_DELAY_MS * 2); // Poll every 2s while waiting
+                  }
+                }
+              })
+              .catch(err => {
+                console.warn('[SSE] Status poll failed:', err);
+                // Try again if we have attempts left
+                if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
+                  es.onerror(event);
+                } else {
+                  // Give up - show final error
+                  showSection(blk.t);
+                  const currentContent = blk.t.textContent || '';
+                  if (!currentContent.trim() || currentContent.includes('Thinking')) {
+                    blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Connection lost after ' + SSE_MAX_RECONNECT_ATTEMPTS + ' reconnect attempts')}</div>`;
+                  } else {
+                    const errorNotice = document.createElement('div');
+                    errorNotice.className = 'response-text error';
+                    errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ Connection lost - please check batch status');
+                    blk.t.appendChild(errorNotice);
+                  }
+                  runBtn.style.display = 'block';
+                  stopBtn.style.display = 'none';
+                  sseReconnectAttempts = 0;
+                }
+              });
+          }, delay);
+          
+          currentEventSource = null;
+          return; // Don't show error yet, we're reconnecting
+        }
+        
+        // No reconnect possible - check for auth errors first
+        if (!sseOk) {
+          // Initial connection failed - try to get error details via fetch
+          fetch(eventUrl)
+            .then(async (resp) => {
+              let errorMsg = 'Connection failed - server may be unreachable';
+              if (!resp.ok) {
+                try {
+                  const errorText = await resp.text();
+                  const errorJson = JSON.parse(errorText);
+                  if (errorJson.status_code === 401) {
+                    errorMsg = '🔒 ' + (errorJson.detail || 'Authentication required') + ' - Please log in';
+                  } else if (errorJson.status_code === 403) {
+                    errorMsg = '🚫 ' + (errorJson.detail || 'Access denied');
+                  } else {
+                    errorMsg = errorJson.detail || errorJson.error || errorMsg;
+                  }
+                } catch (e) {
+                  errorMsg = `HTTP ${resp.status}: ${resp.statusText}`;
+                }
+              }
+              showSection(blk.t);
+              const currentContent = blk.t.textContent || '';
+              if (!currentContent.trim() || currentContent.includes('Thinking')) {
+                blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
+              } else {
+                const errorNotice = document.createElement('div');
+                errorNotice.className = 'response-text error';
+                errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMsg);
+                blk.t.appendChild(errorNotice);
+              }
+            })
+            .catch(() => {
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Connection failed - server may be unreachable')}</div>`;
+            })
+            .finally(() => {
+              runBtn.style.display = 'block';
+              stopBtn.style.display = 'none';
+              stopBtn.setAttribute('title', 'Stop');
+              stopBtn.setAttribute('aria-label', 'Stop');
+              stopBtn.disabled = false;
+              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+              currentEventSource = null;
+              sseReconnectAttempts = 0;
+            });
+          return;
+        }
+        
+        // Connection was lost mid-stream
+        const errorMessage = 'Connection lost - possible timeout or network issue';
+        
+        showSection(blk.t);
+        const currentContent = blk.t.textContent || '';
+        if (!currentContent.trim() || currentContent.includes('Thinking')) {
+          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMessage)}</div>`;
+        } else {
+          const errorNotice = document.createElement('div');
+          errorNotice.className = 'response-text error';
+          errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMessage);
+          blk.t.appendChild(errorNotice);
+        }
+        
+        runBtn.style.display = 'block';
+        stopBtn.style.display = 'none';
         stopBtn.setAttribute('title', 'Stop');
         stopBtn.setAttribute('aria-label', 'Stop');
         stopBtn.disabled = false;
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-        // Keep currentRequestId and Request ID display visible
         currentEventSource = null;
+        sseReconnectAttempts = 0;
       };
     });
+    
+    // Check for active request to reconnect after page refresh
+    (async function reconnectToActiveJob() {
+      const storedRequestId = getStoredActiveRequest();
+      if (!storedRequestId) {
+        return;
+      }
+      
+      try {
+        // Check if job is still running
+        const response = await fetch(`/api/requests/${storedRequestId}/status`);
+        const status = await response.json();
+        
+        if (status.status === 'running') {
+          // Use the SAME setup as normal request - addAssistantBlock, etc.
+          const blk = addAssistantBlock(chatContainer);
+          
+          runBtn.style.display = 'none';
+          stopBtn.style.display = 'block';
+          stopBtn.disabled = false;
+          stopBtn.setAttribute('title', 'Stop');
+          stopBtn.setAttribute('aria-label', 'Stop');
+          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+          
+          // Build SSE URL - only pass request_id, backend uses job's agent
+          const session = sessionStorage.getItem('lastSessionId') || '';
+          let sseUrl = `/events?task=&request_id=${encodeURIComponent(storedRequestId)}&session_id=${encodeURIComponent(session)}`;
+          
+          const token = localStorage.getItem('token');
+          if (token) {
+            sseUrl += `&token=${encodeURIComponent(token)}`;
+          }
+          
+          // Create EventSource and use THE SAME handleSSEEvent as normal flow
+          const es = new EventSource(sseUrl, { withCredentials: true });
+          currentEventSource = es;
+          currentRequestId = storedRequestId;
+          
+          es.onmessage = (ev) => {
+            try {
+              const data = JSON.parse(ev.data);
+              handleSSEEvent(data, blk);
+            } catch (err) {
+              console.warn('[chat_module] SSE reconnect parse error:', err);
+            }
+          };
+          
+          es.onerror = () => {
+            es.close();
+            currentEventSource = null;
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            storeActiveRequest(null);
+          };
+          
+        } else {
+          storeActiveRequest(null);
+        }
+      } catch (error) {
+        console.warn('[chat_module] Failed to check active job status:', error);
+        storeActiveRequest(null);
+      }
+    })();
   };
-
+  
   function showSection(element) {
     const section = element.closest('.container-section');
     if (section && section.style.display === 'none') {
@@ -1242,7 +1829,15 @@
   
   // Listen for session load events
   window.addEventListener('session:loaded', (event) => {
-    const { session } = event.detail;
+    const { session, readOnly, reason } = event.detail;
+    
+    // CRITICAL: Don't override chat if an SSE request is currently streaming!
+    // This prevents race condition where session restore overwrites live streaming output.
+    if (currentEventSource) {
+      console.warn('[session:loaded] Ignoring session load - SSE stream is active');
+      return;
+    }
+    
     if (session && session.messages) {
       // Clear current chat
       const chatEl = document.getElementById('chat');
@@ -1251,14 +1846,18 @@
       }
       
       // Restore messages
-      session.messages.forEach(msg => {
+      // First pass: find the last assistant message to determine if we need a placeholder
+      let lastAssistantMsg = null;
+      for (let i = session.messages.length - 1; i >= 0; i--) {
+        if (session.messages[i].role === 'assistant') {
+          lastAssistantMsg = session.messages[i];
+          break;
+        }
+      }
+      
+      session.messages.forEach((msg, index) => {
         // Skip system messages and tool-related messages
         if (msg.role === 'system' || msg.role === 'tool') {
-          return;
-        }
-        
-        // Skip assistant messages with tool_calls (they're intermediate steps)
-        if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
           return;
         }
         
@@ -1268,11 +1867,176 @@
           row.className = 'row';
           const msgDiv = document.createElement('div');
           msgDiv.className = 'msg user';
+          
+          // Handle multimodal content (array) or simple string content
+          let displayText = '';
+          let images = [];
+          let audioFiles = [];
+          let textFiles = [];
+          
+          if (Array.isArray(msg.content)) {
+            // Parse multimodal content array
+            const textParts = [];
+            msg.content.forEach(item => {
+              if (item.type === 'text') {
+                textParts.push(item.text);
+              } else if (item.type === 'image_url' || item.type === 'image') {
+                images.push(item);
+              } else if (item.type === 'audio') {
+                audioFiles.push(item);
+              } else if (item.type === 'text_file') {
+                textFiles.push(item);
+              }
+            });
+            displayText = textParts.join(' ') || '(File upload)';
+          } else {
+            displayText = msg.content || '';
+          }
+          
           const textSpan = document.createElement('div');
-          textSpan.innerHTML = formatTextWithLineBreaks(msg.content || '');
+          textSpan.innerHTML = formatTextWithLineBreaks(displayText);
           msgDiv.appendChild(textSpan);
+          
+          // Add image previews if any
+          if (images.length > 0) {
+            const previewContainer = document.createElement('div');
+            previewContainer.className = 'user-image-previews';
+            
+            images.forEach(item => {
+              const img = document.createElement('img');
+              const imageUrl = item.image_url?.url || item.url;
+              img.src = imageUrl;
+              img.alt = 'Uploaded image';
+              img.title = 'Click to view full size';
+              
+              // Optional: click to view full size
+              img.onclick = () => {
+                window.open(imageUrl, '_blank');
+              };
+              
+              previewContainer.appendChild(img);
+            });
+            
+            msgDiv.appendChild(previewContainer);
+          }
+          
+          // Add audio previews if any
+          if (audioFiles.length > 0) {
+            const audioContainer = document.createElement('div');
+            audioContainer.className = 'user-audio-previews';
+            audioContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+            
+            audioFiles.forEach((item, index) => {
+              const audioWrapper = document.createElement('div');
+              audioWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+              
+              // Extract audio data URL - handle different formats
+              // Format 1: item.audio_url (from session storage)
+              // Format 2: item.audio.data (alternative format)
+              // Format 3: item.data (fallback)
+              const audioData = item.audio_url || item.audio?.data || item.data;
+              const mediaType = item.audio?.media_type || item.media_type || 'audio/flac';
+              const audioName = item.name || `Audio ${index + 1}`;
+              
+              if (audioData) {
+                // Create play button that plays audio directly
+                const playBtn = document.createElement('button');
+                playBtn.textContent = '▶️ ' + audioName;
+                playBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;';
+                playBtn.title = 'Click to play';
+                
+                // Create hidden audio element
+                const audioEl = document.createElement('audio');
+                audioEl.src = audioData;
+                audioEl.style.display = 'none';
+                
+                let isPlaying = false;
+                playBtn.onclick = () => {
+                  if (isPlaying) {
+                    audioEl.pause();
+                    playBtn.textContent = '▶️ ' + audioName;
+                    isPlaying = false;
+                  } else {
+                    audioEl.play();
+                    playBtn.textContent = '⏸️ ' + audioName;
+                    isPlaying = true;
+                  }
+                };
+                
+                audioEl.onended = () => {
+                  playBtn.textContent = '▶️ ' + audioName;
+                  isPlaying = false;
+                };
+                
+                audioWrapper.appendChild(playBtn);
+                audioWrapper.appendChild(audioEl);
+              } else {
+                // Fallback: Show audio indicator if data not found
+                const indicator = document.createElement('span');
+                indicator.textContent = `🔊 Audio ${index + 1}`;
+                indicator.style.cssText = 'color: #888; font-size: 0.95em;';
+                audioWrapper.appendChild(indicator);
+              }
+              
+              audioContainer.appendChild(audioWrapper);
+            });
+            
+            msgDiv.appendChild(audioContainer);
+          }
+          
+          // Add text file previews if any
+          if (textFiles.length > 0) {
+            const textContainer = document.createElement('div');
+            textContainer.className = 'user-text-file-previews';
+            textContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
+            
+            textFiles.forEach((item, index) => {
+              const textWrapper = document.createElement('div');
+              textWrapper.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+              
+              const fileName = item.name || `File ${index + 1}`;
+              const fileContent = item.content || '';
+              
+              // Create view button
+              const viewBtn = document.createElement('button');
+              viewBtn.textContent = '📄 ' + fileName;
+              viewBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; width: fit-content;';
+              viewBtn.title = 'Click to view';
+              
+              // Create hidden content div
+              const contentDiv = document.createElement('pre');
+              contentDiv.style.cssText = 'display: none; margin: 0; padding: 10px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;';
+              contentDiv.textContent = fileContent;
+              
+              viewBtn.onclick = () => {
+                // Toggle content display
+                if (contentDiv.style.display === 'none') {
+                  contentDiv.style.display = 'block';
+                  viewBtn.textContent = '📄 ' + fileName + ' ▼';
+                } else {
+                  contentDiv.style.display = 'none';
+                  viewBtn.textContent = '📄 ' + fileName;
+                }
+              };
+              
+              textWrapper.appendChild(viewBtn);
+              textWrapper.appendChild(contentDiv);
+              textContainer.appendChild(textWrapper);
+            });
+            
+            msgDiv.appendChild(textContainer);
+          }
+          
           row.appendChild(msgDiv);
           chatEl.appendChild(row);
+        } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+          // Only show placeholder for the LAST assistant message with tool_calls
+          if (msg === lastAssistantMsg && !msg.content) {
+            const blk = addAssistantBlock(chatEl);
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text"><em style="color: #888;">⚙️ Tool calls in progress...</em></div>`;
+          }
+          // Skip all other tool-call-only messages (they're intermediate steps)
         } else if (msg.role === 'assistant' && msg.content) {
           const blk = addAssistantBlock(chatEl);
           showSection(blk.t);
@@ -1290,7 +2054,7 @@
       // Set current session ID for continuation
       currentSessionId = session.session_id;
       
-      // Restore agent and LLM profile selectors
+      // Restore agent and LLM profile selectors (selector_module handles fallback to defaults)
       if (session.agent_name && window.selectorModule) {
         window.selectorModule.setAgent(session.agent_name);
       }
@@ -1303,7 +2067,103 @@
         updateHeaderSessionId(session.session_id);
       }
     }
+    
+    // Handle read-only mode AFTER rendering messages
+    if (readOnly) {
+      showReadOnlyBanner(reason);
+      disableInput();
+    } else {
+      removeReadOnlyBanner();
+      enableInput();
+    }
   });
+  
+  // Helper functions for read-only mode
+  function showReadOnlyBanner(reason) {
+    removeReadOnlyBanner(); // Remove existing banner if any
+    
+    const banner = document.createElement('div');
+    banner.id = 'readOnlyBanner';
+    banner.className = 'read-only-banner';
+    banner.innerHTML = `
+      <div class="banner-content">
+        <span class="banner-icon">🔒</span>
+        <div class="banner-text">
+          <strong>Read-Only Session</strong>
+          <p>${reason || 'This session cannot be edited.'}</p>
+        </div>
+      </div>
+    `;
+    
+    const chatEl = document.getElementById('chat');
+    if (chatEl) {
+      // Insert as first child of chat element (not before it)
+      chatEl.insertBefore(banner, chatEl.firstChild);
+    }
+  }
+  
+  function removeReadOnlyBanner() {
+    const banner = document.getElementById('readOnlyBanner');
+    if (banner) {
+      banner.remove();
+    }
+  }
+  
+  function disableInput() {
+    const taskInput = document.getElementById('task');
+    const runBtn = document.getElementById('runBtn');
+    const fileInput = document.getElementById('fileInput');
+    const fileUploadBtn = document.querySelector('.file-upload-btn');
+    
+    if (taskInput) {
+      taskInput.disabled = true;
+      taskInput.placeholder = 'This session is read-only';
+      taskInput.style.opacity = '0.5';
+    }
+    if (runBtn) {
+      runBtn.disabled = true;
+      runBtn.style.opacity = '0.5';
+    }
+    if (fileInput) {
+      fileInput.disabled = true;
+    }
+    if (fileUploadBtn) {
+      fileUploadBtn.style.opacity = '0.5';
+      fileUploadBtn.style.pointerEvents = 'none';
+    }
+  }
+  
+  function enableInput() {
+    const taskInput = document.getElementById('task');
+    const runBtn = document.getElementById('runBtn');
+    const fileInput = document.getElementById('fileInput');
+    const fileUploadBtn = document.querySelector('.file-upload-btn');
+    
+    if (taskInput) {
+      taskInput.disabled = false;
+      taskInput.placeholder = 'Ask the agent…';
+      taskInput.style.opacity = '1';
+    }
+    if (runBtn) {
+      runBtn.disabled = false;
+      runBtn.style.opacity = '1';
+    }
+    if (fileInput) {
+      fileInput.disabled = false;
+    }
+    if (fileUploadBtn) {
+      fileUploadBtn.style.opacity = '1';
+      fileUploadBtn.style.pointerEvents = 'auto';
+    }
+  }
+
+  // Public method to check if a request is active
+  chatModule.hasActiveRequest = function() {
+    return currentEventSource !== null || currentStatusEventSource !== null;
+  };
+
+  // Export chatModule to window
+  global.chatModule = chatModule;
 
 })(window);
 

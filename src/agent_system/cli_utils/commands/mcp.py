@@ -16,7 +16,7 @@ from agent_system.cli_utils.utils import _atomic_write_text
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
 except Exception:
-    tabulate = None
+    tabulate = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

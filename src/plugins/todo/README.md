@@ -382,6 +382,7 @@ todo:
     max_tasks_per_session: 1000        # Task limit per session
     enable_dependencies: true          # Enable dependency tracking
     auto_save: true                    # Auto-save on modifications
+    max_cache_size: 50                 # Max sessions in memory cache (rest on disk)
 ```
 
 **Agent Allowlists:**

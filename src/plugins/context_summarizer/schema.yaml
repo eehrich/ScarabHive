@@ -4,12 +4,71 @@ hooks:
   - name: summarize_context
     type: pre_llm_call
     enabled: true
-    timeout: 300.0
+    timeout: 900.0
     description: "Intelligently summarizes older messages using LLM to reduce context size while preserving key information"
     category: "context_summarization"
     order:
-      after: ["begin"]
+      after: ["context_engineering"]
       before: ["context_optimization"]
+
+# MCP Tools - Manual summarization controls
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_summarize"
+      description: |
+        Manually trigger context summarization when conversation history becomes too long or irrelevant.
+
+        Use this when:
+        - You notice the conversation is getting very long
+        - Old information is no longer needed for current task
+        - You want to reduce token usage
+        - Context window is approaching limits
+
+        The summarization will:
+        - Preserve recent messages (default: last 10)
+        - Preserve all system messages
+        - Create concise summaries of older message blocks
+        - Update the conversation with summarized version
+
+        Example: If context feels cluttered with old discussion, call this to compress history.
+      parameters:
+        type: object
+        properties:
+          reason:
+            type: string
+            description: "Optional reason for summarization (for logging). Example: 'long planning discussion complete', 'switching topics'"
+          chunk_size:
+            type: integer
+            minimum: 2
+            maximum: 50
+            default: 10
+            description: "Number of older messages to summarize together. Larger = more aggressive compression."
+          preserve_recent:
+            type: integer
+            minimum: 2
+            maximum: 100
+            default: 10
+            description: "Number of recent messages to keep untouched. Increase if you need more recent context."
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_check_stats"
+      description: |
+        Check current conversation context statistics to decide if summarization is needed.
+
+        Returns:
+        - Total message count
+        - Estimated token usage
+        - Context window utilization percentage
+        - Recommendation (summarize vs ok)
+
+        Use this to assess if manual summarization would be beneficial before calling summarize.
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
 
 # Configuration schema for this plugin
 config:
@@ -19,85 +78,135 @@ config:
     description: "Start summarization when context exceeds this percentage of LLM context window (0.0-1.0)"
     minimum: 0.1
     maximum: 0.95
-  
+
+  max_messages:
+    type: integer
+    default: 0
+    description: "Trigger summarization when message count exceeds this limit (0 = disabled, token-based only). When both max_messages and token threshold are configured, summarization triggers when EITHER condition is met."
+    minimum: 0
+    maximum: 10000
+
   summarization_chunk_size:
     type: integer
     default: 10
     description: "Number of older messages to summarize in one batch"
     minimum: 2
     maximum: 50
-  
+
+  max_chunks:
+    type: integer
+    default: 10
+    description: "Maximum number of parallel chunks to process. If message count would exceed this, chunk_size is automatically increased. Set to 0 to disable limit."
+    minimum: 0
+    maximum: 100
+
   preserve_recent_count:
     type: integer
     default: 10
     description: "Always preserve the last N messages without summarization"
     minimum: 2
     maximum: 100
-  
+
   preserve_system_messages:
     type: boolean
     default: true
     description: "Always preserve system messages during summarization"
-  
+
   llm_profile:
     type: string
     default: "turbo"
     description: "LLM profile to use for summarization (turbo, normal, chat, think)"
     enum: ["turbo", "normal", "chat", "think"]
-  
+
+  max_tracked_sessions:
+    type: integer
+    default: 200
+    description: "Maximum number of sessions to track for summarization timestamps (LRU eviction)"
+    minimum: 50
+    maximum: 1000
+
   summary_prompt_template:
     type: string
     default: |
-      Summarize the following conversation messages concisely while preserving all key information, decisions, and context. 
+      Summarize the following conversation messages concisely while preserving all key information, decisions, and context.
       Focus on facts, actions, and important details. Keep the summary clear and structured.
-      
+
       Messages to summarize:
       {messages}
-      
+
       Provide a concise summary:
     description: "Template for the summarization prompt. Use {messages} placeholder for message content."
-  
+
   min_summary_reduction:
     type: number
     default: 0.3
     description: "Minimum reduction ratio (0-1) to accept summary. If summary doesn't reduce by at least this much, keep original."
     minimum: 0.1
     maximum: 0.9
-  
+
   store_original_metadata:
     type: boolean
     default: true
     description: "Store original messages in metadata for audit trail and debugging"
-  
+
   summary_marker_format:
     type: string
     default: "[Summary of {count} messages from {start_time} to {end_time}]"
     description: "Format for summary marker. Placeholders: {count}, {start_time}, {end_time}"
 
+  min_time_between_summarizations:
+    type: number
+    default: 200.0
+    description: "Minimum time in seconds between summarizations for the same session (prevents endless loops)"
+    minimum: 10.0
+    maximum: 3600.0
+
 # Web UI configuration
 web_ui:
   # Header button configuration
   button:
-    enabled: true
-    text: "Context Summary"
+    enabled: false
+    text: "{{ name }}"
     icon: "📝"
     tooltip: "View context summarization history and statistics"
-  
+
+  # Dropdown menu integration
+  menu:
+    enabled: true
+    items:
+      - id: "context_summarizer"
+        menu_id: "user"
+        section: "Context Management"
+        label: "Context Summarizer"
+        action: "openPanel"
+        icon: "📝"
+        requires_admin: false
+        order: 100
+        tooltip: "Context Summarizer"
+
   # Panel configuration
   panel:
     enabled: true
-    title: "Context Summarizer"
-    endpoint: "/plugins/{{ name }}/panel"
+    title: "Context Summarizer"  # Shared title for grouped panel
+    panel_id: "context_summarizer"  # Shared ID for all instances
+    panel_group: "context_summarizer"  # Enables tab grouping
+    endpoint: "/plugins/{{ name }}/"  # Instance-specific endpoint
     type: "iframe"
     description: "View summarization events with before/after message counts and token savings"
-  
+
   endpoints:
-    - path: "/plugins/{{ name }}/history"
+    - path: "/history"
       method: "GET"
+      handler: "get_history"
+      response_type: "json"
       description: "Get summarization event history with timestamps and statistics"
-    - path: "/plugins/{{ name }}/stats"
+    - path: "/stats"
       method: "GET"
+      handler: "get_stats"
+      response_type: "json"
       description: "Get aggregated summarization statistics"
-    - path: "/plugins/{{ name }}/panel"
+    - path: "/"
       method: "GET"
+      handler: "render_panel"
+      response_type: "html"
       description: "Main context summarizer UI panel"

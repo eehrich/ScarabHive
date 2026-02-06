@@ -21,12 +21,15 @@ window.AgentSystem.DropdownMenu = {
     
     try {
       await this.loadMenuData();
-      this.renderMenus();
-      this.setupGlobalListeners();
-      this.initialized = true;
     } catch (error) {
-      console.error('Failed to initialize DropdownMenu:', error);
+      console.error('Failed to load menu data:', error);
+      // Continue with empty menus - will show login button
     }
+    
+    // Always render menus (shows login button if no menus/not authenticated)
+    this.renderMenus();
+    this.setupGlobalListeners();
+    this.initialized = true;
   },
 
   /**
@@ -40,10 +43,7 @@ window.AgentSystem.DropdownMenu = {
         headers: {}
       };
       
-      // Add Authorization header if authManager is available
-      if (window.authManager && window.authManager.token) {
-        fetchOptions.headers['Authorization'] = `Bearer ${window.authManager.token}`;
-      }
+      // No need for Authorization header - cookie is sent automatically
 
       const [defsResponse, itemsResponse] = await Promise.all([
         fetch('/api/menu-definitions', fetchOptions),
@@ -78,9 +78,16 @@ window.AgentSystem.DropdownMenu = {
    */
   renderMenus() {
     const headerButtons = document.querySelector('.header-buttons');
+    const headerUserMenu = document.querySelector('.header-user-menu');
+    
     if (!headerButtons) {
       console.error('Header buttons container not found');
       return;
+    }
+
+    // Clear existing menus before re-rendering
+    if (headerUserMenu) {
+      headerUserMenu.innerHTML = '';
     }
 
     // Find plugin buttons comment marker
@@ -91,7 +98,7 @@ window.AgentSystem.DropdownMenu = {
 
     // If no menus (not logged in), show login button
     if (this.menus.size === 0) {
-      this.renderLoginButton(headerButtons, pluginMarker);
+      this.renderLoginButton(headerUserMenu || headerButtons, pluginMarker);
       return;
     }
 
@@ -109,8 +116,10 @@ window.AgentSystem.DropdownMenu = {
           headerButtons.appendChild(container);
         }
       } else {
-        // Insert on right side (before auth UI or at plugin marker)
-        if (pluginMarker) {
+        // User menu (right side) goes to separate container to stay visible on mobile
+        if (headerUserMenu) {
+          headerUserMenu.appendChild(container);
+        } else if (pluginMarker) {
           headerButtons.insertBefore(container, pluginMarker);
         } else {
           headerButtons.appendChild(container);
@@ -119,49 +128,28 @@ window.AgentSystem.DropdownMenu = {
 
       // Store references
       menuData.btnElement = container.querySelector('.dropdown-menu-btn');
-      menuData.panelElement = container.querySelector('.dropdown-menu-panel');
+      // Panel is attached to body (portal mode), find it by ID
+      menuData.panelElement = document.getElementById(`menu-panel-${menuId}`);
     });
   },
 
   /**
    * Render login button when not authenticated
    */
-  renderLoginButton(headerButtons, pluginMarker) {
+  renderLoginButton(container, pluginMarker) {
+    console.log('[DropdownMenu] Rendering login button, container:', container?.id || container?.className);
+    
     // Create login link/button
     const loginLink = document.createElement('a');
     loginLink.href = '/login';
-    loginLink.className = 'header-button';
-    loginLink.style.cssText = `
-      margin-left: auto;
-      padding: 8px 16px;
-      background: rgba(35, 134, 54, 0.2);
-      border: 1px solid rgba(35, 134, 54, 0.4);
-      border-radius: 6px;
-      color: #7ee787;
-      text-decoration: none;
-      font-size: 14px;
-      font-weight: 500;
-      transition: all 0.2s ease;
-    `;
+    loginLink.className = 'header-login-btn';
+    loginLink.id = 'headerLoginBtn';
     loginLink.textContent = 'Login';
     loginLink.title = 'Login to your account';
     
-    // Hover effect
-    loginLink.addEventListener('mouseenter', () => {
-      loginLink.style.background = 'rgba(35, 134, 54, 0.3)';
-      loginLink.style.borderColor = 'rgba(35, 134, 54, 0.6)';
-    });
-    loginLink.addEventListener('mouseleave', () => {
-      loginLink.style.background = 'rgba(35, 134, 54, 0.2)';
-      loginLink.style.borderColor = 'rgba(35, 134, 54, 0.4)';
-    });
-
-    // Insert at the end (right side)
-    if (pluginMarker) {
-      headerButtons.insertBefore(loginLink, pluginMarker);
-    } else {
-      headerButtons.appendChild(loginLink);
-    }
+    // Append directly to container
+    container.appendChild(loginLink);
+    console.log('[DropdownMenu] Login button added to DOM');
   },
 
   /**
@@ -206,11 +194,17 @@ window.AgentSystem.DropdownMenu = {
     arrow.textContent = '▼';
     button.appendChild(arrow);
 
-    // Create dropdown panel
+    // Create dropdown panel as PORTAL (attached to body, not header)
     const panel = document.createElement('div');
     panel.className = 'dropdown-menu-panel';
     panel.id = `menu-panel-${menuId}`;
     panel.setAttribute('role', 'menu');
+    panel.dataset.menuId = menuId;
+    panel.dataset.alignLeft = definition.position === 'left' ? 'true' : 'false';
+
+    // Create inner wrapper for multi-column support
+    const inner = document.createElement('div');
+    inner.className = 'dropdown-menu-panel-inner';
 
     // Organize items by section
     const sections = this.groupItemsBySection(items);
@@ -220,18 +214,24 @@ window.AgentSystem.DropdownMenu = {
       const empty = document.createElement('div');
       empty.className = 'dropdown-menu-empty';
       empty.textContent = 'No items available';
-      panel.appendChild(empty);
+      inner.appendChild(empty);
     } else {
       // Render sections
       sections.forEach((sectionItems, sectionName) => {
         const section = this.createMenuSection(sectionName, sectionItems);
-        panel.appendChild(section);
+        inner.appendChild(section);
       });
     }
+    
+    panel.appendChild(inner);
 
-    // Assemble
+    // PORTAL PATTERN: Attach panel to body instead of header
+    // This breaks out of the header's stacking context (z-index: 100)
+    // allowing the panel (z-index: 9000) to appear above floating panels (z-index: 1000-8999)
+    document.body.appendChild(panel);
+
+    // Only button goes in container (header)
     container.appendChild(button);
-    container.appendChild(panel);
 
     // Event listeners
     button.addEventListener('click', (e) => {
@@ -384,21 +384,35 @@ window.AgentSystem.DropdownMenu = {
         }
       } else if (item.action === 'openPanel') {
         // Open plugin panel in floating panel
-        if (item.panel_id && window.AgentSystem && window.AgentSystem.PluginManager) {
-          // Create a pseudo-plugin object from the panel_id
-          // We need to fetch the plugin metadata first or construct it
-          const pseudoPlugin = {
-            id: item.panel_id,
-            panel_title: item.label || 'Plugin Panel',
-            panel_endpoint: `/plugins/${item.panel_id}/`,
-            panel_type: 'iframe',
-            description: item.tooltip || ''
-          };
-          
-          // Use PluginManager's togglePluginPanel method
-          window.AgentSystem.PluginManager.togglePluginPanel(pseudoPlugin);
+        if ((item.panel_id || item.panel_endpoint) && window.AgentSystem && window.AgentSystem.PluginManager) {
+          // Check if this is a tabbed panel (has panel_tabs array)
+          if (item.panel_tabs && item.panel_tabs.length > 1) {
+            // Create a tabbed panel
+            const tabbedPlugin = {
+              id: item.panel_id || item.id,
+              panel_title: item.panel_title || item.label || 'Panel',
+              panel_type: 'tabbed-iframe',
+              description: item.tooltip || '',
+              tabs: item.panel_tabs,
+              // Default to the clicked instance's tab
+              activeTab: item.instance_id || item.panel_tabs[0].instance_id
+            };
+            window.AgentSystem.PluginManager.toggleTabbedPanel(tabbedPlugin);
+          } else {
+            // Create a pseudo-plugin object from the panel_id or panel_endpoint
+            const pseudoPlugin = {
+              id: item.panel_id || item.id,
+              panel_title: item.panel_title || item.label || 'Panel',
+              panel_endpoint: item.panel_endpoint || `/plugins/${item.panel_id}/`,
+              panel_type: 'iframe',
+              description: item.tooltip || ''
+            };
+            
+            // Use PluginManager's togglePluginPanel method
+            window.AgentSystem.PluginManager.togglePluginPanel(pseudoPlugin);
+          }
         } else {
-          console.error('Panel ID not provided or PluginManager not available');
+          console.error('Panel ID or endpoint not provided, or PluginManager not available');
         }
       } else if (typeof window[item.action] === 'function') {
         // Call global function
@@ -454,8 +468,65 @@ window.AgentSystem.DropdownMenu = {
 
     menuData.btnElement?.classList.add('open');
     menuData.btnElement?.setAttribute('aria-expanded', 'true');
+    
+    // Position panel under button (portal mode)
+    this.positionPanel(menuData.btnElement, menuData.panelElement);
+    
     menuData.panelElement?.classList.add('open');
     this.openMenuId = menuId;
+    
+    // Check if menu needs multi-column layout
+    this.checkMenuOverflow(menuData.panelElement);
+  },
+  
+  /**
+   * Position dropdown panel under button (for portal mode)
+   */
+  positionPanel(button, panel) {
+    if (!button || !panel) return;
+    
+    const btnRect = button.getBoundingClientRect();
+    const alignLeft = panel.dataset.alignLeft === 'true';
+    
+    // Position below button
+    panel.style.position = 'fixed';
+    panel.style.top = `${btnRect.bottom + 8}px`;
+    
+    if (alignLeft) {
+      panel.style.left = `${btnRect.left}px`;
+      panel.style.right = 'auto';
+    } else {
+      panel.style.right = `${window.innerWidth - btnRect.right}px`;
+      panel.style.left = 'auto';
+    }
+  },
+  
+  /**
+   * Check if menu overflows viewport and apply multi-column if needed
+   */
+  checkMenuOverflow(panel) {
+    if (!panel) return;
+    
+    const inner = panel.querySelector('.dropdown-menu-panel-inner');
+    if (!inner) return;
+    
+    // Reset any previous multi-column state
+    inner.classList.remove('multi-column');
+    inner.style.maxHeight = '';
+    inner.style.columnCount = '';
+    
+    // Get measurements
+    const viewportHeight = window.innerHeight;
+    const panelRect = panel.getBoundingClientRect();
+    const maxAllowedHeight = viewportHeight - panelRect.top - 20; // 20px margin from bottom
+    
+    // If content is taller than available space, use multi-column
+    if (inner.scrollHeight > maxAllowedHeight) {
+      const columns = Math.ceil(inner.scrollHeight / maxAllowedHeight);
+      inner.classList.add('multi-column');
+      inner.style.maxHeight = maxAllowedHeight + 'px';
+      inner.style.columnCount = columns;
+    }
   },
 
   /**
@@ -535,41 +606,19 @@ window.handleLogout = async function() {
     // Perform logout
     await window.authManager.logout();
     
-    // Re-initialize dropdown menu system (will show login button)
-    if (window.AgentSystem && window.AgentSystem.DropdownMenu) {
-      // Clear existing menus
-      window.AgentSystem.DropdownMenu.menus.clear();
-      const container = document.querySelector('.header-buttons');
-      if (container) {
-        const menuContainers = container.querySelectorAll('.dropdown-menu-container');
-        menuContainers.forEach(el => el.remove());
-      }
-      
-      // Reset initialization flag and re-initialize
-      window.AgentSystem.DropdownMenu.initialized = false;
-      await window.AgentSystem.DropdownMenu.init();
-    }
+    // Clear session data from storage (important: sessions are user-specific!)
+    sessionStorage.removeItem('lastSessionId');
+    sessionStorage.removeItem('currentSessionId');
+    localStorage.removeItem('lastSessionId');
+    localStorage.removeItem('currentSessionId');
     
-    // Clear chat or other user-specific UI elements
-    const chatElement = document.getElementById('chat');
-    if (chatElement) {
-      chatElement.innerHTML = '';
-    }
+    // Clear active request tracking
+    sessionStorage.removeItem('activeRequestId');
+    sessionStorage.removeItem('activeRequestTask');
+    sessionStorage.removeItem('activeRequestTimestamp');
     
-    // Close and clear sessions sidebar
-    if (window.sessionManager) {
-      const sidebar = document.getElementById('sessionsSidebar');
-      if (sidebar) {
-        sidebar.classList.remove('open');
-        // Clear session list
-        const sessionList = document.getElementById('sessionsList');
-        if (sessionList) {
-          sessionList.innerHTML = '';
-        }
-      }
-      // Reset session manager state
-      window.sessionManager.sidebarOpen = false;
-    }
+    // Reload page to reset all UI state (cleanest way to handle role-based UI)
+    window.location.reload();
     
   } catch (error) {
     console.error('Logout failed:', error);

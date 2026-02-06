@@ -7,6 +7,7 @@ behavior explicit and testable.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from pathlib import Path
 import os
@@ -14,6 +15,8 @@ import yaml
 import glob as glob_module
 
 from .models import AgentSystemConfig, MCPConfig
+
+logger = logging.getLogger(__name__)
 
 
 def deep_merge(base: dict, overlay: dict) -> dict:
@@ -52,6 +55,11 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                      the `config/config.yaml` file if it exists or the
                      path from the AGENT_CONFIG_PATH environment variable.
     """
+    # Clear caches when reloading settings
+    global _plugins_cache, _inheritance_cache
+    _plugins_cache = None
+    _inheritance_cache.clear()
+    
     # Allow overriding default config file via env var
     env_cfg = os.environ.get("AGENT_CONFIG_PATH")
     cfg_path = Path(config_path or env_cfg or "config/config.yaml")
@@ -59,7 +67,15 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
     # If the master config exists, load it and then load any included files
     if cfg_path.exists():
-        master = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        try:
+            master = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as e:
+            logger.error(f"YAML syntax error in config file '{cfg_path}': {e}")
+            raise ValueError(f"Failed to parse configuration file '{cfg_path}': {e}") from e
+        except Exception as e:
+            logger.error(f"Failed to read config file '{cfg_path}': {e}")
+            raise
+        
         # Determine includes: accept either `includes` (list) or `files`
         includes = master.get("includes") or master.get("files") or []
         # If includes is a single string, make it a list
@@ -95,6 +111,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                 expanded_includes.append(inc)
         
         includes = expanded_includes
+        logger.debug(f"Config includes {len(includes)} files from glob patterns")
 
         # Load each included file and merge into specific sections
         for inc in includes:
@@ -104,12 +121,21 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             if inc_path.exists():
                 try:
                     part = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                    logger.debug(f"Loaded included config: {inc_path.name}")
                     
                     # Merge based on included file structure
+                    # Deep merge llm_system to allow multiple files to contribute models/profiles
                     if "llm_system" in part:
-                        data["llm_system"] = part["llm_system"]
+                        if "llm_system" in data:
+                            data["llm_system"] = deep_merge(data["llm_system"], part["llm_system"])
+                        else:
+                            data["llm_system"] = part["llm_system"]
+                        # Log models being added
+                        if "models" in part.get("llm_system", {}):
+                            model_names = list(part["llm_system"]["models"].keys())
+                            logger.debug(f"Added LLM models from {inc_path.name}: {model_names}")
                     elif inc.endswith("llm.yaml"):
-                        # If llm.yaml contains the configuration directly
+                        # If llm.yaml contains the configuration directly (legacy format)
                         data["llm_system"] = part
                     
                     # New split structure (Epic 0044)
@@ -119,6 +145,10 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                             data["plugins"] = deep_merge(data["plugins"], part["plugins"])
                         else:
                             data["plugins"] = part["plugins"]
+                        # Log servers being added
+                        if "servers" in part.get("plugins", {}):
+                            server_names = list(part["plugins"]["servers"].keys())
+                            logger.debug(f"Added servers from {inc_path.name}: {server_names}")
                     
                     if "external_servers" in part:
                         # mcp_servers.yaml uses "external_servers" key
@@ -131,10 +161,14 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     if "agents" in part:
                         data["agents"] = part["agents"]
                         
+                except yaml.YAMLError as e:
+                    # Log YAML syntax errors and continue (allows other configs to load)
+                    logger.error(f"YAML syntax error in included config '{inc_path}': {e}")
+                    logger.warning(f"Skipping malformed config file: {inc_path}")
                 except Exception as e:
-                    # Log parsing errors but continue loading
-                    print(f"Warning: Failed to parse {inc_path}: {e}")
-                    pass
+                    # Log other parsing errors but continue loading
+                    logger.error(f"Failed to load included config '{inc_path}': {e}", exc_info=True)
+                    logger.warning(f"Skipping problematic config file: {inc_path}")
 
     # Apply simple env-variable expansion for ${VAR} patterns (keep existing loader behavior)
     def _expand_env(value):
@@ -197,15 +231,139 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             # Conservative: if resolution fails for any reason, keep original values
             pass
 
-    return AgentSystemConfig.model_validate(data)
+    # Validate configuration with Pydantic
+    try:
+        return AgentSystemConfig.model_validate(data)
+    except Exception as e:
+        logger.error(f"Configuration validation failed: {e}")
+        # Log the data structure that failed validation for debugging
+        logger.debug(f"Failed configuration data: {data}")
+        raise
+
+
+# Cache for plugin discovery (avoid repeated calls)
+_plugins_cache: dict[str, type] | None = None
+# Cache for resolved server inheritance
+_inheritance_cache: dict[str, tuple[str, dict]] = {}
+
+
+def _get_plugins_cached() -> dict[str, type]:
+    """Get plugins with caching to avoid repeated discovery."""
+    global _plugins_cache
+    if _plugins_cache is None:
+        from ..plugins import discover_all_plugins
+        _plugins_cache = discover_all_plugins()
+    return _plugins_cache
+
+
+def _resolve_server_inheritance(
+    server_name: str,
+    config: "AgentSystemConfig",
+    visited: set[str] | None = None
+) -> tuple[str, dict]:
+    """Resolve server config inheritance chain with caching.
+    
+    If a server's type refers to another server (not a plugin), this function
+    resolves the inheritance chain and merges configurations.
+    
+    Args:
+        server_name: Name of the server to resolve
+        config: AgentSystemConfig instance
+        visited: Set of already visited servers (for cycle detection)
+        
+    Returns:
+        Tuple of (final_plugin_type, merged_config_dict)
+        
+    Raises:
+        ValueError: If circular inheritance detected
+    """
+    
+    # Check cache for top-level calls only (not during recursion)
+    if visited is None and server_name in _inheritance_cache:
+        return _inheritance_cache[server_name]
+    
+    if visited is None:
+        visited = set()
+    
+    if server_name in visited:
+        raise ValueError(f"Circular inheritance detected: {' -> '.join(visited)} -> {server_name}")
+    
+    visited.add(server_name)
+    
+    # Get server config
+    server_config = config.plugins.servers.get(server_name)
+    if server_config is None:
+        return (server_name, {})  # Not found, return as-is
+    
+    # Use exclude_unset=True to only export explicitly set values, not Pydantic defaults
+    # This prevents defaults from overriding parent values during inheritance
+    server_dict = server_config.model_dump(exclude_unset=True)
+    typ = server_dict.get("type", "basic_agent")
+    
+    # Check if server references itself (e.g., writer_content with type: writer_content)
+    # This is not real inheritance, treat it as if type is a plugin
+    if typ == server_name:
+        # Check if it's a known plugin
+        plugins = _get_plugins_cached()
+        if typ in plugins:
+            # Type is a real plugin, return as-is
+            result = (typ, server_dict)
+            _inheritance_cache[server_name] = result
+            return result
+        else:
+            # Self-reference but not a plugin - return as-is (will fail later in bootstrap)
+            return (typ, server_dict)
+    
+    # Check if type is a known plugin (use cached plugins)
+    plugins = _get_plugins_cached()
+    
+    if typ in plugins:
+        # Type is a real plugin, no further inheritance needed
+        result = (typ, server_dict)
+        _inheritance_cache[server_name] = result
+        return result
+    
+    # Type might be another server - check if it exists
+    parent_server = config.plugins.servers.get(typ)
+    if parent_server is None:
+        # Not a server either, return as-is (will fail later in bootstrap)
+        return (typ, server_dict)
+    
+    # Recursively resolve parent
+    parent_type, parent_dict = _resolve_server_inheritance(typ, config, visited)
+    
+    # Merge: parent config first, then child overrides
+    merged = _deep_merge_dict(parent_dict, server_dict)
+    # The final type comes from the resolved parent chain
+    merged["type"] = parent_type
+    
+    result = (parent_type, merged)
+    
+    # Cache result for this server_name (at any recursion level, since visited contains it)
+    # This way sub_agent_character_designer gets cached even though it goes through writer_agent
+    _inheritance_cache[server_name] = result
+    
+    return result
 
 
 def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig] = None) -> Optional[MCPConfig]:
-    """Get an MCPConfig by name with inheritance from default_config.    This function creates a final MCPConfig by:
-    1. Starting with the default_config (from plugins or legacy mcp_system)
-    2. Overlaying/merging the specific server configuration from servers[server_name]
+    """Get an MCPConfig by name with inheritance from default_config and parent servers.
     
-    Supports both new structure (config.plugins) and legacy (config.mcp_system).
+    This function creates a final MCPConfig by:
+    1. Starting with the default_config (from plugins or legacy mcp_system)
+    2. Resolving inheritance if type refers to another server (e.g., type: writer_agent)
+    3. Overlaying/merging the specific server configuration
+    
+    Server inheritance example:
+        writer_agent:
+          type: basic_agent
+          agent_config:
+            hooks: {enabled: true}
+            
+        character_designer:
+          type: writer_agent  # Inherits from writer_agent, resolves to basic_agent
+          agent_config:
+            max_steps: 50     # Override specific values
     
     Args:
         server_name: Name of the server configuration to retrieve
@@ -223,19 +381,29 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     if not config.plugins:
         return None
     
-    default_config_dict = config.plugins.default_config.model_dump()
     server_config = config.plugins.servers.get(server_name)
-    
     if server_config is None:
         return None
     
-    server_config_dict = server_config.model_dump()
+    # Use exclude_unset for default_config too - but this one we want WITH defaults
+    # because it's the base layer. So use regular model_dump() here.
+    default_config_dict = config.plugins.default_config.model_dump()
     
-    # Start with a complete copy of default config
+    # Resolve inheritance chain (type: writer_agent -> type: basic_agent)
+    try:
+        final_type, resolved_config_dict = _resolve_server_inheritance(server_name, config)
+        logger.debug(
+            "Resolved server '%s': type '%s' -> '%s'",
+            server_name, server_config.type, final_type
+        )
+    except ValueError as e:
+        logger.error("Failed to resolve inheritance for '%s': %s", server_name, e)
+        # Fall back to direct config without inheritance
+        resolved_config_dict = server_config.model_dump()
+    
+    # Start with default config, then merge resolved (inherited) config
     merged_config = default_config_dict.copy()
-    
-    # Deep merge server-specific overrides
-    merged_config = _deep_merge_dict(merged_config, server_config_dict)
+    merged_config = _deep_merge_dict(merged_config, resolved_config_dict)
     
     # Create and return final MCPConfig instance
     return MCPConfig.model_validate(merged_config)
@@ -243,6 +411,23 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
 
 def _deep_merge_dict(base: dict, override: dict) -> dict:
     """Deep merge two dictionaries, with override values taking precedence.
+    
+    Supports explicit list merge syntax:
+    - `+item`: Append item to parent list
+    - `!pattern`: Remove matching items from parent list (supports wildcards)
+    - Items without prefix: If any +/! exists, also appended; otherwise list is replaced
+    
+    Examples:
+        # Replace entire list (no +/! prefix)
+        tools:
+          allowed: ["new_tool/*"]  # Replaces parent's list
+        
+        # Merge with parent list
+        tools:
+          allowed:
+            - "+new_tool/*"     # Add to parent
+            - "!old_tool/*"     # Remove from parent
+            - "another_tool/*"  # Also added (merge mode active)
     
     Args:
         base: Base dictionary (default values)
@@ -259,9 +444,102 @@ def _deep_merge_dict(base: dict, override: dict) -> dict:
             isinstance(value, dict)):
             # Recursively merge nested dictionaries
             result[key] = _deep_merge_dict(result[key], value)
+        elif (key in result and 
+              isinstance(result[key], list) and 
+              isinstance(value, list)):
+            # Check if list uses explicit merge syntax (+/!)
+            result[key] = _merge_lists_with_syntax(result[key], value)
         elif value is not None:
             # Override with non-None values
             result[key] = value
         # Skip None values to preserve defaults
     
     return result
+
+
+def _merge_lists_with_syntax(parent_list: list, child_list: list) -> list:
+    """Merge two lists using explicit +/! syntax.
+    
+    If the child list contains any items with + or ! prefix, merge mode is activated:
+    - +item: Add item (without prefix) to result
+    - !pattern: Remove matching items from parent (supports * wildcard)
+    - item (no prefix): Also added in merge mode
+    
+    If no +/! prefixes found, the child list completely replaces the parent.
+    
+    Args:
+        parent_list: The base list from parent config
+        child_list: The override list from child config
+        
+    Returns:
+        Merged or replaced list
+    """
+    # Check if any item uses merge syntax
+    has_merge_syntax = any(
+        isinstance(item, str) and (item.startswith('+') or item.startswith('!'))
+        for item in child_list
+    )
+    
+    if not has_merge_syntax:
+        # No merge syntax - complete replacement (original behavior)
+        return child_list
+    
+    # Merge mode: start with parent list
+    result = list(parent_list)
+    
+    for item in child_list:
+        if not isinstance(item, str):
+            # Non-string items are added as-is
+            if item not in result:
+                result.append(item)
+            continue
+            
+        if item.startswith('!'):
+            # Remove pattern from result
+            pattern = item[1:]  # Strip ! prefix
+            result = [r for r in result if not _matches_pattern(r, pattern)]
+        elif item.startswith('+'):
+            # Add item (strip + prefix)
+            clean_item = item[1:]
+            if clean_item not in result:
+                result.append(clean_item)
+        else:
+            # Regular item in merge mode - also add
+            if item not in result:
+                result.append(item)
+    
+    return result
+
+
+def _matches_pattern(value: str, pattern: str) -> bool:
+    """Check if a value matches a pattern (supports * wildcard).
+    
+    Args:
+        value: The value to check
+        pattern: The pattern (e.g., "w_sam/*" or "exact_match")
+        
+    Returns:
+        True if value matches pattern
+    """
+    if not isinstance(value, str):
+        return False
+    
+    if pattern == value:
+        return True
+    
+    if '*' in pattern:
+        # Simple wildcard matching
+        if pattern.endswith('/*'):
+            # "plugin/*" matches "plugin/tool" and "plugin"
+            prefix = pattern[:-2]
+            return value == prefix or value.startswith(prefix + '/')
+        elif pattern.endswith('*'):
+            # "prefix*" matches anything starting with "prefix"
+            prefix = pattern[:-1]
+            return value.startswith(prefix)
+        elif pattern.startswith('*'):
+            # "*suffix" matches anything ending with "suffix"
+            suffix = pattern[1:]
+            return value.endswith(suffix)
+    
+    return False

@@ -368,20 +368,25 @@ Level 6: ❌ EXCEEDS LIMIT
 
 ## Configuration
 
-### Plugin Configuration (`config/plugins.yaml`)
+### Plugin Configuration
+
+Configure sub-agent management in the `plugins:` section:
 
 ```yaml
-sub_agent_manager:
-  type: sub_agent_manager
-  enabled: true
-  max_nesting_depth: 5
-
-  hook_config:
-    enabled: true
-    inject_sub_agent_context:
+plugins:
+  servers:
+    sub_agent_manager:
+      type: sub_agent_manager
       enabled: true
-      max_sub_agents_shown: 5
-      format: "markdown"
+      config:
+        max_nesting_depth: 5
+      
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 5
+          format: "markdown"
 ```
 
 ### Hook Configuration
@@ -444,10 +449,12 @@ meta → project_manager
 
 **Cause:** Specified agent doesn't exist or isn't enabled
 
-**Solution:** Check `config/plugins.yaml` and ensure agent is enabled with `visibility: "tool"` or `"both"`
+**Solution:** Check the `plugins:` configuration and ensure agent is enabled with `visibility: "tool"` or `"both"`
 
 ```yaml
-web_research_agent:
+plugins:
+  servers:
+    web_research_agent:
   type: web_research_agent
   enabled: true
   metadata:

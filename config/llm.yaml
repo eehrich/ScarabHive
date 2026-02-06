@@ -1,19 +1,330 @@
 llm_system:
   # Default HTTPX timeout configuration for all models
-  # These can be overridden per model if needed
   httpx_timeouts:
     connect: 10.0      # Connection establishment timeout (seconds)
     read: 180.0        # Read timeout - waiting for response data (seconds)
     write: 10.0        # Write timeout - sending request data (seconds)
     pool: 5.0          # Pool timeout - getting connection from pool (seconds)
 
+  # =============================================================================
+  # BATCH PROCESSING CONFIGURATION
+  # =============================================================================
+  # Global batch settings with per-provider overrides.
+  # Models with provider: "batch" use these settings.
+  batch:
+    storage_path: "data/batch_jobs"   # Where to store batch job data
+    
+    providers:
+      gemini:
+        enabled: true
+        collection_window_seconds: 10   # Time to collect requests before submitting
+        max_requests_per_batch: 100     # Max requests per batch
+        poll_interval_seconds: 10       # How often to check batch status
+        max_wait_hours: 4               # Max time to wait for completion
+        max_retries: 3                  # Retries for server-side cancellations
+        cancel_on_startup: true         # Cancel orphaned batches on startup
+        fallback_to_sync: true          # Don't fall back to sync API
+        
+      openai:
+        enabled: true
+        collection_window_seconds: 10
+        max_requests_per_batch: 100     # OpenAI supports up to 50k
+        poll_interval_seconds: 10
+        max_wait_hours: 4
+        max_retries: 3
+        cancel_on_startup: true
+        fallback_to_sync: true
+
+      anthropic:
+        enabled: true
+        collection_window_seconds: 10
+        max_requests_per_batch: 100     # Anthropic supports up to 10k
+        poll_interval_seconds: 30       # Anthropic batches take longer
+        max_wait_hours: 24              # Anthropic allows up to 24h
+        max_retries: 3
+        cancel_on_startup: true
+        fallback_to_sync: false
+
+  # =============================================================================
+  # MODEL DEFINITIONS
+  # =============================================================================
   models:
+    # ---------------------------------------------------------------------------
+    # GEMINI MODELS (Sync/Streaming)
+    # ---------------------------------------------------------------------------
+    gemini-3-0-flash:
+      provider: gemini_sdk
+      model: gemini-3-flash-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000
+      request_timeout: 240
+      include_thoughts: true
+      thinking_level: low  # Gemini 3 uses thinking_level: minimal, low, medium, high
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    gemini-3-0-flash-nostream:
+      provider: gemini_sdk
+      model: gemini-3-flash-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000
+      request_timeout: 240
+      include_thoughts: false
+      thinking_level: low  # Gemini 3 uses thinking_level: minimal, low, medium, high
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    gemini-3-0-pro:
+      provider: gemini_sdk
+      model: gemini-3-pro-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000
+      request_timeout: 240
+      include_thoughts: true
+      thinking_level: high  # Gemini 3 uses thinking_level: low, high
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    gemini-3-0-pro-nostream:
+      provider: gemini_sdk
+      model: gemini-3-pro-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000
+      request_timeout: 240
+      include_thoughts: false
+      thinking_level: high  # Gemini 3 uses thinking_level: low, high
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    # ---------------------------------------------------------------------------
+    # GEMINI BATCH MODELS (provider: batch)
+    # ---------------------------------------------------------------------------
+    gemini-3-0-flash-batch:
+      provider: batch                   
+      batch_provider: gemini            # Which batch API to use
+      model: gemini-3-flash-preview
+      api_key: "***REMOVED***"
+      context_window: 200000
+      include_thoughts: false
+      thinking_level: low
+      #max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: false
+        json_mode: true
+
+    gemini-3-0-pro-batch:
+      provider: batch
+      batch_provider: gemini
+      model: gemini-3-pro-preview
+      api_key: "***REMOVED***"
+      context_window: 200000
+      include_thoughts: false      
+      thinking_level: high
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: false
+        json_mode: true
+
+    # ---------------------------------------------------------------------------
+    # ANTHROPIC CLAUDE MODELS (Sync/Streaming)
+    # ---------------------------------------------------------------------------
+    # Claude Sonnet 4.5 - Smart model for complex agents and coding
+    claude-sonnet-4-5:
+      provider: anthropic
+      model: claude-sonnet-4-5-20250929
+      api_key: "***REMOVED***"
+      context_window: 200000
+      request_timeout: 180
+      max_tokens: 16384
+      include_thinking: false
+      enable_prompt_caching: true
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    # Claude Sonnet 4.5 with Extended Thinking
+    claude-sonnet-4-5-thinking:
+      provider: anthropic
+      model: claude-sonnet-4-5-20250929
+      api_key: "***REMOVED***"      
+      context_window: 200000
+      request_timeout: 300
+      max_tokens: 16384
+      include_thinking: true
+      thinking_budget: 8192
+      enable_prompt_caching: true
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    # Claude Opus 4.5 - Premium model with maximum intelligence
+    claude-opus-4-5:
+      provider: anthropic
+      model: claude-opus-4-5-20251101
+      api_key: "***REMOVED***"
+      context_window: 200000
+      request_timeout: 300
+      max_tokens: 16384
+      include_thinking: false
+      enable_prompt_caching: true
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    # Claude Opus 4.5 with Extended Thinking
+    claude-opus-4-5-thinking:
+      provider: anthropic
+      model: claude-opus-4-5-20251101
+      api_key: "***REMOVED***"
+      context_window: 200000
+      request_timeout: 600
+      max_tokens: 32768
+      include_thinking: true
+      thinking_budget: 16384
+      enable_prompt_caching: true
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    # Claude Haiku 4.5 - Fastest model with near-frontier intelligence
+    claude-haiku-4-5:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+      api_key: "***REMOVED***"
+      context_window: 200000
+      request_timeout: 120
+      max_tokens: 8192
+      include_thinking: false
+      enable_prompt_caching: true
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    # ---------------------------------------------------------------------------
+    # ANTHROPIC BATCH MODELS (provider: batch)
+    # ---------------------------------------------------------------------------
+    # ANTHROPIC BATCH MODELS (provider: batch)
+    # ---------------------------------------------------------------------------
+    claude-sonnet-4-5-batch:
+      provider: batch
+      batch_provider: anthropic
+      model: claude-sonnet-4-5-20250929
+      api_key: "***REMOVED***"
+      context_window: 200000
+      max_tokens: 8192
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+
+    claude-opus-4-5-batch:
+      provider: batch
+      batch_provider: anthropic
+      model: claude-opus-4-5-20251101
+      api_key: "***REMOVED***"
+      context_window: 200000
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+
+    claude-haiku-4-5-batch:
+      provider: batch
+      batch_provider: anthropic
+      model: claude-haiku-4-5-20251001
+      api_key: "***REMOVED***"
+      context_window: 200000
+      max_tokens: 8192
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+
+    # ---------------------------------------------------------------------------
+    # OPENAI MODELS (Sync/Streaming)
+    # ---------------------------------------------------------------------------
     gpt-4.1:
       provider: openai_httpx
       model: gpt-4.1
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 1000000
-      request_timeout: 60
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -24,16 +335,16 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
     gpt-5-nano:
       provider: openai_httpx
       model: gpt-5-nano
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 60
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -46,9 +357,9 @@ llm_system:
     gpt-5-mini:
       provider: openai_httpx
       model: gpt-5-mini
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 180
+      request_timeout: 240
       httpx_timeouts:
         connect: 10.0
         read: 240.0
@@ -62,16 +373,16 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions, assistants]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
-        
-    gpt-5:
+
+    gpt-5.1:
       provider: openai_httpx
-      model: gpt-5
-      openai_api_key: ***REMOVED***
+      model: gpt-5.1
+      api_key: ***REMOVED***
       context_window: 272000
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -82,16 +393,114 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions, assistants]
         default_api_type: chat_completions
-        max_image_size: 20971520  # 20MB
+        max_image_size: 20971520
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
+    gpt-5.1-codex:
+      provider: openai_httpx
+      model: gpt-5.1-codex
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: false
+        video_input: false
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
+        max_image_size: 20971520
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+
+    gpt-5.1-codex-mini:
+      provider: openai_httpx
+      model: gpt-5.1-codex-mini
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      httpx_timeouts:
+        connect: 10.0
+        read: 240.0
+        write: 10.0
+        pool: 5.0
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
+        max_image_size: 20971520
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+
+    # ---------------------------------------------------------------------------
+    # OPENAI BATCH MODELS (provider: batch)
+    # ---------------------------------------------------------------------------
+    gpt-5-nano-batch:
+      provider: batch
+      batch_provider: openai            
+      model: gpt-5-nano
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: false
+        streaming: false
+        json_mode: false
+
+    gpt-5-mini-batch:
+      provider: batch
+      batch_provider: openai            
+      model: gpt-5-mini
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        max_image_size: 20971520
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+
+    gpt-5.1-batch:
+      provider: batch
+      batch_provider: openai            
+      model: gpt-5.1
+      api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        max_image_size: 20971520
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+
+
+    # ---------------------------------------------------------------------------
+    # REALTIME / AUDIO MODELS
+    # ---------------------------------------------------------------------------
     gpt-realtime:
       provider: openai
-      model: gpt-4o-realtime-preview-2024-12-17
-      openai_api_key: ***REMOVED***
+      model: gpt-realtime
+      api_key: ***REMOVED***
       context_window: 27900
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -103,107 +512,233 @@ llm_system:
 
     gpt-realtime-mini:
       provider: openai
-      model: gpt-4o-mini-realtime-preview-2024-12-17
-      openai_api_key: ***REMOVED***
+      model: gpt-realtime-mini
+      api_key: ***REMOVED***
       context_window: 27900
-      request_timeout: 180
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
         audio_input: true
+        image_input: true
         streaming: true
         supported_api_types: [realtime]
         default_api_type: realtime
-        image_input: true
-        streaming: true
 
     gpt-audio:
       provider: openai
       model: gpt-audio
-      openai_api_key: ***REMOVED***
-      context_window: 100000
-      request_timeout: 180
+      api_key: ***REMOVED***
+      context_window: 128000
+      request_timeout: 240
+      # Audio models require modalities - must include "audio" if input has no audio
+      modalities: ["text", "audio"]
       capabilities:
         tools: true
         function_calling: true
         audio_input: true
         streaming: false
 
+    # ---------------------------------------------------------------------------
+    # LOCAL / OLLAMA MODELS
+    # ---------------------------------------------------------------------------
     ollama-gpt-oss-20b:
       provider: ollama
       model: gpt-oss:20b
       ollama_url: http://192.0.2.64:11434
       ollama_mode: native
-      request_timeout: 180
+      request_timeout: 240
       context_window: 65535
       capabilities:
         tools: true
         function_calling: true
         streaming: true
 
+    # ---------------------------------------------------------------------------
+    # DEEPSEEK MODELS
+    # ---------------------------------------------------------------------------
     deepseek-chat:
-      provider: ollama
+      provider: openai_httpx
       model: deepseek-chat
-      openai_api_key: "***REMOVED***"
-      ollama_url: https://api.deepseek.com
-      ollama_mode: openai_compat
-      context_window: 100000 # 128K context size totally
-      request_timeout: 180
+      api_key: "***REMOVED***"
+      base_url: https://api.deepseek.com/v1
+      context_window: 100000
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
         streaming: true
         json_mode: true
 
-    deepseek-chat-small:
-      provider: ollama
+    deepseek-chat-nostream:
+      provider: openai_httpx
       model: deepseek-chat
-      openai_api_key: "***REMOVED***"
-      ollama_url: https://api.deepseek.com
-      ollama_mode: openai_compat
-      context_window: 20000 # for testing small context
-      request_timeout: 180
+      api_key: "***REMOVED***"
+      base_url: https://api.deepseek.com/v1
+      context_window: 100000
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
-        streaming: true
+        streaming: false
         json_mode: true
 
+  # =============================================================================
+  # PROFILES
+  # =============================================================================
   profiles:
     turbo:
       model_ref: gpt-5-nano
-      description: "Turbo model for high-speed responses and cheap, but less powerful"
-      max_steps: 100
+      description: "Model for high-speed responses and cheap, but less powerful"
+      max_steps: 500
+
+    turbo-batch:
+      model_ref: gpt-5-nano-batch
+      description: "Model for high-speed responses and cheap, but less powerful (batch)"
+      max_steps: 500
+
     normal:
+      #model_ref: gemini-3-0-flash-nostream
       model_ref: gpt-5-mini
-      description: "Fast model for quick responses"
-      max_steps: 100
+      description: "Fast model for medium reasoning tasks"
+      max_steps: 500
+      
+    normal-stream:
+      model_ref: gemini-3-0-flash
+      description: "Fast model for medium reasoning tasks (streaming)"
+      max_steps: 500
+      
     think:
-      model_ref: gpt-5
-      description: "Advanced model for complex reasoning"
-      max_steps: 100
+      #model_ref: gemini-3-0-pro-nostream
+      model_ref: gpt-5.1
+      description: "Advanced model for complex reasoning (batch)"
+      max_steps: 500
+      
+    think-stream:
+      model_ref: gemini-3-0-pro
+      description: "Advanced model for complex reasoning (streaming)"
+      max_steps: 500
+      
     big:
       model_ref: gpt-4.1
-      description: "Expensive model with big context window, legacy and medium powerful."
-      max_steps: 100      
+      description: "Expensive model with big context window"
+      max_steps: 500
+      
     chat:
       model_ref: deepseek-chat
-      description: "Cheap and fast none thinking model, for medium complex tasks"
-      max_steps: 100
+      description: "Cheap and fast model for medium tasks"
+      max_steps: 500
+      
+    chat-nostream:
+      model_ref: deepseek-chat-nostream
+      description: "Cheap and fast model for medium tasks (no streaming)"
+      max_steps: 500
+      
+    code:
+      model_ref: gpt-5.1-codex
+      description: "Special LLM for complex coding tasks"
+      max_steps: 500
+      
+    code-mini:
+      model_ref: gpt-5.1-codex-mini
+      description: "Special LLM for medium coding tasks"
+      max_steps: 500
+      
     realtime:
       model_ref: gpt-realtime-mini
-      description: "Realtime answers, for medium complex tasks"
-      max_steps: 100      
-    small:
-      model_ref: deepseek-chat-small
-      description: "Cheap and fast none thinking model, for medium complex tasks"
-      max_steps: 100      
+      description: "Realtime answers for medium tasks"
+      max_steps: 500
+
+    # Named profiles for specific models
+    gemini-flash:
+      model_ref: gemini-3-0-flash-nostream
+      description: "Google Gemini Flash"
+      max_steps: 500
+
+    gemini-flash-stream:
+      model_ref: gemini-3-0-flash
+      description: "Google Gemini Flash"
+      max_steps: 500      
+      
+    gemini-flash-batch:
+      model_ref: gemini-3-0-flash-batch
+      description: "Google Gemini Flash (batch)"
+      max_steps: 500
+      
+    gemini-pro:
+      model_ref: gemini-3-0-pro-nostream
+      description: "Google Gemini Pro"
+      max_steps: 500
+
+    gemini-pro-stream:
+      model_ref: gemini-3-0-pro
+      description: "Google Gemini Pro"
+      max_steps: 500
+
+    gemini-pro-batch:
+      model_ref: gemini-3-0-pro-batch
+      description: "Google Gemini Pro (batch)"
+      max_steps: 500
+
+    gpt-full:
+      model_ref: gpt-5.1
+      description: "OpenAI full model for complex tasks"
+      max_steps: 500
+      
+    gpt-mini:
+      model_ref: gpt-5-mini
+      description: "OpenAI mini model (sync)"
+      max_steps: 500
+      
+    gpt-mini-batch:
+      model_ref: gpt-5-mini-batch
+      description: "OpenAI mini model (batch)"
+      max_steps: 500
+    
+    gpt-full-batch:
+      model_ref: gpt-5.1-batch
+      description: "OpenAI full model (batch)"
+      max_steps: 500
+      
+    gpt-nano:
+      model_ref: gpt-5-nano
+      description: "OpenAI nano model for fast tasks"
+      max_steps: 500
+
+    # Claude 4.5 profiles
+    claude-sonnet:
+      model_ref: claude-sonnet-4-5
+      description: "Claude Sonnet 4.5 - Smart model for complex agents and coding"
+      max_steps: 500
+    
+    claude-sonnet-batch:
+      model_ref: claude-sonnet-4-5-batch
+      description: "Claude Sonnet 4.5 (batch)"
+      max_steps: 500
+
+    claude-opus:
+      model_ref: claude-opus-4-5
+      description: "Claude Opus 4.5 - Premium model with maximum intelligence"
+      max_steps: 500
+    
+    claude-opus-batch:
+      model_ref: claude-opus-4-5-batch
+      description: "Claude Opus 4.5 (batch)"
+      max_steps: 500
+
+    claude-haiku:
+      model_ref: claude-haiku-4-5
+      description: "Claude Haiku 4.5 - Fastest model with near-frontier intelligence"
+      max_steps: 500
+    
+    claude-haiku-batch:
+      model_ref: claude-haiku-4-5-batch
+      description: "Claude Haiku 4.5 (batch)"
+      max_steps: 500
+
     local:
       model_ref: ollama-gpt-oss-20b
-      description: "Local hosted model for privacy and offline usage, powerful but slow."
-      max_steps: 100
+      description: "Local model for privacy and offline usage"
+      max_steps: 500
 
-  default_profile: normal
-
-
-
+  default_profile: chat

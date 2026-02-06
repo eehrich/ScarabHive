@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Audit</title>
+    <link rel="stylesheet" href="/static/css/scrollbar.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+
+        .filters {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        select, input {
+            padding: 8px 12px;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #569cd6;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .controls > span {
+            margin-left: auto;
+            color: #858585;
+            font-size: 12px;
+        }
+
+        label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: #858585;
+            cursor: pointer;
+        }
+
+        label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+
+        .audit-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .audit-table th {
+            background: #2d2d30;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #569cd6;
+            font-size: 13px;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .audit-table td {
+            padding: 10px 12px;
+            border-top: 1px solid #3e3e42;
+            font-size: 13px;
+        }
+
+        .audit-table tbody tr:hover {
+            background: #2d2d30;
+        }
+
+        .status-allowed {
+            color: #4ec9b0;
+        }
+
+        .status-denied {
+            color: #f48771;
+        }
+
+        .timestamp {
+            color: #858585;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .category {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .category-plugin { background: #0e639c; color: white; }
+        .category-api { background: #6f42c1; color: white; }
+        .category-agent { background: #107c10; color: white; }
+        .category-auth { background: #d13438; color: white; }
+        .category-mcp { background: #ca5010; color: white; }
+        .category-debug { background: #5c2d91; color: white; }
+        .category-health { background: #008272; color: white; }
+        .category-other { background: #3e3e42; color: #d4d4d4; }
+
+        .method {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .method-get { background: #0e639c; color: white; }
+        .method-post { background: #107c10; color: white; }
+        .method-put { background: #ca5010; color: white; }
+        .method-delete { background: #d13438; color: white; }
+        .method-patch { background: #6f42c1; color: white; }
+
+        .status-code {
+            font-family: 'Consolas', monospace;
+            font-weight: 600;
+        }
+
+        .status-2xx { color: #4ec9b0; }
+        .status-3xx { color: #569cd6; }
+        .status-4xx { color: #dcdcaa; }
+        .status-5xx { color: #f48771; }
+
+        code {
+            background: #1e1e1e;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-family: 'Consolas', monospace;
+            color: #ce9178;
+        }
+
+        .duration {
+            color: #858585;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .client-ip {
+            color: #858585;
+            font-size: 11px;
+            font-family: 'Consolas', monospace;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+        }
+
+        .error {
+            color: #f48771;
+            text-align: center;
+            padding: 40px;
+        }
+
+        /* Filter Dropdown Styles */
+        .filter-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .filter-dropdown-btn {
+            padding: 8px 12px;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            font-size: 13px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 140px;
+            justify-content: space-between;
+        }
+
+        .filter-dropdown-btn:hover {
+            border-color: #569cd6;
+        }
+
+        .filter-dropdown-content {
+            display: none;
+            position: absolute;
+            left: 0;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 1000;
+            min-width: 200px;
+            padding: 8px 0;
+            margin-top: 4px;
+            text-align: left;
+        }
+
+        .filter-dropdown-content.show {
+            display: block;
+        }
+
+        .filter-option {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 8px 15px;
+            cursor: pointer;
+            font-size: 13px;
+            gap: 8px;
+            text-align: left;
+        }
+
+        .filter-option input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            margin: 0;
+            flex-shrink: 0;
+        }
+
+        .filter-option span {
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        .filter-divider {
+            height: 1px;
+            background: #3e3e42;
+            margin: 8px 0;
+        }
+
+        .filter-actions {
+            display: flex;
+            gap: 5px;
+            padding: 8px 15px 5px;
+        }
+
+        .filter-actions button {
+            flex: 1;
+            padding: 4px 8px;
+            font-size: 11px;
+            background: #3c3c3c;
+        }
+
+        .filter-actions button:hover {
+            background: #505050;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 Security Audit Log</h1>
+        
+        <div class="controls">
+            <select id="categoryFilter" onchange="loadAudit()">
+                <option value="">All Categories</option>
+                <option value="plugin">Plugin</option>
+                <option value="api">API</option>
+                <option value="agent">Agent</option>
+                <option value="auth">Auth</option>
+                <option value="mcp">MCP</option>
+                <option value="debug">Debug</option>
+                <option value="health">Health</option>
+                <option value="other">Other</option>
+            </select>
+            
+            <!-- Multi-select status filter -->
+            <div class="filter-dropdown" id="statusFilterDropdown">
+                <button type="button" class="filter-dropdown-btn" onclick="toggleFilterDropdown()">
+                    <span id="filterLabel">Status Filter</span>
+                    <span>▼</span>
+                </button>
+                <div class="filter-dropdown-content" id="filterDropdownContent">
+                    <label class="filter-option">
+                        <input type="checkbox" id="filter2xx" checked onchange="updateFilter()">
+                        <span>✅ 2xx Success</span>
+                    </label>
+                    <label class="filter-option">
+                        <input type="checkbox" id="filter3xx" checked onchange="updateFilter()">
+                        <span>🔀 3xx Redirect</span>
+                    </label>
+                    <label class="filter-option">
+                        <input type="checkbox" id="filter4xx" checked onchange="updateFilter()">
+                        <span>⚠️ 4xx Client Error</span>
+                    </label>
+                    <label class="filter-option">
+                        <input type="checkbox" id="filter5xx" checked onchange="updateFilter()">
+                        <span>❌ 5xx Server Error</span>
+                    </label>
+                    <div class="filter-divider"></div>
+                    <div class="filter-actions">
+                        <button type="button" onclick="selectAllFilters()">All</button>
+                        <button type="button" onclick="selectNoneFilters()">None</button>
+                        <button type="button" onclick="selectErrorsOnly()">Errors Only</button>
+                    </div>
+                </div>
+            </div>
+            
+            <input type="number" id="limitInput" placeholder="Limit" value="100" style="width: 80px;" onchange="loadAudit()">
+            <button class="icon-only" onclick="loadAudit()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only active" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
+                ⏱️
+            </button>
+            <span id="lastUpdate"></span>
+        </div>
+
+        <table class="audit-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Category</th>
+                    <th>Method</th>
+                    <th>Path</th>
+                    <th>User</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>IP</th>
+                </tr>
+            </thead>
+            <tbody id="auditBody">
+                <tr><td colspan="8" class="loading">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let refreshInterval;
+        let autoRefreshEnabled = true;
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const dropdown = document.getElementById('statusFilterDropdown');
+            if (dropdown && !dropdown.contains(e.target)) {
+                document.getElementById('filterDropdownContent').classList.remove('show');
+            }
+        });
+
+        function toggleFilterDropdown() {
+            const content = document.getElementById('filterDropdownContent');
+            content.classList.toggle('show');
+        }
+
+        function updateFilter() {
+            updateFilterLabel();
+            loadAudit();
+        }
+
+        function updateFilterLabel() {
+            const filters = getSelectedFilters();
+            const label = document.getElementById('filterLabel');
+            if (filters.length === 4) {
+                label.textContent = 'All Status';
+            } else if (filters.length === 0) {
+                label.textContent = 'None Selected';
+            } else {
+                label.textContent = filters.map(f => f.toUpperCase()).join(', ');
+            }
+        }
+
+        function getSelectedFilters() {
+            const filters = [];
+            if (document.getElementById('filter2xx').checked) filters.push('2xx');
+            if (document.getElementById('filter3xx').checked) filters.push('3xx');
+            if (document.getElementById('filter4xx').checked) filters.push('4xx');
+            if (document.getElementById('filter5xx').checked) filters.push('5xx');
+            return filters;
+        }
+
+        function selectAllFilters() {
+            document.getElementById('filter2xx').checked = true;
+            document.getElementById('filter3xx').checked = true;
+            document.getElementById('filter4xx').checked = true;
+            document.getElementById('filter5xx').checked = true;
+            updateFilter();
+        }
+
+        function selectNoneFilters() {
+            document.getElementById('filter2xx').checked = false;
+            document.getElementById('filter3xx').checked = false;
+            document.getElementById('filter4xx').checked = false;
+            document.getElementById('filter5xx').checked = false;
+            updateFilter();
+        }
+
+        function selectErrorsOnly() {
+            document.getElementById('filter2xx').checked = false;
+            document.getElementById('filter3xx').checked = false;
+            document.getElementById('filter4xx').checked = true;
+            document.getElementById('filter5xx').checked = true;
+            updateFilter();
+        }
+
+        async function loadAudit() {
+            const category = document.getElementById('categoryFilter').value;
+            const selectedFilters = getSelectedFilters();
+            const limit = document.getElementById('limitInput').value || 100;
+            
+            const params = new URLSearchParams({ limit });
+            if (category) params.append('category', category);
+            if (selectedFilters.length > 0) {
+                params.append('status_filter', selectedFilters.join(','));
+            }
+            
+            const url = `/api/plugins/security/audit?${params}`;
+            
+            try {
+                const response = await fetch(url, { credentials: 'include' });
+                const data = await response.json();
+                
+                renderAuditLog(data.audit_log || []);
+                updateLastRefresh();
+            } catch (error) {
+                document.getElementById('auditBody').innerHTML = 
+                    '<tr><td colspan="8" class="error">Error loading audit log</td></tr>';
+            }
+        }
+
+        function updateLastRefresh() {
+            document.getElementById('lastUpdate').textContent = 
+                'Updated: ' + new Date().toLocaleTimeString();
+        }
+
+        function getStatusClass(code) {
+            if (code >= 200 && code < 300) return 'status-2xx';
+            if (code >= 300 && code < 400) return 'status-3xx';
+            if (code >= 400 && code < 500) return 'status-4xx';
+            return 'status-5xx';
+        }
+
+        function getStatusText(code) {
+            const statusTexts = {
+                // 2xx Success
+                200: 'OK',
+                201: 'Created',
+                202: 'Accepted',
+                204: 'No Content',
+                
+                // 3xx Redirect
+                301: 'Moved',
+                302: 'Found',
+                304: 'Not Modified',
+                307: 'Temp Redirect',
+                
+                // 4xx Client Error
+                400: 'Bad Request',
+                401: 'Unauthorized',
+                403: 'Forbidden',
+                404: 'Not Found',
+                405: 'Method Not Allowed',
+                409: 'Conflict',
+                422: 'Unprocessable',
+                429: 'Too Many Requests',
+                
+                // 5xx Server Error
+                500: 'Server Error',
+                501: 'Not Implemented',
+                502: 'Bad Gateway',
+                503: 'Service Unavailable',
+                504: 'Gateway Timeout'
+            };
+            return statusTexts[code] || '';
+        }
+
+        function renderAuditLog(entries) {
+            const tbody = document.getElementById('auditBody');
+            
+            if (entries.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="loading">No audit entries</td></tr>';
+                return;
+            }
+            
+            // Reverse to show newest first
+            const reversed = [...entries].reverse();
+            
+            tbody.innerHTML = reversed.map(entry => {
+                const statusClass = entry.allowed ? 'status-allowed' : 'status-denied';
+                const statusIcon = entry.allowed ? '✓' : '✗';
+                const methodClass = `method method-${entry.method.toLowerCase()}`;
+                const categoryClass = `category category-${entry.category}`;
+                const statusCodeClass = getStatusClass(entry.status_code);
+                const statusText = getStatusText(entry.status_code);
+                const statusDisplay = statusText ? 
+                    `${entry.status_code} (${statusText})` : 
+                    entry.status_code;
+                
+                return `
+                    <tr>
+                        <td class="timestamp">${new Date(entry.timestamp).toLocaleString()}</td>
+                        <td><span class="${categoryClass}">${entry.category}</span></td>
+                        <td><span class="${methodClass}">${entry.method}</span></td>
+                        <td><code>${entry.path}</code></td>
+                        <td>${entry.user_id || 'anonymous'}</td>
+                        <td>
+                            <span class="status-code ${statusCodeClass}">${statusDisplay}</span>
+                            <span class="${statusClass}">${statusIcon}</span>
+                        </td>
+                        <td class="duration">${entry.duration_ms?.toFixed(1) || '-'}ms</td>
+                        <td class="client-ip">${entry.client_ip || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('autoRefreshBtn');
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Paused';
+            } else {
+                refreshInterval = setInterval(loadAudit, 5000);
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
+            }
+        }
+
+        // Start auto-refresh
+        refreshInterval = setInterval(loadAudit, 5000);
+        
+        // Initial load
+        updateFilterLabel();
+        loadAudit();
+    </script>
+</body>
+</html>

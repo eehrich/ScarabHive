@@ -25,6 +25,14 @@ class ContextStatsResponse(BaseModel):
     warning_levels: Optional[Dict[str, Any]] = None
 
 
+class PanelTab(BaseModel):
+    instance_id: str
+    label: str
+    endpoint: str
+    icon: Optional[str] = None
+    plugin_name: str
+
+
 class PluginUIMetadata(BaseModel):
     id: str
     name: str
@@ -35,6 +43,8 @@ class PluginUIMetadata(BaseModel):
     panel_endpoint: str
     panel_type: str
     description: Optional[str] = None
+    panel_group: Optional[str] = None
+    panel_tabs: Optional[List[PanelTab]] = None
 
 
 # Helper functions
@@ -139,10 +149,10 @@ async def get_plugin_ui_metadata():
         from agent_system.plugins.web_adapter import get_web_plugin_registry
         from agent_system.plugins.mcp_adapter import plugin_mcp_registry
         
-        logger.info("Getting plugin UI metadata...")
+        logger.debug("Getting plugin UI metadata...")
         
         registry = get_web_plugin_registry()
-        logger.info(f"Registry returned: {registry}")
+        logger.debug(f"Registry returned: {registry}")
         
         if not registry:
             logger.warning("Registry is empty or None")
@@ -152,8 +162,37 @@ async def get_plugin_ui_metadata():
         plugin_registry = plugin_mcp_registry
         
         ui_plugins = []
+        # Track panel_groups to deduplicate buttons (one button per group)
+        panel_group_added: set[str] = set()
+        # Collect tabs for each panel_group
+        panel_group_tabs: dict[str, list[dict]] = {}
+        
+        # First pass: collect all tabs for each panel_group
         for plugin_id, plugin_info in registry.items():
-            logger.info(f"Processing plugin {plugin_id}: {plugin_info}")
+            try:
+                plugin_server = plugin_registry.get_server(plugin_id)
+                if plugin_server and plugin_server.plugin_schema:
+                    schema = plugin_server.plugin_schema
+                    web_ui = schema.get('web_ui') if schema else None
+                    if web_ui:
+                        panel_config = web_ui.get('panel', {})
+                        panel_group = panel_config.get('panel_group')
+                        if panel_group:
+                            if panel_group not in panel_group_tabs:
+                                panel_group_tabs[panel_group] = []
+                            panel_group_tabs[panel_group].append({
+                                "instance_id": plugin_id,
+                                "label": plugin_id,
+                                "endpoint": panel_config.get('endpoint', f'/plugins/{plugin_id}/'),
+                                "icon": web_ui.get('button', {}).get('icon', ''),
+                                "plugin_name": plugin_id
+                            })
+            except Exception:
+                pass
+        
+        # Second pass: build UI metadata with tabs
+        for plugin_id, plugin_info in registry.items():
+            logger.debug(f"Processing plugin {plugin_id}: {plugin_info}")
             
             try:
                 # Get schema from already registered plugin server instead of reloading from file
@@ -161,10 +200,10 @@ async def get_plugin_ui_metadata():
                 
                 if plugin_server and plugin_server.plugin_schema:
                     schema = plugin_server.plugin_schema
-                    logger.info(f"Got schema for {plugin_id} from plugin server")
+                    logger.debug(f"Got schema for {plugin_id} from plugin server")
                     
                     web_ui = schema.get('web_ui') if schema else None
-                    logger.info(f"Web UI config for {plugin_id}: {web_ui}")
+                    logger.debug(f"Web UI config for {plugin_id}: {web_ui}")
                     
                     if web_ui:
                         # Check button.enabled
@@ -174,6 +213,19 @@ async def get_plugin_ui_metadata():
                         if button_enabled:
                             panel_config = web_ui.get('panel', {})
                             
+                            # Check for panel_group - only one button per group
+                            panel_group = panel_config.get('panel_group')
+                            if panel_group:
+                                if panel_group in panel_group_added:
+                                    logger.debug(f"Skipping button for {plugin_id} - panel_group {panel_group} already has button")
+                                    continue
+                                panel_group_added.add(panel_group)
+                            
+                            # Get tabs for this panel_group (if any)
+                            tabs = None
+                            if panel_group and panel_group in panel_group_tabs:
+                                tabs = [PanelTab(**t) for t in panel_group_tabs[panel_group]]
+                            
                             plugin_metadata = PluginUIMetadata(
                                 id=plugin_id,
                                 name=plugin_info.get('name', plugin_id),
@@ -182,21 +234,23 @@ async def get_plugin_ui_metadata():
                                 button_icon=button_config.get('icon'),
                                 panel_title=panel_config.get('title', plugin_info.get('name', plugin_id)),
                                 panel_endpoint=panel_config.get('endpoint', f'/plugins/{plugin_id}/panel'),
-                                panel_type=panel_config.get('type', 'fetch'),
-                                description=panel_config.get('description', plugin_info.get('description'))
+                                panel_type='tabbed-iframe' if tabs and len(tabs) > 1 else panel_config.get('type', 'fetch'),
+                                description=panel_config.get('description', plugin_info.get('description')),
+                                panel_group=panel_group,
+                                panel_tabs=tabs
                             )
                             ui_plugins.append(plugin_metadata)
-                            logger.info(f"Added UI plugin button: {plugin_metadata}")
+                            logger.debug(f"Added UI plugin button: {plugin_metadata}")
                         else:
-                            logger.info(f"Plugin {plugin_id} button disabled in schema")
+                            logger.debug(f"Plugin {plugin_id} button disabled in schema")
                     else:
-                        logger.info(f"Plugin {plugin_id} has no web_ui config")
+                        logger.debug(f"Plugin {plugin_id} has no web_ui config")
                 else:
-                    logger.info(f"No plugin server or schema found for {plugin_id}")
+                    logger.debug(f"No plugin server or schema found for {plugin_id}")
             except Exception as schema_error:
                 logger.error(f"Error processing plugin {plugin_id}: {schema_error}")
         
-        logger.info(f"Returning {len(ui_plugins)} UI plugins: {ui_plugins}")
+        logger.debug(f"Returning {len(ui_plugins)} UI plugins: {ui_plugins}")
         return ui_plugins
     except Exception as e:
         logger.error(f"Error getting plugin UI metadata: {e}")

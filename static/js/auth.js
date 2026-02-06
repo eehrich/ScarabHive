@@ -6,37 +6,43 @@
 class AuthManager {
     constructor() {
         this.token = null;
+        this.refreshToken = null;
         this.user = null;
         this.tokenKey = 'auth_token';
+        this.refreshTokenKey = 'refresh_token';
         this.usernameKey = 'auth_username';
+        this.refreshInterval = null;
         this.init();
     }
-    
+
     init() {
-        // Load token from storage
-        this.token = localStorage.getItem(this.tokenKey) || sessionStorage.getItem(this.tokenKey);
-        
-        if (this.token) {
-            // Verify token is still valid
-            this.verifyToken().catch(() => this.clearAuth());
-        }
+        // Check if we have a valid cookie-based session
+        // We don't read tokens from storage anymore - only use HttpOnly cookies
+        // Just verify if we're authenticated by checking /auth/me
+        this.verifyToken().then(authenticated => {
+            if (authenticated) {
+                console.log('Authenticated via cookie');
+            }
+        }).catch(() => {
+            // Not authenticated, that's fine
+            console.log('Not authenticated');
+        });
     }
-    
+
     async verifyToken() {
-        if (!this.token) return false;
-        
         try {
+            // Cookie is sent automatically by browser
             const response = await fetch('/auth/me', {
-                headers: {
-                    'Authorization': `Bearer ${this.token}`
-                }
+                credentials: 'include'  // Important: include cookies
             });
-            
+
             if (response.ok) {
                 this.user = await response.json();
+                this.token = 'cookie-based'; // Marker that we're authenticated
                 return true;
             } else {
-                this.clearAuth();
+                this.user = null;
+                this.token = null;
                 return false;
             }
         } catch (error) {
@@ -44,28 +50,29 @@ class AuthManager {
             return false;
         }
     }
-    
+
     isAuthenticated() {
-        return !!this.token;
+        return !!this.token && !!this.user;
     }
-    
+
     getToken() {
-        return this.token;
+        // For compatibility - return a marker since we use cookies
+        return this.token || null;
     }
-    
+
     getUser() {
         return this.user;
     }
-    
+
     getUsername() {
         if (this.user) {
             return this.user.username;
         }
-        return localStorage.getItem(this.usernameKey) || 
-               sessionStorage.getItem(this.usernameKey) || 
+        return localStorage.getItem(this.usernameKey) ||
+               sessionStorage.getItem(this.usernameKey) ||
                'Guest';
     }
-    
+
     async login(username, password, rememberMe = false) {
         try {
             const response = await fetch('/auth/login', {
@@ -73,21 +80,22 @@ class AuthManager {
                 headers: {
                     'Content-Type': 'application/json'
                 },
+                credentials: 'include',  // Important: include cookies
                 body: JSON.stringify({ username, password })
             });
-            
+
             if (response.ok) {
                 const data = await response.json();
-                this.token = data.access_token;
+                // Cookie is set by server automatically
+                // We don't store tokens in localStorage anymore
                 
-                // Store token
+                // Store username for display (optional)
                 const storage = rememberMe ? localStorage : sessionStorage;
-                storage.setItem(this.tokenKey, this.token);
                 storage.setItem(this.usernameKey, username);
-                
+
                 // Fetch user info
                 await this.verifyToken();
-                
+
                 return { success: true, user: this.user };
             } else {
                 const error = await response.json();
@@ -98,52 +106,64 @@ class AuthManager {
             return { success: false, error: 'Network error' };
         }
     }
-    
+
     async logout() {
         try {
-            // Call logout endpoint (for server-side cleanup if needed)
-            if (this.token) {
-                await fetch('/auth/logout', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.token}`
-                    }
-                });
-            }
+            // Call logout endpoint (server will delete cookie)
+            await fetch('/auth/logout', {
+                method: 'POST',
+                credentials: 'include'  // Important: include cookies
+            });
         } catch (error) {
             console.error('Logout error:', error);
         } finally {
             this.clearAuth();
+            // Re-initialize dropdown menu to show login button
+            if (window.AgentSystem && window.AgentSystem.DropdownMenu) {
+                window.AgentSystem.DropdownMenu.initialized = false;
+                await window.AgentSystem.DropdownMenu.init();
+            }
         }
     }
-    
+
     clearAuth() {
         this.token = null;
+        this.refreshToken = null;
         this.user = null;
-        localStorage.removeItem(this.tokenKey);
+        // Only clear username from storage
         localStorage.removeItem(this.usernameKey);
-        sessionStorage.removeItem(this.tokenKey);
         sessionStorage.removeItem(this.usernameKey);
+        // Tokens are in HttpOnly cookies - browser will handle them
     }
-    
-    // Helper to add auth header to fetch requests
-    authFetch(url, options = {}) {
-        if (this.token) {
-            options.headers = options.headers || {};
-            options.headers['Authorization'] = `Bearer ${this.token}`;
+
+    // Helper to add credentials to fetch requests
+    async authFetch(url, options = {}) {
+        // Always include cookies
+        options.credentials = 'include';
+        
+        // No need to add Authorization header - cookie is sent automatically
+        const response = await fetch(url, options);
+
+        // If we get 401, user needs to re-login
+        if (response.status === 401) {
+            console.log('Received 401, redirecting to login...');
+            this.clearAuth();
+            this.redirectToLogin();
         }
-        return fetch(url, options);
+
+        return response;
     }
-    
+
     // Redirect to login page
     redirectToLogin(returnUrl = null) {
         const currentUrl = returnUrl || window.location.pathname + window.location.search;
         window.location.href = `/login?return=${encodeURIComponent(currentUrl)}`;
     }
-    
+
     // Check if user has admin role
     isAdmin() {
-        return this.user && this.user.role === 'ADMIN';
+        // role is returned as lowercase "admin" from the API (see UserRole enum)
+        return this.user && (this.user.role === 'admin' || this.user.role === 'ADMIN');
     }
 }
 

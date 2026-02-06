@@ -290,12 +290,15 @@ class Agent(MCPServer):
 - Schema validation
 - Pydantic model binding
 
-**Configuration Files:**
-- `config/config.yaml` - Main system config
-- `config/llm.yaml` - LLM profiles
-- `config/agents.yaml` - Config-based agents
-- `config/mcp_servers.yaml` - External MCP servers
-- `config/plugins.yaml` - Plugin overrides
+**Configuration System:**
+- `config/config.yaml` - Main config with includes mechanism
+- **`llm_system:`** - LLM profiles and model configurations
+- **`plugins:`** - Plugin discovery, default configs, and server configurations
+- **`external_servers:`** - External MCP server connections
+- **`agents:`** - Config-based agent definitions
+- **`server_mode:`** - MCP server mode settings
+
+All configuration sections can be defined in the main config or in separate files that are included via the `includes:` list. The system uses deep-merge to combine configurations from multiple files.
 
 ---
 

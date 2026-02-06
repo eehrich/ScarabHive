@@ -288,28 +288,20 @@
         const passwordInput = document.getElementById('password');
         const rememberMeCheckbox = document.getElementById('rememberMe');
         
-        // Check if already logged in
-        const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
-        if (token) {
-            // Verify token is still valid
-            fetch('/auth/me', {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
-            })
-            .then(response => {
-                if (response.ok) {
-                    // Already logged in, redirect
-                    const returnUrl = new URLSearchParams(window.location.search).get('return') || '/';
-                    window.location.href = returnUrl;
-                }
-            })
-            .catch(() => {
-                // Token invalid, clear it
-                localStorage.removeItem('auth_token');
-                sessionStorage.removeItem('auth_token');
-            });
-        }
+        // Check if already logged in via cookie
+        fetch('/auth/me', {
+            credentials: 'include'  // Include cookies
+        })
+        .then(response => {
+            if (response.ok) {
+                // Already logged in, redirect
+                const returnUrl = new URLSearchParams(window.location.search).get('return') || '/';
+                window.location.href = returnUrl;
+            }
+        })
+        .catch(() => {
+            // Not logged in, that's fine
+        });
         
         function showError(message) {
             errorMessage.textContent = message;
@@ -353,23 +345,17 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
+                    credentials: 'include',  // Important: include cookies
                     body: JSON.stringify({ username, password })
                 });
                 
                 const data = await response.json();
                 
                 if (response.ok) {
-                    // Login successful
-                    const token = data.access_token;
-                    
-                    // Store token based on remember me choice
-                    if (rememberMe) {
-                        localStorage.setItem('auth_token', token);
-                        localStorage.setItem('auth_username', username);
-                    } else {
-                        sessionStorage.setItem('auth_token', token);
-                        sessionStorage.setItem('auth_username', username);
-                    }
+                    // Login successful - cookie is set automatically by server
+                    // Optionally store username for display
+                    const storage = rememberMe ? localStorage : sessionStorage;
+                    storage.setItem('auth_username', username);
                     
                     showSuccess('Login successful! Redirecting...');
                     

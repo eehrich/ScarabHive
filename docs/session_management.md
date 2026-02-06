@@ -31,14 +31,21 @@ Each session is a JSON file containing:
   "title": "Conversation Title",
   "agent_name": "basic_agent",
   "llm_profile": "default",
+  "context_vars": {
+    "workflow_phase": "planning",
+    "book_id": "123"
+  },
   "messages": [
     {
       "role": "user",
-      "content": "Hello"
+      "content": "Hello",
+      "estimated_tokens": 3
     },
     {
       "role": "assistant",
-      "content": "Hi there!"
+      "content": "Hi there! How can I help you today?",
+      "estimated_tokens": 12,
+      "tool_calls": null
     }
   ],
   "metadata": {
@@ -49,6 +56,23 @@ Each session is a JSON file containing:
     "custom_field": "custom_value"
   }
 }
+```
+
+#### Message Fields
+
+Each message in the `messages` array includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `role` | string | Message role: `user`, `assistant`, `tool`, or `system` |
+| `content` | string/array | Message content (text or multimodal) |
+| `estimated_tokens` | int | Estimated token count for context window tracking |
+| `tool_calls` | array | Tool calls made by assistant (optional) |
+| `tool_call_id` | string | ID reference for tool responses (optional) |
+| `timestamp` | string | ISO 8601 timestamp (optional) |
+| `reasoning_content` | string | Chain-of-thought reasoning (optional) |
+
+The `estimated_tokens` field is computed when the session is saved using `~4 chars/token` for text and `~1000 tokens` for images.
 ```
 
 ## API Endpoints

@@ -111,13 +111,59 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `llm_profile` | string | Yes | - | LLM profile from `config/llm.yaml` |
+| `llm_profile_fallbacks` | list[string] | No | [] | Fallback profiles on rate limit/quota errors |
+| `fallback_recovery_seconds` | integer | No | 3600 | Seconds before retrying original LLM after fallback (1 hour default) |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
+| `template_vars` | object | No | null | Custom variables for Jinja2 template rendering |
 | `tools` | object | No | {} | Tool access control |
 | `context_management` | object | No | defaults | Context management config |
 
 \* Either `system_prompt` or `system_template` must be provided, but not both.
+
+### LLM Profile Fallbacks
+
+When the primary LLM profile hits rate limits (HTTP 429) or quota exhaustion, the agent automatically switches to fallback profiles in order:
+
+```yaml
+my_agent:
+  type: basic_agent
+  agent_config:
+    llm_profile: "gemini"              # Primary profile
+    llm_profile_fallbacks:             # Tried in order on rate limit
+      - "openai"                       # First fallback
+      - "anthropic"                    # Second fallback
+    fallback_recovery_seconds: 1800    # Try primary again after 30min (default: 3600)
+```
+
+**Behavior:**
+1. Agent tries primary `llm_profile` first
+2. On `LLMRateLimitError` or `LLMQuotaExhaustedError`, tries next fallback profile
+3. Fallback becomes **persistent** - all subsequent requests use fallback LLM
+4. After `fallback_recovery_seconds` elapsed, agent tries original profile again
+5. If recovery succeeds, switches back to primary profile
+6. If recovery fails, re-activates fallback for another recovery period
+7. If all fallbacks exhausted, raises the original error
+
+**Automatic Recovery:**
+- **Default:** Retries original profile after 1 hour (3600 seconds)
+- **Configurable:** Set `fallback_recovery_seconds` to custom value
+- **Use Cases:**
+  - Rate limits (TPM/RPM/RPD) - temporary, recovers automatically
+  - Quota exhausted - persistent until daily/monthly reset
+  - API outages - retries when service restored
+
+**Status Updates:**
+- Shows active profile: `gemini:fallback`, `openai:fallback`
+- Recovery info: `"Switched to openai (rate limit hit, retry in 60min)"`
+- Auto-recovery: `"Fallback recovery period elapsed. Trying original LLM again."`
+
+**Use Cases:**
+- Gemini free tier (250 requests/day) → OpenAI fallback
+- Primary API down → Secondary provider
+- Cost optimization (cheaper primary, expensive fallback)
+- Rate limit management (temporary TPM/RPM limits)
 
 ### Tools Configuration
 
@@ -135,6 +181,55 @@ tools:
 1. If `allowed` is empty, all tools are allowed by default
 2. `blocked` takes precedence over `allowed`
 3. Patterns support wildcards (`*`)
+
+**List Merge Syntax for Inheritance:**
+
+When an agent inherits from another agent via `type:`, lists are **replaced by default**. Use explicit prefixes to merge:
+
+| Prefix | Behavior | Example |
+|--------|----------|---------|
+| `+item` | Append item to parent list | `+new_tool/*` |
+| `!pattern` | Remove matching items from parent | `!old_tool/*` |
+| `item` (no prefix) | In merge mode: also appended | `regular_tool/*` |
+
+**Example:**
+
+```yaml
+# Parent agent
+book_architect:
+  type: writer_agent
+  agent_config:
+    tools:
+      allowed:
+        - "writer_content/*"
+        - "w_sam/*"            # Parent uses standard sub-agent manager
+        - "todo/*"
+
+# Child agent inheriting from book_architect
+book_architect_gemini_batch:
+  type: book_architect         # Inherits from book_architect
+  agent_config:
+    tools:
+      allowed:
+        - "!w_sam/*"           # Remove parent's w_sam from allowed
+        - "+w_sam_gemini/*"    # Add gemini-specific sub-agent manager
+      blocked:
+        - "+w_sam/*"           # Also block it explicitly
+```
+
+**Result:** The child agent will have:
+- All parent tools EXCEPT `w_sam/*` (removed by `!`)
+- Plus `w_sam_gemini/*` (added by `+`)
+- `w_sam/*` in blocked list
+
+**Without prefixes** (complete replacement):
+```yaml
+tools:
+  allowed:
+    - "only_this_tool/*"  # Replaces entire parent list
+```
+
+This syntax works for **any list** in the config, not just tools - including `template_vars`, `llm_profile_fallbacks`, etc.
 
 ### self_tool_descriptions Configuration
 
@@ -214,6 +309,214 @@ Reference in agent config:
 agent_config:
   system_template: "config/prompts/my_prompt.yaml"
 ```
+
+### Template Variables (Jinja2)
+
+You can define custom variables directly in your agent configuration that are available for Jinja2 template rendering. This allows you to create reusable prompt templates with agent-specific values without writing Python code.
+
+#### Defining Template Variables
+
+Add `template_vars` to your `agent_config`:
+
+```yaml
+agents:
+  my_agent:
+    enabled: true
+    description: "Agent with custom template variables"
+    agent_config:
+      llm_profile: "chat"
+      system_prompt: |
+        You are the {{ project_name }} assistant, version {{ version }}.
+        Project author: {{ author }}
+        {% if debug_mode %}Debug mode is enabled.{% endif %}
+        
+        Focus areas: {{ focus_areas | join(', ') }}
+      
+      template_vars:
+        project_name: "AgentSystem"
+        version: "2.0.0"
+        author: "Development Team"
+        debug_mode: false
+        focus_areas:
+          - "code quality"
+          - "best practices"
+          - "performance"
+```
+
+#### Available Variables
+
+The following variables are automatically available in all templates:
+
+| Variable | Description |
+|----------|-------------|
+| `tools` | List of available tool names |
+| `max_steps` | Maximum reasoning steps configured |
+| `current_step` | Current step number (1-indexed) |
+| `current_date` | Current date (YYYY-MM-DD) |
+| `current_time` | Current time (HH:MM:SS) |
+| `current_datetime` | ISO format datetime |
+| `current_timezone` | Configured timezone |
+| `current_location` | Configured location |
+| `current_weekday` | Day name (e.g., "Monday") |
+| `current_month` | Month name (e.g., "January") |
+| `current_year` | Year (e.g., 2025) |
+
+Custom `template_vars` are merged with these built-in variables. **Custom variables take precedence** if there's a name conflict.
+
+#### Using with Template Files
+
+Works with both inline `system_prompt` and `system_template` files:
+
+**config/prompts/reusable_prompt.md:**
+```markdown
+# {{ project_name }} Agent
+
+You are a specialized assistant for **{{ project_name }}**.
+
+## Configuration
+- Version: {{ version }}
+- Author: {{ author }}
+
+## Your Focus Areas
+{% for area in focus_areas %}
+- {{ area }}
+{% endfor %}
+
+## Current Context
+Today is {{ current_weekday }}, {{ current_date }}.
+You are on step {{ current_step }} of {{ max_steps }}.
+```
+
+**config/agents/my_agent.yaml:**
+```yaml
+plugins:
+  servers:
+    my_custom_agent:
+      type: basic_agent
+      enabled: true
+      agent_config:
+        llm_profile: "chat"
+        max_steps: 20
+        system_template: "config/prompts/reusable_prompt.md"
+        template_vars:
+          project_name: "MyProject"
+          version: "1.0.0"
+          author: "My Team"
+          focus_areas:
+            - "feature development"
+            - "bug fixing"
+```
+
+#### Complex Variable Types
+
+`template_vars` supports nested objects and lists:
+
+```yaml
+template_vars:
+  # Simple values
+  name: "MyAgent"
+  max_retries: 3
+  
+  # Nested objects
+  config:
+    debug: true
+    verbosity: "high"
+    features:
+      streaming: true
+      caching: false
+  
+  # Lists
+  allowed_domains:
+    - "example.com"
+    - "api.example.com"
+  
+  # Mixed
+  team:
+    - name: "Alice"
+      role: "Lead"
+    - name: "Bob"
+      role: "Developer"
+```
+
+Access in templates:
+```
+Config debug: {{ config.debug }}
+First domain: {{ allowed_domains[0] }}
+Team lead: {{ team[0].name }} ({{ team[0].role }})
+```
+
+## Session Context Variables (context_vars)
+
+Session context variables allow you to pass runtime state into a session that persists across the session's lifetime. Unlike `template_vars` (which are static config values), `context_vars` are set when spawning sub-agents or starting sessions and can change between sessions.
+
+### Setting Context Variables
+
+Context variables are passed when spawning sub-agents via the sub-agent manager:
+
+```yaml
+# When creating a sub-agent, context_vars can be passed:
+# {
+#   "operation": "create",
+#   "agent_type": "scene_writer",
+#   "task": "Write chapter 1",
+#   "context_vars": {
+#     "workflow_phase": "content",
+#     "book_id": "17",
+#     "chapter_id": "1"
+#   }
+# }
+```
+
+### Accessing Context Variables
+
+Context variables are automatically loaded into the agent's template variables and can be used in prompts:
+
+```yaml
+agents:
+  scene_writer:
+    agent_config:
+      system_prompt: |
+        You are writing for book {{ book_id }}, chapter {{ chapter_id }}.
+        Current workflow phase: {{ workflow_phase }}
+```
+
+### Phase-Based Agent Filtering
+
+A powerful use case for context variables is **phase-based filtering** in sub-agent managers. This restricts which agents are available based on the current workflow phase:
+
+```yaml
+# config/plugins.yaml
+w_sam:
+  type: sub_agent_manager
+  enabled: true
+  
+  allowed_agents:
+    - story_designer
+    - story_reviewer
+    - scene_writer
+    - quality_meta_reviewer
+
+  # Phase filtering uses session context_vars
+  phase_filtering:
+    enabled: true
+    phase_variable: "workflow_phase"  # Which context var to read
+    phase_agents:
+      planning: [story_designer, story_reviewer]
+      content: [scene_writer]
+      review: [quality_meta_reviewer]
+      _default: []  # Empty = all allowed_agents when phase unknown
+```
+
+When `phase_filtering` is enabled:
+1. The sub-agent manager reads `workflow_phase` from the session's context_vars
+2. Only agents matching the current phase are shown as available
+3. Attempts to spawn non-phase agents are blocked with a helpful error
+
+### Frontend Display
+
+Sessions with context_vars display them in the UI:
+- **Badges**: `workflow_phase` and `book_id` shown as colored badges
+- **Info Panel**: Click the info button (ℹ️) to see all context variables and phase-allowed agents
 
 ## LLM Profiles
 

@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sub-Agent Manager</title>
+    <link rel="stylesheet" href="/static/css/scrollbar.css">
     <style>
         * {
             margin: 0;
@@ -54,6 +55,26 @@
         }
         
         button:hover {
+            background: #1177bb;
+        }
+        
+        button.icon-only {
+            padding: 8px;
+            min-width: 36px;
+            justify-content: center;
+            font-size: 18px;
+            background: #3c3c3c;
+        }
+        
+        button.icon-only:hover {
+            background: #505050;
+        }
+        
+        button.icon-only.active {
+            background: #0e639c;
+        }
+        
+        button.icon-only.active:hover {
             background: #1177bb;
         }
         
@@ -149,9 +170,25 @@
             color: #fff;
         }
         
+        .status-running {
+            background: #ff9800;
+            color: #fff;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
         .status-archived {
             background: #6e6e6e;
             color: #d4d4d4;
+        }
+
+        .status-interrupted {
+            background: #c74e39;
+            color: #fff;
         }
         
         .agent-meta {
@@ -167,6 +204,28 @@
             color: #d4d4d4;
             margin-bottom: 10px;
             font-style: italic;
+        }
+        
+        .agent-activity {
+            font-size: 12px;
+            color: #4ec9b0;
+            margin-bottom: 10px;
+            padding: 6px 10px;
+            background: #1e3a1e;
+            border-radius: 4px;
+            border-left: 3px solid #4ec9b0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .agent-activity .spinner {
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
         
         .agent-actions {
@@ -278,19 +337,239 @@
             padding: 40px;
             color: #858585;
         }
+        
+        /* Multi-select dropdown styles */
+        .filter-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        
+        .filter-dropdown-btn {
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 160px;
+            justify-content: space-between;
+        }
+        
+        .filter-dropdown-btn:hover {
+            border-color: #0e639c;
+        }
+        
+        .filter-dropdown-content {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            min-width: 180px;
+            z-index: 100;
+            margin-top: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        
+        .filter-dropdown-content.show {
+            display: block;
+        }
+        
+        .filter-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background 0.15s;
+            font-size: 13px;
+        }
+        
+        .filter-option:hover {
+            background: #2d2d30;
+        }
+        
+        .filter-option input[type="checkbox"] {
+            accent-color: #0e639c;
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        
+        .filter-divider {
+            height: 1px;
+            background: #3e3e42;
+            margin: 4px 0;
+        }
+        
+        .filter-actions {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            border-top: 1px solid #3e3e42;
+        }
+        
+        .filter-actions button {
+            flex: 1;
+            font-size: 11px;
+            padding: 4px 8px;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+        
+        .status-badge.running { background: #ff9800; }
+        .status-badge.active { background: #16825d; }
+        .status-badge.archived { background: #6e6e6e; }
+        .status-badge.interrupted { background: #c74e39; }
+        
+        /* Phase Banner Styles */
+        .phase-banner {
+            background: linear-gradient(135deg, #1a3a5c 0%, #264f78 100%);
+            border: 1px solid #3794ff;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .phase-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .phase-label {
+            color: #9cdcfe;
+            font-size: 13px;
+        }
+        
+        .phase-value {
+            background: #569cd6;
+            color: #fff;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+        }
+        
+        .phase-value.planning { background: #569cd6; }
+        .phase-value.characters { background: #c586c0; }
+        .phase-value.structure { background: #4ec9b0; }
+        .phase-value.content { background: #dcdcaa; color: #1e1e1e; }
+        .phase-value.review { background: #ce9178; }
+        
+        .phase-agents-info {
+            flex: 1;
+            min-width: 200px;
+            font-size: 12px;
+            color: #d4d4d4;
+        }
+        
+        #phaseAgentsList {
+            font-family: monospace;
+            color: #9cdcfe;
+        }
+        
+        .phase-toggle {
+            display: flex;
+            align-items: center;
+        }
+        
+        .toggle-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #d4d4d4;
+        }
+        
+        .toggle-label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🤖 Sub-Agent Manager</h1>
         
+        <!-- Phase Status Banner (shown when phase filtering is active) -->
+        <div class="phase-banner" id="phaseBanner" style="display: none;">
+            <div class="phase-info">
+                <span class="phase-label">Workflow Phase:</span>
+                <span class="phase-value" id="currentPhaseValue">-</span>
+            </div>
+            <div class="phase-agents-info">
+                <span id="phaseAgentsLabel">Available agents:</span>
+                <span id="phaseAgentsList">-</span>
+            </div>
+            <div class="phase-toggle">
+                <label class="toggle-label">
+                    <input type="checkbox" id="showAllAgentsToggle" onchange="toggleAgentFilter()">
+                    <span>Show all agents</span>
+                </label>
+            </div>
+        </div>
+        
         <div class="controls">
             <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
-            <button onclick="loadAgents()">🔄 Refresh</button>
-            <label style="color: #858585; margin-left: auto; display: flex; align-items: center; gap: 5px;">
-                <input type="checkbox" id="includeArchived" onchange="loadAgents()">
-                Show Archived
-            </label>
+            
+            <!-- Multi-select status filter -->
+            <div class="filter-dropdown" id="statusFilterDropdown">
+                <button type="button" class="filter-dropdown-btn" onclick="toggleFilterDropdown()">
+                    <span id="filterLabel">Filter Status</span>
+                    <span>▼</span>
+                </button>
+                <div class="filter-dropdown-content" id="filterDropdownContent">
+                    <label class="filter-option">
+                        <input type="checkbox" id="filterRunning" checked onchange="updateFilter()">
+                        <span class="status-badge running"></span>
+                        <span>🏃 Running</span>
+                    </label>
+                    <label class="filter-option">
+                        <input type="checkbox" id="filterActive" checked onchange="updateFilter()">
+                        <span class="status-badge active"></span>
+                        <span>✅ Active (idle)</span>
+                    </label>
+                    <label class="filter-option">
+                        <input type="checkbox" id="filterArchived" onchange="updateFilter()">
+                        <span class="status-badge archived"></span>
+                        <span>📦 Archived</span>
+                    </label>
+                    <div class="filter-divider"></div>
+                    <div class="filter-actions">
+                        <button type="button" onclick="selectAllFilters()">All</button>
+                        <button type="button" onclick="selectNoneFilters()">None</button>
+                        <button type="button" onclick="selectActiveOnly()">Active Only</button>
+                    </div>
+                </div>
+            </div>
+            
+            <button class="icon-only" onclick="loadAgents()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (10s) - Inactive" style="background: #3c3c3c;">
+                ⏱️
+            </button>
         </div>
         
         <div class="stats-grid" id="statsGrid">
@@ -335,8 +614,149 @@
     </div>
     
     <script>
+        // Prevent parent page scroll when scrolling in this panel
+        document.addEventListener('wheel', function(e) {
+            const scrollable = document.scrollingElement || document.documentElement;
+            const atTop = scrollable.scrollTop === 0;
+            const atBottom = scrollable.scrollHeight - scrollable.scrollTop === scrollable.clientHeight;
+            
+            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+        
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const dropdown = document.getElementById('statusFilterDropdown');
+            if (dropdown && !dropdown.contains(e.target)) {
+                document.getElementById('filterDropdownContent').classList.remove('show');
+            }
+        });
+
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
+        let autoRefreshInterval = null;
+        let phaseInfo = null;  // Store phase filtering info
+        let showAllAgents = false;  // Toggle state for agent filter
+        
+        // Phase filtering functions
+        async function loadPhaseInfo() {
+            if (!currentSessionId) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/phase-info?session_id=${currentSessionId}`);
+                phaseInfo = await response.json();
+                
+                const banner = document.getElementById('phaseBanner');
+                const phaseValue = document.getElementById('currentPhaseValue');
+                const phaseAgentsList = document.getElementById('phaseAgentsList');
+                const phaseAgentsLabel = document.getElementById('phaseAgentsLabel');
+                
+                if (phaseInfo.enabled) {
+                    banner.style.display = 'flex';
+                    
+                    if (phaseInfo.current_phase) {
+                        phaseValue.textContent = phaseInfo.current_phase;
+                        phaseValue.className = 'phase-value ' + phaseInfo.current_phase;
+                        
+                        const agents = showAllAgents 
+                            ? phaseInfo.all_allowed_agents 
+                            : phaseInfo.filtered_agents;
+                        phaseAgentsList.textContent = agents.join(', ');
+                        phaseAgentsLabel.textContent = showAllAgents 
+                            ? 'All allowed agents:' 
+                            : `Phase "${phaseInfo.current_phase}" agents:`;
+                    } else {
+                        phaseValue.textContent = 'Not Set';
+                        phaseValue.className = 'phase-value';
+                        phaseAgentsList.textContent = phaseInfo.all_allowed_agents.join(', ');
+                        phaseAgentsLabel.textContent = 'All allowed agents:';
+                    }
+                } else {
+                    banner.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Error loading phase info:', error);
+            }
+        }
+        
+        function toggleAgentFilter() {
+            showAllAgents = document.getElementById('showAllAgentsToggle').checked;
+            loadPhaseInfo();  // Refresh display
+        }
+        
+        // Filter dropdown functions
+        function toggleFilterDropdown() {
+            const content = document.getElementById('filterDropdownContent');
+            content.classList.toggle('show');
+        }
+        
+        function getSelectedFilters() {
+            const runningEl = document.getElementById('filterRunning');
+            const activeEl = document.getElementById('filterActive');
+            const archivedEl = document.getElementById('filterArchived');
+            
+            // Defensive: if elements don't exist, use defaults
+            return {
+                running: runningEl ? runningEl.checked : true,
+                active: activeEl ? activeEl.checked : true,
+                archived: archivedEl ? archivedEl.checked : false
+            };
+        }
+        
+        function updateFilterLabel() {
+            const filters = getSelectedFilters();
+            const selected = [];
+            if (filters.running) selected.push('Running');
+            if (filters.active) selected.push('Active');
+            if (filters.archived) selected.push('Archived');
+            
+            const label = document.getElementById('filterLabel');
+            if (!label) return;  // Element not found
+            
+            if (selected.length === 0) {
+                label.textContent = 'No Filter';
+            } else if (selected.length === 3) {
+                label.textContent = 'All Status';
+            } else {
+                label.textContent = selected.join(', ');
+            }
+        }
+        
+        function updateFilter() {
+            updateFilterLabel();
+            loadAgents();
+        }
+        
+        function selectAllFilters() {
+            const r = document.getElementById('filterRunning');
+            const a = document.getElementById('filterActive');
+            const ar = document.getElementById('filterArchived');
+            if (r) r.checked = true;
+            if (a) a.checked = true;
+            if (ar) ar.checked = true;
+            updateFilter();
+        }
+        
+        function selectNoneFilters() {
+            const r = document.getElementById('filterRunning');
+            const a = document.getElementById('filterActive');
+            const ar = document.getElementById('filterArchived');
+            if (r) r.checked = false;
+            if (a) a.checked = false;
+            if (ar) ar.checked = false;
+            updateFilter();
+        }
+        
+        function selectActiveOnly() {
+            const r = document.getElementById('filterRunning');
+            const a = document.getElementById('filterActive');
+            const ar = document.getElementById('filterArchived');
+            if (r) r.checked = true;
+            if (a) a.checked = true;
+            if (ar) ar.checked = false;
+            updateFilter();
+        }
         
         // Get session ID from parent window if available (iframe context)
         function getSessionId() {
@@ -362,23 +782,69 @@
                 return;
             }
             
-            const includeArchived = document.getElementById('includeArchived').checked;
+            const filters = getSelectedFilters();
+            console.log('loadAgents - filters:', filters);  // Debug
+            // Load archived agents only if archived filter is selected
+            const includeArchived = filters.archived;
             const agentsList = document.getElementById('agentsList');
             agentsList.innerHTML = '<div class="loading">Loading...</div>';
             
             try {
                 const response = await fetch(`${API_BASE}/sub-agents?session_id=${currentSessionId}&include_completed=${includeArchived}`);
                 const data = await response.json();
+                console.log('loadAgents - API response:', data);  // Debug
                 
                 if (data.error) {
                     throw new Error(data.error);
                 }
                 
-                renderAgents(data.instances || []);
+                renderAgents(data.instances || [], filters);
                 await loadStats();
+                await loadPhaseInfo();  // Load phase filtering info
             } catch (error) {
                 console.error('Error loading agents:', error);
                 agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>Error: ${error.message}</div></div>`;
+            }
+        }
+        
+        function toggleAutoRefresh() {
+            if (autoRefreshInterval) {
+                stopAutoRefresh();
+            } else {
+                startAutoRefresh();
+            }
+        }
+        
+        function startAutoRefresh() {
+            if (autoRefreshInterval) return;
+            autoRefreshInterval = setInterval(() => {
+                // Only refresh if we have a session ID
+                const sessionId = getSessionId();
+                if (sessionId) {
+                    loadAgents();
+                }
+            }, 10000);
+            updateAutoRefreshButton(true);
+        }
+        
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+            updateAutoRefreshButton(false);
+        }
+        
+        function updateAutoRefreshButton(isActive) {
+            const btn = document.getElementById('autoRefreshBtn');
+            if (btn) {
+                btn.title = isActive ? 'Auto-Refresh (10s) - Active' : 'Auto-Refresh (10s) - Inactive';
+                btn.style.background = isActive ? '#0e639c' : '#3c3c3c';
+                if (isActive) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
             }
         }
         
@@ -397,34 +863,104 @@
             }
         }
         
-        function renderAgents(agents) {
+        function timeAgo(dateString) {
+            if (!dateString) return 'never';
+            const date = new Date(dateString);
+            const now = new Date();
+            const seconds = Math.floor((now - date) / 1000);
+            
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+            if (seconds < 2592000) return `${Math.floor(seconds / 86400)} days ago`;
+            return date.toLocaleDateString();
+        }
+        
+        function renderAgents(agents, filters = {running: true, active: true, archived: false}) {
             const agentsList = document.getElementById('agentsList');
             
-            if (!agents.length) {
-                agentsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div>No sub-agents found</div></div>';
+            // Helper to determine agent's effective status
+            function getAgentEffectiveStatus(agent) {
+                const statusLower = (agent.status || '').toLowerCase();
+                if (statusLower === 'interrupted') return 'interrupted';
+                if (statusLower === 'running' || statusLower === 'pending') return 'running';
+
+                const activityLower = (agent.current_activity || '').toLowerCase();
+                const isRunning = agent.current_activity && 
+                                 statusLower === 'active' && 
+                                 !activityLower.includes('completed') &&
+                                 !activityLower.includes('cancelled') &&
+                                 !activityLower.includes('failed') &&
+                                 !activityLower.includes('error');
+                
+                if (isRunning) return 'running';
+                if (statusLower === 'archived') return 'archived';
+                return 'active';  // active but not running (idle)
+            }
+            
+            // Apply multi-select status filter
+            let filteredAgents = agents.filter(agent => {
+                const effectiveStatus = getAgentEffectiveStatus(agent);
+                
+                if (effectiveStatus === 'running' && filters.running) return true;
+                if (effectiveStatus === 'active' && filters.active) return true;
+                // Show interrupted under the Active filter by default
+                if (effectiveStatus === 'interrupted' && filters.active) return true;
+                if (effectiveStatus === 'archived' && filters.archived) return true;
+                
+                return false;
+            });
+            
+            if (!filteredAgents.length) {
+                const filterText = [];
+                if (filters.running) filterText.push('running');
+                if (filters.active) filterText.push('active');
+                if (filters.archived) filterText.push('archived');
+                const filterStr = filterText.length > 0 ? filterText.join('/') : 'selected';
+                agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📦</div><div>No ${filterStr} sub-agents found</div></div>`;
                 return;
             }
             
-            agentsList.innerHTML = agents.map(agent => `
+            agentsList.innerHTML = filteredAgents.map(agent => {
+                // Agent is running only if it has activity AND it's not in a terminal state
+                const effectiveStatus = getAgentEffectiveStatus(agent);
+                const isRunning = effectiveStatus === 'running';
+                const statusClass = isRunning ? 'running' : (agent.status || 'active').toLowerCase();
+                const statusText = isRunning
+                    ? '🔄 RUNNING'
+                    : (statusClass === 'interrupted' ? '⛔ INTERRUPTED' : statusClass.toUpperCase());
+                
+                const activityHtml = agent.current_activity 
+                    ? `<div class="agent-activity">
+                         <span class="spinner">⚙️</span>
+                         <span>${escapeHtml(agent.current_activity)}</span>
+                       </div>`
+                    : '';
+                
+                const lastUsedAgo = timeAgo(agent.last_used);
+                
+                return `
                 <div class="agent-item">
                     <div class="agent-header">
                         <span class="agent-id">${agent.instance_id}</span>
-                        <span class="agent-status status-${agent.status}">${agent.status}</span>
+                        <span class="agent-status status-${statusClass}">${statusText}</span>
                     </div>
                     <div class="agent-meta">
                         <span class="agent-type">${agent.agent_type}</span>
-                        <span>Created: ${new Date(agent.created_at).toLocaleString()}</span>
-                        <span>Last used: ${new Date(agent.last_used).toLocaleString()}</span>
+                        <span>Messages: ${agent.message_count || 0}</span>
+                        <span>Last used: ${lastUsedAgo}</span>
                     </div>
                     <div class="agent-task">"${agent.task_summary || 'No task summary'}"</div>
+                    ${activityHtml}
                     <div class="agent-actions">
-                        ${agent.status === 'active' ? `
+                        ${(agent.status === 'active' || effectiveStatus === 'interrupted') ? `
                             <button onclick="viewDetails('${agent.instance_id}')">ℹ️ Details</button>
                             <button class="danger" onclick="archiveAgent('${agent.instance_id}')">🗑️ Archive</button>
                         ` : ''}
                     </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
         
         async function archiveAgent(instanceId) {
@@ -530,17 +1066,20 @@
             const sessionId = getSessionId();
             if (sessionId) {
                 // Hide session ID input if we got it from parent
-                const inputContainer = document.querySelector('.controls');
                 const sessionInput = document.getElementById('sessionIdInput');
                 if (sessionInput && sessionInput.value === '') {
                     sessionInput.style.display = 'none';
-                    const label = inputContainer.querySelector('label');
-                    if (label) label.style.display = 'none';
                 }
                 
-                // Auto-load agents
+                // Initialize filter label and load agents
+                updateFilterLabel();
                 loadAgents();
             }
+        });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopAutoRefresh();
         });
     </script>
 </body>

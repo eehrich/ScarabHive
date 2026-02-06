@@ -1,0 +1,27 @@
+# SQLite Query Plugin - Simple SQL Execution for Debugging
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_execute_sql"
+      description: |
+        Execute raw SQL statements on configured SQLite database. 
+        Be careful as this allows full access to the database. No safety checks are performed. No backups are made.
+        
+      parameters:
+        type: object
+        properties:
+          sql:
+            type: string
+            description: |
+              SQL statement to execute (any valid SQLite statement).
+              Examples:
+              - "SELECT * FROM books WHERE status = 'draft'"
+              - "UPDATE books SET status = 'completed' WHERE id = 1"
+              - "PRAGMA table_info(books)"
+        required: ["sql"]
+        additionalProperties: false
+
+config:
+  database: default.db
+  query_timeout: 30

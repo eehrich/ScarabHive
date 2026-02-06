@@ -23,6 +23,7 @@ from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .mcp.integration import MCPIntegration, initialize_mcp, shutdown_mcp
+from .llm.batch.initialization import init_batch_system, shutdown_batch_system
 from .utils.logging import setup_logging
 from .servers.agent.server import Agent
 
@@ -443,7 +444,10 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 base_url = "http://127.0.0.1:8000"
                 url = f"{base_url}{endpoint_path}/server-info"
 
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                # Get CLI request timeout from config (default 5.0 seconds)
+                timeout = config.network.cli_request_timeout if config and config.network else 5.0
+                
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     try:
                         response = await client.get(url)
                         if response.status_code == 200:
@@ -602,6 +606,8 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="Run an agent task (default)")
     run_parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
     run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
+    run_parser.add_argument("--audio", dest="audio", nargs="+", metavar="PATH", help="Path(s) to audio file(s) to attach to the task (mp3, wav, ogg, etc.)")
+    run_parser.add_argument("--text", "--files", dest="text_files", nargs="+", metavar="PATH", help="Path(s) to text file(s) to attach to the task (txt, md, py, json, etc.)")
     run_parser.add_argument("--agent", dest="agent_override", help="Override the default agent (use agent name from config)")
     run_parser.add_argument("--llm", dest="llm_profile_override", help="Override the LLM profile (use profile name from llm.yaml)")
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
@@ -1191,7 +1197,14 @@ def main() -> None:
 
     # Determine logfile: prefer explicit per-role setting if provided in config.
     log_path = config.logging.file_cli or _role_logfile(config.logging.file or "logs/agent.log", "cli")
-    log_file = setup_logging(config.logging.enabled, config.logging.level, log_path)
+    log_file = setup_logging(
+        config.logging.enabled, 
+        config.logging.level, 
+        log_path,
+        rotation_enabled=config.logging.rotation_enabled,
+        max_bytes=config.logging.max_bytes,
+        backup_count=config.logging.backup_count
+    )
     logger = logging.getLogger(__name__)
     # If verbose not set, reduce console output to WARNING to avoid noisy logs on stdout
     if not args.verbose:
@@ -1211,15 +1224,20 @@ def main() -> None:
     registry = MCPRegistry()
     vprint("[cli] bootstrapping servers...")
     logger.info("Bootstrapping servers")
-    
+
+    # Store config for lazy batch queue manager initialization
+    # This allows LLMFactory to create the manager when first needed
+    from .llm.factory import set_batch_config
+    set_batch_config(config)
+
     # Use InitializationService for consistent bootstrap + injection
     from .services.initialization_service import InitializationService
     init_service = InitializationService(config)
     registry, session_service = init_service.initialize_for_cli()
-    
+
     # Keep references to session_manager for CLI use
     session_manager = init_service.session_manager
-    
+
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
 
@@ -1233,6 +1251,16 @@ def main() -> None:
     except Exception as e:
         logger.warning("Failed to initialize MCP integration: %s", e)
         vprint(f"[cli] Warning: MCP integration failed: {e}")
+
+    # Initialize batch queue manager if any LLM models have batch enabled
+    vprint("[cli] initializing batch queue manager...")
+    try:
+        asyncio.run(init_batch_system(config))
+        vprint("[cli] batch queue manager initialized")
+        logger.info("Batch queue manager initialized successfully")
+    except Exception as e:
+        logger.warning("Failed to initialize batch queue manager: %s", e)
+        vprint(f"[cli] Warning: batch queue manager failed: {e}")
 
     # Note: SessionManager, SessionService, and dependency injection
     # are now handled by InitializationService.initialize_for_cli() above
@@ -1281,35 +1309,62 @@ def main() -> None:
         registry.register(entry_name, agent)
         vprint(f"[cli] created agent: {entry_name}")
 
-    # Process image attachments if provided
+    # Process multimodal attachments (images, audio, text files)
     task_input: Union[str, ChatMessage] = args.task
-    if getattr(args, "images", None):
-        vprint(f"[cli] processing {len(args.images)} image attachment(s)")
+    has_images = getattr(args, "images", None)
+    has_audio = getattr(args, "audio", None)
+    has_text_files = getattr(args, "text_files", None)
+    
+    if has_images or has_audio or has_text_files:
+        attachment_counts = []
+        if has_images:
+            attachment_counts.append(f"{len(has_images)} image(s)")
+        if has_audio:
+            attachment_counts.append(f"{len(has_audio)} audio(s)")
+        if has_text_files:
+            attachment_counts.append(f"{len(has_text_files)} text file(s)")
+        vprint(f"[cli] processing attachments: {', '.join(attachment_counts)}")
+        
         try:
-            from .utils.image_processor import create_multimodal_message, ImageProcessingError
+            from .utils.multimodal_processor import (
+                create_multimodal_message_extended,
+                ImageProcessingError,
+                AudioProcessingError,
+                TextFileProcessingError
+            )
 
-            # Convert string paths to Path objects
-            image_paths = [Path(img_path) for img_path in args.images]
+            # Convert string paths to lists of Path objects
+            image_paths = [Path(p) for p in has_images] if has_images else None
+            audio_paths = [Path(p) for p in has_audio] if has_audio else None
+            text_file_paths = [Path(p) for p in has_text_files] if has_text_files else None
 
-            # Create multimodal message with proper error handling
-            task_input = create_multimodal_message(
+            # Create multimodal message with all attachment types
+            task_input = create_multimodal_message_extended(
                 text=args.task,
                 image_paths=image_paths,
+                audio_paths=audio_paths,
+                text_file_paths=text_file_paths,
                 max_size_mb=None  # No hard limit, just warnings
             )
 
-            vprint(f"[cli] created multimodal message with {len(image_paths)} image(s)")
+            vprint("[cli] created multimodal message")
 
         except ImageProcessingError as e:
-            print(f"Error: {e}", file=sys.stderr)
+            print(f"Error processing image: {e}", file=sys.stderr)
+            return
+        except AudioProcessingError as e:
+            print(f"Error processing audio: {e}", file=sys.stderr)
+            return
+        except TextFileProcessingError as e:
+            print(f"Error processing text file: {e}", file=sys.stderr)
             return
         except ImportError as e:
-            print(f"Error: Image processing requires Pillow: {e}", file=sys.stderr)
+            print(f"Error: Multimodal processing requires Pillow: {e}", file=sys.stderr)
             print("Install with: pip install Pillow", file=sys.stderr)
             return
         except Exception as e:
-            print(f"Error processing images: {e}", file=sys.stderr)
-            logger.exception("Unexpected error in image processing")
+            print(f"Error processing attachments: {e}", file=sys.stderr)
+            logger.exception("Unexpected error in multimodal processing")
             return
 
     vprint(f"[cli] running task: {args.task}")
@@ -1402,6 +1457,15 @@ def main() -> None:
             was_new_session = True
             if hasattr(agent, '_session_tracker'):
                 agent._session_tracker.set_session_messages(actual_session_id, [])
+
+        # CRITICAL: Initialize session template_vars from agent_config for NEW sessions
+        # This ensures initial values (like workflow_phase: "planning") are available
+        # without requiring explicit set_context calls
+        if was_new_session and hasattr(agent, '_session_tracker') and hasattr(agent, 'agent_config'):
+            if agent.agent_config and agent.agent_config.template_vars:
+                initial_vars = agent.agent_config.template_vars.copy()
+                agent._session_tracker.set_session_template_vars(actual_session_id, initial_vars)
+                logger.debug(f"[cli] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
 
         return True, was_new_session  # Continue with task execution
 
@@ -1563,8 +1627,20 @@ def main() -> None:
                         except Exception as e:
                             logger.debug(f"Failed to JSON dump MCP result: {e}")
                             print(str(res))
+                elif t == "thinking_delta":
+                    # Show thinking/reasoning content as it streams (like WebUI)
+                    delta = ev.get("delta", "")
+                    if delta:
+                        # Print without newline for streaming effect
+                        if _supports_color():
+                            print(_colorize(delta, "90"), end="", flush=True)  # Dark gray
+                        else:
+                            print(delta, end="", flush=True)
+                elif t == "thinking_complete":
+                    # Thinking finished - add newline
+                    print()  # Newline after thinking content
                 elif t == "thinking":
-                    # Optionally show LLM progress when verbose
+                    # Optionally show LLM progress when verbose (backward compatibility)
                     if args.verbose:
                         step = ev.get("step")
                         print(f"[LLM] thinking (step {step})")
@@ -1581,7 +1657,8 @@ def main() -> None:
                                 output=summary,
                                 agent_instance=agent,
                                 session_id=actual_session_id,
-                                request_id="cli_display"
+                                request_id="cli_display",
+                                output_format='ansi'  # Request ANSI format for terminal display
                             )
                             if content_format == 'ansi':
                                 render_with_rich(formatted_summary)
@@ -1693,19 +1770,18 @@ def main() -> None:
                 return
 
             try:
-                # Resolve profile to model config using the factory
-                from .llm.factory import resolve_llm_config_for_agent
+                # Use factory function that properly handles batch mode
+                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
                 from .config.models import AgentConfig
-                from .llm.clients import make_llm
 
-                # Create temporary agent config with override profile
+                llm_override = create_llm_from_profile(
+                    config=config,
+                    llm_profile=llm_profile_override,
+                )
+
+                # Get profile info for logging
                 temp_agent_config = AgentConfig(llm_profile=llm_profile_override)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-
-                # Create new LLM with resolved config
-                llm_override = make_llm(**llm_kwargs)
-
-                # Build profile info string for logging
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
                 llm_profile_info = f"{llm_profile_override}:{provider}/{model}"
@@ -1720,7 +1796,7 @@ def main() -> None:
     # Set session metadata for tool execution context (enables _user_id, _agent injection)
     if hasattr(agent, '_session_tracker'):
         # Determine effective LLM profile (override or agent default)
-        effective_llm_profile = llm_profile_override or agent.agent_config.llm_profile
+        effective_llm_profile = llm_profile_override or agent.agent_config.default_llm_profile
 
         agent._session_tracker.set_session_metadata(actual_session_id, {
             "user_id": session_user,
@@ -1782,6 +1858,14 @@ def main() -> None:
             asyncio.run(save_session_after_task())
 
     finally:
+        # Shutdown batch queue manager first
+        try:
+            asyncio.run(shutdown_batch_system())
+            vprint("[cli] batch queue manager shut down")
+            logger.info("Batch queue manager shut down successfully")
+        except Exception as e:
+            logger.warning("Failed to shutdown batch queue manager: %s", e)
+        
         # Ensure MCP integration is properly shut down to close aiohttp sessions
         try:
             asyncio.run(shutdown_mcp())

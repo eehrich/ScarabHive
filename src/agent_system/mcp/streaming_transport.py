@@ -55,7 +55,8 @@ class HTTPStreamingTransport(MCPTransport):
     4. Optional: GET request opens standalone SSE stream for server messages
     """
 
-    def __init__(self, url: str = None, base_url: str = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True):
+    def __init__(self, url: Optional[str] = None, base_url: Optional[str] = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True,
+                 connection_limit: int = 10, connection_limit_per_host: int = 5):
         """
         Initialize Streamable HTTP transport.
         
@@ -65,13 +66,17 @@ class HTTPStreamingTransport(MCPTransport):
             timeout: Request timeout in seconds
             ssl_verify: Whether to verify SSL certificates
             use_sse: Ignored (kept for backward compatibility) - SSE mode is auto-detected per response
+            connection_limit: Total HTTP connection limit for connection pooling
+            connection_limit_per_host: HTTP connection limit per host
         """
         # Accept both url and base_url for backward compatibility
         if url is None and base_url is None:
             raise ValueError("Either url or base_url must be provided")
-        self.url = url or base_url
+        self.url: str = url or base_url  # type: ignore[assignment]  # Either url or base_url is guaranteed non-None
         self.timeout = timeout
         self.ssl_verify = ssl_verify
+        self.connection_limit = connection_limit
+        self.connection_limit_per_host = connection_limit_per_host
         self.session_id: Optional[str] = None
         self._request_counter = 0
         self._standalone_sse_task: Optional[asyncio.Task] = None
@@ -87,7 +92,7 @@ class HTTPStreamingTransport(MCPTransport):
         clean HTTP connection management.
         """
         self._connected = True
-        logger.info(f"HTTP streaming transport connected to {self.url}")
+        logger.debug(f"HTTP streaming transport connected to {self.url}")
 
     async def disconnect(self) -> None:
         """Close transport and any open SSE streams"""
@@ -117,7 +122,7 @@ class HTTPStreamingTransport(MCPTransport):
             raise Exception("Not connected - call connect() first")
         
         # Create fresh session for this notification
-        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=self.connection_limit, limit_per_host=self.connection_limit_per_host)
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -163,7 +168,7 @@ class HTTPStreamingTransport(MCPTransport):
             raise Exception("Not connected - call connect() first")
         
         # Create fresh session for this request to avoid connection pool issues
-        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=self.connection_limit, limit_per_host=self.connection_limit_per_host)
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -282,7 +287,7 @@ class HTTPStreamingTransport(MCPTransport):
             raise Exception("Not connected")
         
         # Create dedicated session for long-lived SSE stream
-        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=self.connection_limit, limit_per_host=self.connection_limit_per_host)
         timeout = aiohttp.ClientTimeout(total=None)  # No timeout for SSE stream
         
         try:
@@ -337,7 +342,7 @@ class HTTPStreamingTransport(MCPTransport):
 
     def _message_to_dict(self, message: MCPMessage) -> Dict[str, Any]:
         """Convert MCPMessage to JSON-RPC dict"""
-        payload = {
+        payload: Dict[str, Any] = {
             'jsonrpc': message.jsonrpc or '2.0'
         }
         
@@ -350,12 +355,13 @@ class HTTPStreamingTransport(MCPTransport):
         if message.result is not None:
             payload['result'] = message.result
         if message.error:
-            payload['error'] = {
+            error_dict: Dict[str, Any] = {
                 'code': message.error.code,
                 'message': message.error.message
             }
             if message.error.data:
-                payload['error']['data'] = message.error.data
+                error_dict['data'] = message.error.data
+            payload['error'] = error_dict
         
         return payload
 

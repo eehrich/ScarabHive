@@ -23,7 +23,8 @@ from agent_system.auth.models import TokenData, UserRole
 # Use environment variable or generate secure random key
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or secrets.token_urlsafe(64)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 10080  # 7 days (7 * 24 * 60)
+REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 
 def get_password_hash(password: str) -> str:
@@ -51,28 +52,30 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
     secret_key: Optional[str] = None,
     algorithm: Optional[str] = None,
+    token_type: str = "access",
 ) -> str:
     """
     Create a JWT access token.
-    
+
     Args:
         data: Payload data to encode
         expires_delta: Token expiration time delta (default: 30 minutes)
         secret_key: Secret key for signing (default: module SECRET_KEY)
         algorithm: JWT algorithm (default: HS256)
-    
+        token_type: Token type ("access" or "refresh")
+
     Returns:
         Encoded JWT token string
     """
     to_encode = data.copy()
-    
+
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    
-    to_encode.update({"exp": expire})
-    
+
+    to_encode.update({"exp": expire, "type": token_type})
+
     encoded_jwt = jwt.encode(
         to_encode,
         secret_key or SECRET_KEY,
@@ -88,12 +91,12 @@ def decode_access_token(
 ) -> Optional[TokenData]:
     """
     Decode and validate a JWT access token.
-    
+
     Args:
         token: JWT token string
         secret_key: Secret key for validation (default: module SECRET_KEY)
         algorithm: JWT algorithm (default: HS256)
-    
+
     Returns:
         TokenData if valid, None otherwise
     """
@@ -106,10 +109,11 @@ def decode_access_token(
         username: Optional[str] = payload.get("sub")
         user_id: Optional[int] = payload.get("user_id")
         role_str: Optional[str] = payload.get("role")
-        
+        token_type: Optional[str] = payload.get("type", "access")
+
         if username is None:
             return None
-        
+
         # Convert role string to enum
         role = None
         if role_str:
@@ -117,8 +121,8 @@ def decode_access_token(
                 role = UserRole(role_str)
             except ValueError:
                 pass
-        
-        return TokenData(username=username, user_id=user_id, role=role)
+
+        return TokenData(username=username, user_id=user_id, role=role, token_type=token_type)
     except JWTError:
         return None
 
@@ -138,16 +142,18 @@ def verify_api_key(plain_key: str, hashed_key: str) -> bool:
     return hmac.compare_digest(hash_api_key(plain_key), hashed_key)
 
 
-def set_jwt_config(secret_key: str, algorithm: str = "HS256", expire_minutes: int = 30) -> None:
+def set_jwt_config(secret_key: str, algorithm: str = "HS256", expire_minutes: int = 30, refresh_expire_days: int = 30) -> None:
     """
     Configure JWT settings from application config.
-    
+
     Args:
         secret_key: Secret key for JWT signing
         algorithm: JWT algorithm
         expire_minutes: Token expiration time in minutes
+        refresh_expire_days: Refresh token expiration time in days
     """
-    global SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+    global SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
     SECRET_KEY = secret_key
     ALGORITHM = algorithm
     ACCESS_TOKEN_EXPIRE_MINUTES = expire_minutes
+    REFRESH_TOKEN_EXPIRE_DAYS = refresh_expire_days

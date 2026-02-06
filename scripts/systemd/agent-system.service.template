@@ -1,0 +1,41 @@
+# AgentSystem systemd service template
+# 
+# Installation:
+# 1. Copy this file to /etc/systemd/system/agent-system.service
+# 2. Update WorkingDirectory, User, and paths as needed
+# 3. Enable service: systemctl enable agent-system.service
+# 4. Start service: systemctl start agent-system.service
+#
+# Important: The OMP_NUM_THREADS and ORT_DISABLE_THREAD_AFFINITY environment
+# variables prevent onnxruntime pthread_setaffinity_np crashes in containerized
+# environments (Docker, LXC, VMs with CPU pinning restrictions)
+
+[Unit]
+Description=Agent System MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/agentsystem
+Environment="PATH=/root/agentsystem/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="AGENT_LOG_LEVEL=debug"
+
+# Fix for onnxruntime pthread_setaffinity_np crashes (Signal 11 SEGV)
+# These variables prevent thread affinity issues in virtualized environments
+Environment="OMP_NUM_THREADS=1"
+Environment="ORT_DISABLE_THREAD_AFFINITY=1"
+
+# Optional: Enable profiling (uncomment as needed)
+#Environment="AGENT_ENABLE_PROFILING=1"
+#Environment="AGENT_ENABLE_MEMORY_PROFILING=1"
+#Environment="AGENT_MEMORY_SNAPSHOT_INTERVAL=3600"
+
+ExecStart=/root/agentsystem/.venv/bin/python -m uvicorn agent_system.app:build_app --factory --host 192.0.2.114 --port 80 --log-level info --timeout-graceful-shutdown 5
+
+# Auto-restart on failure
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

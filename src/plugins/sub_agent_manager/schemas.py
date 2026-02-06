@@ -17,6 +17,8 @@ class SubAgentMetadata(BaseModel):
     last_used: datetime = Field(description="Last accessed timestamp")
     status: Literal["active", "archived"] = Field(description="Current status")
     task_summary: str = Field(max_length=200, description="Task summary (max 200 chars)")
+    current_activity: str | None = Field(default=None, max_length=500, description="Current activity description (e.g., 'Thinking...', 'Running tool: writer_search')")
+    activity_updated_at: datetime | None = Field(default=None, description="Last activity update timestamp")
 
 
 class ParentSessionLink(BaseModel):

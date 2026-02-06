@@ -1,0 +1,240 @@
+# ComfyUI Plugin Tool Schema
+# Single tool with multiple operations for workflow management
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_workflow"
+      description: >
+        Execute and manage ComfyUI workflows for generating images, audio, video, text, and other media.
+        Use operation='list' to see available workflows, then 'execute' to run them.
+        Track progress with 'status' and retrieve outputs with 'result'.
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum:
+              - list
+              - execute
+              - status
+              - result
+              - load
+              - wait_for_completion
+              - server_status
+              - queue
+              - cancel
+            description: >
+              The operation to perform:
+              - list: List available workflows (filterable by category)
+              - execute: Execute a workflow with given parameters
+              - status: Get the current status of a job
+              - result: Retrieve output files from completed job
+              - load: Load previously generated media for LLM analysis (view existing outputs)
+              - wait_for_completion: Wait synchronously until a job completes 
+              - server_status: Check ComfyUI server connectivity
+              - queue: View pending and running jobs
+              - cancel: Cancel a job by prompt_id
+          
+          workflow_id:
+            type: string
+            description: >
+              ID of the workflow to execute.
+              Required for operation='execute'.
+              Use operation='list' to see available workflow IDs.
+          
+          parameters:
+            type: object
+            description: >
+              Parameters to pass to the workflow.
+              Each workflow has different parameters.
+              Use operation='list' to see required parameters for each workflow.
+            additionalProperties: true
+          
+          prompt_id:
+            type: string
+            description: >
+              The job ID returned from a previous 'execute' operation.
+              Required for operations: status, result, cancel, wait_for_completion.
+          
+          poll_interval:
+            type: integer
+            default: 2
+            description: >
+              Time in seconds between status checks (for operation='wait_for_completion').
+              Default: 2 seconds.
+          
+          category:
+            type: string
+            description: >
+              Filter workflows by category (for operation='list').
+              Common categories: image_generation, audio, video, tts, text
+          
+          download:
+            type: boolean
+            default: true
+            description: >
+              For operation='result' and 'wait_for_completion': whether to download files locally.
+              If true (default), files are saved to the output directory.
+          
+          include_content:
+            type: boolean
+            default: false
+            description: >
+              For operation='result' and 'wait_for_completion': whether to include the generated
+              media/text content in the response for LLM analysis. When true, images/audio/video/text
+              will be attached so the LLM can see and analyze the generated content.
+              Text outputs include content directly in the response for immediate use.
+              Useful for workflows where you want the LLM to describe or evaluate the output.
+          
+          output_prefix:
+            type: string
+            default: "comfy"
+            description: >
+              Prefix for downloaded output files.
+              Useful for organizing outputs from different jobs.
+          
+          file_path:
+            type: string
+            description: >
+              For operation='load': Path to a specific file to load (absolute or relative to output directory).
+              Use this to load a file you already know the path to.
+          
+          filename:
+            type: string
+            description: >
+              For operation='load': Filename to search for in the output directory.
+              The plugin will search for this file and load it for analysis.
+        required:
+          - operation
+        additionalProperties: false
+
+# Configuration schema
+config:
+  type: object
+  properties:
+    host:
+      type: string
+      description: ComfyUI server hostname
+      default: "127.0.0.1"
+    
+    port:
+      type: integer
+      description: ComfyUI server port
+      default: 8188
+    
+    timeout_seconds:
+      type: integer
+      description: Timeout for ComfyUI operations (seconds)
+      default: 300
+    
+    unknown_threshold_seconds:
+      type: integer
+      description: >
+        Fail early if a job stays in "unknown" status for this many seconds.
+        If a job is not found in ComfyUI's queue or history after this threshold,
+        it's considered lost/dropped and marked as failed immediately rather than
+        waiting for the full timeout. This handles cases where jobs are lost due to
+        network issues, server restarts, or queue clearing.
+      default: 60
+      minimum: 1
+    
+    output_dir:
+      type: string
+      description: Directory where ComfyUI outputs are saved
+      default: "data/comfyui/outputs"
+    
+    workflow_files_dir:
+      type: string
+      description: Directory containing workflow JSON files
+      default: "config/comfyui_workflows"
+    
+    cleanup_age_hours:
+      type: integer
+      description: >
+        Automatically delete output files older than this many hours.
+        Set to 0 to disable automatic cleanup.
+        Cleanup runs on plugin startup and after each job completion.
+      default: 48
+      minimum: 0
+    
+    workflows:
+      type: array
+      description: List of available workflow configurations
+      items:
+        type: object
+
+
+# Web UI configuration for ComfyUI Monitor
+web_ui:
+  # Button in plugin bar
+  button:
+    enabled: true
+    text: "ComfyUI"
+    icon: "🎨"
+  
+  # Dropdown menu integration
+  menu:
+    enabled: true
+    items:
+      - id: "comfyui_monitor"
+        menu_id: "user"
+        section: "Tools"
+        label: "ComfyUI Monitor"
+        action: "openPanel"
+        panel_id: "{{ name }}"
+        icon: "🎨"
+        requires_admin: false
+        order: 150
+        tooltip: "Monitor ComfyUI workflow jobs"
+
+  # Panel configuration
+  panel:
+    enabled: true
+    panel_id: "{{ name }}"
+    panel_group: "comfyui"
+    title: "ComfyUI Monitor"
+    endpoint: "/plugins/{{ name }}/"
+    type: "iframe"
+    icon: "🎨"
+    position: "right"
+    width: "700px"
+    height: "550px"
+    description: "Monitor and manage ComfyUI workflow jobs"
+
+  # Access control
+  requires_auth: false
+  requires_role: null
+
+  # Web endpoints documentation
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "monitor_panel"
+      response_type: "html"
+      description: "ComfyUI job monitoring panel"
+    - path: "/jobs"
+      method: "GET"
+      handler: "list_jobs"
+      response_type: "json"
+      description: "List all jobs with optional filters"
+    - path: "/jobs/{prompt_id}"
+      method: "GET"
+      handler: "get_job_detail"
+      response_type: "json"
+      description: "Get details for a specific job"
+    - path: "/jobs/{prompt_id}/cancel"
+      method: "POST"
+      handler: "cancel_job"
+      response_type: "json"
+      description: "Cancel a running or queued job"
+    - path: "/workflows"
+      method: "GET"
+      handler: "list_workflows"
+      response_type: "json"
+      description: "List configured workflows"
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get server and job statistics"

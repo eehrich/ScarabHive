@@ -99,7 +99,7 @@ class MCPService:
             }
 
             # Add tool information if requested
-            if include_tools and is_connected:
+            if include_tools and is_connected and client:
                 try:
                     tools = await client.list_tools()
                     tool_list = [tool.name for tool in tools] if tools else []

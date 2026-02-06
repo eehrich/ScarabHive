@@ -146,7 +146,10 @@ class MCPServerHandler:
         self.config = config
         self.registry = registry
         self._sessions: Dict[str, MCPServerSession] = {}
-        self._session_ttl = 3600.0  # 1 hour session timeout
+        # Get session TTL from server_mode config (default 3600.0 = 1 hour)
+        self._session_ttl = 3600.0
+        if config.server_mode and hasattr(config.server_mode, 'session_ttl'):
+            self._session_ttl = config.server_mode.session_ttl
         self._request_counter = 0
         
     async def handle_request(self, request: Request) -> Response:
@@ -392,7 +395,7 @@ class MCPServerHandler:
             raise Exception(f"Plugin not found: {plugin_name}")
         
         # Call tool
-        logger.info(f"Executing tool: {tool_name} with args: {arguments}")
+        logger.debug(f"Executing tool: {tool_name} with args: {arguments}")
         
         try:
             if hasattr(server, 'call_tool'):

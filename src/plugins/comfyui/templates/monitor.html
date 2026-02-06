@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/css/scrollbar.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 12px;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #858585;
+            margin-bottom: 5px;
+            white-space: nowrap;
+        }
+
+        .stat-value {
+            font-size: clamp(12px, 3vw, 22px);
+            font-weight: 600;
+            color: #4ec9b0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+
+        button.btn-cancel {
+            background: #a1260d;
+            padding: 4px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            pointer-events: auto;
+            position: relative;
+            z-index: 10;
+        }
+
+        button.btn-cancel:hover {
+            background: #c72e0d;
+        }
+        
+        button.btn-cancel:active {
+            background: #8a1f0a;
+        }
+
+        .section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #ce9178;
+        }
+
+        .server-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            font-size: 13px;
+            margin-bottom: 20px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .status-online { background: #4ec9b0; }
+        .status-offline { background: #f48771; }
+        .status-running { 
+            background: #569cd6; 
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #858585;
+        }
+
+        .auto-refresh input {
+            accent-color: #0e639c;
+        }
+
+        .jobs-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .jobs-table th,
+        .jobs-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .jobs-table th {
+            background: #1e1e1e;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #858585;
+        }
+
+        .jobs-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .jobs-table tr:hover td {
+            background: #2a2d2e;
+        }
+
+        .job-id {
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            color: #a371f7;
+        }
+
+        .workflow-name {
+            font-weight: 500;
+            color: #569cd6;
+        }
+
+        .timestamp {
+            font-size: 12px;
+            color: #858585;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .badge-queued {
+            background: rgba(206, 145, 120, 0.2);
+            color: #ce9178;
+        }
+
+        .badge-running {
+            background: rgba(86, 156, 214, 0.2);
+            color: #569cd6;
+        }
+
+        .badge-completed {
+            background: rgba(78, 201, 176, 0.2);
+            color: #4ec9b0;
+        }
+
+        .badge-failed {
+            background: rgba(244, 135, 113, 0.2);
+            color: #f48771;
+        }
+
+        .badge-cancelled {
+            background: rgba(133, 133, 133, 0.2);
+            color: #858585;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #858585;
+            font-size: 13px;
+        }
+
+        .outputs-preview {
+            font-size: 12px;
+        }
+
+        .error {
+            color: #f48771;
+            padding: 10px;
+            background: rgba(244, 135, 113, 0.1);
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎨 {{ title }}</h1>
+        
+        <div class="server-status">
+            <span class="status-indicator" id="serverIndicator"></span>
+            <span id="serverStatus">Checking...</span>
+            <span style="color: #858585; margin-left: 8px;">{{ host }}:{{ port }}</span>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Jobs</div>
+                <div class="stat-value" id="statTotal">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Completed</div>
+                <div class="stat-value" id="statCompleted">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Failed</div>
+                <div class="stat-value" id="statFailed">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">In Queue</div>
+                <div class="stat-value" id="statPending">-</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>🔄 Active Jobs</h2>
+            <div class="controls">
+                <button class="icon-only" onclick="refreshData()" title="Refresh">🔄</button>
+                <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">⏱️</button>
+            </div>
+            <table class="jobs-table">
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Workflow</th>
+                        <th>Status</th>
+                        <th>Submitted</th>
+                        <th>Duration</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="activeJobs">
+                    <tr>
+                        <td colspan="6" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="section">
+            <h2>✅ Recent Completed</h2>
+            <table class="jobs-table">
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Workflow</th>
+                        <th>Status</th>
+                        <th>Completed</th>
+                        <th>Duration</th>
+                        <th>Outputs</th>
+                    </tr>
+                </thead>
+                <tbody id="completedJobs">
+                    <tr>
+                        <td colspan="6" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        let refreshInterval = null;
+        const pluginName = '{{ plugin_name }}';
+        
+        function getStatusBadge(status) {
+            const badges = {
+                'queued': '<span class="badge badge-queued">Queued</span>',
+                'running': '<span class="badge badge-running">Running</span>',
+                'completed': '<span class="badge badge-completed">Completed</span>',
+                'failed': '<span class="badge badge-failed">Failed</span>',
+                'cancelled': '<span class="badge badge-cancelled">Cancelled</span>'
+            };
+            return badges[status] || `<span class="badge">${status}</span>`;
+        }
+        
+        function formatTimestamp(ts) {
+            if (!ts) return '-';
+            const date = new Date(ts);
+            return date.toLocaleString();
+        }
+        
+        function formatDuration(seconds) {
+            if (!seconds && seconds !== 0) return '-';
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.round(seconds % 60);
+            return `${mins}m ${secs}s`;
+        }
+        
+        function formatOutputs(outputs) {
+            if (!outputs) return '-';
+            const counts = [];
+            if (outputs.images?.length) counts.push(`🖼️ ${outputs.images.length}`);
+            if (outputs.audio?.length) counts.push(`🔊 ${outputs.audio.length}`);
+            if (outputs.video?.length) counts.push(`🎬 ${outputs.video.length}`);
+            return counts.length ? counts.join(' ') : '-';
+        }
+        
+        async function cancelJob(promptId) {
+            try {
+                const url = `/plugins/${pluginName}/jobs/${promptId}/cancel`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    credentials: 'include'  // Include auth cookies
+                });
+                if (response.ok) {
+                    refreshData();
+                } else {
+                    console.error('❌ Cancel failed with status:', response.status);
+                }
+            } catch (error) {
+                console.error('💥 Cancel failed with exception:', error);
+            }
+        }
+        
+        async function refreshData() {
+            try {
+                const response = await fetch(`/plugins/${pluginName}/jobs`, {
+                    credentials: 'include'  // Include auth cookies
+                });
+                const data = await response.json();
+                
+                // Update server status
+                const indicator = document.getElementById('serverIndicator');
+                const statusText = document.getElementById('serverStatus');
+                if (data.server_online) {
+                    indicator.className = 'status-indicator status-online';
+                    statusText.textContent = 'Online';
+                } else {
+                    indicator.className = 'status-indicator status-offline';
+                    statusText.textContent = 'Offline';
+                }
+                
+                // Update stats
+                const stats = data.stats || {};
+                document.getElementById('statTotal').textContent = stats.total || 0;
+                document.getElementById('statCompleted').textContent = stats.completed || 0;
+                document.getElementById('statFailed').textContent = stats.failed || 0;
+                document.getElementById('statPending').textContent = 
+                    (data.queue_pending || 0) + (data.queue_running || 0);
+                
+                // Update active jobs table
+                const activeBody = document.getElementById('activeJobs');
+                if (data.jobs && data.jobs.length > 0) {
+                    activeBody.innerHTML = data.jobs.map(job => `
+                        <tr>
+                            <td class="job-id" title="${job.prompt_id}">${job.prompt_id.substring(0, 12)}...</td>
+                            <td class="workflow-name">${job.workflow_name || job.workflow_id || '-'}</td>
+                            <td>${getStatusBadge(job.status)}</td>
+                            <td class="timestamp">${formatTimestamp(job.submitted_at)}</td>
+                            <td>${formatDuration(job.duration_seconds)}</td>
+                            <td>
+                                ${['queued', 'running'].includes(job.status) 
+                                    ? `<button type="button" class="btn btn-cancel" data-prompt-id="${job.prompt_id}">Cancel</button>` 
+                                    : '-'}
+                            </td>
+                        </tr>
+                    `).join('');
+                    
+
+                } else {
+                    activeBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active jobs</td></tr>';
+                }
+                
+                // Update completed jobs table
+                const completedBody = document.getElementById('completedJobs');
+                if (data.recent_completed && data.recent_completed.length > 0) {
+                    completedBody.innerHTML = data.recent_completed.map(job => `
+                        <tr>
+                            <td class="job-id" title="${job.prompt_id}">${job.prompt_id.substring(0, 12)}...</td>
+                            <td class="workflow-name">${job.workflow_name || job.workflow_id || '-'}</td>
+                            <td>${getStatusBadge(job.status)}</td>
+                            <td class="timestamp">${formatTimestamp(job.completed_at)}</td>
+                            <td>${formatDuration(job.duration_seconds)}</td>
+                            <td>${formatOutputs(job.outputs)}</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    completedBody.innerHTML = '<tr><td colspan="6" class="empty-state">No completed jobs yet</td></tr>';
+                }
+                
+            } catch (error) {
+                console.error('Refresh failed:', error);
+                document.getElementById('serverIndicator').className = 'status-indicator status-offline';
+                document.getElementById('serverStatus').textContent = 'Error';
+            }
+        }
+        
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Inactive';
+            } else {
+                refreshInterval = setInterval(refreshData, 5000);
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
+            }
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshData();
+            refreshInterval = setInterval(refreshData, 5000);
+        });
+    </script>
+</body>
+</html>

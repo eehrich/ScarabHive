@@ -31,3 +31,6 @@ tools:
             default: false
             description: "Include detailed system information in response"
         additionalProperties: false
+config:
+  max_wait_seconds: 3600
+  default_update_interval: 5.0

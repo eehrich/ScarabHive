@@ -8,14 +8,17 @@ OpenAI client which has known hanging/timeout issues.
 import asyncio
 import json
 import logging
-from typing import Optional
+import socket
+from typing import Any, Optional
 from dataclasses import dataclass
 
 import httpx
 import ssl
 
 from agent_system.llm.clients import LLMClient
+from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.core.cancellation import CancellationToken
+from agent_system.llm import openai_utils
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,8 @@ class HTTPXOpenAIClient(LLMClient):
         verify: Optional[bool] = None,
         context_window: Optional[int] = None,
         capabilities: Optional[dict] = None,
+        parallel_tool_calls: bool = True,
+        max_tokens: Optional[int] = None,
         **extra_params
     ):
         # LLMClient doesn't have __init__, so no super() call needed
@@ -64,8 +69,15 @@ class HTTPXOpenAIClient(LLMClient):
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
         self.verify = verify
+        self.parallel_tool_calls = parallel_tool_calls
+        self.max_tokens = max_tokens  # Limit output tokens (None = provider default)
         self.extra_params = extra_params
         self.capabilities = capabilities or {}
+        self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
+        
+        # OpenRouter requires "usage": {"include": true} for detailed usage (cached_tokens, cost)
+        # Other APIs reject this parameter with 400 Bad Request
+        self._is_openrouter = "openrouter.ai" in base_url.lower()
 
         # Validate API type - HTTPX client only supports chat_completions
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
@@ -117,6 +129,68 @@ class HTTPXOpenAIClient(LLMClient):
             "User-Agent": "AgentSystem-HTTPX/1.0"
         }
 
+    def _get_keepalive_socket_options(self) -> list:
+        """Get TCP keep-alive socket options for the current platform.
+        
+        This prevents connection drops during long "thinking" pauses (e.g., DeepSeek reasoning).
+        Especially important on Linux servers where firewalls/proxies may close idle connections.
+        """
+        options = [
+            (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),  # Enable keep-alive
+        ]
+        # Linux-specific: set keep-alive timing (not available on all platforms)
+        if hasattr(socket, 'TCP_KEEPIDLE'):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 15))  # Start after 15s idle
+        if hasattr(socket, 'TCP_KEEPINTVL'):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15))  # Probe every 15s
+        if hasattr(socket, 'TCP_KEEPCNT'):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5))  # 5 probes before giving up
+        return options
+
+    def _create_multimodal_injection(self, tool_msg) -> Optional[dict]:
+        """Create injected user message for multimodal tool content.
+        
+        Delegates to the central utility function in multimodal_tool_content.py.
+        """
+        from ..utils.multimodal_tool_content import create_multimodal_injection, check_vision_support
+        
+        # Check if model supports audio input
+        supports_audio = False
+        if self.capabilities:
+            supports_audio = getattr(self.capabilities, 'audio_input', False)
+        
+        return create_multimodal_injection(
+            tool_msg=tool_msg,
+            supports_vision=check_vision_support(self.capabilities),
+            model_name=self.model,
+            supports_audio=supports_audio
+        )
+
+    def _filter_audio_from_content(self, content: Any) -> Any:
+        """Filter and normalize content for OpenAI API.
+        
+        Uses shared openai_utils for consistent normalization across all OpenAI clients.
+        Respects model capabilities - if model supports audio/video, keeps that content.
+        
+        Args:
+            content: Message content (str, list, or dict)
+            
+        Returns:
+            Normalized content for OpenAI API
+        """
+        # Check capabilities to determine what to allow
+        allow_audio = False
+        allow_video = False
+        if self.capabilities:
+            allow_audio = getattr(self.capabilities, 'audio_input', False)
+            allow_video = getattr(self.capabilities, 'video_input', False)
+        
+        return openai_utils.normalize_message_content(
+            content,
+            allow_audio=allow_audio,
+            allow_video=allow_video
+        )
+
     async def chat(
         self,
         messages: list,
@@ -130,16 +204,18 @@ class HTTPXOpenAIClient(LLMClient):
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ) -> dict:
         """Send chat completion request with tools."""
-        return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token)
+        return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token, status_scope=status_scope)
 
     async def chat_tools_streaming(
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ):
         """Stream chat completion request with tools.
 
@@ -149,7 +225,7 @@ class HTTPXOpenAIClient(LLMClient):
                 {"type": "tool_call_delta", "index": int, "delta": dict}
                 {"type": "final", "assistant": dict}
         """
-        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token):
+        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token, status_scope=status_scope):
             yield chunk
 
     def supports_streaming(self) -> bool:
@@ -162,11 +238,21 @@ class HTTPXOpenAIClient(LLMClient):
                 return self.capabilities.streaming
         return True  # Default to True if capabilities not set
 
+    async def _report_status(self, status_scope, message: str) -> None:
+        """Report status update if scope is available."""
+        if status_scope is None:
+            return
+        try:
+            await status_scope.progress(message)
+        except Exception as e:
+            logger.debug(f"Failed to report LLM status: {e}")
+
     async def _make_request(
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ) -> dict:
         """Make the actual HTTP request with proper cancellation and error handling."""
 
@@ -177,18 +263,18 @@ class HTTPXOpenAIClient(LLMClient):
                 streaming_enabled = self.capabilities.get('streaming', True)
             elif hasattr(self.capabilities, 'streaming'):
                 streaming_enabled = self.capabilities.streaming
-        
+
         logger.debug(f"_make_request: streaming_enabled={streaming_enabled}, capabilities type={type(self.capabilities)}")
-        
+
         if not streaming_enabled:
             # Use non-streaming request
             logger.debug("Using non-streaming request path")
-            return await self._make_request_non_streaming(messages, tools, cancellation_token)
+            return await self._make_request_non_streaming(messages, tools, cancellation_token, status_scope)
 
         # Use streaming request (default behavior)
         logger.debug("Using streaming request path")
         final_result = None
-        async for chunk in self._make_request_streaming(messages, tools, cancellation_token):
+        async for chunk in self._make_request_streaming(messages, tools, cancellation_token, status_scope):
             if chunk.get("type") == "final":
                 # Extract all fields from final chunk (assistant, usage, etc.)
                 final_result = {k: v for k, v in chunk.items() if k != "type"}
@@ -200,7 +286,8 @@ class HTTPXOpenAIClient(LLMClient):
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ) -> dict:
         """Make non-streaming HTTP POST request for models that don't support streaming.
 
@@ -210,14 +297,35 @@ class HTTPXOpenAIClient(LLMClient):
         logger.debug(f"_make_request_non_streaming called for model {self.model}")
 
         # Build request payload - convert ChatMessage objects to dicts
-        message_dicts = []
-        for msg in messages:
-            if hasattr(msg, 'model_dump'):
-                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
-            elif isinstance(msg, dict):
-                message_dicts.append(msg)
-            else:
-                message_dicts.append(dict(msg))
+        # NOTE: model_dump() is CPU-intensive for large messages (can take 150ms+ for 30+ messages)
+        # Run in thread pool to avoid blocking event loop
+        def _serialize_messages() -> list:
+            result = []
+            for msg in messages:
+                if hasattr(msg, 'model_dump'):
+                    d = msg.model_dump(exclude_none=True, mode='json')
+                    # Remove multimodal_content from serialized dict - it's processed separately
+                    d.pop('multimodal_content', None)
+                    # Filter out audio/video content - not supported by Chat Completions API
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
+                    result.append(d)
+                    
+                    # Inject multimodal content as synthetic user message after tool response
+                    if getattr(msg, 'role', None) == 'tool' and getattr(msg, 'multimodal_content', None):
+                        injection = self._create_multimodal_injection(msg)
+                        if injection:
+                            result.append(injection)
+                elif isinstance(msg, dict):
+                    d = dict(msg)
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
+                    result.append(d)
+                else:
+                    result.append(dict(msg))
+            return result
+        
+        message_dicts = await asyncio.to_thread(_serialize_messages)
 
         payload = {
             "model": self.model,
@@ -225,11 +333,20 @@ class HTTPXOpenAIClient(LLMClient):
             "stream": False,  # ⚡ Disable streaming
             **self.extra_params
         }
+        
+        # OpenRouter: request detailed usage (cached_tokens, cost)
+        if self._is_openrouter:
+            payload["usage"] = {"include": True}
+
+        # Add max_tokens if configured (limits output length)
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
 
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-
+            if self.parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
         url = f"{self.base_url}/chat/completions"
 
         # Retry logic with exponential backoff
@@ -241,7 +358,7 @@ class HTTPXOpenAIClient(LLMClient):
 
             try:
                 # Create fresh client for each request
-                client_kwargs = {"timeout": self._timeout}
+                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
 
@@ -251,15 +368,37 @@ class HTTPXOpenAIClient(LLMClient):
                     # Make regular POST request (not streaming)
                     response = await client.post(url=url, headers=self._headers, json=payload)
 
-                    # Handle rate limiting
-                    if response.status_code == 429 and attempt < self.max_retries:
+                    # Handle rate limiting (429) - raise for fallback after retries exhausted
+                    if response.status_code == 429:
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                        backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-                        logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                        await asyncio.sleep(backoff_time)
+                        if attempt < self.max_retries:
+                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                            await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
+                            continue
+                        # Retries exhausted - raise for fallback
+                        error_text = response.text[:200] if response.text else ""
+                        await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
+                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {error_text}",
+                                provider="httpx", model=self._model, retry_after=retry_after
+                            )
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            provider="httpx", model=self._model, retry_after=retry_after
+                        )
+
+                    # Handle server errors (5xx) - retry with exponential backoff
+                    if response.status_code >= 500 and attempt < self.max_retries:
+                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
+                        await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
 
-                    # Check for HTTP errors
+                    # Check for HTTP errors (4xx client errors or exhausted retries)
                     if response.status_code >= 400:
                         error_text = response.text[:200] if response.text else ""
                         error_msg = f"HTTP {response.status_code}: {error_text}"
@@ -281,9 +420,11 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying in {backoff_time}s")
-                    await asyncio.sleep(backoff_time)
+                    await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                 else:
                     logger.error(f"Request failed after {self.max_retries + 1} attempts")
+                    await self._report_status(status_scope, f"Request failed after retries: {self.model}")
                     raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception}") from last_exception
 
         # Should never reach here
@@ -293,7 +434,8 @@ class HTTPXOpenAIClient(LLMClient):
         self,
         messages: list,
         tools: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        status_scope=None
     ):
         """Make streaming HTTP request that yields chunks.
 
@@ -302,17 +444,38 @@ class HTTPXOpenAIClient(LLMClient):
         """
 
         # Build request payload - convert ChatMessage objects to dicts
-        message_dicts = []
-        for msg in messages:
-            if hasattr(msg, 'model_dump'):
-                # ChatMessage object - convert to dict, exclude None values for API compatibility
-                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
-            elif isinstance(msg, dict):
-                # Already a dict
-                message_dicts.append(msg)
-            else:
-                # Fallback - try to convert to dict
-                message_dicts.append(dict(msg))
+        # NOTE: model_dump() is CPU-intensive for large messages (can take 150ms+ for 30+ messages)
+        # Run in thread pool to avoid blocking event loop
+        def _serialize_messages() -> list:
+            result = []
+            for msg in messages:
+                if hasattr(msg, 'model_dump'):
+                    # ChatMessage object - convert to dict, exclude None values for API compatibility
+                    d = msg.model_dump(exclude_none=True, mode='json')
+                    # Remove multimodal_content from serialized dict - it's processed separately
+                    d.pop('multimodal_content', None)
+                    # Filter out audio/video content - not supported by Chat Completions API
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
+                    result.append(d)
+                    
+                    # Inject multimodal content as synthetic user message after tool response
+                    if getattr(msg, 'role', None) == 'tool' and getattr(msg, 'multimodal_content', None):
+                        injection = self._create_multimodal_injection(msg)
+                        if injection:
+                            result.append(injection)
+                elif isinstance(msg, dict):
+                    # Already a dict - also filter audio
+                    d = dict(msg)
+                    if 'content' in d:
+                        d['content'] = self._filter_audio_from_content(d['content'])
+                    result.append(d)
+                else:
+                    # Fallback - try to convert to dict
+                    result.append(dict(msg))
+            return result
+        
+        message_dicts = await asyncio.to_thread(_serialize_messages)
 
         payload = {
             "model": self.model,
@@ -321,20 +484,31 @@ class HTTPXOpenAIClient(LLMClient):
             "stream_options": {"include_usage": True},  # Request usage stats in stream
             **self.extra_params
         }
+        
+        # OpenRouter: request detailed usage (cached_tokens, cost)
+        if self._is_openrouter:
+            payload["usage"] = {"include": True}
+
+        # Add max_tokens if configured (limits output length)
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
 
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            if self.parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
 
         url = f"{self.base_url}/chat/completions"
 
         # Accumulators for building complete response
-        accumulated_content = []
-        accumulated_tool_calls = {}  # index -> tool call data
+        accumulated_content: list[str] = []
+        accumulated_reasoning: list[str] = []  # For reasoning_content (DeepSeek, OpenAI o-series)
+        accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
         accumulated_usage = None  # usage information from final chunk
 
         # Retry logic with exponential backoff
-        last_exception = None
+        last_exception: Exception | None = None
         for attempt in range(self.max_retries + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
@@ -342,24 +516,65 @@ class HTTPXOpenAIClient(LLMClient):
 
             try:
                 # Create fresh client for each request to avoid connection issues
-                client_kwargs = {"timeout": self._timeout}
+                # Enable TCP keep-alive to prevent connection drops during long "thinking" pauses
+                # This is especially important on Linux servers where firewalls/proxies may
+                # close idle connections after ~30s
+                socket_options = self._get_keepalive_socket_options()
+                
+                # Configure HTTP transport with socket options
+                # Note: http2=True can help avoid some SSL shutdown issues on certain platforms
+                # but may cause compatibility issues with some APIs, so we stick with HTTP/1.1
+                transport = httpx.AsyncHTTPTransport(
+                    retries=0,  # We handle retries ourselves
+                    socket_options=socket_options,
+                    # Disable HTTP/2 to avoid potential compatibility issues
+                    http2=False
+                )
+                
+                client_kwargs: dict[str, Any] = {
+                    "timeout": self._timeout,
+                    "transport": transport
+                }
                 # Only include verify if explicitly configured (None means use httpx default)
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
 
-                async with httpx.AsyncClient(**client_kwargs) as client:
+                # Create client - we'll handle cleanup carefully to avoid SSL shutdown segfaults
+                client = httpx.AsyncClient(**client_kwargs)
+                try:
                     logger.debug(f"HTTPX streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
 
                     # Make streaming request
                     async with client.stream("POST", url=url, headers=self._headers, json=payload) as response:
                         # Check status code (don't use raise_for_status() - it tries to read the body)
-                        if response.status_code == 429 and attempt < self.max_retries:
-                            # Rate limit - retry with backoff
+                        if response.status_code == 429:
                             retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                            if attempt < self.max_retries:
+                                backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                                logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                                await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                                await self._cancellable_sleep(backoff_time, cancellation_token)
+                                continue
+                            # Retries exhausted - raise for fallback
+                            error_body = await response.aread()
+                            error_text = error_body.decode()[:200] if error_body else ""
+                            await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
+                            if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                                raise LLMQuotaExhaustedError(
+                                    f"Quota exhausted: {error_text}",
+                                    provider="httpx", model=self._model, retry_after=retry_after
+                                )
+                            raise LLMRateLimitError(
+                                f"Rate limit exceeded: {error_text}",
+                                provider="httpx", model=self._model, retry_after=retry_after
+                            )
 
-                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                            await asyncio.sleep(backoff_time)
+                        # Handle server errors (5xx) - retry with exponential backoff
+                        if response.status_code >= 500 and attempt < self.max_retries:
+                            backoff_time = self.retry_backoff * (2 ** attempt)
+                            logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
+                            await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
 
                         # Check for errors without reading body (streaming response)
@@ -371,94 +586,208 @@ class HTTPXOpenAIClient(LLMClient):
                             logger.error(f"HTTPX streaming request failed: {error_msg}")
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                        # Parse SSE stream
-                        async for line in response.aiter_lines():
+                        # Parse SSE stream with chunk timeout
+                        # Use aiter_bytes() instead of aiter_lines() because aiter_lines()
+                        # can block indefinitely inside httpcore when server keeps connection
+                        # open but stops sending data. With aiter_bytes() we get smaller chunks
+                        # and our timeout actually works.
+                        chunk_timeout = self.timeout_config.read
+                        # aiter_bytes() is async iterator that we can iterate over directly
+                        line_buffer = ""
+                        
+                        # Create async iterator manually to apply timeout per chunk
+                        byte_stream = response.aiter_bytes()
+                        
+                        while True:
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
-
-                            if not line or not line.startswith("data: "):
-                                continue
-
-                            data = line[6:]  # Remove "data: " prefix
-
-                            if data == "[DONE]":
-                                # Stream finished - yield final result
-                                assistant = {
-                                    "role": "assistant",
-                                    "content": "".join(accumulated_content) if accumulated_content else ""
-                                }
-
-                                # Add tool calls if any
-                                if accumulated_tool_calls:
-                                    tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
-                                    assistant["tool_calls"] = tool_calls_list
-
-                                final_result = {"assistant": assistant}
-
-                                # Add usage if available
-                                if accumulated_usage:
-                                    final_result["usage"] = accumulated_usage
-
-                                yield {"type": "final", **final_result}
-                                return  # Success - exit retry loop
-
+                            
                             try:
-                                chunk_data = json.loads(data)
-                            except Exception:
-                                logger.debug(f"Failed to parse chunk data: {data[:100]}")
-                                continue
+                                # Get next chunk with timeout
+                                chunk_bytes = await asyncio.wait_for(byte_stream.__anext__(), timeout=chunk_timeout)
+                                line_buffer += chunk_bytes.decode('utf-8', errors='replace')
+                            except StopAsyncIteration:
+                                # Stream completed - process any remaining data in buffer
+                                break
+                            except asyncio.TimeoutError:
+                                logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
+                                raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
+                            
+                            # Process complete lines from buffer
+                            while '\n' in line_buffer:
+                                line, line_buffer = line_buffer.split('\n', 1)
+                                line = line.strip()
+                                
+                                if not line or not line.startswith("data: "):
+                                    continue
 
-                            # Track usage if available in chunk
-                            if "usage" in chunk_data:
-                                accumulated_usage = chunk_data["usage"]
+                                data = line[6:]  # Remove "data: " prefix
 
-                            # Process chunk
-                            choices = chunk_data.get("choices", [])
-                            if not choices:
-                                continue
-
-                            delta = choices[0].get("delta", {})
-
-                            # Handle content delta
-                            if "content" in delta and delta["content"]:
-                                accumulated_content.append(delta["content"])
-                                yield {
-                                    "type": "content_delta",
-                                    "delta": delta["content"],
-                                    "accumulated": "".join(accumulated_content)
-                                }
-
-                            # Handle tool call deltas
-                            if "tool_calls" in delta:
-                                for tc_delta in delta["tool_calls"]:
-                                    index = tc_delta.get("index", 0)
-
-                                    # Initialize tool call buffer if needed
-                                    if index not in accumulated_tool_calls:
-                                        accumulated_tool_calls[index] = {
-                                            "id": "",
-                                            "type": "function",
-                                            "function": {"name": "", "arguments": ""}
-                                        }
-
-                                    # Accumulate deltas
-                                    if "id" in tc_delta:
-                                        accumulated_tool_calls[index]["id"] = tc_delta["id"]
-
-                                    if "function" in tc_delta:
-                                        func_delta = tc_delta["function"]
-                                        if "name" in func_delta:
-                                            accumulated_tool_calls[index]["function"]["name"] += func_delta["name"]
-                                        if "arguments" in func_delta:
-                                            accumulated_tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
-
-                                    # Yield delta with accumulated state
-                                    yield {
-                                        "type": "tool_call_delta",
-                                        "index": index,
-                                        "delta": tc_delta,
-                                        "accumulated": accumulated_tool_calls[index]
+                                if data == "[DONE]":
+                                    # Stream finished - yield final result
+                                    assistant = {
+                                        "role": "assistant",
+                                        "content": "".join(accumulated_content) if accumulated_content else ""
                                     }
+
+                                    # Add reasoning_content if any (DeepSeek, OpenAI o-series)
+                                    if accumulated_reasoning:
+                                        assistant["reasoning_content"] = "".join(accumulated_reasoning)
+
+                                    # Add tool calls if any
+                                    if accumulated_tool_calls:
+                                        tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                        assistant["tool_calls"] = tool_calls_list
+
+                                    final_result = {"assistant": assistant}
+
+                                    # Add usage if available
+                                    if accumulated_usage:
+                                        final_result["usage"] = accumulated_usage
+
+                                    yield {"type": "final", **final_result}
+                                    return  # Success - exit retry loop
+
+                                try:
+                                    chunk_data = json.loads(data)
+                                except Exception:
+                                    logger.debug(f"Failed to parse chunk data: {data[:100]}")
+                                    continue
+
+                                # Track usage if available in chunk
+                                if "usage" in chunk_data:
+                                    accumulated_usage = chunk_data["usage"]
+
+                                # Process chunk
+                                choices = chunk_data.get("choices", [])
+                                if not choices:
+                                    continue
+
+                                choice = choices[0]
+                                delta = choice.get("delta", {})
+
+                                # Handle reasoning_content delta (DeepSeek, OpenAI o-series thinking)
+                                # This comes BEFORE the actual content in thinking models
+                                if "reasoning_content" in delta and delta["reasoning_content"]:
+                                    accumulated_reasoning.append(delta["reasoning_content"])
+                                    yield {
+                                        "type": "thinking_delta",
+                                        "delta": delta["reasoning_content"],
+                                        "accumulated": "".join(accumulated_reasoning)
+                                    }
+
+                                # Handle content delta
+                                if "content" in delta and delta["content"]:
+                                    accumulated_content.append(delta["content"])
+                                    yield {
+                                        "type": "content_delta",
+                                        "delta": delta["content"],
+                                        "accumulated": "".join(accumulated_content)
+                                    }
+
+                                # Handle tool call deltas
+                                if "tool_calls" in delta:
+                                    for tc_delta in delta["tool_calls"]:
+                                        index = tc_delta.get("index", 0)
+
+                                        # Initialize tool call buffer if needed
+                                        if index not in accumulated_tool_calls:
+                                            accumulated_tool_calls[index] = {
+                                                "id": "",
+                                                "type": "function",
+                                                "function": {"name": "", "arguments": ""}
+                                            }
+
+                                        # Accumulate deltas
+                                        if "id" in tc_delta:
+                                            accumulated_tool_calls[index]["id"] = tc_delta["id"]
+
+                                        if "function" in tc_delta:
+                                            func_delta = tc_delta["function"]
+                                            if "name" in func_delta:
+                                                accumulated_tool_calls[index]["function"]["name"] += func_delta["name"]
+                                            if "arguments" in func_delta:
+                                                accumulated_tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
+
+                                        # Yield delta with accumulated state
+                                        yield {
+                                            "type": "tool_call_delta",
+                                            "index": index,
+                                            "delta": tc_delta,
+                                            "accumulated": accumulated_tool_calls[index]
+                                        }
+                        
+                        # After stream ends, process any remaining data in buffer
+                        # This handles the case where the last chunk doesn't end with \n
+                        # or where [DONE] is in the buffer but wasn't processed yet
+                        if line_buffer.strip():
+                            for line in line_buffer.split('\n'):
+                                line = line.strip()
+                                if not line or not line.startswith("data: "):
+                                    continue
+                                data = line[6:]
+                                if data == "[DONE]":
+                                    # Found [DONE] in remaining buffer
+                                    assistant = {
+                                        "role": "assistant",
+                                        "content": "".join(accumulated_content) if accumulated_content else ""
+                                    }
+                                    if accumulated_reasoning:
+                                        assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                                    if accumulated_tool_calls:
+                                        tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                        assistant["tool_calls"] = tool_calls_list
+                                    final_result = {"assistant": assistant}
+                                    if accumulated_usage:
+                                        final_result["usage"] = accumulated_usage
+                                    yield {"type": "final", **final_result}
+                                    return
+                                # Try to parse remaining JSON chunks
+                                try:
+                                    chunk_data = json.loads(data)
+                                    if "usage" in chunk_data:
+                                        accumulated_usage = chunk_data["usage"]
+                                    choices = chunk_data.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        if "reasoning_content" in delta and delta["reasoning_content"]:
+                                            accumulated_reasoning.append(delta["reasoning_content"])
+                                        if "content" in delta and delta["content"]:
+                                            accumulated_content.append(delta["content"])
+                                except Exception:
+                                    pass
+                        
+                        # Stream ended without [DONE] - yield final result anyway
+                        # This can happen with some API implementations
+                        logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
+                        assistant = {
+                            "role": "assistant",
+                            "content": "".join(accumulated_content) if accumulated_content else ""
+                        }
+                        if accumulated_reasoning:
+                            assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                        if accumulated_tool_calls:
+                            tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                            assistant["tool_calls"] = tool_calls_list
+                        final_result = {"assistant": assistant}
+                        if accumulated_usage:
+                            final_result["usage"] = accumulated_usage
+                        yield {"type": "final", **final_result}
+                        return  # Success - exit retry loop
+                finally:
+                    # Safely close client with timeout to avoid SSL shutdown segfaults
+                    # This is critical on Linux with OpenSSL 3.x where SSL_shutdown can hang
+                    try:
+                        await asyncio.wait_for(client.aclose(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Client close timed out, forcing close")
+                        # Force close without waiting for SSL shutdown
+                        try:
+                            await asyncio.shield(asyncio.sleep(0))  # Give event loop a tick
+                        except Exception:
+                            pass
+                    except Exception as close_err:
+                        logger.debug(f"Error during client close (ignored): {close_err}")
 
             except asyncio.CancelledError:
                 # Re-raise cancellation without wrapping
@@ -470,37 +799,43 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    await self._report_status(status_scope, f"Timeout, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
+                    await self._report_status(status_scope, f"Timeout after retries: {self.model}")
                     raise Exception(f"Request timed out: {e}") from e
 
             except httpx.HTTPStatusError as e:
-                last_exception = e
+                last_exception = e  # type: ignore[assignment]  # Can be HTTPStatusError, TimeoutException, or NetworkError
                 if e.response.status_code >= 500 and attempt < self.max_retries:
                     # Server error - retry
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
-                    await asyncio.sleep(backoff_time)
+                    await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     # Client error or max retries exceeded
                     # Error message already in exception (we read it before raising in streaming mode)
                     error_msg = str(e)
                     logger.error(f"HTTP error (streaming): {error_msg}")
+                    await self._report_status(status_scope, f"HTTP error: {self.model}")
                     raise Exception(error_msg) from e
 
-            except (httpx.NetworkError, httpx.ConnectError) as e:
-                last_exception = e
+            except (httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                last_exception = e  # type: ignore[assignment]  # Multiple exception types possible
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Network error, retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")
+                    await self._report_status(status_scope, f"Network error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
-                    logger.error(f"Network error after {self.max_retries + 1} attempts: {e}")
-                    raise Exception(f"Network error: {e}") from e
+                    logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
+                    await self._report_status(status_scope, f"Network error after retries: {self.model}")
+                    raise Exception(f"Network/protocol error: {e}") from e
 
         # Should never reach here, but just in case
         raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
@@ -535,6 +870,8 @@ class HTTPXOpenAIClient(LLMClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            if self.parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
 
         url = f"{self.base_url}/chat/completions"
 
@@ -547,7 +884,7 @@ class HTTPXOpenAIClient(LLMClient):
 
             try:
                 # Create fresh client for each request to avoid connection issues
-                client_kwargs = {"timeout": self._timeout}
+                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
                 # Only include verify if explicitly configured (None means use httpx default)
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
@@ -562,14 +899,24 @@ class HTTPXOpenAIClient(LLMClient):
                     )
 
                     # Check for HTTP errors
-                    if response.status_code == 429 and attempt < self.max_retries:
-                        # Rate limit - retry with backoff
+                    if response.status_code == 429:
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                        backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-
-                        logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                        await asyncio.sleep(backoff_time)
-                        continue
+                        if attempt < self.max_retries:
+                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
+                            continue
+                        # Retries exhausted - raise for fallback
+                        error_text = response.text[:200] if response.text else ""
+                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {error_text}",
+                                provider="httpx", model=self._model, retry_after=retry_after
+                            )
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            provider="httpx", model=self._model, retry_after=retry_after
+                        )
 
                     response.raise_for_status()
 
@@ -587,7 +934,7 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
@@ -599,7 +946,7 @@ class HTTPXOpenAIClient(LLMClient):
                     # Server error - retry
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     # Client error or max retries exceeded
@@ -612,7 +959,7 @@ class HTTPXOpenAIClient(LLMClient):
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Network error, retrying in {backoff_time}s: {e}")
-                    await asyncio.sleep(backoff_time)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
                     logger.error(f"Network error after {self.max_retries + 1} attempts: {e}")
@@ -651,7 +998,7 @@ class HTTPXOpenAIClient(LLMClient):
         """Format OpenAI API response to our standard format."""
         try:
             logger.debug(f"Formatting response_data keys: {list(response_data.keys())}")
-            
+
             choices = response_data.get("choices", [])
             if not choices:
                 return {"assistant": {"role": "assistant", "content": ""}}
@@ -664,6 +1011,11 @@ class HTTPXOpenAIClient(LLMClient):
                 "role": "assistant",
                 "content": message.get("content", "") or ""
             }
+
+            # Add reasoning_content if present (DeepSeek, OpenAI o-series)
+            reasoning_content = message.get("reasoning_content")
+            if reasoning_content:
+                assistant["reasoning_content"] = reasoning_content
 
             # Add tool calls if present
             tool_calls = message.get("tool_calls")

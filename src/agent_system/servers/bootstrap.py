@@ -133,11 +133,16 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                     raise
         # Direct agent type (non-plugin)
         elif typ == "agent":
-            from .agent.server import Agent
-            
-            # Agent uses (name, system_config, mcp_config, registry) constructor
-            agent_registry = MCPRegistry()
-            registry.register(key, Agent(key, config, server_mcp_cfg, agent_registry))
+            try:
+                from .agent.server import Agent
+                
+                # Agent uses (name, system_config, mcp_config, registry) constructor
+                agent_registry = MCPRegistry()
+                registry.register(key, Agent(key, config, server_mcp_cfg, agent_registry))
+            except Exception as e:
+                logger.exception("Failed to instantiate agent '%s': %s", key, e)
+                if "test" in str(Path.cwd()):
+                    raise
         else:
             logger.warning("Unknown server type '%s' for server '%s'", typ, key)
             continue

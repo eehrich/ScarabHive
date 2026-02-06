@@ -1,46 +1,79 @@
 # ================================
-# Plugin Configuration  
+# Plugin Configuration
 # ================================
 # Configuration for local MCP plugins (servers)
+# Note: Additional plugin configs are loaded via includes in config/config.yaml
+# (e.g., agents_writer/writer_plugin_configs.yaml, agents_trading/trading_plugin_configs.yaml)
 
 plugins:
   # Plugin discovery directories
   plugin_dirs:
     - src/plugins
-  
+    - src/plugins_writer
+    - src/plugins_trading
+
   # Default configuration for all plugins
   default_config:
     type: basic_agent
     enabled: false
-    
+
     agent_config:
       llm_profile: normal
+      llm_profile_fallbacks: [chat]
       max_steps: 20
       system_template: "config/prompts/system_prompt.yaml"
-      
-      hooks:        
-        enabled: true 
+
+      hooks:
+        enabled: true
         overrides:  # by default disable html formatting of markdown
           markdown_formatter.format_markdown_output:
-             enabled: false     
+             enabled: false
 
+      timeouts:
+        # Queue handler timeouts (prevent cross-session blocking)
+        status_queue_put_timeout: 5.0  # seconds
+        
+        # LLM task timeout - safety net only!
+        # For batch mode: actual timeout is max_wait_hours in llm.yaml
+        # For sync mode: actual timeout is request_timeout in model config
+        llm_task_max_iterations: 864000  # 864000 * 0.1s = 24h safety net
+        
+        # Session lock timeout (prevent same-session deadlock)
+        session_lock_timeout: 5.0  # seconds
+    
       tools:
         allowed: []
         blocked: []
-  
+
   # Plugin server configurations
   servers:
     example:
       type: example
       enabled: true
-    
+
     basic_agent:
       type: basic_agent
       enabled: true
       agent_config:
+        llm_profile: ["think", "normal", "turbo", "chat"]  # First is default, rest are available options
+        
+        timeouts:
+          # Queue handler timeouts (prevent cross-session blocking)
+          status_queue_put_timeout: 5.0  # seconds
+          
+          # LLM task timeout - safety net only!
+          # For batch mode: actual timeout is max_wait_hours in llm.yaml
+          # For sync mode: actual timeout is request_timeout in model config
+          llm_task_max_iterations: 864000  # 864000 * 0.1s = 24h safety net
+          
+          # Session lock timeout (prevent same-session deadlock)
+          session_lock_timeout: 5.0  # seconds
+          
+          # NOTE: Hooks and tools have NO hard timeouts - they can run as long as needed
+          # Examples: context_summarizer (10+ min), sub_agent_manager (hours)
+        
         tools:
-          allowed:
-            - "*"
+          allowed: []
         hooks:
           enabled: true
           overrides:
@@ -50,18 +83,18 @@ plugins:
               enabled: true
             sequential_thinking.inject_active_sessions:
               enabled: true
-      
-      metadata:
-        visibility: "both"  # Make available as tool for meta_agent
-    
 
-    
+      metadata:
+        visibility: "tool"  # Make available as tool for meta_agent
+
+
+
     basic_operations:
       type: basic_operations
       enabled: true
       max_wait_seconds: 3600
       default_update_interval: 5.0
-    
+
     sequential_thinking:
       type: sequential_thinking
       enabled: true
@@ -70,16 +103,22 @@ plugins:
       enable_branching: true
       enable_revisions: true
       max_summary_thoughts: 10
-      
+
       # Hook config for inject_active_sessions
       max_thoughts_in_prompt: 5
       show_branch_info: true
       format: markdown
-    
+
+    cognitive_stack:
+      type: cognitive_stack
+      enabled: true
+      max_depth: 50
+      max_frames_in_prompt: 3
+
     todo:
       type: todo
       enabled: true
-    
+
     memory:
       type: memory
       enabled: true
@@ -94,44 +133,180 @@ plugins:
       enabled: false
       host: 127.0.0.1
       port: 9000
-    
-    yahoo_finance:
-      type: yahoo_finance
-      enabled: false
-    
+
+    batch_monitor:
+      type: batch_monitor
+      enabled: true
+      description: "Monitor and query batch queue status"
+
+    comfyui:
+      type: comfyui
+      enabled: true  # ComfyUI server must be running on localhost:8188
+      description: "Execute ComfyUI workflows for image, audio, and video generation"
+      host: "192.0.2.125"
+      port: 8188
+      timeout_seconds: 300
+      unknown_threshold_seconds: 60  # Fail early if job stays unknown for this many seconds (lost/dropped)
+      output_dir: "data/comfyui/outputs"
+      workflow_files_dir: "config/comfyui_workflows"
+      cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
+      workflows:
+        - id: stable_audio
+          name: "Stable Audio Generation"
+          description: "Generate audio clips using Stable Audio Open 1.0 with T5 text encoder"
+          category: audio
+          workflow_file: stable_audio.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the audio to generate (e.g., 'ambient electronic music')"
+              node_id: "3"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "noise, distortion, vocals, speech"
+              description: "Things to avoid in the audio"
+              node_id: "4"
+              field: inputs.text
+            - name: duration
+              type: float
+              default: 10.0
+              description: "Audio duration in seconds (1-47)"
+              node_id: "5"
+              field: inputs.seconds_total
+            - name: duration_latent
+              type: float
+              default: 10.0
+              description: "Audio duration in seconds for latent"
+              node_id: "6"
+              field: inputs.seconds
+            - name: steps
+              type: integer
+              default: 50
+              description: "Number of sampling steps (10-200)"
+              node_id: "7"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.0
+              description: "Classifier-free guidance scale (1-20)"
+              node_id: "7"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random-like behavior)"
+              node_id: "7"
+              field: inputs.seed
+
+        - id: sdxl_txt2img
+          name: "Stable Diffusion XL Text-to-Image"
+          description: "High-quality image generation using SDXL base model. Requires sd_xl_base_1.0.safetensors checkpoint."
+          category: image_generation
+          workflow_file: sdxl_txt2img.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the image to generate"
+              node_id: "6"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed"
+              description: "Things to avoid in the image"
+              node_id: "7"
+              field: inputs.text
+            - name: width
+              type: integer
+              default: 1024
+              description: "Image width (512-2048, should be divisible by 8)"
+              node_id: "5"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1024
+              description: "Image height (512-2048, should be divisible by 8)"
+              node_id: "5"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 20
+              description: "Number of sampling steps (15-30 recommended)"
+              node_id: "3"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.0
+              description: "Classifier-free guidance scale (5-10 recommended)"
+              node_id: "3"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "3"
+              field: inputs.seed
+
     twitter_search:
       type: twitter_search
       enabled: false
-    
+
+    # Tavily AI-powered web search (better than DuckDuckGo for complex queries)
+    # Get API key at: https://app.tavily.com
+    tavily_search:
+      type: tavily_search
+      enabled: true
+      api_key: "***REMOVED***"  # Set via TAVILY_API_KEY env var (recommended) or here
+      cache_ttl: 1800  # 30 minutes
+      cache_enabled: true
+      default_max_results: 5
+      default_search_depth: "basic"  # "basic" or "advanced" (2x credits)
+
     weather:
       type: weather
       enabled: true
-    
+
     datetime:
       type: datetime
       enabled: true
-    
+
     llm_router:
       type: llm_router
       enabled: true
-    
+
     log_viewer:
       type: log_viewer
       enabled: true
-    
+      log_files:
+        - logs/api.log
+        - logs/cli.log
+        - logs/profiling.log
+        - logs/security.log
+
+      max_lines: 20           # Maximum lines to return per request
+      refresh_interval: 1.0   # Polling interval in seconds for UI updates
+
     script_interpreter:
       type: script_interpreter
       enabled: true
-    
+
     file_ops:
       type: file_ops
       enabled: true
       allowed_directories:
         - data/workspace
       max_file_size_mb: 10
+      max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
+      default_line_limit: 500  # Default lines when paginating large files
       search:
         enable_indexing: true
-        auto_reindex_interval: 300  # 5 minutes
+        index_on_startup: true
+        enable_semantic_search: true
+        auto_reindex_interval: 3600
         exclude_patterns:
           - "**/.git/**"
           - "**/__pycache__/**"
@@ -140,67 +315,203 @@ plugins:
           - "**/*.min.js"
           - "**/*.min.css"
           - "**/*.map"
-    
+
+    workspace_file_ops:
+      type: file_ops
+      enabled: true
+      allowed_directories:
+        - .
+      max_file_size_mb: 200
+      max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
+      default_line_limit: 500  # Default lines when paginating large files
+      search:
+        enable_indexing: true
+        index_on_startup: false  # Don't auto-index on startup (too slow for large workspace)
+        enable_semantic_search: true
+        auto_reindex_interval: 3600  # 1 hour (reduced from 5 min to avoid constant rebuilds)
+        exclude_patterns:
+          - "**/.git/**"
+          - "**/cache/**"
+          - "**/.tmp/**"
+          - "**/.backups/**"
+          - "**/.pytest_cache/**"
+          - "**/.ruff_cache/**"
+          - "**/.mypy_cache/**"
+          - "**/__pycache__/**"
+          - "**/node_modules/**"
+          - "**/.venv/**"
+          - "**/*.min.js"
+          - "**/*.min.css"
+          - "**/*.map"
+
+
+
+
+    #sqlite_query:
+    #  type: sqlite_query
+    #  enabled: true
+    #  database: "data/writer/books.db"
+    #  query_timeout: 30
+
     sub_agent_manager:
       type: sub_agent_manager
       enabled: true
-      max_nesting_depth: 5      
+      max_nesting_depth: 5
       allowed_agents:
-        - basic_agent
-        - web_research_agent
         - financial_analyst_agent
         - code_reviewer_agent
         - meta_web_research_agent
-        - parallel_thinking_agent
-        - thinking_agent
+        - sysadmin_agent
+        - comfyui_agent
       hook_config:
         enabled: true
         inject_sub_agent_context:
           enabled: true
           max_sub_agents_shown: 5
           format: "markdown"
-    
+
     user_management:
       type: user_management
       enabled: true
-    
+
     context_summarizer:
       type: context_summarizer
       enabled: true
       config:
         max_message_preview_length: 5000
-    
+        min_time_between_summarizations: 500
+        max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
+        max_messages: 150
+
     context_optimizer:
       type: context_optimizer
+      enabled: false # FIXME: Disabled it for now
+      config:
+        # Token limit: Use X% of LLM context window
+        max_context_percentage: 0.80  # 80% of context window
+        
+        # Message truncation: Max tokens for individual messages
+        max_message_length_tokens: 8000       # Soft limit - triggers smart truncation
+        hard_max_message_length_tokens: 16000 # Hard limit - force-truncate if exceeded
+        
+        # Smart JSON truncation for tool responses
+        # When tool response JSON exceeds max_message_length_tokens,
+        # long strings within the JSON are truncated while keeping structure valid
+        max_json_string_length: 50000  # Max chars per string in JSON
+        keep_string_end: true  # Keep END of strings (newest data) vs beginning
+        
+        # Message preservation rules
+        preserve_system_messages: true  # Never remove system messages
+        preserve_last_n_messages: 7  # Always keep last N messages
+        
+        # Remove consecutive duplicate messages (same role + content)
+        remove_duplicates: true
+
+    context_engineer:
+      type: context_engineer
       enabled: true
-    
+      config:
+        # Token thresholds for layered compaction
+        layer1_threshold: 60000   # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 80000   # Start semi-reversible compaction (archival with summaries)
+        layer3_threshold: 120000  # Start irreversible compaction (drop old messages)
+        target_tokens: 40000      # Target token count after compaction
+
+        store_media_before_compaction: true  # Aktiviert MediaStore
+        media_store_ttl_seconds: 604800      # 7 Tage
+        media_store_max_files: 500           # Max Dateien pro Session
+
+        # Request size limits (bytes) - prevents Gemini 100MB limit errors
+        max_request_bytes: 94371840    # 90 MB - trigger compaction threshold
+        target_request_bytes: 73400320 # 70 MB - target after compaction
+        
+        # Core memory settings
+        core_memory_max_tokens: 3000   # Max tokens for always-present facts
+        
+        # Tool result storage settings
+        tool_result_min_size: 500      # Min tokens to store tool result externally
+        tool_result_keep_last: 7       # Keep last N tool results inline (unless too large)
+        tool_result_max_inline_size: 10000  # ALWAYS archive results > this size (even if last N) *2 will also affect last tool call
+        
+        # Variable substitution settings
+        variable_min_size: 500         # Min tokens to create $VAR_N variable
+        
+        # Archival memory settings
+        archive_after_turns: 15        # Archive messages older than N turns
+        keep_system_messages: true     # Never archive/drop system messages
+        semantic_search: true          # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
+        
+        # Irreversible compaction settings
+        drop_after_turns: 30           # Drop messages older than N turns (Layer 3 only)
+        max_summary_tokens: 100        # Max tokens for archived message summaries
+        
+        # Pre-Layer P: Hard message limit - prunes oldest messages if exceeded
+        # Runs BEFORE token-based layers to prevent excessive message counts
+        # Counts ALL messages including tool calls/results, not just user messages
+        max_messages: 200              # 0 = disabled, e.g., 200 = keep max 200 messages
+        
+        deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
+        compact_media_after_user_message: true  # Compact media files after user messages 
+        compact_media_after_final_response: true  # Compact media files after final agent response
+        
+        # Always compact media - runs regardless of token count
+        # Removes ALL media items except those in the last N messages that contain media
+        # Set to 0 to disable, >0 to enable (e.g., 5 keeps last 5 messages with media)
+        always_compact_media_keep_last: 5
+
     context_usage_tracker:
       type: context_usage_tracker
       enabled: true
-    
+
     request_logger:
       type: request_logger
-      enabled: true
-    
+      enabled: false
+
     message_validator:
       type: message_validator
       enabled: true
       config:
         log_level: warning
         strict_mode: false
-    
+        # disable it
+        max_tool_response_size_kb: 9999  # Hard limit: 50 KB (≈12.5k tokens)
+        warn_tool_response_size_kb: 9998  # Warn at 30 KB (≈7.5k tokens)
+
     markdown_formatter:
       type: markdown_formatter
       enabled: true
-    
+
     message_debugger:
       type: message_debugger
       enabled: true
-    
+
+    agent_continuation:
+      type: agent_continuation
+      enabled: true
+      config:
+        max_continuations: 10
+        strategy: "rules"
+        llm_profile: "turbo"
+        default_continue_message: >
+          Your previous response appears to be an intermediate status update,
+          not a final result.  Continue executing the remaining steps of your
+          task.  Do not repeat status information — proceed with the next
+          action.
+        # Per-agent rules can be configured here OR inline in the agent's
+        # hooks.overrides (preferred — keeps config with the agent).
+        # agent_rules:
+        #   my_agent:
+        #     strategy: "rules"
+        #     default: "continue"
+        #     rules:
+        #       - type: keyword_final
+        #         keywords: ["done", "completed"]
+
+
     terminal:
       type: terminal
       enabled: true
-      
+
       # Security settings
       security:
         # Whitelist: If set, only these patterns are allowed
@@ -212,29 +523,35 @@ plugins:
         #   - "^ls .*"
         #   - "^cat .*"
         #   - "^grep .*"
-        
+
         # Blacklist: Always blocked patterns
         blacklist:
           - "rm -rf /"
           - "dd if="
           - "mkfs"
           - "chmod 777"
-        
+
         # Allow chained commands (&&, ||, ;)
         allow_command_chains: true
-      
+
       # Resource limits
       limits:
         max_output_size_kb: 60  # Like GitHub Copilot
         default_timeout_seconds: 300
         max_timeout_seconds: 3600
         max_concurrent_background: 10
-      
+
       # Platform settings
       platform:
         bash_path: "auto"  # Auto-detect or specify path
         initial_cwd: null  # Default to current directory
 
+    audio_ops:
+      type: audio_ops
+      enabled: true
+      description: "Audio file manipulation - cut segments from FLAC/MP3/WAV files"
+      storage_path: "data/audio_ops"
+ 
 # ================================
 # Hook Configuration
 # ================================
@@ -243,7 +560,7 @@ hooks:
   # Global hook settings
   enabled: true  # Master switch for all hooks
   default_timeout: 30.0  # Default timeout in seconds
-  
+
   # Per-hook configuration overrides
   # Format: hook_name or plugin_name.hook_name
   overrides:
@@ -251,7 +568,7 @@ hooks:
     # request_logger.log_pre_llm:
     #   enabled: true
     #   timeout: 5.0
-    
+
     # Example: Configure hook ordering
     # context_optimizer:
     #   enabled: true

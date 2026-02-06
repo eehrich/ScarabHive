@@ -52,8 +52,11 @@ class HookContext:
         output: Final output to format (for format_output hooks)
         output_format: Target format for output ('html', 'ansi', 'text', 'markdown')
         metadata: Additional hook-specific metadata
+        hook_config: Per-agent custom config from hooks.overrides (auto-populated by registry)
+        target_hook_name: Short hook name the registry intends to dispatch (set by registry)
         step: Current execution step number
         llm: Reference to the LLM client being used
+        cancellation_token: Optional cancellation token for graceful cancellation
     """
     hook_type: HookType
     request_id: str
@@ -67,8 +70,11 @@ class HookContext:
     output: Optional[str] = None
     output_format: str = "text"  # Target format: 'html', 'ansi', 'text', 'markdown'
     metadata: Dict[str, Any] = field(default_factory=dict)
+    hook_config: Dict[str, Any] = field(default_factory=dict)
+    target_hook_name: Optional[str] = None
     step: int = 0
     llm: Optional[Any] = None
+    cancellation_token: Optional[Any] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert context to dictionary for serialization."""

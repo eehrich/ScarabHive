@@ -1,7 +1,10 @@
 name: terminal
 version: 1.0.0
-description: "Secure bash command execution with process management"
-author: AgentSystem Team
+description: Secure bash command execution with process management
+author: Enrico Ehrich
 entrypoint: server:TerminalServer
-type: mcp_only
+type:
+- mcp-server
 category: utilities
+requires:
+  agent_system: '>=0.4.0'

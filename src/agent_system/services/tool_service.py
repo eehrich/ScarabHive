@@ -86,8 +86,8 @@ class ToolService:
         server_config = self._mcp.configured_external_servers[server_name]
         
         # Get filtering configuration
-        allowed_tools = server_config.tools.allowed if server_config.tools else None
-        blocked_tools = server_config.tools.blocked if server_config.tools else None
+        allowed_tools: list[str] | None = server_config.tools.allowed if server_config.tools else None
+        blocked_tools: list[str] | None = server_config.tools.blocked if server_config.tools else None
         
         # Get available tools from server
         try:
@@ -118,14 +118,16 @@ class ToolService:
                     return {"error": f"Failed to list tools: {str(e)}"}
             
             # Calculate effective tools based on filtering
-            if allowed_tools:
+            # Note: Empty allowed_tools list means no filtering (pass through)
+            # Non-empty allowed_tools list means whitelist filtering
+            if allowed_tools:  # Only filter if allowed list has items
                 effective_tools = [t for t in available_tools if t in allowed_tools]
             elif blocked_tools:
                 effective_tools = [t for t in available_tools if t not in blocked_tools]
             else:
                 effective_tools = available_tools
             
-            result = {
+            result: dict[str, Any] = {
                 "server": server_name,
                 "available_tools": available_tools,
                 "effective_tools": effective_tools
@@ -133,8 +135,8 @@ class ToolService:
             
             if include_filtering:
                 result["filtering"] = {
-                    "allowed_tools": allowed_tools,
-                    "blocked_tools": blocked_tools
+                    "allowed_tools": allowed_tools or [],
+                    "blocked_tools": blocked_tools or []
                 }
             
             # Clean up temporary client
@@ -393,9 +395,9 @@ class ToolService:
         # Determine status
         if blocked_tools and tool_name in blocked_tools:
             status = "blocked"
-        elif allowed_tools and tool_name in allowed_tools:
+        elif allowed_tools is not None and tool_name in allowed_tools:
             status = "allowed"
-        elif allowed_tools:
+        elif allowed_tools is not None:
             # If allowed list exists but tool not in it, it's blocked
             status = "blocked"
         else:

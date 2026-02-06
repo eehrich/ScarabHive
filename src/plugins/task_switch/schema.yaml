@@ -1,0 +1,79 @@
+# Task Switch Plugin - State machine control for prompt segments
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_set_task"
+      description: |
+        Switch to a different task/state. This will change your prompt dynamically to the new task and your behavior.
+        {% if has_preconditions %}
+        NOTE: Some tasks have preconditions (gate checks). If a precondition is not met, 
+        the switch will be BLOCKED and you'll receive details about what needs to be done first.
+        {% endif %}
+      parameters:
+        type: object
+        properties:
+          task_name:
+            type: string
+            description: |
+              The name of the task/state to switch to.
+              This will be provided in your prompt context. Use it to adapt your behavior.
+            {% if allowed_tasks %}enum: {{ allowed_tasks | tojson }}
+            {% endif %}
+        required:
+          - task_name
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_set_context"
+      description: |
+        Set runtime context variables for the current session. These variables are used in 
+        prompt templates and precondition checks. For example, set book_id when starting 
+        work on a specific book, so precondition checks can validate the correct book status.
+      parameters:
+        type: object
+        properties:
+          book_id:
+            type: string
+            description: "ID of the book to work on (used in precondition checks)"
+        additionalProperties: true
+
+
+config:
+  task_var_name:
+    type: string
+    default: "current_task"
+    description: "Variable name in template_vars to store current task state"
+  
+  allowed_tasks:
+    type: array
+    default: []
+    description: "Optional list of allowed task states. Empty list = any task allowed. When set, only these tasks are valid."
+    items:
+      type: string
+
+  task_preconditions:
+    type: object
+    default: {}
+    description: |
+      Preconditions (gate checks) per task. When switching to a task with a precondition,
+      the specified tool is called first. If the gate_field is not true, the switch is blocked.
+      Params support Jinja2-style templates (double braces) that resolve from agent's template_vars.
+    additionalProperties:
+      type: object
+      properties:
+        tool:
+          type: string
+          description: "Tool to call for gate check"
+        params:
+          type: object
+          description: "Parameters for the tool (supports Jinja2-style templates from agent's template_vars)"
+        gate_field:
+          type: string
+          default: "can_proceed"
+          description: "Field path in result that must be true (supports dot notation)"
+        error_field:
+          type: string
+          default: "gate_reason"
+          description: "Field path in result with error message if gate closed"

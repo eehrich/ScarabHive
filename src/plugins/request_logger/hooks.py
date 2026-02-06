@@ -30,18 +30,23 @@ class RequestLoggerPlugin(SchemaBasedPluginHook):
     Handler methods match hook names exactly.
     """
     
-    def __init__(self, plugin_dir: Path | str):
+    def __init__(self, plugin_dir: Path | str, mcp_config: Any = None):
         """Initialize the request logger plugin.
         
         Args:
             plugin_dir: Directory containing schema.yaml
+            mcp_config: MCP configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
         self.request_count = 0
         self.session_data: Dict[str, Any] = {}
         
-        # Get configuration - for hooks, config is a raw dict from YAML
+        # Get configuration from schema defaults
         config = self.get_config()
+        
+        # Merge with mcp_config.config if provided (overrides schema defaults)
+        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
+            config.update(mcp_config.config)
         self.log_level = str(config.get('log_level', 'INFO'))
         self.log_message_content = bool(config.get('log_message_content', True))
         self.log_timing = bool(config.get('log_timing', True))
@@ -82,9 +87,12 @@ class RequestLoggerPlugin(SchemaBasedPluginHook):
                     content_preview += "..."
                 logger.debug(f"[RequestLogger] Last message: role={role}, content={content_preview}")
             
+            # IMPORTANT: Return modified=False because we only modified metadata, not messages.
+            # Returning modified=True would cause our input context (with potentially old messages)
+            # to replace the current_context, overwriting any message modifications from earlier hooks.
             return HookResult(
                 success=True,
-                modified=True,  # We modified metadata
+                modified=False,  # Only metadata was modified, not messages
                 context=context,
                 metadata={'logged': True, 'request_number': request_num}
             )

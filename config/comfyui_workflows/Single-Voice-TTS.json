@@ -1,0 +1,114 @@
+{
+  "1": {
+    "inputs": {
+      "value": "Je krásne sobotné ráno. Jasné slnko svieti do izby cez veľké, čisté okno. V celom byte je ticho a príjemný pokoj. Adam ešte leží vo svojej teplej posteli a tvrdo spí. Sníva sa mu o veľkom futbalovom štadióne. V tom sne dáva rozhodujúci gól a všetci fanúšikovia kričia jeho meno. Je to veľmi pekný a živý sen.\nZ kuchyne zrazu zavonia čerstvá, horúca káva. Táto vôňa je silná a veľmi príjemná. Adam sa pomaly začína prebúdzať. Najprv otvorí jedno oko, potom neochotne aj druhé. Hlasno si zívne a pomaly si pretrie tvár rukami. Vstane z postele, položí nohy na chladnú podlahu a rýchlo si oblečie svoje obľúbené tričko. „Dobré ráno,\" povie Adam ticho a pomaly vojde do kuchyne. Eva už sedí pri veľkom kuchynskom stole. Je kompletne oblečená a pekne učesaná. Sústredene si číta farebný časopis a pije svoju rannú kávu. Na stole sú pripravené bohaté raňajky. Sú tam čerstvé rožky, žlté maslo a domáci jahodový džem. Eva zdvihne hlavu a usmeje sa na svojho brata. "
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "InputText"
+    }
+  },
+  "2": {
+    "inputs": {
+      "audio": "de-benjamin-werner.wav",
+      "audioUI": ""
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Speaker_Audio_File"
+    }
+  },
+  "4": {
+    "inputs": {
+      "value": 301
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "5": {
+    "inputs": {
+      "audioUI": "",
+      "audio": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "11": {
+    "inputs": {
+      "text": [
+        "1",
+        0
+      ],
+      "model": "VibeVoice-7B",
+      "attention_type": "auto",
+      "quantize_llm": "full precision",
+      "free_memory_after_generate": true,
+      "diffusion_steps": 12,
+      "seed": [
+        "4",
+        0
+      ],
+      "cfg_scale": 2.2,
+      "use_sampling": false,
+      "temperature": 1.8,
+      "top_p": 0.95,
+      "max_words_per_chunk": [
+        "20",
+        0
+      ],
+      "voice_speed_factor": 1,
+      "voice_to_clone": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "VibeVoiceSingleSpeakerNode",
+    "_meta": {
+      "title": "VibeVoice Single Speaker"
+    }
+  },
+  "17": {
+    "inputs": {
+      "lora_name": "Elise",
+      "llm_strength": 1,
+      "use_llm": true,
+      "use_diffusion_head": true,
+      "use_acoustic_connector": true,
+      "use_semantic_connector": true
+    },
+    "class_type": "VibeVoiceLoRANode",
+    "_meta": {
+      "title": "VibeVoice LoRA"
+    }
+  },
+  "20": {
+    "inputs": {
+      "value": 250
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Chunksize"
+    }
+  },
+  "21": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save_Audio"
+    }
+  }
+}

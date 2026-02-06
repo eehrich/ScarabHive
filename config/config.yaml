@@ -3,48 +3,69 @@
 # ================================
 
 name: "AgentSystem"
-version: "0.2.0"
-description: "Scarab Flexible AI Agent System using MCP"
+version: "0.5.3"
+description: "Scarab Flexible AI Agent System with plugin support"
 
 # all included configs
 includes:
   - llm.yaml
+  - llm_openrouter.yaml
   - plugins.yaml
   - mcp_servers.yaml
   - mcp_server_mode.yaml
   - agents/*.yaml
+  - agents_writer/*.yaml
+  - agents_trading/*.yaml
+  - agents_priv/*.yaml
 
 # Context information automatically added to prompts
 context:
-  auto_datetime: true 
-  timezone: "Europe/Berlin"  
-  location: "Germany" 
+  auto_datetime: true
+  timezone: "Europe/Berlin"
+  location: "Germany"
 
-network: # type NetworkConfig
-  ssl_verify: false
+# Status message system configuration
+status: # type StatusConfig
+  queue_maxsize: 5000  # Max events per status queue (prevents memory exhaustion with parallel sessions)
+  drop_oldest_when_full: true  # Drop oldest events when queue is full (protects against slow consumers)
+  sse_keepalive_interval: 10.0  # Interval for SSE keep-alive comments (seconds) - must be < browser timeout (~30s)
+  llm_heartbeat_interval: 5.0  # Interval for heartbeat events during LLM calls (seconds)
+
+# Vision/image processing configuration
+vision: # type VisionConfig
+  image_warn_size_mb: 10.0  # Warn when images exceed this size (MB)
+  image_max_size_mb: null  # Maximum allowed image size (MB), null = no limit
+
+# Network settings
+network:
+  ssl_verify: true
   host: 127.0.0.1
   port: 8000
-  disable_cache: true  
+  disable_cache: true
+  http_connection_limit: 10  # Total HTTP connections for MCP streamable transport
+  http_connection_limit_per_host: 5  # HTTP connections per host
+  cli_request_timeout: 5.0  # Timeout for CLI HTTP requests (seconds)
 
 
 # define the agent which will be startet by default if no other agent is specified
-default_agent: meta_agent
+default_agent: chat_agent
 
 # Multi-user authentication and authorization (optional)
-auth: # type AuthConfig
-  enabled: true  # Set to true to enable multi-user authentication
+auth:
+  enabled: true  # Disabled for development - set to true for production
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
-  access_token_expire_minutes: 30
-  
+  access_token_expire_minutes: 5256000  # ~10 years - essentially unlimited for dev
+  refresh_token_expire_days: 3650    # 10 years (not used when access token is this long)
+
   # Database settings
   database_path: "data/users.db"
-  
+
   # Security settings
   rate_limit_enabled: false  # Disabled for development
   requests_per_minute: 60
   security_headers_enabled: true
-  
+
   # CORS settings
   cors_enabled: true
   cors_origins:
@@ -54,37 +75,286 @@ auth: # type AuthConfig
     - "*"
   cors_headers:
     - "*"
-  
+
   # Trusted hosts (optional, uncomment and configure for production)
   # trusted_hosts:
   #   - "localhost"
   #   - "127.0.0.1"
   #   - "*.yourdomain.com"
-  
+
   # Default admin user (created on first startup if no users exist)
   default_admin_username: "admin"
-  default_admin_password: "admin"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
-  default_admin_email: "admin@localhost"
+  default_admin_password: "admin123"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
+  default_admin_email: "admin@example.com"
 
+  # ============================================================
+  # Anonymous Access Configuration (NEW)
+  # ============================================================
+  # When auth.enabled=true but anonymous_access.enabled=true,
+  # unauthenticated users can access certain endpoints with limited permissions.
+  anonymous_access:
+    enabled: false  # Set to true to allow unauthenticated access
+    role: "guest"   # Role assigned to anonymous users
+    allowed_endpoints:
+      - "GET /health"
+      - "GET /static/*"
+      - "GET /login"
+      - "POST /auth/login"
+      - "POST /auth/register"
+    rate_limit_multiplier: 0.5  # 50% of normal rate limit for anonymous users
 
+  # ============================================================
+  # Endpoint Security Rules (NEW)
+  # ============================================================
+  # Fine-grained control over which endpoints require authentication
+  # and what role is needed. Rules are processed in order, first match wins.
+  endpoint_security:
+    default_policy: "require_auth"  # Default: require authentication
+    audit_enabled: true             # Log all endpoint access to security.log
+    rules:
+      # Public API endpoints - no auth required
+      - pattern: "GET /api/menu-definitions"
+        policy: "allow_anonymous"
+        description: "Menu definitions needed for login button display"
+      
+      - pattern: "GET /api/menu-items"
+        policy: "allow_anonymous"
+        description: "Menu items needed for UI initialization"
+      
+      - pattern: "GET /agents"
+        policy: "allow_anonymous"
+        description: "Agent listing for UI dropdown"
+      
+      - pattern: "GET /llm/overrides"
+        policy: "allow_anonymous"
+        description: "LLM override listing for UI dropdown"
+      
+      # Login/Auth endpoints - must be public
+      - pattern: "* /auth/*"
+        policy: "allow_anonymous"
+        description: "Auth endpoints must be public for login"
+      
+      - pattern: "GET /login"
+        policy: "allow_anonymous"
+        description: "Login page must be public"
+      
+      - pattern: "GET /"
+        policy: "allow_anonymous"
+        description: "Index page is public (auth checked via API calls)"
+      
+      # Static files - always public
+      - pattern: "GET /static/*"
+        policy: "allow_anonymous"
+        description: "Static assets are public"
+      
+      # Health and version endpoints - public for monitoring
+      - pattern: "GET /health"
+        policy: "allow_anonymous"
+        description: "Health check is public for load balancers"
+      
+      - pattern: "GET /api/health"
+        policy: "allow_anonymous"
+        description: "API health check is public"
+      
+      - pattern: "GET /api/version"
+        policy: "allow_anonymous"
+        description: "Version info is public"
+      
+      - pattern: "GET /favicon.ico"
+        policy: "allow_anonymous"
+        description: "Favicon is public"
+      
+      # Admin-only endpoints - Documentation and debugging
+      - pattern: "GET /docs"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Swagger UI requires admin role"
+      
+      - pattern: "GET /redoc"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "ReDoc UI requires admin role"
+      
+      - pattern: "GET /openapi.json"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "OpenAPI schema requires admin role"
+      
+      - pattern: "* /debug/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Debug endpoints require admin role"
+      
+      - pattern: "* /api/debug/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "API debug endpoints require admin role"
+      
+      - pattern: "* /api/plugins/security/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Security audit endpoints require admin role"
+      
+      # Config endpoint - admin only (exposes system configuration)
+      # Note: Now under /admin/config (moved from /config)
+      
+      # Hook endpoints - admin only (system internals)
+      - pattern: "* /hooks/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Hook endpoints expose system internals"
+      
+      - pattern: "GET /hooks"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Hook listing requires admin role"
+      
+      # MCP endpoints - admin only (system internals)
+      - pattern: "* /mcp/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "MCP endpoints expose plugin internals"
+      
+      - pattern: "POST /mcp"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "MCP protocol endpoint requires admin"
+      
+      # Status pages - user role (system status is useful for all users)
+      - pattern: "GET /status"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Status page requires authentication"
+      
+      - pattern: "GET /status/*"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Status endpoints require authentication"
+      
+      # Agent debug endpoints - admin only (grouped under /agents/debug/*)
+      - pattern: "GET /agents/debug/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Agent debug endpoints require admin role"
+      
+      # Admin endpoints - always require admin role
+      - pattern: "/admin/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Admin endpoints require admin privileges"
+      
+      # Request management - requires user role (now under /api/requests/*)
+      - pattern: "GET /api/requests/*/status"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Request status requires authentication"
+      
+      - pattern: "POST /api/requests/*/cancel"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Cancel requests require authentication"
+      
+      - pattern: "POST /events/*/append"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Event append requires authentication"
+      
+      # Agent execution - requires user role
+      - pattern: "POST /run"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Agent execution requires authentication"
+      
+      # Event streams - requires user role
+      - pattern: "GET /events"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Event streams require authentication"
+      
+      # Session management - requires user role
+      - pattern: "* /sessions/*"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Session management requires authentication"
+      
+      - pattern: "POST /sessions"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Session creation requires authentication"
+      
+      # Agent tool listing - user role
+      - pattern: "GET /agents/*/allowed-tools"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Agent tool listing requires authentication"
+      
+      # LLM profile listing - can be opened for UI
+      - pattern: "GET /llm/profiles"
+        policy: "require_auth"
+        min_role: "user"
+        description: "LLM profile listing requires authentication"
 
+  # ============================================================
+  # LLM Request Security (NEW)
+  # ============================================================
+  # Security settings for LLM API calls (which incur costs)
+  llm_security:
+    require_valid_user: true          # LLM calls require authenticated user
+    validate_session_ownership: true  # Users can only access their own sessions
+    audit_llm_requests: true          # Log all LLM requests with user info
+    max_tokens_per_request_anonymous: null  # Token limit for anonymous (null = blocked)
+    max_requests_per_hour_anonymous: 0      # 0 = anonymous users cannot make LLM requests
 
+  # ============================================================
+  # Plugin Endpoint Security (NEW)
+  # ============================================================
+  # Centralized security for all plugin-provided HTTP endpoints
+  plugin_security:
+    default_policy: "require_auth"    # Default: all plugin endpoints require auth
+    default_min_role: "user"          # Default minimum role for plugin endpoints
+    
+    # Plugin-specific overrides (uncomment and customize as needed)
+    # plugin_overrides:
+    #   todo:
+    #     policy: "allow_anonymous"   # Allow anonymous access to todo plugin
+    #   admin_tools:
+    #     min_role: "admin"           # Require admin for admin_tools plugin
+    
+    # Endpoint pattern rules (highest priority, processed in order)
+    endpoint_rules:
+      # Block all plugin admin endpoints for non-admins
+      - pattern: "/plugins/*/admin/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Plugin admin endpoints require admin role"
 
-logging: # type LoggingConfig
+      - pattern: "/plugins/user_management/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Management of users via plugin requires admin role"        
+      
+      # Example: Allow anonymous access to specific plugin endpoint
+      # - pattern: "GET /plugins/todo/panel"
+      #   policy: "allow_anonymous"
+      #   description: "Todo panel is publicly viewable"
+
+# Logging configuration
+logging:
   enabled: true
   level: DEBUG
   file: logs/agent.log
   file_cli: logs/cli.log
   file_api: logs/api.log
+  
+  # Log rotation settings
+  rotation_enabled: true  # Enable automatic log rotation
+  max_bytes: "10MB"  # Maximum size per log file before rotation (supports KB, MB, GB or plain bytes as int)
+  backup_count: 5  # Number of backup files to keep (e.g., agent.log.1, agent.log.2, ...)
 
   # Cancellation system configuration
   cancellation: # type CancellationConfig
     cleanup_timeout: 10.0  # Seconds to wait for graceful cleanup before forcing termination
     monitor_interval: 1.0  # Seconds between timeout checks
- 
-
-
-
 
 
 

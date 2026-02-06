@@ -49,12 +49,12 @@ tools:
     function:
       name: "{{ name }}"
       description: |
-        Step-by-step reasoning with branching/revision. Complex problems → structured thinking.
+        Step-by-step reasoning with branching/revision support.
         
-        KEY SEMANTICS:
-        - thought_number: YOUR counter (informational). Server assigns sequential numbers automatically.
-        - Revisions: Set is_revision=true + revises_thought=N. Creates new entry but numbered as N.
-        - Response fields: current_thought_number (server's canonical), client_thought_number (yours), recorded_thoughts_count (total entries).
+        CRITICAL: total_thoughts is your UPFRONT ESTIMATE (e.g., 15), NOT the current step!
+        Set once at start, keep constant. Only increase with needs_more_thoughts=true.
+        
+        Example: thought_number=1,2,3... (increments), total_thoughts=15 (stays fixed)
       parameters:
         type: object
         properties:
@@ -62,20 +62,18 @@ tools:
             type: string
             minLength: 1
             maxLength: 10000
-            description: "Current thinking step (1-10000 chars)"
+            description: "Current reasoning step content"
           next_thought_needed:
             type: boolean
-            description: "Continue after this?"
+            description: "true=continue, false=done"
           thought_number:
             type: integer
             minimum: 1
-            description: "Thought index (server auto-assigns sequential numbers, your value is informational)"
+            description: "Current step (1, 2, 3, ...) - increment each call"
           total_thoughts:
             type: integer
             minimum: 1
-            description: |
-              Estimated total (dynamic, update via needs_more_thoughts=true).
-              Note: Will be auto-clamped to >= actual thoughts to ensure consistency.
+            description: "FIXED upfront estimate (e.g., 15). NOT the current step! Keep constant unless needs_more_thoughts=true."
           session_id:
             type: string
             description: "Session ID (auto-generated if omitted)"
@@ -86,32 +84,30 @@ tools:
           revises_thought:
             type: integer
             minimum: 1
-            description: "Which thought to revise (required if is_revision=true)"
+            description: "Which thought # to revise (if is_revision=true)"
           branch_from_thought:
             type: integer
             minimum: 1
-            description: "Branch from this thought (creates exploration path)"
+            description: "Start branch from thought #"
           branch_id:
             type: string
             maxLength: 100
-            description: |
-              Branch name. Create: set both branch_from_thought + branch_id. Switch: branch_id only.
-              Examples: 'main', 'alternative_approach', 'cloud_first'
+            description: "Branch name (create: set both branch_from+branch_id, switch: branch_id only)"
           needs_more_thoughts:
             type: boolean
             default: false
-            description: "Update estimate upward"
+            description: "Increase estimate without warnings"
           idempotency_key:
             type: string
             maxLength: 200
-            description: "Optional: UUID/hash for retry protection. Same key = same event_id returned (no duplicate)."
+            description: "UUID/hash for retry protection"
         required: ["thought", "next_thought_needed", "thought_number", "total_thoughts"]
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_clear_history"
-      description: "Clear session(s). Omit session_id to clear all."
+      description: "Clear session(s). Omit session_id for all."
       parameters:
         type: object
         properties:
@@ -123,7 +119,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_get_summary"
-      description: "Get session summary with thoughts, branches, statistics."
+      description: "Get session summary with thoughts, branches, stats."
       parameters:
         type: object
         properties:
@@ -135,7 +131,7 @@ tools:
             minimum: 1
             maximum: {{ max_history_size }}
             default: 10
-            description: "Thoughts in summary (default: 10)"
+            description: "Thoughts in summary"
           include_branches:
             type: boolean
             default: true

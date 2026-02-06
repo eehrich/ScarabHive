@@ -4,9 +4,39 @@
 
 The AgentSystem now supports multi-user authentication and authorization, enabling multiple users to access the API with isolated sessions and proper access controls. This feature is **disabled by default** and can be enabled through configuration.
 
-## Architecture
+## Security Architecture
 
-### Components
+When deploying to the public internet, the AgentSystem implements a multi-layered security approach:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LAYER 1: Transport Security                   │
+│                 (HTTPS, TLS - handled externally)                │
+├─────────────────────────────────────────────────────────────────┤
+│                    LAYER 2: Rate Limiting                        │
+│           Per-IP request limiting (RateLimitMiddleware)          │
+├─────────────────────────────────────────────────────────────────┤
+│                    LAYER 3: Authentication                       │
+│              JWT Token / API Key / Anonymous Mode                │
+├─────────────────────────────────────────────────────────────────┤
+│                    LAYER 4: Authorization                        │
+│           Role-based (ADMIN/USER/GUEST) + Resource ACL           │
+├─────────────────────────────────────────────────────────────────┤
+│                    LAYER 5: LLM Request Security                 │
+│        User context validation for all LLM API calls             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Security Enforcement (v0.5.1+)
+
+The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) provides centralized security enforcement:
+
+- **Endpoint Pattern Matching**: Rules like `/admin/*` or `POST /run` can require specific roles
+- **Anonymous Access Control**: Configurable list of endpoints accessible without authentication
+- **LLM Request Validation**: Ensures LLM API calls are only made by authenticated users
+- **Session Ownership**: Users can only access their own sessions
+
+## Components
 
 1. **User Database (`src/agent_system/auth/database.py`)**
    - SQLite-based user storage (with PostgreSQL migration path)
@@ -25,22 +55,28 @@ The AgentSystem now supports multi-user authentication and authorization, enabli
    - Security headers (X-Frame-Options, CSP, HSTS, etc.)
    - CORS configuration
 
-4. **User Models (`src/agent_system/auth/models.py`)**
+4. **Security Enforcement (`src/agent_system/auth/enforcement.py`)** *(NEW)*
+   - Centralized endpoint security enforcement
+   - Role-based access control validation
+   - Anonymous user handling
+   - LLM request authorization
+
+5. **User Models (`src/agent_system/auth/models.py`)**
    - Pydantic models for validation
    - User roles: ADMIN, USER, GUEST
    - Token and API key schemas
 
-5. **FastAPI Dependencies (`src/agent_system/auth/dependencies.py`)**
+6. **FastAPI Dependencies (`src/agent_system/auth/dependencies.py`)**
    - `get_current_user`: Extract user from JWT or API key
    - `get_current_active_user`: Ensure user is active
    - `require_admin`: Restrict access to admin users
    - `get_optional_user`: Allow both authenticated and anonymous access
 
-6. **API Endpoints**
+7. **API Endpoints**
    - **Auth Endpoints** (`src/api/auth_endpoints.py`): `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, API key management
    - **Admin Endpoints** (`src/api/admin_endpoints.py`): `/admin/users/*` for user management (admin-only)
 
-7. **CLI Commands (`src/agent_system/cli/users.py`)**
+8. **CLI Commands (`src/agent_system/cli/users.py`)**
    - `agent-cli users list`: List all users
    - `agent-cli users create`: Create a new user
    - `agent-cli users delete`: Delete a user
@@ -82,20 +118,59 @@ auth:
   database_path: "data/users.db"
   
   # Security settings
-  security:
-    rate_limit_per_minute: 60
-    security_headers: true
-    cors_enabled: true
-    cors_origins:
-      - "http://localhost:3000"
-      - "http://127.0.0.1:8000"
-    cors_allow_credentials: true
+  rate_limit_enabled: true
+  requests_per_minute: 60
+  security_headers_enabled: true
+  
+  # CORS settings
+  cors_enabled: true
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:8000"
+  cors_credentials: true
   
   # Default admin user (created on first startup if no users exist)
-  default_admin:
-    username: "admin"
-    password: "CHANGE_THIS_PASSWORD"  # WARNING: Change immediately
-    email: "admin@example.com"
+  default_admin_username: "admin"
+  default_admin_password: "CHANGE_THIS_PASSWORD"  # WARNING: Change immediately
+  default_admin_email: "admin@example.com"
+  
+  # ============================================================
+  # Anonymous Access Configuration (NEW in v0.5.1)
+  # ============================================================
+  anonymous_access:
+    enabled: false  # Set to true to allow unauthenticated access
+    role: "guest"   # Role assigned to anonymous users
+    allowed_endpoints:  # Endpoints accessible without auth
+      - "GET /health"
+      - "GET /static/*"
+      - "GET /login"
+      - "POST /auth/login"
+    rate_limit_multiplier: 0.5  # 50% of normal rate limit
+  
+  # ============================================================
+  # Endpoint Security Rules (NEW in v0.5.1)
+  # ============================================================
+  endpoint_security:
+    default_policy: "require_auth"  # Default: require authentication
+    rules:
+      - pattern: "/admin/*"
+        policy: "require_auth"
+        min_role: "admin"
+      - pattern: "POST /run"
+        policy: "require_auth"
+        min_role: "user"
+      - pattern: "GET /events"
+        policy: "require_auth"
+        min_role: "user"
+  
+  # ============================================================
+  # LLM Request Security (NEW in v0.5.1)
+  # ============================================================
+  llm_security:
+    require_valid_user: true          # LLM calls require authenticated user
+    validate_session_ownership: true  # Users can only access their own sessions
+    audit_llm_requests: true          # Log all LLM requests with user info
+    max_requests_per_hour_anonymous: 0  # 0 = anonymous users cannot make LLM requests
 ```
 
 ### Security Best Practices

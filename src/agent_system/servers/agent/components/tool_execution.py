@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator
 
 if TYPE_CHECKING:
@@ -26,13 +27,10 @@ logger = logging.getLogger(__name__)
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
-    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None, 
-                 status_forwarder: Optional[StatusEventForwarder] = None):
+    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None):
         self.registry = registry  # Legacy registry (empty for now)
         # Optional Agent instance for centralized counters and MCP integration access
         self._agent = agent
-        # Optional StatusEventForwarder for real-time status streaming during tool execution
-        self._status_forwarder = status_forwarder
         # Current session ID and user ID for tool execution context
         self._current_session_id: Optional[str] = None
         self._current_user_id: Optional[str] = None
@@ -59,7 +57,7 @@ class ToolExecutionManager:
 
     async def _invoke_tool(self, tool_name: str, params: Dict[str, Any]):
         """Execute a tool call against the registry and return results.
-        
+
         Modern interface: tool_name IS the function/method to call.
         No separate action_name needed - the tool name identifies the exact operation.
         """
@@ -70,7 +68,20 @@ class ToolExecutionManager:
             mcp_integration = self._agent._mcp_integration_manager.mcp_integration
             if mcp_integration is not None:  # type: ignore[unreachable]
                 if mcp_integration.initialized:  # type: ignore[unreachable]
+                    # First try exact match (legacy behavior)
                     plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                    
+                    # If not found, try to extract server name from tool name
+                    # Tool names are typically: servername_toolname (e.g. writer_content_production_status)
+                    if not plugin_adapter:
+                        # Try progressively shorter prefixes
+                        parts = tool_name.split('_')
+                        for i in range(len(parts) - 1, 0, -1):
+                            server_name = '_'.join(parts[:i])
+                            plugin_adapter = mcp_integration.plugin_registry.get_server(server_name)
+                            if plugin_adapter:
+                                logger.debug(f"Found plugin adapter for {tool_name} via server name {server_name}")
+                                break
 
         if plugin_adapter:
             # Use the PluginMCPAdapter which handles tool routing and status forwarding correctly
@@ -81,19 +92,19 @@ class ToolExecutionManager:
             except Exception as e:
                 logger.exception("Plugin tool %s invocation failed: %s", tool_name, e)
                 raise
-        
+
         # If no plugin adapter, try to get server directly (for config agents)
         server = None
         if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
             server = self._agent._get_server_from_any_registry(tool_name)
-        
+
         # Final fallback to legacy registry (though it's usually empty)
         if not server:
             server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
 
         if not server:
             raise RuntimeError(f"Unknown tool: {tool_name}")
-        
+
         try:
             # Check if server has call_with_status (MCP server interface)
             if hasattr(server, 'call_with_status'):
@@ -109,10 +120,10 @@ class ToolExecutionManager:
     async def execute_tools(self, tool_calls: List[Dict], tool_name_mapping: Dict[str, str],
                           available_tools: List[str], step: int, request_id: str | None = None) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
         """Execute all tool calls and return tool result messages, events, and results.
-        
+
         This is a convenience wrapper around execute_tools_streaming() for backward compatibility
         and testing. It collects all streaming results and returns them as a tuple.
-        
+
         For production use with real-time status streaming, use execute_tools_streaming() directly.
 
         Returns:
@@ -121,7 +132,7 @@ class ToolExecutionManager:
         tool_messages = []
         events_to_yield = []
         results_to_add: List[Dict] = []
-        
+
         # Collect all results from the streaming version
         async for item in self.execute_tools_streaming(tool_calls, tool_name_mapping, available_tools, step, request_id):
             if item["type"] == "status":
@@ -143,32 +154,35 @@ class ToolExecutionManager:
         step: int,
         request_id: str | None = None,
         session_id: str | None = None,
-        user_id: str | None = None
+        user_id: str | None = None,
+        status_forwarder: Optional[StatusEventForwarder] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
-        
+
         This async generator allows status events from sub-agents to be streamed
         to the client while tools are still executing, instead of buffering them
         until all tools complete.
-        
+
         Args:
             session_id: Agent session ID to inject into tool params for session-aware tools
             user_id: User ID to inject into tool params for multi-user isolation
-        
+            status_forwarder: Per-request status forwarder for streaming events (MUST be passed per-request
+                             to avoid race conditions with concurrent requests)
+
         Yields:
             Dict with either:
             - {"type": "status", "event": {...}} - Status event to forward
-            - {"type": "tool_events", "events": [...]} - Tool execution events  
+            - {"type": "tool_events", "events": [...]} - Tool execution events
             - {"type": "complete", "messages": [...], "results": [...]} - Final results
         """
-        # Store session_id and user_id for use in tool execution
-        self._current_session_id = session_id
-        self._current_user_id = user_id
-        
+        # NOTE: session_id and user_id are passed as parameters through the call chain
+        # to avoid race conditions when multiple requests share the same ToolExecutionManager.
+        # DO NOT store them as instance variables (self._current_session_id/user_id)!
+
         tool_messages = []
         events_to_yield = []
         results_to_add: List[Dict] = []
-        
+
         # Prepare tool executions (same as execute_tools())
         valid_tool_executions = []
 
@@ -192,13 +206,20 @@ class ToolExecutionManager:
 
             if not tool_name or tool_name not in available_tools:
                 logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
-                events_to_yield.append({"type": "error", "message": f"Unknown tool: {tool_name}"})
+                # Use tool_error type instead of error - error type causes frontend to abort
+                events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": f"Unknown tool: {tool_name}"})
                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                # Return detailed error message so LLM can recover
+                error_content = json.dumps({
+                    "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
+                    "type": "ToolNotFoundError"
+                })
                 tool_messages.append(ChatMessage(
                     role="tool",
                     tool_call_id=tool_call_id,
                     name=openai_tool_name or "unknown",
-                    content=json.dumps({"error": f"Tool '{tool_name}' is not available."})
+                    content=error_content,
+                    timestamp=datetime.now(timezone.utc)
                 ))
                 continue
 
@@ -207,7 +228,10 @@ class ToolExecutionManager:
         # Execute all valid tools in parallel with real-time status streaming
         if valid_tool_executions:
             # Create tasks for parallel execution with unique request_id suffixes
+            # Store task -> tool_info mapping for error handling
             tasks = []
+            task_tool_info: Dict[asyncio.Task, tuple] = {}  # task -> (tc, tool_name, openai_tool_name)
+            task_indices: Dict[asyncio.Task, int] = {}  # task -> original index (for ordering responses)
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
                 # Create tool-specific request_id (same logic as execute_tools)
                 original_request_id = params.get("request_id") or params.get("requestId") or request_id
@@ -228,24 +252,38 @@ class ToolExecutionManager:
                     tool_specific_request_id = None
 
                 task = asyncio.create_task(
-                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id)
+                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id, session_id, user_id)
                 )
                 tasks.append(task)
+                task_tool_info[task] = (tc, tool_name, openai_tool_name)
+                task_indices[task] = i  # Store original index for ordering
+
+            # Collect results with their original indices for later sorting
+            # IMPORTANT: Gemini API requires function_response parts to be in the same
+            # order as the original function_call parts to avoid MALFORMED_FUNCTION_CALL errors
+            indexed_results: List[tuple[int, ChatMessage, List[Dict], List[Dict]]] = []
 
             # Poll for completion while streaming status events
+            # NOTE: No hard iteration limit - tools can run as long as needed
+            # (e.g., sub_agent_manager may run for hours)
+            # Tools are cancelled via cancellation_token if request is cancelled by user
             pending = set(tasks)
+            
             while pending:
                 # Wait for any task completion or timeout (50ms polling interval)
                 done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
-                
+
                 # Yield any pending status events from sub-agents
-                if self._status_forwarder:
-                    status_events = self._status_forwarder.get_pending_events()
+                # CRITICAL: Use the passed status_forwarder parameter, NOT self._status_forwarder
+                # to avoid race conditions when multiple requests share the same agent instance
+                if status_forwarder:
+                    status_events = status_forwarder.get_pending_events()
                     for status_event in status_events:
                         yield {"type": "status", "event": status_event}
-                
+
                 # Process completed tasks
                 for task in done:
+                    original_index = task_indices.get(task, 999)  # Default high index if not found
                     try:
                         result = task.result()
                         if isinstance(result, BaseException):
@@ -253,22 +291,75 @@ class ToolExecutionManager:
                             logger.exception("Tool execution failed: %s", result)
                         else:
                             tool_message, events, tool_results = result
-                            tool_messages.append(tool_message)
+                            # Store with original index for later sorting
+                            indexed_results.append((original_index, tool_message, events, tool_results))
                             events_to_yield.extend(events)
                             results_to_add.extend(tool_results)
+                    except asyncio.CancelledError:
+                        logger.debug("Tool task was cancelled")
+                        # Task was cancelled, this is expected during request cancellation
+                        # Create a cancelled response to avoid orphaned tool_calls
+                        if task in task_tool_info:
+                            tc, tool_name, openai_tool_name = task_tool_info[task]
+                            tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
+                            cancelled_msg = ChatMessage(
+                                role="tool",
+                                tool_call_id=tool_call_id,
+                                name=sanitize_for_llm(openai_tool_name),
+                                content=json.dumps({"error": f"Tool '{tool_name}' was cancelled."}),
+                                timestamp=datetime.now(timezone.utc)
+                            )
+                            indexed_results.append((original_index, cancelled_msg, [], []))
+                            events_to_yield.append({"type": "tool_cancelled", "tool": tool_name})
                     except Exception as e:
+                        # CRITICAL: Create error response to avoid orphaned tool_calls
+                        # Without this, the LLM will crash because it expects a tool response for every tool_call
                         logger.exception("Error processing tool result: %s", e)
+                        if task in task_tool_info:
+                            tc, tool_name, openai_tool_name = task_tool_info[task]
+                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            error_content = json.dumps({
+                                "error": f"Tool '{tool_name}' execution failed: {str(e)}",
+                                "type": type(e).__name__
+                            })
+                            error_msg = ChatMessage(
+                                role="tool",
+                                tool_call_id=tool_call_id,
+                                name=sanitize_for_llm(openai_tool_name),
+                                content=sanitize_json_content(error_content),
+                                timestamp=datetime.now(timezone.utc)
+                            )
+                            indexed_results.append((original_index, error_msg, [], []))
+                            events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": str(e)})
 
-            # Yield final status events after all tools complete
-            if self._status_forwarder:
-                status_events = self._status_forwarder.get_pending_events()
+            # Sort results by original index and extract messages
+            # CRITICAL: Gemini API requires function_response parts to match the order
+            # of the original function_call parts. Without this sorting, parallel tool
+            # execution can produce responses in completion order (not call order),
+            # causing MALFORMED_FUNCTION_CALL errors.
+            indexed_results.sort(key=lambda x: x[0])
+            for _, msg, _, _ in indexed_results:
+                tool_messages.append(msg)
+
+            # Drain any remaining status events after all tools complete
+            # This ensures .end() events are not lost due to timing issues
+            if status_forwarder:
+                # Use drain to ensure all events are consumed
+                # Reduced timeout for faster response
+                drained_events = await status_forwarder.drain_pending_events(max_wait_ms=30)
+                for status_event in drained_events:
+                    yield {"type": "status", "event": status_event}
+
+            # Final check for any remaining status events
+            if status_forwarder:
+                status_events = status_forwarder.get_pending_events()
                 for status_event in status_events:
                     yield {"type": "status", "event": status_event}
-        
+
         # Yield tool execution events
         if events_to_yield:
             yield {"type": "tool_events", "events": events_to_yield}
-        
+
         # Yield final completion with all results
         yield {
             "type": "complete",
@@ -277,20 +368,39 @@ class ToolExecutionManager:
         }
 
     async def _execute_single_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 params: Dict[str, Any], step: int, request_id: str | None = None,
+                                 session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a single tool and return the result message, events, and results."""
         # Use cancellation system if request_id is available
         if request_id:
-            return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id)
+            return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
         else:
-            # Legacy execution without cancellation
-            if "." in tool_name:
-                return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id)
-            else:
-                return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+            # Legacy execution without cancellation - wrap in try/except for robustness
+            try:
+                if "." in tool_name:
+                    return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
+                else:
+                    return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
+            except Exception as e:
+                # Handle unknown tool errors gracefully - return error message instead of crashing
+                logger.exception("Tool %s execution failed (legacy path): %s", tool_name, e)
+                tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                error_content = json.dumps({
+                    "error": f"Tool '{tool_name}' execution failed: {str(e)}",
+                    "type": type(e).__name__
+                })
+                message = ChatMessage(
+                    role="tool",
+                    tool_call_id=tool_call_id,
+                    name=sanitize_for_llm(openai_tool_name),
+                    content=sanitize_json_content(error_content),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                return message, [{"type": "tool_error", "tool": tool_name, "error": str(e)}], []
 
     async def _execute_with_cancellation(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                       params: Dict[str, Any], step: int, request_id: str) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                       params: Dict[str, Any], step: int, request_id: str,
+                                       session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute tool with cancellation support."""
         cancellation_manager = get_cancellation_manager()
 
@@ -305,8 +415,13 @@ class ToolExecutionManager:
         # Create tool-specific request ID for tool-level cancellation
         tool_request_id = f"{request_id}_{step:03d}"
 
+        # Get tool cleanup timeout from agent config (fallback to 30.0 for backward compatibility)
+        cleanup_timeout = 30.0
+        if self._agent and self._agent.agent_config and self._agent.agent_config.timeouts:
+            cleanup_timeout = self._agent.agent_config.timeouts.tool_cleanup_timeout
+
         # Create cancellation context with tool-specific ID
-        async with cancellable_operation(tool_request_id, cleanup_timeout=30.0) as tool_token:
+        async with cancellable_operation(tool_request_id, cleanup_timeout=cleanup_timeout) as tool_token:
             # If main request is cancelled during tool execution, cancel tool token too
             if main_token and main_token.is_cancelled and not tool_token.is_cancelled:
                 tool_token.cancel()
@@ -319,11 +434,11 @@ class ToolExecutionManager:
             try:
                 if "." in tool_name:
                     task = asyncio.create_task(
-                        self._execute_external_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id)
+                        self._execute_external_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
                     )
                 else:
                     task = asyncio.create_task(
-                        self._execute_plugin_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id)
+                        self._execute_plugin_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
                     )
 
                 # Register task for forced cancellation with tool-specific ID
@@ -336,6 +451,22 @@ class ToolExecutionManager:
                     # Task was force-cancelled
                     logger.warning("Tool %s force-cancelled (request_id: %s)", tool_name, request_id)
                     return self._create_cancelled_response(tc, tool_name, openai_tool_name, request_id, forced=True)
+                except Exception as e:
+                    # Tool execution failed with exception - CRITICAL: Must return error response to avoid orphaned tool_calls
+                    logger.exception("Tool %s execution failed (request_id: %s): %s", tool_name, request_id, e)
+                    tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                    error_content = json.dumps({
+                        "error": f"Tool '{tool_name}' execution failed: {str(e)}",
+                        "type": type(e).__name__
+                    })
+                    message = ChatMessage(
+                        role="tool",
+                        tool_call_id=tool_call_id,
+                        name=sanitize_for_llm(openai_tool_name),
+                        content=sanitize_json_content(error_content),
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    return message, [{"type": "tool_error", "tool": tool_name, "error": str(e), "request_id": request_id}], []
 
             except CancellationError as e:
                 # Tool gracefully cancelled itself
@@ -347,7 +478,7 @@ class ToolExecutionManager:
         """Create a cancelled tool response."""
         tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
         cancel_type = "force-cancelled" if forced else "cancelled"
-        error_content = json.dumps({
+        cancel_content = json.dumps({
             "error": f"Tool '{tool_name}' was {cancel_type}.",
             "cancelled": True,
             "forced": forced
@@ -357,16 +488,26 @@ class ToolExecutionManager:
             role="tool",
             tool_call_id=tool_call_id,
             name=sanitize_for_llm(openai_tool_name),
-            content=sanitize_json_content(error_content)
+            content=sanitize_json_content(cancel_content),
+            timestamp=datetime.now(timezone.utc)
         )
 
         event_type = "tool_force_cancelled" if forced else "tool_cancelled"
         return message, [{"type": event_type, "tool": tool_name, "request_id": request_id}], []
 
     async def _execute_external_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                   params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                   params: Dict[str, Any], step: int, request_id: str | None = None,
+                                   session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute an external MCP tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
+
+        # Inject session context into params for external tools
+        if session_id or user_id:
+            params = params.copy()
+            if session_id:
+                params["_session_id"] = session_id
+            if user_id:
+                params["_user_id"] = user_id
 
         # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
@@ -410,7 +551,8 @@ class ToolExecutionManager:
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
-                content=tool_msg_content
+                content=tool_msg_content,
+                timestamp=datetime.now(timezone.utc)
             )
             return message, events, results
         except (Exception, GeneratorExit) as e:
@@ -424,33 +566,35 @@ class ToolExecutionManager:
                 logger.exception("External tool %s invocation failed: %s", tool_name, e)
                 tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
                 error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
-            
+
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
-                content=sanitize_json_content(error_content)
+                content=sanitize_json_content(error_content),
+                timestamp=datetime.now(timezone.utc)
             )
             return message, events, results
 
     async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 params: Dict[str, Any], step: int, request_id: str | None = None,
+                                 session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a plugin tool (or config agent tool)."""
         # CRITICAL FIX: Check if tool_name exists as a registered server FIRST
-        # This prevents prefix-based false positives where "sysadmin_agent_manager" 
+        # This prevents prefix-based false positives where "sysadmin_agent_manager"
         # incorrectly matches "sysadmin_agent_" prefix check
         server = None
-        
+
         # Try to get server from registries first
         if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
             server = self._agent._get_server_from_any_registry(tool_name)
-        
+
         # If not found in registry, check if it's an own tool using prefix check
         if not server and self._agent and tool_name.startswith(f"{self._agent.name}_"):
             # This is likely an own tool - use the agent itself as the server
             server = self._agent
             logger.debug(f"Tool '{tool_name}' is agent's own tool (prefix match), using self as server")
-        
+
         # Legacy fallback paths (for systems not using _get_server_from_any_registry)
         if not server:
             # Get plugin server from MCP integration plugin registry
@@ -468,13 +612,27 @@ class ToolExecutionManager:
                     agent_registry = self._agent.registry
                     if agent_registry and tool_name in agent_registry.list():
                         server = agent_registry.get(tool_name)
-                
+
                 # Final fallback to legacy registry (though it may be empty)
                 if not server:
                     server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
 
         if not server:
-            raise RuntimeError(f"Server not found for tool: {tool_name}")
+            # Return error response instead of raising - allows agent to recover from hallucinated tool names
+            logger.warning("Server not found for tool: %s (hallucinated tool call?)", tool_name)
+            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+            error_content = json.dumps({
+                "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
+                "type": "ToolNotFoundError"
+            })
+            message = ChatMessage(
+                role="tool",
+                tool_call_id=tool_call_id,
+                name=sanitize_for_llm(openai_tool_name),
+                content=sanitize_json_content(error_content),
+                timestamp=datetime.now(timezone.utc)
+            )
+            return message, [{"type": "tool_error", "tool": tool_name, "error": f"Unknown tool: {tool_name}"}], []
 
         serializable_params = self._make_params_serializable(params)
         event_request_id = serializable_params.get('request_id') or request_id
@@ -484,39 +642,63 @@ class ToolExecutionManager:
 
         try:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
-            
-            # Inject session context from current execution context if available
-            if self._current_session_id or self._current_user_id or request_id or (self._agent and hasattr(self._agent, 'name')) or (self._agent and hasattr(self._agent, 'registry')):
+
+            # Inject session context from parameters (passed through call chain to avoid race conditions)
+            if session_id or user_id or request_id or (self._agent and hasattr(self._agent, 'name')) or (self._agent and hasattr(self._agent, 'registry')):
                 params = params.copy()  # Don't mutate original
-                
-                if self._current_session_id:
-                    params["_session_id"] = self._current_session_id
-                    logger.debug(f"✓ Injected session_id '{self._current_session_id}' into tool params")
-                
-                if self._current_user_id:
-                    params["_user_id"] = self._current_user_id
-                    logger.debug(f"✓ Injected user_id '{self._current_user_id}' into tool params")
-                
+
+                if session_id:
+                    params["_session_id"] = session_id
+                    logger.debug(f"[TOOL_EXEC] Injected _session_id={session_id} into tool params for {openai_tool_name}")
+
+                if user_id:
+                    params["_user_id"] = user_id
+                    
+                    # CRITICAL: Register user_id for this request_id so sub-agents can find it
+                    # When a tool spawns a sub-agent (e.g., meta_web_research_agent), the sub-agent
+                    # generates a new session and needs to know the user_id
+                    if request_id:
+                        from agent_system.app import _request_user_map
+                        _request_user_map[request_id] = user_id
+
                 if request_id:
                     params["_request_id"] = request_id
-                    logger.debug(f"✓ Injected request_id '{request_id}' into tool params")
-                
+
                 if self._agent and hasattr(self._agent, 'name'):
                     params["_agent_name"] = self._agent.name
-                    logger.debug(f"✓ Injected agent_name '{self._agent.name}' into tool params")
-                
+
                 # Inject the agent instance itself for tools that need it
                 # Tools can access agent._session_service, agent.registry, etc.
                 if self._agent:
                     params["_agent"] = self._agent
-                    logger.debug("✓ Injected agent instance into tool params")
-                
+
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)
             else:
                 tool_result = await server.call(openai_tool_name, params)
-                
+
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
+
+            # Extract multimodal content from tool result (if present)
+            # Tools can return _multimodal_content: [{type, path, mime_type, description}]
+            multimodal_content = None
+            if isinstance(tool_result, dict):
+                raw_multimodal = tool_result.pop("_multimodal_content", None)
+                if raw_multimodal:
+                    from ....llm.models import MultimodalToolContent
+                    # Convert to Pydantic models
+                    multimodal_content = []
+                    items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
+                    for item in items:
+                        if isinstance(item, dict):
+                            multimodal_content.append(MultimodalToolContent(**item))
+                        elif isinstance(item, MultimodalToolContent):
+                            multimodal_content.append(item)
+                    if multimodal_content:
+                        logger.debug(
+                            "Extracted %d multimodal items from tool %s",
+                            len(multimodal_content), tool_name
+                        )
 
             results.append({
                 "server": tool_name,
@@ -528,14 +710,16 @@ class ToolExecutionManager:
             result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": openai_tool_name, "result": tool_result, "request_id": event_request_id}
             events.append(result_event)
 
-            # Create tool result message
+            # Create tool result message with optional multimodal content
             tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
             tool_msg_content = sanitize_json_content(json.dumps(tool_result, ensure_ascii=False))
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=openai_tool_name,
-                content=tool_msg_content
+                content=tool_msg_content,
+                timestamp=datetime.now(timezone.utc),
+                multimodal_content=multimodal_content  # Attach multimodal content
             )
             return message, events, results
 
@@ -548,11 +732,12 @@ class ToolExecutionManager:
                 logger.exception("Tool %s invocation failed: %s", tool_name, e)
                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                 error_content = json.dumps({"error": sanitize_for_llm(str(e))})
-            
+
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
-                content=sanitize_json_content(error_content)
+                content=sanitize_json_content(error_content),
+                timestamp=datetime.now(timezone.utc)
             )
             return message, events, results

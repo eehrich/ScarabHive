@@ -62,9 +62,18 @@ window.AgentSystem.log_viewer = {
     }
   },
 
+  _initialized: false,  // Guard against multiple init calls
+
   init(shadowRoot = null) {
+    // Guard against multiple initialization (can happen with retry logic)
+    if (this._initialized && this.rootElement === (shadowRoot || document)) {
+      console.log('Log viewer already initialized, skipping');
+      return;
+    }
+    
     // Set root element for queries (shadow root or document)
     this.rootElement = shadowRoot || document;
+    this._initialized = true;
 
     // Load persisted settings (if any)
     this.loadState();
@@ -81,7 +90,8 @@ window.AgentSystem.log_viewer = {
     if (viewerContainer) {
       viewerContainer.style.height = '';
       viewerContainer.style.flex = '1';
-      viewerContainer.style.overflow = 'hidden';  // No scroll on container
+      viewerContainer.style.minHeight = '0';
+      viewerContainer.style.overflow = 'hidden';  // Critical for flex child height calculation
     }
 
     this.setupEventHandlers();
@@ -126,13 +136,22 @@ window.AgentSystem.log_viewer = {
       autoScrollBtn.classList.toggle('active', this.autoScroll);
     }
 
-    // Search input
+    // Search input - reload logs on change
     const searchInput = controls.querySelector('#searchInput');
     if (searchInput) {
+      // Use debounce to avoid too many requests
+      let searchTimeout;
       searchInput.addEventListener('input', (e) => {
         this.searchTerm = e.target.value.toLowerCase();
-        this.applyFilters();
         this.saveState();
+        
+        // Debounce search - reload after 500ms of no typing
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
+        }, 500);
       });
     }
 
@@ -175,7 +194,10 @@ window.AgentSystem.log_viewer = {
         checkbox.addEventListener('change', () => {
           this.levelFilters[checkbox.value] = checkbox.checked;
           this.updateDropdownLabel();
-          this.applyFilters();
+          // Reload logs with new filter
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
           this.saveState();
         });
       });
@@ -192,7 +214,10 @@ window.AgentSystem.log_viewer = {
             if (checkbox) checkbox.checked = true;
           });
           this.updateDropdownLabel();
-          this.applyFilters();
+          // Reload logs with new filter
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
           this.saveState();
         });
       }
@@ -205,7 +230,10 @@ window.AgentSystem.log_viewer = {
             if (checkbox) checkbox.checked = false;
           });
           this.updateDropdownLabel();
-          this.applyFilters();
+          // Reload logs with new filter
+          if (this.currentFile) {
+            this.loadInitialLogContent(this.currentFile, true);
+          }
           this.saveState();
         });
       }
@@ -251,16 +279,8 @@ window.AgentSystem.log_viewer = {
         });
       }
 
-      // If a desired file was saved earlier, attempt to select it (populateFileSelect will choose it once files are loaded)
-      if (this._desiredFileSelection && fileSelect) {
-        // Attempt to select now if present
-        const opt = Array.from(fileSelect.options).find(o => o.value === this._desiredFileSelection);
-        if (opt) {
-          fileSelect.value = opt.value;
-          // trigger selection
-          this.selectLogFile(opt.value);
-        }
-      }
+      // Note: File selection is handled in populateFileSelect() after file list loads
+      // Don't trigger selectLogFile here to avoid double-loading
     } catch (err) {
       console.warn('Failed to apply UI state:', err);
     }
@@ -276,13 +296,14 @@ window.AgentSystem.log_viewer = {
 
       const data = await response.json();
 
-      this.populateFileSelect(data.logs || []);
+      const fileSelected = this.populateFileSelect(data.logs || []);
 
-      // Auto-select first existing file if available
-      const existingFiles = (data.logs || []).filter(file => file.exists);
-      if (existingFiles.length > 0) {
-        this.selectLogFile(existingFiles[0].name);
-      } else {
+      // Auto-select first existing file ONLY if populateFileSelect didn't already select one
+      if (!fileSelected) {
+        const existingFiles = (data.logs || []).filter(file => file.exists);
+        if (existingFiles.length > 0) {
+          this.selectLogFile(existingFiles[0].name);
+        }
       }
 
     } catch (error) {
@@ -295,7 +316,7 @@ window.AgentSystem.log_viewer = {
     const fileSelect = this.rootElement.querySelector('#logFileSelect');
     if (!fileSelect) {
       console.error('Log file select element not found');
-      return;
+      return false;
     }
 
     fileSelect.innerHTML = '<option value="">Select a log file...</option>';
@@ -317,11 +338,17 @@ window.AgentSystem.log_viewer = {
         fileSelect.value = opt.value;
         // select without saving again (already saved)
         this.selectLogFile(opt.value);
+        // Clear desired selection and signal that we selected a file
+        this._desiredFileSelection = null;
+        return true; // Signal: file was selected
       }
+      // Clear even if file not found
+      this._desiredFileSelection = null;
     }
 
     // Ensure other UI state is applied (checkboxes, toggles, search, limits)
     this.applyStateToUI();
+    return false; // Signal: no file was selected
   },
 
   formatFileSize(bytes) {
@@ -335,7 +362,7 @@ window.AgentSystem.log_viewer = {
     if (!filename) return;
 
     this.currentLogFile = filename;
-    this.updateStatus(`Connecting to ${filename}...`);
+    this.updateStatus(`Connecting...`);
 
     // Stop any existing polling
     this.stopPolling();
@@ -345,6 +372,9 @@ window.AgentSystem.log_viewer = {
     if (logContainer) {
       logContainer.innerHTML = '';
     }
+
+    // Show loading indicator
+    this.showLoading('Loading log file...');
 
     // Start new polling
     this.startStreaming(filename);
@@ -356,11 +386,28 @@ window.AgentSystem.log_viewer = {
   async loadInitialLogContent(filename, isRefresh = false) {
     if (!filename) return;
 
+    // Show loading for initial load (not refresh which is quick)
+    if (!isRefresh) {
+      this.showLoading('Loading log entries...');
+    }
+
     try {
       // Always respect user's line limit selection
       const lines = this.lineLimit;
-      // For initial load, don't send since_timestamp to enable multiline grouping
-      const url = `/plugins/log_viewer/logs/content/${encodeURIComponent(filename)}?lines=${lines}`;
+      
+      // Build URL with filters
+      let url = `/plugins/log_viewer/logs/content/${encodeURIComponent(filename)}?lines=${lines}`;
+      
+      // Add level filter if not all levels are selected
+      const activeLevels = Object.keys(this.levelFilters).filter(level => this.levelFilters[level]);
+      if (activeLevels.length > 0 && activeLevels.length < Object.keys(this.levelFilters).length) {
+        url += `&levels=${activeLevels.join(',')}`;
+      }
+      
+      // Add search term if present
+      if (this.searchTerm) {
+        url += `&search=${encodeURIComponent(this.searchTerm)}`;
+      }
 
       const response = await fetch(url);
       if (!response.ok) {
@@ -381,24 +428,26 @@ window.AgentSystem.log_viewer = {
         }
       }
 
-      this.updateStatus(`${filename} loaded (${data.lines?.length || 0} lines)`);
+      this.updateStatus(`Updated: ${new Date().toLocaleTimeString()}`);
 
     } catch (error) {
       console.error('Failed to load initial log content:', error);
       this.showError(`Failed to load ${filename}: ${error.message}`);
+    } finally {
+      // Always hide loading indicator
+      this.hideLoading();
     }
   },
 
-  startStreaming(filename) {
+  async startStreaming(filename) {
     // Use polling instead of EventSource to avoid infinite loops
     this.currentFile = filename;
     this.lastTimestamp = 0;
     this.stopPolling(); // Stop any existing polling
 
-    this.updateStatus(`Loading ${filename}...`);
-
-    // Initial load
-    this.loadInitialLogContent(filename, false);
+    // Initial load - wait for it to complete before starting polling
+    // This ensures lastTimestamp is set before polling begins
+    await this.loadInitialLogContent(filename, false);
 
     // Set up periodic polling if auto-refresh is enabled
     this.startPolling();
@@ -408,7 +457,19 @@ window.AgentSystem.log_viewer = {
     if (!this.currentFile) return;
 
     try {
-      const url = `/plugins/log_viewer/logs/content/${encodeURIComponent(this.currentFile)}?lines=${this.lineLimit}&since_timestamp=${this.lastTimestamp}`;
+      // Build URL with filters
+      let url = `/plugins/log_viewer/logs/content/${encodeURIComponent(this.currentFile)}?lines=${this.lineLimit}&since_timestamp=${this.lastTimestamp}`;
+      
+      // Add level filter if not all levels are selected
+      const activeLevels = Object.keys(this.levelFilters).filter(level => this.levelFilters[level]);
+      if (activeLevels.length > 0 && activeLevels.length < Object.keys(this.levelFilters).length) {
+        url += `&levels=${activeLevels.join(',')}`;
+      }
+      
+      // Add search term if present
+      if (this.searchTerm) {
+        url += `&search=${encodeURIComponent(this.searchTerm)}`;
+      }
 
       const response = await fetch(url);
       if (!response.ok) {
@@ -456,7 +517,7 @@ window.AgentSystem.log_viewer = {
     const logContainer = this.rootElement.querySelector('#logContainer');
     if (!logContainer) return;
 
-  const logLine = this.createLogLineElement(data);
+    const logLine = this.createLogLineElement(data);
 
     logContainer.appendChild(logLine);
 
@@ -465,10 +526,12 @@ window.AgentSystem.log_viewer = {
 
     // Auto-scroll if enabled
     if (this.autoScroll) {
-      const scrollContainer = this.rootElement.querySelector('#logContainer');
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      }
+      requestAnimationFrame(() => {
+        const scrollContainer = this.rootElement.querySelector('#logContainer');
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+      });
     }
 
     // Limit number of lines to user's selection (or 1000 max for memory)
@@ -633,10 +696,7 @@ window.AgentSystem.log_viewer = {
     const logContainer = this.rootElement.querySelector('#logContainer');
     if (!logContainer || !newLines) return;
 
-    // Store current scroll position
-    const scrollContainer = this.rootElement.querySelector('#logContainer');
-    const wasScrolledToBottom = scrollContainer ?
-      scrollContainer.scrollHeight - scrollContainer.scrollTop <= scrollContainer.clientHeight + 100 : false;    // Limit lines to user's selection (take last N lines to show most recent)
+    // Limit lines to user's selection (take last N lines to show most recent)
     const linesToShow = newLines.slice(-this.lineLimit);
 
     // Create document fragment for efficient DOM manipulation
@@ -655,12 +715,14 @@ window.AgentSystem.log_viewer = {
     // Apply filters to all content
     this.applyFilters();
 
-    // Restore scroll position
-    if (wasScrolledToBottom && this.autoScroll) {
-      const scrollContainer = this.rootElement.querySelector('#logContainer');
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      }
+    // Auto-scroll to bottom if enabled (after filters are applied)
+    if (this.autoScroll) {
+      requestAnimationFrame(() => {
+        const scrollContainer = this.rootElement.querySelector('#logContainer');
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+      });
     }
   },
 
@@ -851,6 +913,36 @@ window.AgentSystem.log_viewer = {
       logContainer.appendChild(errorDiv);
     }
     this.updateStatus(message);
+  },
+
+  showLoading(message = 'Loading...') {
+    const viewerContainer = this.rootElement.querySelector('.log-viewer-container');
+    if (!viewerContainer) return;
+
+    // Remove existing loading overlay if any
+    this.hideLoading();
+
+    // Create loading overlay
+    const overlay = document.createElement('div');
+    overlay.className = 'log-loading-overlay';
+    overlay.innerHTML = `
+      <div class="log-loading-spinner"></div>
+      <div class="log-loading-text">${message}</div>
+    `;
+
+    // Make container relative for absolute positioning of overlay
+    viewerContainer.style.position = 'relative';
+    viewerContainer.appendChild(overlay);
+  },
+
+  hideLoading() {
+    const viewerContainer = this.rootElement.querySelector('.log-viewer-container');
+    if (!viewerContainer) return;
+
+    const overlay = viewerContainer.querySelector('.log-loading-overlay');
+    if (overlay) {
+      overlay.remove();
+    }
   },
 
   destroy() {

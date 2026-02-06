@@ -13,7 +13,7 @@ The AgentSystem now supports **multimodal conversations** with vision-capable LL
 
 ## Supported Models
 
-Vision capabilities are configured in `config/llm.yaml`. Currently supported vision models include:
+Vision capabilities are configured in the `llm_system:` configuration section. Currently supported vision models include:
 
 - **GPT-5** (OpenAI): Supports JPEG, PNG, GIF, WebP images up to 20MB
 - **GPT-4.1** (OpenAI): Supports JPEG, PNG, GIF, WebP images up to 20MB
@@ -22,16 +22,17 @@ Vision capabilities are configured in `config/llm.yaml`. Currently supported vis
 
 ### Model Capability Configuration
 
-Each model's vision capabilities are defined in `config/llm.yaml`:
+Each model's vision capabilities are defined in the `llm_system:` section:
 
 ```yaml
-models:
-  gpt-5:
-    vision_support: true
-    max_image_size_mb: 20
-    supported_image_formats: [jpeg, jpg, png, gif, webp]
-    max_images_per_message: 10
-    image_detail_levels: [auto, low, high]
+llm_system:
+  models:
+    gpt-5:
+      vision_support: true
+      max_image_size_mb: 20
+      supported_image_formats: [jpeg, jpg, png, gif, webp]
+      max_images_per_message: 10
+      image_detail_levels: [auto, low, high]
 ```
 
 **Key Parameters:**
@@ -220,7 +221,7 @@ Standard web image formats are supported:
 
 ### Size Limits
 
-Size limits vary by model (configured in `llm.yaml`):
+Size limits vary by model (configured in `llm_system:` section):
 - **GPT-5**: 20 MB per image
 - **GPT-5-mini**: 5 MB per image
 - **Custom models**: Check config
@@ -239,7 +240,7 @@ OpenAI vision models support detail level control:
 - **`high`**: Detailed analysis, higher token cost (129 base + scaled)
 
 **Setting detail level** (currently applies to all images):
-Configure in `llm.yaml` under model's `default_image_detail` parameter.
+Configure in `llm_system:` section under model's `default_image_detail` parameter.
 
 ## Message Structure
 
@@ -298,31 +299,34 @@ if message.has_images():
 
 ## Configuration Reference
 
-### Model Capabilities (`config/llm.yaml`)
+### Model Capabilities
+
+Configure in `llm_system:` section:
 
 ```yaml
-models:
-  gpt-5:
-    # Vision support
-    vision_support: true
-    max_image_size_mb: 20
-    supported_image_formats: [jpeg, jpg, png, gif, webp]
-    max_images_per_message: 10
-    image_detail_levels: [auto, low, high]
-    default_image_detail: auto
-    
-    # Other capabilities
-    text_generation: true
-    max_tokens: 128000
-    temperature: 1.0
-    # ... (see llm.yaml for full config)
+llm_system:
+  models:
+    gpt-5:
+      # Vision support
+      vision_support: true
+      max_image_size_mb: 20
+      supported_image_formats: [jpeg, jpg, png, gif, webp]
+      max_images_per_message: 10
+      image_detail_levels: [auto, low, high]
+      default_image_detail: auto
+      
+      # Other capabilities
+      text_generation: true
+      max_tokens: 128000
+      temperature: 1.0
+      # ... (see llm_system configuration for full options)
 ```
 
 ### Adding New Vision Models
 
 To enable vision for a new model:
 
-1. Add model configuration to `config/llm.yaml`:
+1. Add model configuration to `llm_system:` section:
 ```yaml
 my-custom-vision-model:
   vision_support: true
@@ -344,7 +348,7 @@ my-custom-vision-model:
 
 **Solution:** 
 - Convert image to JPEG or PNG
-- Check model config in `llm.yaml`
+- Check model config in `llm_system:` configuration section
 - Verify file extension matches actual format
 
 ### Error: "Image too large"
@@ -362,7 +366,7 @@ my-custom-vision-model:
 
 **Solution:**
 - Use a vision-capable model (GPT-5, GPT-4.1, etc.)
-- Enable vision in model config if supported
+- Enable vision in model config in `llm_system:` section if supported
 - Check API key has access to vision models
 
 ### Images not displaying in WebUI
@@ -511,6 +515,8 @@ These are prepared for future model capabilities but not yet functional.
 
 For issues, questions, or feature requests:
 1. Check existing tests in `tests/test_llm_models_multimodal.py`
-2. Review capability config in `config/llm.yaml`
+2. Review capability config in `llm_system:` configuration section
 3. Check API logs in `logs/api.log`
 4. Consult source code in `src/agent_system/llm/`
+
+```

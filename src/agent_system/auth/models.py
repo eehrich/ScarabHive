@@ -61,6 +61,7 @@ class UserInDB(User):
 class Token(BaseModel):
     """JWT token response schema."""
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     expires_in: int  # seconds
 
@@ -70,12 +71,18 @@ class TokenData(BaseModel):
     username: Optional[str] = None
     user_id: Optional[int] = None
     role: Optional[UserRole] = None
+    token_type: Optional[str] = "access"  # "access" or "refresh"
 
 
 class LoginRequest(BaseModel):
     """Login request schema."""
     username: str
     password: str
+
+
+class RefreshTokenRequest(BaseModel):
+    """Refresh token request schema."""
+    refresh_token: str
 
 
 class PasswordResetRequest(BaseModel):

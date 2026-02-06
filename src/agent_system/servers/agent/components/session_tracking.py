@@ -55,11 +55,44 @@ class SessionTracker:
         # Session metadata: session_id -> Dict[str, Any] (user_id, etc.)
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
 
+        # Session template vars: session_id -> Dict[str, Any] (workflow_phase, book_id, etc.)
+        # CRITICAL: These are SESSION-SCOPED, not shared across sessions using same agent
+        self._session_template_vars: Dict[str, Dict[str, Any]] = {}
+
         # Request-to-session mapping: request_id -> session_id
         self._request_to_session: Dict[str, str] = {}
 
-        # Lock for thread-safe access
+        # Session-level locks: session_id -> asyncio.Lock
+        # Prevents multiple parallel requests from modifying the same session simultaneously
+        self._session_locks: Dict[str, asyncio.Lock] = {}
+
+        # Track which request owns which session lock: session_id -> request_id
+        self._session_lock_owners: Dict[str, str] = {}
+
+        # Compacted messages pending to be applied: session_id -> List[ChatMessage]
+        # When a compaction tool runs mid-request, it stores the compacted messages here.
+        # The agent will use these instead of the request's local messages when persisting.
+        self._compacted_messages: Dict[str, List[ChatMessage]] = {}
+
+        # Appended messages for append-mode requests: request_id -> List[ChatMessage]
+        self._appended_messages: Dict[str, List[ChatMessage]] = {}
+
+        # Lock for thread-safe access to internal data structures
         self._lock = asyncio.Lock()
+
+    async def is_request_active(self, request_id: str) -> bool:
+        """Check if a request is currently active (still running).
+        
+        Used by the status endpoint to determine if a request is still processing.
+        
+        Args:
+            request_id: The request ID to check
+            
+        Returns:
+            True if the request is active, False otherwise
+        """
+        async with self._lock:
+            return request_id in self._active_requests
 
     async def append_user_message(self, request_id: str, content: str) -> bool:
         """
@@ -96,6 +129,88 @@ class SessionTracker:
                         return False
         logger.debug("Request %s not found for append", request_id)
         return False
+
+    async def acquire_session_lock(self, session_id: str, request_id: str, timeout: float = 5.0) -> bool:
+        """Acquire exclusive lock for a session.
+        
+        Args:
+            session_id: The session ID to lock
+            request_id: The request ID acquiring the lock
+            timeout: Maximum time to wait for lock (seconds)
+            
+        Returns:
+            True if lock acquired, False if timeout or already locked by another request
+        """
+        async with self._lock:
+            # Check if session is already locked by a different request
+            if session_id in self._session_lock_owners:
+                owner = self._session_lock_owners[session_id]
+                if owner != request_id:
+                    logger.warning("Session %s is already locked by request %s (request %s waiting)",
+                                 session_id, owner, request_id)
+                    return False
+                else:
+                    # Same request already owns the lock (re-entrant)
+                    logger.debug("Request %s already owns lock for session %s", request_id, session_id)
+                    return True
+            
+            # Create lock if it doesn't exist
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = asyncio.Lock()
+        
+        # Try to acquire the lock with timeout
+        lock = self._session_locks[session_id]
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=timeout)
+            async with self._lock:
+                self._session_lock_owners[session_id] = request_id
+            logger.info("Request %s acquired lock for session %s", request_id, session_id)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning("Request %s timed out waiting for lock on session %s", request_id, session_id)
+            return False
+    
+    async def release_session_lock(self, session_id: str, request_id: str) -> None:
+        """Release exclusive lock for a session.
+        
+        Args:
+            session_id: The session ID to unlock
+            request_id: The request ID releasing the lock
+        """
+        async with self._lock:
+            if session_id not in self._session_lock_owners:
+                logger.debug("No lock owner for session %s (request %s trying to release)",
+                           session_id, request_id)
+                return
+            
+            owner = self._session_lock_owners[session_id]
+            if owner != request_id:
+                logger.warning("Request %s tried to release lock owned by %s for session %s",
+                             request_id, owner, session_id)
+                return
+            
+            # Remove ownership
+            del self._session_lock_owners[session_id]
+        
+        # Release the actual lock
+        if session_id in self._session_locks:
+            lock = self._session_locks[session_id]
+            if lock.locked():
+                lock.release()
+                logger.info("Request %s released lock for session %s", request_id, session_id)
+    
+    def check_session_locked(self, session_id: str) -> tuple[bool, Optional[str]]:
+        """Check if a session is currently locked.
+        
+        Args:
+            session_id: The session ID to check
+            
+        Returns:
+            Tuple of (is_locked, owner_request_id)
+        """
+        if session_id in self._session_lock_owners:
+            return True, self._session_lock_owners[session_id]
+        return False, None
 
     async def append_to_session(self, session_id: str, content: str) -> bool:
         """
@@ -177,12 +292,26 @@ class SessionTracker:
 
     def unregister_request(self, request_id: str) -> None:
         """
-        Unregister an active request.
+        Unregister an active request and release session lock if held.
 
         Args:
             request_id: The request ID to remove
         """
-        # Note: This is called during finalization, may need lock if concurrent
+        # Release session lock if this request owns it
+        session_id = self._request_to_session.get(request_id)
+        if session_id:
+            # Check if this request owns the lock and release it synchronously
+            # (called during cleanup, async not needed here)
+            if session_id in self._session_lock_owners and self._session_lock_owners[session_id] == request_id:
+                del self._session_lock_owners[session_id]
+                if session_id in self._session_locks:
+                    lock = self._session_locks[session_id]
+                    if lock.locked():
+                        lock.release()
+                        logger.info("Released session lock for %s during unregister of request %s", 
+                                  session_id, request_id)
+        
+        # Remove request tracking
         self._active_requests.pop(request_id, None)
         self._request_to_session.pop(request_id, None)
 
@@ -220,6 +349,48 @@ class SessionTracker:
         """
         self._sessions[session_id] = messages
 
+    def set_compacted_messages(self, session_id: str, messages: List[ChatMessage] | None) -> None:
+        """
+        Set compacted messages to be used instead of request messages when persisting.
+        
+        When a compaction/summarization tool runs mid-request, the local request
+        messages list cannot be directly modified. This stores the compacted messages
+        so the agent can use them when persisting the session at end of request.
+
+        Args:
+            session_id: The session ID
+            messages: The compacted messages to use, or None to clear
+        """
+        if messages is None:
+            # Clear by removing from dict
+            self._compacted_messages.pop(session_id, None)
+            logger.debug(f"Cleared compacted messages for session {session_id}")
+        else:
+            self._compacted_messages[session_id] = messages
+            logger.debug(f"Set {len(messages)} compacted messages for session {session_id}")
+
+    def get_compacted_messages(self, session_id: str) -> Optional[List[ChatMessage]]:
+        """
+        Get pending compacted messages for a session.
+
+        Args:
+            session_id: The session ID
+
+        Returns:
+            The compacted messages if any, None otherwise
+        """
+        return self._compacted_messages.get(session_id)
+
+    def clear_compacted_messages(self, session_id: str) -> None:
+        """
+        Clear pending compacted messages for a session.
+        Called after the compacted messages have been applied.
+
+        Args:
+            session_id: The session ID
+        """
+        self._compacted_messages.pop(session_id, None)
+
     def set_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
         """
         Set metadata for a session (e.g., user_id).
@@ -241,6 +412,43 @@ class SessionTracker:
             Metadata dict or None if not found
         """
         return self._session_metadata.get(session_id)
+
+    def set_session_template_vars(self, session_id: str, template_vars: Dict[str, Any]) -> None:
+        """
+        Set session-scoped template variables (e.g., workflow_phase, book_id).
+        
+        CRITICAL: These are isolated per session, not shared across sessions
+        using the same agent singleton. This prevents cross-session contamination.
+
+        Args:
+            session_id: The session ID
+            template_vars: Template variables dict
+        """
+        if session_id not in self._session_template_vars:
+            self._session_template_vars[session_id] = {}
+        self._session_template_vars[session_id].update(template_vars)
+        logger.debug(f"Set session template vars for {session_id}: {list(template_vars.keys())}")
+
+    def get_session_template_vars(self, session_id: str) -> Dict[str, Any]:
+        """
+        Get session-scoped template variables.
+
+        Args:
+            session_id: The session ID
+
+        Returns:
+            Template variables dict (empty dict if not found)
+        """
+        return self._session_template_vars.get(session_id, {})
+
+    def clear_session_template_vars(self, session_id: str) -> None:
+        """
+        Clear session-scoped template variables.
+
+        Args:
+            session_id: The session ID
+        """
+        self._session_template_vars.pop(session_id, None)
 
     def has_session(self, session_id: str) -> bool:
         """
@@ -273,10 +481,33 @@ class SessionTracker:
         Returns:
             True if session was deleted, False if it didn't exist
         """
+        deleted = False
         if session_id in self._sessions:
             del self._sessions[session_id]
-            return True
-        return False
+            deleted = True
+        
+        # Also clear any pending compacted messages
+        self._compacted_messages.pop(session_id, None)
+        
+        # Clear metadata to prevent memory leak
+        self._session_metadata.pop(session_id, None)
+        
+        # Clear session template vars to prevent memory leak
+        self._session_template_vars.pop(session_id, None)
+        
+        # Clear session locks to prevent memory leak
+        if session_id in self._session_lock_owners:
+            del self._session_lock_owners[session_id]
+        if session_id in self._session_locks:
+            lock = self._session_locks.pop(session_id)
+            # Release lock if still held (defensive)
+            if lock.locked():
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass  # Already released
+        
+        return deleted
 
     def clear(self) -> None:
         """
@@ -286,3 +517,8 @@ class SessionTracker:
         self._sessions.clear()
         self._request_to_session.clear()
         self._appended_messages.clear()
+        self._compacted_messages.clear()
+        self._session_metadata.clear()
+        self._session_template_vars.clear()
+        self._session_locks.clear()
+        self._session_lock_owners.clear()

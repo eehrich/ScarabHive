@@ -1,102 +1,88 @@
+# File Operations Plugin Schema
+# Jinja2 variables: {{ name }}, {{ read_only }}
+
 tools:
   - type: function
     function:
       name: "{{ name }}_read_file"
-      description: "Read contents of a text file. Supports offset/limit for large files."
+      description: "Read the contents of a file. Line numbers are 1-indexed. This tool will truncate its output at 2000 lines and may be called repeatedly with offset and limit parameters to read larger files in chunks."
       parameters:
         type: object
         properties:
-          file_path:
+          filePath:
             type: string
-            description: "Absolute or relative path to file"
+            description: "The absolute path of the file to read."
           offset:
             type: integer
-            minimum: 0
-            description: "Start reading from this line number (0-indexed)"
+            minimum: 1
+            description: "Optional: the 1-based line number to start reading from. Only use this if the file is too large to read at once. If not specified, the file will be read from the beginning."
           limit:
             type: integer
             minimum: 1
-            description: "Maximum number of lines to read"
-          encoding:
-            type: string
-            default: "utf-8"
-            description: "Text encoding (utf-8, latin-1, etc.)"
-        required: ["file_path"]
+            description: "Optional: the maximum number of lines to read. Only use this together with `offset` if the file is too large to read at once."
+        required: ["filePath"]
         additionalProperties: false
 
+{% if not read_only %}
   - type: function
     function:
-      name: "{{ name }}_create_file"
-      description: "Create a new text file. Fails if file already exists unless overwrite=true."
+      name: "{{ name }}_manage"
+      description: |
+        File and directory management operations: create, delete, move, rename.
+        All paths must be within allowed directories. Parent directories are auto-created for create operation.
       parameters:
         type: object
         properties:
-          file_path:
+          operation:
             type: string
-            description: "Path where file will be created"
+            enum: ["create", "delete", "move", "rename"]
+            description: |
+              Operation to perform:
+              - create: Create new file with content (fails if exists)
+              - delete: Delete file or empty directory
+              - move: Move file/directory to new location
+              - rename: Rename file/directory (same directory)
+          path:
+            type: string
+            description: "Absolute path to the file or directory to operate on"
           content:
             type: string
-            description: "File content to write"
-          overwrite:
+            description: "File content (required for create operation, files only)"
+          destination:
+            type: string
+            description: "Destination path (required for move operation)"
+          new_name:
+            type: string
+            description: "New name without path (required for rename operation)"
+          recursive:
             type: boolean
             default: false
-            description: "Allow overwriting existing file"
-          create_dirs:
-            type: boolean
-            default: true
-            description: "Auto-create parent directories"
-          encoding:
-            type: string
-            default: "utf-8"
-            description: "Text encoding"
-        required: ["file_path", "content"]
+            description: "Allow recursive deletion of non-empty directories (for delete operation)"
+        required: ["operation", "path"]
         additionalProperties: false
 
   - type: function
     function:
-      name: "{{ name }}_edit_file"
-      description: "Edit an existing file. Supports append, replace, and insert modes."
-      parameters:
-        type: object
-        properties:
-          file_path:
-            type: string
-            description: "Path to file to edit"
-          mode:
-            type: string
-            enum: ["append", "replace", "insert"]
-            description: "Edit mode: append to end, replace string, or insert at line"
-          content:
-            type: string
-            description: "Content to add/insert (for append/insert modes)"
-          old_string:
-            type: string
-            description: "String to replace (for replace mode)"
-          new_string:
-            type: string
-            description: "Replacement string (for replace mode)"
-          line_number:
-            type: integer
-            minimum: 0
-            description: "Line number to insert at (for insert mode, 0-indexed)"
-        required: ["file_path", "mode"]
-        additionalProperties: false
+      name: "{{ name }}_replace_string_in_file"
+      description: |
+        This is a tool for making edits in an existing file in the workspace. For moving or renaming files, use run in terminal tool with the 'mv' command instead. For larger edits, split them into smaller edits and call the edit tool multiple times to ensure accuracy. Before editing, always ensure you have the context to understand the file's contents and context. To edit a file, provide: 1) filePath (absolute path), 2) oldString (MUST be the exact literal text to replace including all whitespace, indentation, newlines, and surrounding code etc), and 3) newString (MUST be the exact literal text to replace \`oldString\` with (also including all whitespace, indentation, newlines, and surrounding code etc.). Ensure the resulting code is correct and idiomatic.). Each use of this tool replaces exactly ONE occurrence of oldString.
 
-  - type: function
-    function:
-      name: "{{ name }}_delete_file"
-      description: "Delete a file. Requires confirmation for safety."
+        CRITICAL for \`oldString\`: Must uniquely identify the single instance to change. Include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. If this string matches multiple locations, or does not match exactly, the tool will fail.
       parameters:
         type: object
         properties:
-          file_path:
+          filePath:
             type: string
-            description: "Path to file to delete"
-          confirm:
-            type: boolean
-            description: "Must be true to confirm deletion"
-        required: ["file_path", "confirm"]
+            description: "An absolute path to the file to edit."
+          oldString:
+            type: string
+            description: "The exact literal text to replace, preferably unescaped. For single replacements (default), include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. For multiple replacements, specify expected_replacements parameter. If this string is not the exact literal text (i.e. you escaped it) or does not match exactly, the tool will fail."
+          newString:
+            type: string
+            description: "The exact literal text to replace `old_string` with, preferably unescaped. Provide the EXACT text. Ensure the resulting code is correct and idiomatic."
+        required: ["filePath", "oldString", "newString"]
         additionalProperties: false
+{% endif %}
 
   - type: function
     function:
@@ -187,12 +173,12 @@ tools:
       description: |
         Semantic/AI-powered code search using embeddings. Finds files by meaning, not just keywords.
         Uses ChromaDB for intelligent similarity search.
-        
+
         Examples:
           - "find authentication logic" → matches verify_credentials(), login(), auth functions
           - "database connection code" → finds DB setup, connection pools, ORM configs
           - "error handling patterns" → locates try/except blocks, error classes
-        
+
         Better than grep for conceptual searches where exact keywords vary.
       parameters:
         type: object
@@ -211,3 +197,47 @@ tools:
             description: "Optional glob pattern to filter results by file type (e.g., '*.py')"
         required: ["query"]
         additionalProperties: false
+
+config:
+  # Read-only mode: disables all write/modification operations
+  # When true, only read_file, list_directory, search_files, grep_search, semantic_search are available
+  read_only: false
+  
+  # Sandbox security: restricts file operations to these directories only
+  # Prevents path traversal attacks and unauthorized file access
+  allowed_directories:
+    - data/workspace
+  max_file_size_for_indexing_kb: 1024
+  max_file_size_mb: 10
+  
+  # File reading limits to prevent memory issues with large files
+  max_unpaginated_file_size_kb:
+    type: integer
+    default: 100
+    description: "Maximum file size in KB to read without pagination (default: 100KB)"
+    minimum: 10
+    maximum: 10240
+  
+  default_line_limit:
+    type: integer
+    default: 500
+    description: "Default number of lines to read when file exceeds max_unpaginated_file_size"
+    minimum: 50
+    maximum: 10000
+  
+  search:
+    enable_indexing: true
+    index_on_startup: true
+    # Requires ChromaDB Python package for vector embeddings and similarity search
+    enable_semantic_search: true
+    auto_reindex_interval: 3600
+    # Exclude patterns optimize indexing performance by skipping large binary/generated files
+    # Also reduces memory usage and search noise
+    exclude_patterns:
+      - '**/.git/**'
+      - '**/__pycache__/**'
+      - '**/node_modules/**'
+      - '**/.venv/**'
+      - '**/*.min.js'
+      - '**/*.min.css'
+      - '**/*.map'

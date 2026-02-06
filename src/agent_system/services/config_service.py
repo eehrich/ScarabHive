@@ -122,6 +122,11 @@ class ConfigService:
             force=True  # Override any existing configuration
         )
         
+        # Downgrade ChromaDB's noisy "n_results" warning to INFO
+        # This is normal behavior when query requests more results than available
+        chromadb_logger = logging.getLogger('chromadb.segment.impl.vector.local_persistent_hnsw')
+        chromadb_logger.setLevel(logging.ERROR)  # Only show actual errors, not informational warnings
+        
         logger.info(f"Logging configured: level={logging.getLevelName(level)}, verbose={verbose}")
 
     def get_mcp_server_config(

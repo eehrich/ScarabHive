@@ -13,6 +13,56 @@ from agent_system.services.session_manager import SessionPermissionError, Sessio
 logger = logging.getLogger(__name__)
 
 
+def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
+    """Estimate token count for a message.
+    
+    Uses ~4 chars per token approximation for text content.
+    Tool calls and multimodal content are handled separately.
+    
+    Args:
+        msg_dict: Message as dictionary
+        
+    Returns:
+        Estimated token count
+    """
+    tokens = 0
+    
+    # Content tokens
+    content = msg_dict.get('content') or ''
+    if isinstance(content, str):
+        tokens += len(content) // 4
+    elif isinstance(content, list):
+        # Multimodal content
+        for part in content:
+            if isinstance(part, dict):
+                if part.get('type') == 'text':
+                    tokens += len(part.get('text', '')) // 4
+                elif part.get('type') in ('image_url', 'image'):
+                    # Images cost ~1000 tokens (approximate)
+                    tokens += 1000
+            elif isinstance(part, str):
+                tokens += len(part) // 4
+    else:
+        # Fallback: serialize to JSON
+        import json
+        tokens += len(json.dumps(content)) // 4
+    
+    # Tool calls tokens (assistant messages with function calls)
+    tool_calls = msg_dict.get('tool_calls')
+    if tool_calls:
+        import json
+        for tc in tool_calls:
+            tc_str = json.dumps(tc) if isinstance(tc, dict) else str(tc)
+            tokens += len(tc_str) // 4
+    
+    # Reasoning content (if present)
+    reasoning = msg_dict.get('reasoning_content')
+    if reasoning:
+        tokens += len(reasoning) // 4
+    
+    return max(1, tokens)  # At least 1 token per message
+
+
 class SessionService:
     """Service for managing session loading, restoration, and saving."""
 
@@ -52,7 +102,7 @@ class SessionService:
             session_data = await self.session_manager.load_session(user_id, session_id)
 
             if not session_data.get("messages"):
-                logger.info(f"[SESSION] Session {session_id} found but has no messages")
+                logger.debug(f"[SESSION] Session {session_id} found but has no messages")
                 return True, 0
 
             # Convert dict messages to ChatMessage objects
@@ -77,7 +127,24 @@ class SessionService:
                 "llm_profile": session_data.get("llm_profile")
             })
 
-            logger.info(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
+            # Restore context_vars to SESSION-SCOPED template_vars (NOT agent.agent_config!)
+            # CRITICAL: This ensures session isolation - multiple sessions using the same
+            # agent singleton won't contaminate each other's template vars (e.g., workflow_phase)
+            context_vars = session_data.get("context_vars", {})
+            if context_vars:
+                agent._session_tracker.set_session_template_vars(session_id, context_vars)
+                logger.debug(f"[SESSION] Restored context_vars to session template_vars: {list(context_vars.keys())}")
+            else:
+                # No context_vars in session - initialize from agent config defaults
+                # This ensures defaults (e.g., workflow_phase: "planning") are available
+                if hasattr(agent, 'agent_config') and agent.agent_config:
+                    if hasattr(agent.agent_config, 'template_vars') and agent.agent_config.template_vars:
+                        default_vars = agent.agent_config.template_vars.copy()
+                        if default_vars:
+                            agent._session_tracker.set_session_template_vars(session_id, default_vars)
+                            logger.debug(f"[SESSION] Initialized session template_vars from agent config defaults: {list(default_vars.keys())}")
+
+            logger.debug(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
 
         except SessionPermissionError:
@@ -85,7 +152,7 @@ class SessionService:
             raise
         except SessionNotFoundError:
             # Session doesn't exist - return False so caller can create new one
-            logger.info(f"[SESSION] Session {session_id} not found")
+            logger.debug(f"[SESSION] Session {session_id} not found")
             return False, 0
         except Exception as e:
             # Other errors (e.g., corrupt session file) - log and return False
@@ -128,22 +195,28 @@ class SessionService:
 
             logger.debug(f"[SESSION] Saving session {session_id}, messages count: {len(messages_list)}")
 
-            # Convert ChatMessage objects to dicts
+            # Convert ChatMessage objects to dicts with token estimation
             messages_dicts = []
             for msg in messages_list:
                 if hasattr(msg, 'model_dump'):
-                    messages_dicts.append(msg.model_dump(mode='json'))
+                    msg_dict = msg.model_dump(mode='json')
                 elif hasattr(msg, 'dict'):
-                    messages_dicts.append(msg.dict())
+                    msg_dict = msg.dict()
                 else:
-                    messages_dicts.append(dict(msg))
+                    msg_dict = dict(msg)
+                
+                # Add estimated token count if not already present
+                if 'estimated_tokens' not in msg_dict:
+                    msg_dict['estimated_tokens'] = _estimate_message_tokens(msg_dict)
+                
+                messages_dicts.append(msg_dict)
 
             # Determine title from first user message
             title = self._extract_session_title(messages_dicts)
 
             # Check if session already exists and find its owner
             # This is critical for sub-agent sessions which may have different user_ids
-            session_owner = self.session_manager._find_session_owner(session_id)
+            session_owner = await self.session_manager._find_session_owner_async(session_id)
             session_exists = session_owner is not None
 
             # Use the actual owner's user_id for existing sessions
@@ -162,20 +235,36 @@ class SessionService:
                 )
                 # Step 2: Add messages
                 session_data["messages"] = messages_dicts
-                # Step 3: Save back
+                
+                # Step 3: Initialize context_vars from agent config defaults if not already set
+                # This ensures defaults (e.g., workflow_phase: "planning") are persisted
+                if "context_vars" not in session_data or not session_data["context_vars"]:
+                    if hasattr(agent, 'agent_config') and agent.agent_config:
+                        if hasattr(agent.agent_config, 'template_vars') and agent.agent_config.template_vars:
+                            session_data["context_vars"] = agent.agent_config.template_vars.copy()
+                            logger.debug(f"[SESSION] Initialized context_vars from agent config: {list(session_data['context_vars'].keys())}")
+                
+                # Step 4: Save back
                 await self.session_manager.save_session(session_data)
             else:
                 logger.debug(f"[SESSION] Updating existing session {session_id} (owner: {actual_user_id})")
                 # Load existing session with correct owner
                 session_data = await self.session_manager.load_session(actual_user_id, session_id)
-                # Update messages, title, and llm_profile
+                # Update messages
                 session_data["messages"] = messages_dicts
-                session_data["title"] = title
+                # Only update title if it's still the default auto-generated title
+                # This preserves user-renamed session titles
+                extracted_title = self._extract_session_title(messages_dicts)
+                if session_data.get("title") == extracted_title or not session_data.get("title"):
+                    session_data["title"] = extracted_title
+                # CRITICAL: Always update agent_name and llm_profile from current request
+                # This ensures user-selected agent/llm overrides are persisted
+                session_data["agent_name"] = agent_name
                 session_data["llm_profile"] = llm_profile
                 # Save back
                 await self.session_manager.save_session(session_data)
 
-            logger.info(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
+            logger.debug(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
             return True
 
         except Exception as save_err:

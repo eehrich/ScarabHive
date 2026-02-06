@@ -11,7 +11,7 @@ from agent_system.hooks import get_hook_registry, HookType
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
 except Exception:
-    tabulate = None
+    tabulate = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

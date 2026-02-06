@@ -12,7 +12,7 @@ tools:
               type: string
             description: "Optional list of tags to filter machines"
         required: []
-    
+
   - type: function
     function:
       name: "{{ name }}_execute"
@@ -35,7 +35,7 @@ tools:
         required:
           - machine
           - command
-    
+
   - type: function
     function:
       name: "{{ name }}_upload_file"
@@ -59,7 +59,7 @@ tools:
           - machine
           - local_path
           - remote_path
-    
+
   - type: function
     function:
       name: "{{ name }}_download_file"
@@ -80,7 +80,7 @@ tools:
           - machine
           - remote_path
           - local_path
-    
+
   - type: function
     function:
       name: "{{ name }}_check_connection"
@@ -92,7 +92,7 @@ tools:
             type: string
             description: "Single machine name."
         required: []
-  
+
   - type: function
     function:
       name: "{{ name }}_add_machine"
@@ -159,7 +159,7 @@ tools:
             auth_method: "password"
             password: "temp123"
             persistent: false
-  
+
   - type: function
     function:
       name: "{{ name }}_remove_machine"
@@ -197,27 +197,36 @@ web_ui:
     text: "SSH Control"
     icon: "🖥️"
     tooltip: "SSH Machine Control Panel"
-  
+
   # Panel configuration
   panel:
     enabled: true
     title: "SSH Machine Control"
-    endpoint: "/plugins/{{ name }}/panel"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     description: "Control and monitor SSH-connected machines"
-  
+
   endpoints:
-    - path: "/panel.html"
+    - path: "/"
       method: "GET"
+      handler: "panel"
+      response_type: "html"
       description: "SSH control dashboard panel"
     - path: "/api/machines"
       method: "GET"
+      handler: "list_machines"
+      response_type: "json"
       description: "List all configured machines with connection status"
-    - path: "/api/machines/{machine}/status"
+    - path: "/api/machines/{machine_name}/status"
       method: "GET"
+      handler: "get_machine_status"
+      response_type: "json"
       description: "Get detailed status for specific machine"
     - path: "/api/machines/add"
       method: "POST"
+      handler: "add_machine"
+      response_type: "json"
       description: "Dynamically add a new SSH machine (calls {{ name }}_add_machine tool)"
       body_schema:
         type: object
@@ -255,6 +264,8 @@ web_ui:
         required: ["name", "host", "username"]
     - path: "/api/machines/{name}"
       method: "DELETE"
+      handler: "remove_machine"
+      response_type: "json"
       description: "Remove an SSH machine (calls {{ name }}_remove_machine tool)"
       query_parameters:
         remove_from_config:
@@ -262,7 +273,34 @@ web_ui:
           description: "Also remove from config file (default: false)"
     - path: "/api/history"
       method: "GET"
+      handler: "get_command_history"
+      response_type: "json"
       description: "Get recent command execution history"
+    - path: "/api/machines/{machine_name}/history"
+      method: "GET"
+      handler: "get_machine_history"
+      response_type: "json"
+      description: "Get command execution history for a specific machine"
     - path: "/api/execute"
       method: "POST"
+      handler: "execute_command"
+      response_type: "json"
       description: "Execute command on remote machine"
+    - path: "/api/execute/stream"
+      method: "GET"
+      handler: "execute_command_stream"
+      response_type: "response"
+      description: "Execute command with streaming SSE output"
+
+config:
+  machines:
+  security:
+    # Prevents MITM attacks by verifying host keys against known_hosts file
+    strict_host_key_checking: true
+    known_hosts_file: ~/.ssh/known_hosts
+    # Security compliance: logs all SSH commands with timestamps and machine info
+    # Useful for audit trails and debugging
+    audit_log: true
+    audit_log_file: logs/ssh_control_audit.log
+  plugins: null
+  servers: null

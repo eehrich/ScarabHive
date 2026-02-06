@@ -451,7 +451,9 @@ class MCPClientFactory:
         client_name: str = "AgentSystem",
         timeout: float = 30.0,
         ssl_verify: bool = True,
-        initialization_options: Optional[Dict[str, Any]] = None
+        initialization_options: Optional[Dict[str, Any]] = None,
+        connection_limit: int = 10,
+        connection_limit_per_host: int = 5
     ) -> StandardMCPClient:
         """Create a streaming MCP client using SSE transport
 
@@ -461,12 +463,16 @@ class MCPClientFactory:
             timeout: Request timeout in seconds
             ssl_verify: Whether to verify SSL certificates
             initialization_options: MCP initialization options
+            connection_limit: Total HTTP connection limit
+            connection_limit_per_host: HTTP connection limit per host
         """
         transport = HTTPStreamingTransport(
             base_url=base_url,
             timeout=timeout,
             ssl_verify=ssl_verify,
-            use_sse=True  # Streaming transport always uses SSE
+            use_sse=True,  # Streaming transport always uses SSE
+            connection_limit=connection_limit,
+            connection_limit_per_host=connection_limit_per_host
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)
@@ -487,7 +493,9 @@ class MCPClientFactory:
     async def create_client_from_config(
         config: RemoteMCPConfig,
         ssl_verify: bool = True,
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        connection_limit: int = 10,
+        connection_limit_per_host: int = 5
     ) -> StandardMCPClient:
         """Create an MCP client from configuration.
 
@@ -495,6 +503,8 @@ class MCPClientFactory:
             config: RemoteMCPConfig object with server connection details
             ssl_verify: SSL certificate verification setting from network config
             timeout: Connection timeout from external_servers.connection.timeout
+            connection_limit: Total HTTP connection limit from network config
+            connection_limit_per_host: HTTP connection limit per host from network config
         """
         transport_type = config.transport
 
@@ -509,7 +519,9 @@ class MCPClientFactory:
                 client_name="AgentSystem",
                 timeout=timeout,
                 ssl_verify=ssl_verify,
-                initialization_options=config.initialization_options
+                initialization_options=config.initialization_options,
+                connection_limit=connection_limit,
+                connection_limit_per_host=connection_limit_per_host
             )
         elif transport_type == "streaming":
             return await MCPClientFactory.create_streaming_client(
@@ -517,7 +529,9 @@ class MCPClientFactory:
                 client_name="AgentSystem",
                 timeout=timeout,
                 ssl_verify=ssl_verify,
-                initialization_options=config.initialization_options
+                initialization_options=config.initialization_options,
+                connection_limit=connection_limit,
+                connection_limit_per_host=connection_limit_per_host
             )
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
@@ -533,7 +547,8 @@ class MCPClientManager:
         self._tools_cache_time = 0.0
         self._tools_cache_ttl = 30.0  # Cache for 30 seconds
 
-    async def add_client(self, name: str, config: RemoteMCPConfig, ssl_verify: bool = True, timeout: float = 30.0) -> None:
+    async def add_client(self, name: str, config: RemoteMCPConfig, ssl_verify: bool = True, timeout: float = 30.0,
+                         connection_limit: int = 10, connection_limit_per_host: int = 5) -> None:
         """Add an MCP client from configuration.
 
         Args:
@@ -541,6 +556,8 @@ class MCPClientManager:
             config: RemoteMCPConfig object with server connection details
             ssl_verify: SSL certificate verification setting from network config
             timeout: Connection timeout from external_servers.connection.timeout
+            connection_limit: Total HTTP connection limit from network config
+            connection_limit_per_host: HTTP connection limit per host from network config
         """
         try:
             # Announce connection attempt
@@ -559,7 +576,13 @@ class MCPClientManager:
                 except Exception as e:
                     logger.debug(f"Failed to delete existing client {name} from registry: {e}")
 
-            client = await MCPClientFactory.create_client_from_config(config, ssl_verify=ssl_verify, timeout=timeout)
+            client = await MCPClientFactory.create_client_from_config(
+                config, 
+                ssl_verify=ssl_verify, 
+                timeout=timeout,
+                connection_limit=connection_limit,
+                connection_limit_per_host=connection_limit_per_host
+            )
             self.clients[name] = client
             logger.info(f"Added MCP client: {name}")
             try:

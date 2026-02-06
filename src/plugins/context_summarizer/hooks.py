@@ -5,7 +5,9 @@ reducing context size while preserving key information and decisions.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -40,24 +42,38 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Web UI history tracking
         self.summarization_history = summarization_history
 
+        # Session tracking for rate limiting (with LRU eviction)
+        self._last_summarization_time: Dict[str, float] = {}  # session_id -> timestamp
+
         # Load config - for hooks, config is a raw dict from YAML
         config = self.get_config()
+        
+        # Memory management settings
+        self._max_tracked_sessions = int(config.get('max_tracked_sessions', 200))
         self.trigger_percentage = float(config.get('summarization_trigger_percentage', 0.60))
         self.chunk_size = int(config.get('summarization_chunk_size', 10))
+        self.max_chunks = int(config.get('max_chunks', 10))  # Limit parallel LLM calls
         self.preserve_recent = int(config.get('preserve_recent_count', 10))
         self.preserve_system = bool(config.get('preserve_system_messages', True))
-        self.llm_profile = str(config.get('llm_profile', 'fast'))
+        self.llm_profile = str(config.get('llm_profile', 'turbo'))
         self.prompt_template = str(config.get('summary_prompt_template', ''))
         self.min_reduction = float(config.get('min_summary_reduction', 0.3))
         self.store_metadata = bool(config.get('store_original_metadata', True))
         self.marker_format = str(config.get('summary_marker_format',
                                         '[Summary of {count} messages from {start_time} to {end_time}]'))
         self.max_preview_length = int(config.get('max_message_preview_length', 5000))
+        self.min_time_between = float(config.get('min_time_between_summarizations', 200.0))
+        self.max_messages = int(config.get('max_messages', 0))  # 0 = disabled
+        
+        # Store system_config for later LLM instantiation
+        self._system_config = None
+        self._summarizer_llm = None
 
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
-            f"chunk_size={self.chunk_size}, preserve_recent={self.preserve_recent}, "
-            f"llm_profile={self.llm_profile}"
+            f"max_messages={self.max_messages or 'disabled'}, "
+            f"chunk_size={self.chunk_size}, max_chunks={self.max_chunks}, preserve_recent={self.preserve_recent}, "
+            f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
         )
 
     async def summarize_context(self, context: HookContext) -> HookResult:
@@ -95,7 +111,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # Get LLM context window size
             context_window = self._get_context_window(context)
             if not context_window:
-                logger.warning("[ContextSummarizer] No LLM context window available, skipping summarization")
+                logger.warning(
+                    f"[ContextSummarizer] No LLM context window available for session {context.session_id}. "
+                    f"Skipping summarization. context.llm={context.llm}, "
+                    f"has_context_window={hasattr(context.llm, 'context_window') if context.llm else False}"
+                )
                 return HookResult(
                     success=True,
                     modified=False,
@@ -106,10 +126,56 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # Calculate trigger threshold from percentage
             trigger_tokens = int(context_window * self.trigger_percentage)
 
-            # Estimate token count (rough: 1 token ≈ 4 chars)
-            total_tokens = self._estimate_tokens(messages_as_dicts)
+            # Try to get actual prompt tokens from context_usage_tracker (more accurate)
+            # If not available, fall back to estimation
+            total_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts)
 
-            if total_tokens < trigger_tokens:
+            # Skip threshold check if this is a manual trigger
+            is_manual_trigger = context.metadata.get('manual_trigger', False) if context.metadata else False
+
+            # Check rate limiting: prevent endless loop by enforcing minimum time between summarizations
+            session_id = context.session_id or "unknown"
+            current_time = time.monotonic()  # Use monotonic clock, not event loop time
+            
+            if not is_manual_trigger:
+                last_summarization = self._last_summarization_time.get(session_id)
+                if last_summarization:
+                    time_since_last = current_time - last_summarization
+                    if time_since_last < self.min_time_between:
+                        logger.info(
+                            f"[ContextSummarizer] Session {session_id}: Rate limited - "
+                            f"only {time_since_last:.1f}s since last summarization "
+                            f"(minimum: {self.min_time_between}s)"
+                        )
+                        return HookResult(
+                            success=True,
+                            modified=False,
+                            context=context,
+                            metadata={
+                                'reason': 'rate_limited',
+                                'time_since_last': time_since_last,
+                                'min_time_between': self.min_time_between
+                            }
+                        )
+
+            # Check per-agent max_messages override from hook_config
+            agent_max_messages = self.max_messages
+            if context.hook_config and 'max_messages' in context.hook_config:
+                agent_max_messages = int(context.hook_config['max_messages'])
+
+            # Determine if message count trigger fires
+            message_count = len(messages_as_dicts)
+            message_count_exceeded = (
+                agent_max_messages > 0 and message_count > agent_max_messages
+            )
+
+            if not is_manual_trigger and total_tokens < trigger_tokens and not message_count_exceeded:
+                logger.info(
+                    f"[ContextSummarizer] Session {context.session_id}: Below threshold - "
+                    f"total_tokens={total_tokens}, trigger_tokens={trigger_tokens} "
+                    f"({self.trigger_percentage:.0%} of context_window={context_window})"
+                    f"{f', messages={message_count}/{agent_max_messages}' if agent_max_messages > 0 else ''}"
+                )
                 return HookResult(
                     success=True,
                     modified=False,
@@ -119,14 +185,26 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'total_tokens': total_tokens,
                         'threshold': trigger_tokens,
                         'threshold_percentage': self.trigger_percentage,
-                        'context_window': context_window
+                        'context_window': context_window,
+                        'message_count': message_count,
+                        'max_messages': agent_max_messages,
                     }
                 )
 
-            logger.info(
-                f"[ContextSummarizer] Context exceeds threshold: {total_tokens} > {trigger_tokens} tokens "
-                f"({self.trigger_percentage:.0%} of {context_window}). Starting summarization for session {context.session_id}"
+            trigger_reason = 'manual' if is_manual_trigger else (
+                'message_count' if message_count_exceeded and total_tokens < trigger_tokens else 'token_limit'
             )
+            logger.info(
+                f"[ContextSummarizer] Context exceeds threshold (reason={trigger_reason}): "
+                f"{total_tokens} {'forced' if is_manual_trigger else '> ' + str(trigger_tokens)} tokens "
+                f"({self.trigger_percentage:.0%} of {context_window})"
+                f"{f', messages={message_count} > {agent_max_messages}' if message_count_exceeded else ''}"
+                f". Starting summarization for session {context.session_id}"
+            )
+
+            # Clean up orphaned tool_calls BEFORE categorization
+            # This prevents tool_calls without responses from causing issues during summarization
+            messages_as_dicts = self._remove_orphaned_tool_calls(messages_as_dicts)
 
             # Generate unique request_id for summarizer status messages (like tool calls)
             # This must be done BEFORE creating StatusScope so all messages use the same unique ID
@@ -139,6 +217,34 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             if len(old_msgs) < 2:
                 # Not enough old messages to summarize
+                logger.info(
+                    f"[ContextSummarizer] Session {context.session_id}: Insufficient old messages - "
+                    f"old_msgs={len(old_msgs)}, recent_msgs={len(recent_msgs)}, system_msgs={len(system_msgs)}"
+                )
+                
+                # Record in history even when not applied
+                if self.summarization_history is not None:
+                    event = {
+                        'timestamp': datetime.now().isoformat(),
+                        'session_id': context.session_id,
+                        'request_id': context.request_id,
+                        'strategy': 'summarize',
+                        'original_message_count': len(messages),
+                        'summarized_message_count': len(messages),
+                        'messages_summarized': 0,
+                        'summary_count': 0,
+                        'original_tokens': 0,
+                        'new_tokens': 0,
+                        'tokens_saved': 0,
+                        'reduction_ratio': 0,
+                        'status': 'skipped',
+                        'reason': 'insufficient_old_messages',
+                        'before_messages': [],
+                        'after_messages': [],
+                        'summary_stats': {'summary_count': 0}
+                    }
+                    self.summarization_history.append(event)
+                
                 return HookResult(
                     success=True,
                     modified=False,
@@ -150,17 +256,22 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 )
 
             # Use StatusScope to ensure START/END pairing even on errors
+            result = None
             async with StatusScope(
                 status_bus,
                 "context_summarizer",
                 summarizer_request_id,
                 start_msg=f"Summarizing {len(old_msgs)} older messages using LLM (preserving {len(recent_msgs)} recent messages)",
                 end_msg="Context summarization completed"
-            ):
+            ) as scope:
+                # Small sleep to allow START message to be delivered
+                await asyncio.sleep(0.01)
+
                 # Summarize old messages in chunks
                 summarized_msgs, summary_stats = await self._summarize_messages(
                     old_msgs,
-                    context
+                    context,
+                    scope
                 )
 
                 # Reconstruct message list: system + summarized + recent
@@ -177,7 +288,32 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         f"[ContextSummarizer] Summarization reduction ({reduction_ratio:.2%}) "
                         f"below minimum ({self.min_reduction:.2%}). Keeping original messages."
                     )
-                    return HookResult(
+                    
+                    # Record in history even when not applied
+                    if self.summarization_history is not None:
+                        event = {
+                            'timestamp': datetime.now().isoformat(),
+                            'session_id': context.session_id,
+                            'request_id': context.request_id,
+                            'strategy': 'summarize',
+                            'original_message_count': len(messages),
+                            'summarized_message_count': len(messages),  # No change
+                            'messages_summarized': len(old_msgs),
+                            'summary_count': 0,
+                            'original_tokens': original_tokens,
+                            'new_tokens': original_tokens,  # No change
+                            'tokens_saved': 0,
+                            'reduction_ratio': reduction_ratio,
+                            'status': 'rejected',
+                            'reason': 'insufficient_reduction',
+                            'before_messages': [],
+                            'after_messages': [],
+                            'summary_stats': {'summary_count': 0}
+                        }
+                        self.summarization_history.append(event)
+                    
+                    # Store result instead of returning directly
+                    result = HookResult(
                         success=True,
                         modified=False,
                         context=context,
@@ -187,69 +323,45 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'min_reduction': self.min_reduction
                         }
                     )
+                else:
+                    # Convert dicts back to ChatMessage objects
+                    new_messages = []
+                    for msg_dict in new_messages_dicts:
+                        if isinstance(msg_dict, dict):
+                            new_messages.append(ChatMessage(**msg_dict))
+                        else:
+                            new_messages.append(msg_dict)
 
-                # Convert dicts back to ChatMessage objects
-                new_messages = []
-                for msg_dict in new_messages_dicts:
-                    if isinstance(msg_dict, dict):
-                        new_messages.append(ChatMessage(**msg_dict))
-                    else:
-                        new_messages.append(msg_dict)
+                    # Create modified context
+                    modified_context = HookContext(
+                        hook_type=context.hook_type,
+                        request_id=context.request_id,
+                        session_id=context.session_id,
+                        agent=context.agent,
+                        agent_name=context.agent_name,
+                        messages=new_messages,
+                        llm_response=context.llm_response,
+                        tool_call=context.tool_call,
+                        tool_result=context.tool_result,
+                        output=context.output,
+                        metadata=context.metadata,
+                        step=context.step,
+                        llm=context.llm
+                    )
 
-                # Create modified context
-                modified_context = HookContext(
-                    hook_type=context.hook_type,
-                    request_id=context.request_id,
-                    session_id=context.session_id,
-                    agent=context.agent,
-                    agent_name=context.agent_name,
-                    messages=new_messages,
-                    llm_response=context.llm_response,
-                    tool_call=context.tool_call,
-                    tool_result=context.tool_result,
-                    output=context.output,
-                    metadata=context.metadata,
-                    step=context.step,
-                    llm=context.llm
-                )
+                    logger.info(
+                        f"[ContextSummarizer] Summarization complete: "
+                        f"{len(messages)} → {len(new_messages)} messages, "
+                        f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
+                    )
 
-                logger.info(
-                    f"[ContextSummarizer] Summarization complete: "
-                    f"{len(messages)} → {len(new_messages)} messages, "
-                    f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
-                )
-
-                # Record summarization event in history
-                if self.summarization_history is not None:
-                    event = {
-                        'timestamp': datetime.now().isoformat(),
-                        'session_id': context.session_id,
-                        'request_id': context.request_id,
-                        'strategy': 'summarize',  # context_summarizer uses LLM summarization
-                        'original_message_count': len(messages),
-                        'summarized_message_count': len(new_messages),
-                        'messages_summarized': len(old_msgs),
-                        'summary_count': summary_stats['summary_count'],
-                        'original_tokens': original_tokens,
-                        'new_tokens': new_tokens,
-                        'tokens_saved': original_tokens - new_tokens,
-                        'reduction_ratio': reduction_ratio,
-                        'before_messages': [self._serialize_message(m) for m in old_msgs],  # ALL messages that were removed (summarized)
-                        'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
-                        'summary_stats': summary_stats
-                    }
-                    self.summarization_history.append(event)
-
-                    # Keep only last 1000 events
-                    if len(self.summarization_history) > 1000:
-                        self.summarization_history.pop(0)
-
-                return HookResult(
-                    success=True,
-                    modified=True,
-                    context=modified_context,
-                    metadata={
-                        'summarization': {
+                    # Record summarization event in history
+                    if self.summarization_history is not None:
+                        event = {
+                            'timestamp': datetime.now().isoformat(),
+                            'session_id': context.session_id,
+                            'request_id': context.request_id,
+                            'strategy': 'summarize',  # context_summarizer uses LLM summarization
                             'original_message_count': len(messages),
                             'summarized_message_count': len(new_messages),
                             'messages_summarized': len(old_msgs),
@@ -258,10 +370,64 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'new_tokens': new_tokens,
                             'tokens_saved': original_tokens - new_tokens,
                             'reduction_ratio': reduction_ratio,
-                            **summary_stats
+                            'status': 'success',  # Mark successful summarizations
+                            'before_messages': [self._serialize_message(m) for m in old_msgs],  # ALL messages that were removed (summarized)
+                            'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
+                            'summary_stats': summary_stats
                         }
-                    }
-                )
+                        self.summarization_history.append(event)
+
+                        # Keep only last 1000 events
+                        if len(self.summarization_history) > 1000:
+                            self.summarization_history.pop(0)
+
+                    # Update last summarization time for rate limiting
+                    self._last_summarization_time[session_id] = current_time
+                    
+                    # Evict old entries if over limit (LRU by timestamp)
+                    if len(self._last_summarization_time) > self._max_tracked_sessions:
+                        oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
+                        del self._last_summarization_time[oldest]
+
+                    # NOTE: Session persistence is now handled automatically by HookIntegrationManager
+                    # when we return HookResult with modified=True. The explicit set_compacted_messages()
+                    # call below is kept for backwards compatibility but is no longer strictly required.
+                    conversation_msgs = [msg for msg in new_messages if msg.role != "system"]
+                    if context.agent and hasattr(context.agent, '_session_tracker'):
+                        context.agent._session_tracker.set_compacted_messages(
+                            session_id, conversation_msgs
+                        )
+                        logger.debug(
+                            f"[ContextSummarizer] Persisted {len(conversation_msgs)} compacted messages "
+                            f"for session {session_id}"
+                        )
+
+                    # Store result instead of returning directly
+                    result = HookResult(
+                        success=True,
+                        modified=True,
+                        context=modified_context,
+                        metadata={
+                            'summarization': {
+                                'original_message_count': len(messages),
+                                'summarized_message_count': len(new_messages),
+                                'messages_summarized': len(old_msgs),
+                                'summary_count': summary_stats['summary_count'],
+                                'original_tokens': original_tokens,
+                                'new_tokens': new_tokens,
+                                'tokens_saved': original_tokens - new_tokens,
+                                'reduction_ratio': reduction_ratio,
+                                **summary_stats
+                            }
+                        }
+                    )
+                    
+                    # Invalidate usage tracker data for this session after successful summarization
+                    # This prevents subsequent hooks from using stale token counts
+                    self._invalidate_usage_tracker_session(context, session_id, "context_summarizer")
+            
+            # Return after StatusScope is properly closed
+            return result
 
         except Exception as e:
             logger.error(f"[ContextSummarizer] Error during summarization: {e}", exc_info=True)
@@ -305,6 +471,112 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         logger.warning("[ContextSummarizer] Could not determine context window size")
         return None
 
+    def _get_actual_or_estimated_tokens(self, context: HookContext, messages: List[Dict]) -> int:
+        """Get actual token count from last LLM response or estimate from messages.
+
+        Uses the MAXIMUM of:
+        1. Actual prompt_tokens from last LLM response (via context_usage_tracker)
+        2. Estimated tokens from current messages
+
+        This ensures we trigger summarization if either metric exceeds threshold,
+        preventing context overflow.
+
+        Args:
+            context: Hook context with session_id
+            messages: Current message list
+
+        Returns:
+            Maximum of actual or estimated token count
+        """
+        estimated_tokens = self._estimate_tokens(messages)
+
+        # Include tool definition tokens in estimation (they consume context window)
+        if context.agent and hasattr(context.agent, '_current_tools_schema'):
+            tools_schema = context.agent._current_tools_schema
+            if tools_schema and isinstance(tools_schema, list):
+                from agent_system.llm.token_utils import estimate_tools_token_count
+                tool_tokens = estimate_tools_token_count(tools_schema)
+                estimated_tokens += tool_tokens
+                logger.debug(
+                    f"[ContextSummarizer] Added {tool_tokens} tool definition tokens "
+                    f"({len(tools_schema)} tools)"
+                )
+
+        actual_tokens = 0
+
+        # Try to get actual tokens from context_usage_tracker's latest snapshot FOR THIS SESSION
+        # This uses the previous LLM call's token count as baseline - if it was already high,
+        # the next call will be at least as large (probably larger with new messages)
+        try:
+            # Access the plugin registry via agent's system_config
+            if context.agent and hasattr(context.agent, 'system_config'):
+                system_config = context.agent.system_config
+                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
+                    registry = system_config.mcp_registry
+
+                    # Get context_usage_tracker plugin
+                    usage_tracker_plugin = registry.get_server('context_usage_tracker')
+                    if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
+                        tracker = usage_tracker_plugin.tracker
+
+                        # Get latest snapshot FOR THIS SESSION (not global _latest_snapshot!)
+                        # This filters by session_id to avoid interference from sub-agents
+                        latest = tracker.get_latest(session_id=context.session_id)
+                        if latest:
+                            # Check if data is stale (context was optimized since last LLM call)
+                            # Stale data doesn't reflect current message list, so ignore it
+                            if latest.get('is_stale'):
+                                logger.debug(
+                                    f"[ContextSummarizer] Ignoring stale usage_tracker data for session "
+                                    f"{context.session_id} (context was already optimized)"
+                                )
+                            else:
+                                actual_tokens = latest.get('prompt_tokens', 0)
+                                logger.debug(
+                                    f"[ContextSummarizer] Got actual tokens from usage_tracker: {actual_tokens} "
+                                    f"(estimated: {estimated_tokens})"
+                                )
+        except Exception as e:
+            logger.debug(f"[ContextSummarizer] Could not get actual tokens from usage_tracker: {e}")
+
+        # Return the MAXIMUM to ensure we trigger on either metric
+        max_tokens = max(actual_tokens, estimated_tokens)
+
+        if actual_tokens > 0 and estimated_tokens > 0:
+            logger.info(
+                f"[ContextSummarizer] Session {context.session_id}: Using max tokens - "
+                f"actual={actual_tokens}, estimated={estimated_tokens}, using={max_tokens}"
+            )
+
+        return max_tokens
+    
+    def _invalidate_usage_tracker_session(
+        self, 
+        context: HookContext, 
+        session_id: str, 
+        reason: str
+    ) -> None:
+        """Mark usage tracker data as stale after context optimization.
+        
+        This prevents subsequent hooks from using outdated token counts
+        that don't reflect the optimized message list.
+        
+        Args:
+            context: Hook context with agent reference
+            session_id: Session to invalidate
+            reason: Reason for invalidation (for logging)
+        """
+        try:
+            if context.agent and hasattr(context.agent, 'system_config'):
+                system_config = context.agent.system_config
+                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
+                    registry = system_config.mcp_registry
+                    usage_tracker_plugin = registry.get_server('context_usage_tracker')
+                    if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
+                        usage_tracker_plugin.tracker.invalidate_session(session_id, reason)
+        except Exception as e:
+            logger.debug(f"[ContextSummarizer] Could not invalidate usage_tracker session: {e}")
+
     def _estimate_tokens(self, messages: List[Dict]) -> int:
         """Estimate token count for messages using agent system's token estimation.
 
@@ -331,7 +603,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         messages: List[Dict]
     ) -> tuple[List[Dict], List[Dict], List[Dict]]:
         """Categorize messages into system, recent, and old.
-        
+
         Ensures tool_calls/tool response pairs stay together to prevent
         orphaned tool responses after summarization.
 
@@ -365,23 +637,23 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 for tc in msg.get('tool_calls', []):
                     if isinstance(tc, dict) and 'id' in tc:
                         tool_call_map[tc['id']] = i
-        
+
         # Find tool responses and ensure they're in the same category as their tool_calls
         indices_to_move_to_old: set[int] = set()
         indices_to_move_to_recent: set[int] = set()
-        
+
         for i, msg in enumerate(messages):
             if msg.get('role') == 'tool':
                 tool_call_id = msg.get('tool_call_id')
                 if tool_call_id and tool_call_id in tool_call_map:
                     assistant_idx = tool_call_map[tool_call_id]
-                    
+
                     # Check where assistant and tool are categorized
                     assistant_in_old = any(idx == assistant_idx for idx, _ in old_msgs)
                     assistant_in_recent = any(idx == assistant_idx for idx, _ in recent_msgs)
                     tool_in_old = any(idx == i for idx, _ in old_msgs)
                     tool_in_recent = any(idx == i for idx, _ in recent_msgs)
-                    
+
                     # If assistant is old but tool is recent, move tool to old
                     if assistant_in_old and tool_in_recent:
                         indices_to_move_to_old.add(i)
@@ -389,23 +661,23 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     elif assistant_in_recent and tool_in_old:
                         indices_to_move_to_recent.add(i)
                         indices_to_move_to_recent.add(assistant_idx)
-        
+
         # Apply moves
         if indices_to_move_to_old or indices_to_move_to_recent:
             # Rebuild categories with moves applied
             recent_msgs_filtered = [(i, m) for i, m in recent_msgs if i not in indices_to_move_to_old]
             old_msgs_filtered = [(i, m) for i, m in old_msgs if i not in indices_to_move_to_recent]
-            
+
             # Add moved messages
             for i in indices_to_move_to_old:
                 msg = messages[i]
                 old_msgs_filtered.append((i, msg))
-            
+
             for i in indices_to_move_to_recent:
                 msg = messages[i]
                 if not any(idx == i for idx, _ in recent_msgs_filtered):
                     recent_msgs_filtered.append((i, msg))
-            
+
             # Sort by original index to maintain order
             recent_msgs = sorted(recent_msgs_filtered, key=lambda x: x[0])
             old_msgs = sorted(old_msgs_filtered, key=lambda x: x[0])
@@ -417,93 +689,463 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             [msg for _, msg in old_msgs]
         )
 
+    def _remove_orphaned_tool_calls(self, messages: List[Dict]) -> List[Dict]:
+        """Remove tool_calls that have no corresponding tool responses.
+        
+        This prevents orphaned tool_calls from causing validation issues
+        after summarization (e.g., after cancellation or context_summarizer runs).
+        
+        Args:
+            messages: List of messages
+            
+        Returns:
+            Cleaned list with orphaned tool_calls removed
+        """
+        # Build set of tool_call_ids that have responses
+        responded_tool_call_ids: set[str] = set()
+        for msg in messages:
+            if msg.get('role') == 'tool' and msg.get('tool_call_id'):
+                responded_tool_call_ids.add(msg['tool_call_id'])
+        
+        # Clean assistant messages: remove tool_calls without responses
+        cleaned_messages = []
+        for msg in messages:
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                # Filter tool_calls to only those with responses
+                original_tool_calls = msg.get('tool_calls', [])
+                kept_tool_calls = []
+                removed_count = 0
+                
+                for tc in original_tool_calls:
+                    if isinstance(tc, dict) and tc.get('id'):
+                        if tc['id'] in responded_tool_call_ids:
+                            kept_tool_calls.append(tc)
+                        else:
+                            removed_count += 1
+                            logger.debug(
+                                f"[ContextSummarizer] Removing orphaned tool_call: {tc.get('id')} "
+                                f"(function: {tc.get('function', {}).get('name', 'unknown')})"
+                            )
+                
+                # Create cleaned message
+                if removed_count > 0:
+                    cleaned_msg = msg.copy()
+                    if kept_tool_calls:
+                        cleaned_msg['tool_calls'] = kept_tool_calls
+                    else:
+                        # No tool_calls left, remove the field entirely
+                        cleaned_msg.pop('tool_calls', None)
+                    cleaned_messages.append(cleaned_msg)
+                    
+                    if removed_count > 0:
+                        logger.info(
+                            f"[ContextSummarizer] Cleaned assistant message: "
+                            f"removed {removed_count} orphaned tool_call(s), "
+                            f"kept {len(kept_tool_calls)} with responses"
+                        )
+                else:
+                    # No changes needed
+                    cleaned_messages.append(msg)
+            else:
+                # Non-assistant or no tool_calls, keep as-is
+                cleaned_messages.append(msg)
+        
+        return cleaned_messages
+
+    def _create_smart_chunks(self, messages: List[dict], chunk_size: int) -> List[List[dict]]:
+        """Create chunks that keep tool_calls and tool responses together.
+
+        This ensures that if an assistant message with tool_calls is in a chunk,
+        all its corresponding tool responses are also in the same chunk.
+
+        Args:
+            messages: Messages to chunk
+            chunk_size: Target chunk size (may be exceeded to keep pairs together)
+
+        Returns:
+            List of message chunks
+        """
+        if not messages:
+            return []
+
+        # Build mapping: tool_call_id -> assistant message index
+        tool_call_map: Dict[str, int] = {}
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                for tc in msg.get('tool_calls', []):
+                    if isinstance(tc, dict) and 'id' in tc:
+                        tool_call_map[tc['id']] = i
+
+        # Build groups: each group is a list of message indices that must stay together
+        # Start with each message in its own group
+        groups: List[set[int]] = [{i} for i in range(len(messages))]
+
+        # Merge groups: if a tool response belongs to an assistant, merge their groups
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'tool':
+                tool_call_id = msg.get('tool_call_id')
+                if tool_call_id and tool_call_id in tool_call_map:
+                    assistant_idx = tool_call_map[tool_call_id]
+                    # Merge groups: add tool response index to assistant's group
+                    groups[assistant_idx].add(i)
+                    groups[i] = groups[assistant_idx]  # Point to same group object
+
+        # Deduplicate groups (multiple indices may point to same set object)
+        unique_groups = []
+        seen = set()
+        for group in groups:
+            group_id = id(group)
+            if group_id not in seen:
+                seen.add(group_id)
+                unique_groups.append(sorted(list(group)))
+
+        # Now create chunks by greedily packing groups
+        chunks: List[List[dict]] = []
+        current_chunk: List[dict] = []
+        current_size = 0
+
+        for group_indices in unique_groups:
+            group_msgs = [messages[i] for i in group_indices]
+            group_size = len(group_msgs)
+
+            # If adding this group exceeds chunk_size and current_chunk is not empty, start new chunk
+            if current_size > 0 and current_size + group_size > chunk_size:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_size = 0
+
+            # Add group to current chunk
+            current_chunk.extend(group_msgs)
+            current_size += group_size
+
+        # Add final chunk if not empty
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
+    def _get_summarizer_llm(self, context: HookContext):
+        """Get or create LLM instance with configured llm_profile.
+        
+        Args:
+            context: Hook context with agent and system_config
+            
+        Returns:
+            LLM instance configured with self.llm_profile
+        """
+        # Cache LLM instance for reuse
+        if self._summarizer_llm is not None:
+            return self._summarizer_llm
+            
+        # Get system_config from context
+        if not context.agent or not hasattr(context.agent, 'system_config'):
+            logger.warning("[ContextSummarizer] No system_config available, falling back to context.llm")
+            return context.llm
+            
+        system_config = context.agent.system_config
+        
+        # Create LLM instance with configured profile
+        try:
+            from agent_system.llm.factory import resolve_llm_config_for_agent
+            from agent_system.llm.clients import make_llm
+            from agent_system.config.models import AgentConfig
+            
+            # Create a temporary agent config with our llm_profile
+            temp_agent_config = AgentConfig(
+                default_llm_profile=self.llm_profile,
+                max_steps=1  # Dummy value, not used for LLM creation
+            )
+            
+            # Resolve LLM config using the profile
+            llm_kwargs = resolve_llm_config_for_agent(system_config, temp_agent_config)
+            
+            # Get SSL verify setting
+            ssl_verify = None
+            try:
+                ssl_verify = system_config.network.ssl_verify
+            except Exception:
+                pass
+            
+            # Create LLM instance
+            self._summarizer_llm = make_llm(
+                llm_kwargs["provider"],
+                llm_kwargs["model"],
+                llm_kwargs["api_key"],
+                llm_kwargs["base_url"],
+                llm_kwargs["context_window"],
+                llm_kwargs["ollama_mode"],
+                llm_kwargs["request_timeout"],
+                ssl_verify=ssl_verify,
+                httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
+                capabilities=llm_kwargs.get("capabilities"),
+            )
+            
+            logger.info(
+                f"[ContextSummarizer] Created LLM instance with profile '{self.llm_profile}' "
+                f"(model: {self._summarizer_llm.model_name if hasattr(self._summarizer_llm, 'model_name') else 'unknown'})"
+            )
+            
+            return self._summarizer_llm
+        except Exception as e:
+            logger.error(f"[ContextSummarizer] Failed to create LLM with profile '{self.llm_profile}': {e}")
+            logger.warning("[ContextSummarizer] Falling back to context.llm")
+            return context.llm
+
     async def _summarize_messages(
         self,
-        messages: List[Dict],
-        context: HookContext
-    ) -> tuple[List[Dict], Dict[str, Any]]:
-        """Summarize a list of messages using LLM.
+        messages: List[dict],
+        context: HookContext,
+        scope: StatusScope
+    ) -> tuple[List[dict], Dict[str, Any]]:
+        """Summarize messages in chunks using LLM.
+        
+        Uses parallel processing to submit all chunks to the LLM simultaneously,
+        which enables efficient batch API usage when configured.
+        
+        If chunk count exceeds max_chunks, automatically increases chunk_size
+        to reduce the number of parallel LLM calls.
 
         Args:
             messages: Messages to summarize
-            context: Original hook context for LLM access
+            context: Hook context with LLM access
+            scope: StatusScope for progress updates
 
         Returns:
             Tuple of (summarized_messages, statistics)
         """
-        if not context.llm:
-            logger.warning("[ContextSummarizer] No LLM available in context, skipping summarization")
+        # Get LLM with configured profile (not agent's LLM!)
+        summarizer_llm = self._get_summarizer_llm(context)
+        
+        if not summarizer_llm:
+            logger.warning("[ContextSummarizer] No LLM available, skipping summarization")
             return messages, {'summary_count': 0, 'reason': 'no_llm'}
 
+        # Calculate effective chunk_size to respect max_chunks limit
+        effective_chunk_size = self.chunk_size
+        if self.max_chunks > 0 and len(messages) > 0:
+            # Calculate minimum chunk size needed to stay within max_chunks
+            min_chunk_size_for_limit = (len(messages) + self.max_chunks - 1) // self.max_chunks
+            if min_chunk_size_for_limit > effective_chunk_size:
+                logger.info(
+                    f"[ContextSummarizer] Increasing chunk_size from {effective_chunk_size} to "
+                    f"{min_chunk_size_for_limit} to respect max_chunks={self.max_chunks} "
+                    f"(messages={len(messages)})"
+                )
+                effective_chunk_size = min_chunk_size_for_limit
+
+        # CRITICAL: Create chunks that keep tool_calls/tool response pairs together
+        chunks = self._create_smart_chunks(messages, effective_chunk_size)
+
+        total_chunks = len(chunks)
+        
+        # Log if we had to limit chunks
+        if total_chunks > self.max_chunks and self.max_chunks > 0:
+            logger.warning(
+                f"[ContextSummarizer] Chunk count ({total_chunks}) still exceeds max_chunks "
+                f"({self.max_chunks}) due to tool_call grouping. Proceeding anyway."
+            )
+
+        # Get cancellation token from context (if available)
+        cancellation_token = getattr(context, 'cancellation_token', None)
+
+        # Check for cancellation before starting
+        if cancellation_token and cancellation_token.is_cancelled:
+            logger.info("[ContextSummarizer] Cancellation requested before starting")
+            return messages, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0}
+
+        # Send progress update
+        await scope.progress(
+            f"Summarizing {total_chunks} chunks in parallel ({len(messages)} messages total)..."
+        )
+        await asyncio.sleep(0.01)
+
+        # Process ALL chunks in parallel for batch API efficiency
+        summarized, stats = await self._summarize_chunks_parallel(
+            chunks, summarizer_llm, cancellation_token, scope, total_chunks
+        )
+
+        return summarized, stats
+
+    async def _summarize_single_chunk(
+        self,
+        chunk: List[dict],
+        chunk_idx: int,
+        total_chunks: int,
+        summarizer_llm,
+        cancellation_token
+    ) -> dict:
+        """Summarize a single chunk of messages.
+        
+        Args:
+            chunk: Messages to summarize
+            chunk_idx: Index of this chunk (0-based)
+            total_chunks: Total number of chunks
+            summarizer_llm: LLM instance to use
+            cancellation_token: Optional cancellation token
+            
+        Returns:
+            Dict with 'success', 'result' (summary message or original chunk), and 'error' if failed
+        """
+        chunk_num = chunk_idx + 1
+        
+        if len(chunk) < 2:
+            # Too small to summarize, keep as-is
+            return {
+                'success': True,
+                'result': chunk,
+                'is_summary': False,
+                'chunk_idx': chunk_idx
+            }
+        
+        try:
+            # Format messages for prompt
+            formatted_msgs = self._format_messages_for_summary(chunk)
+
+            # Create summarization prompt
+            prompt = self.prompt_template.replace('{messages}', formatted_msgs)
+
+            # Call LLM for summarization using chat() method with cancellation support
+            from agent_system.llm.models import ChatMessage
+            summary_response = await summarizer_llm.chat(
+                messages=[ChatMessage(role='user', content=prompt, timestamp=datetime.now())],
+                cancellation_token=cancellation_token
+            )
+
+            summary_content = summary_response if isinstance(summary_response, str) else str(summary_response)
+
+            # Create summary marker with message count
+            marker = f"[Summary of {len(chunk)} older messages (chunk {chunk_num}/{total_chunks})]"
+
+            # Create summary message as 'user' role so it gets persisted in sessions
+            summary_msg = {
+                'role': 'user',
+                'name': '__context_summary__',  # Special marker for UI styling
+                'content': f"{marker}\n\n{summary_content}",
+                'metadata': {
+                    'is_summary': True,
+                    'summarized_count': len(chunk),
+                    'chunk_index': chunk_idx,
+                    'total_chunks': total_chunks
+                }
+            }
+
+            # Store original messages in metadata if configured
+            if self.store_metadata:
+                summary_msg['metadata']['original_messages'] = chunk
+
+            logger.debug(
+                f"[ContextSummarizer] Summarized chunk {chunk_num}/{total_chunks}: "
+                f"{len(chunk)} messages → 1 summary"
+            )
+
+            return {
+                'success': True,
+                'result': [summary_msg],
+                'is_summary': True,
+                'chunk_idx': chunk_idx
+            }
+
+        except asyncio.CancelledError:
+            logger.info(f"[ContextSummarizer] Chunk {chunk_num}/{total_chunks} cancelled")
+            return {
+                'success': False,
+                'result': chunk,
+                'is_summary': False,
+                'chunk_idx': chunk_idx,
+                'error': 'cancelled'
+            }
+        except Exception as e:
+            logger.error(f"[ContextSummarizer] Error summarizing chunk {chunk_num}: {e}", exc_info=True)
+            # Fallback: keep original messages
+            return {
+                'success': False,
+                'result': chunk,
+                'is_summary': False,
+                'chunk_idx': chunk_idx,
+                'error': str(e)
+            }
+
+    async def _summarize_chunks_parallel(
+        self,
+        chunks: List[List[dict]],
+        summarizer_llm,
+        cancellation_token,
+        scope: StatusScope,
+        total_chunks: int
+    ) -> tuple[List[dict], Dict[str, Any]]:
+        """Process all chunks in parallel for batch API efficiency.
+        
+        Args:
+            chunks: List of message chunks to summarize
+            summarizer_llm: LLM instance to use
+            cancellation_token: Optional cancellation token
+            scope: StatusScope for progress updates
+            total_chunks: Total number of chunks
+            
+        Returns:
+            Tuple of (summarized_messages, statistics)
+        """
+        # Create tasks for all chunks
+        tasks = [
+            self._summarize_single_chunk(
+                chunk, idx, total_chunks, summarizer_llm, cancellation_token
+            )
+            for idx, chunk in enumerate(chunks)
+        ]
+
+        logger.info(f"[ContextSummarizer] Starting parallel summarization of {len(tasks)} chunks")
+
+        # Execute all tasks in parallel
+        # Using return_exceptions=True to handle individual failures gracefully
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results maintaining chunk order
         summarized = []
         summary_count = 0
-        total_chunks = (len(messages) + self.chunk_size - 1) // self.chunk_size
+        failed_chunks = 0
+        cancelled = False
 
-        # Process messages in chunks
-        for chunk_idx in range(0, len(messages), self.chunk_size):
-            chunk = messages[chunk_idx:chunk_idx + self.chunk_size]
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                # Task raised an exception
+                logger.error(f"[ContextSummarizer] Chunk {idx + 1} raised exception: {result}")
+                summarized.extend(chunks[idx])  # Keep original
+                failed_chunks += 1
+            elif isinstance(result, dict):
+                if result.get('error') == 'cancelled':
+                    cancelled = True
+                
+                # Append result messages (either summary or original)
+                summarized.extend(result['result'])
+                
+                if result.get('is_summary'):
+                    summary_count += 1
+                elif not result.get('success'):
+                    failed_chunks += 1
+            else:
+                # Unexpected result type
+                logger.warning(f"[ContextSummarizer] Unexpected result type for chunk {idx + 1}: {type(result)}")
+                summarized.extend(chunks[idx])
+                failed_chunks += 1
 
-            if len(chunk) < 2:
-                # Too small to summarize, keep as-is
-                summarized.extend(chunk)
-                continue
-
-            try:
-                # Format messages for prompt
-                formatted_msgs = self._format_messages_for_summary(chunk)
-
-                # Create summarization prompt
-                prompt = self.prompt_template.replace('{messages}', formatted_msgs)
-
-                # Call LLM for summarization using chat() method
-                from agent_system.llm.models import ChatMessage
-                summary_response = await context.llm.chat(
-                    messages=[ChatMessage(role='user', content=prompt)],
-                    cancellation_token=None
-                )
-
-                summary_content = summary_response if isinstance(summary_response, str) else str(summary_response)
-
-                # Create summary marker with message count
-                # Note: Messages typically don't have timestamps, so we just show count
-                chunk_num = chunk_idx // self.chunk_size + 1
-                marker = f"[Summary of {len(chunk)} older messages (chunk {chunk_num}/{total_chunks})]"
-
-                # Create summary message
-                summary_msg = {
-                    'role': 'system',
-                    'content': f"{marker}\n\n{summary_content}",
-                    'metadata': {
-                        'is_summary': True,
-                        'summarized_count': len(chunk),
-                        'chunk_index': chunk_idx // self.chunk_size,
-                        'total_chunks': total_chunks
-                    }
-                }
-
-                # Store original messages in metadata if configured
-                if self.store_metadata:
-                    summary_msg['metadata']['original_messages'] = chunk
-
-                summarized.append(summary_msg)
-                summary_count += 1
-
-                logger.debug(
-                    f"[ContextSummarizer] Summarized chunk {chunk_idx // self.chunk_size + 1}/{total_chunks}: "
-                    f"{len(chunk)} messages → 1 summary"
-                )
-
-            except Exception as e:
-                logger.error(f"[ContextSummarizer] Error summarizing chunk: {e}", exc_info=True)
-                # Fallback: keep original messages
-                summarized.extend(chunk)
+        # Send completion progress
+        await scope.progress(
+            f"Completed {summary_count}/{total_chunks} chunks successfully"
+        )
 
         stats = {
             'summary_count': summary_count,
             'total_chunks': total_chunks,
             'successful_chunks': summary_count,
-            'failed_chunks': total_chunks - summary_count
+            'failed_chunks': failed_chunks,
+            'parallel': True,
+            'cancelled': cancelled
         }
+
+        logger.info(
+            f"[ContextSummarizer] Parallel summarization complete: "
+            f"{summary_count}/{total_chunks} successful, {failed_chunks} failed"
+        )
 
         return summarized, stats
 

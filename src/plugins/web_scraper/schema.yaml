@@ -62,3 +62,8 @@ tools:
             description: "Custom cache TTL in seconds (overrides default)"
         required: [url]
         additionalProperties: false
+config:
+  ssl_verify: true
+  proxies:
+  cache_ttl: 1800
+  cache_enabled: true

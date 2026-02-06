@@ -5,14 +5,58 @@ web_ui:
     enabled: true
     text: "Memories"
     icon: "💾"
-  
+
   panel:
     enabled: true
     title: "Memory Manager"
-    endpoint: "/plugins/{{ name }}/panel"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     width: "1000px"
     height: "800px"
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "get_panel"
+      response_type: "html"
+      description: "Render the Memory management dashboard"
+
+    - path: "/memories"
+      method: "GET"
+      handler: "get_memories"
+      response_type: "json"
+      description: "Get memories with pagination and sorting"
+
+    - path: "/memories/{memory_id}"
+      method: "GET"
+      handler: "get_memory"
+      response_type: "json"
+      description: "Get a single memory by ID"
+
+    - path: "/memories/search"
+      method: "POST"
+      handler: "search_memories"
+      response_type: "json"
+      description: "Semantic search for memories"
+
+    - path: "/memories"
+      method: "POST"
+      handler: "create_memory"
+      response_type: "json"
+      description: "Create a new memory"
+
+    - path: "/memories/{memory_id}"
+      method: "DELETE"
+      handler: "delete_memory"
+      response_type: "json"
+      description: "Delete a memory"
+
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get summary statistics"
 
 hooks:
   - name: inject_memory_context
@@ -26,32 +70,41 @@ hooks:
       before: ["message_validation"]
 
 config:
+  storage_path:
+    type: string
+    default: "data/memories"
+    description: "Directory path for storing memory metadata and vector embeddings"
+
   max_memories:
     type: integer
     default: 10
     description: "Maximum number of memories to inject into system prompt"
     minimum: 1
     maximum: 50
-  
+
   max_memories_per_session:
     type: integer
     default: 5000
     description: "Maximum memories allowed per session"
     minimum: 10
     maximum: 10000
-  
+
   auto_extract_keywords:
     type: boolean
     default: true
     description: "Automatically extract keywords from content if not provided"
-  
+
+  # Used for search operation - returns top N results by vector similarity
+  # Requires ChromaDB Python package for vector embeddings
   search_n_results:
     type: integer
     default: 5
     description: "Default number of search results to return"
     minimum: 1
     maximum: 20
-  
+
+  # When enabled, inject_memory_context hook uses vector similarity to find relevant memories
+  # When disabled, injects most recently accessed memories
   use_semantic_injection:
     type: boolean
     default: true
@@ -78,20 +131,20 @@ tools:
               - list: Show all memories
               - delete: Remove a memory
               - update: Edit an existing memory (partial update supported - only provide fields to change)
-          
+
           # For store operation
           title:
             type: string
             minLength: 1
             maxLength: 200
             description: "Memory title (required for store, optional for update)"
-          
+
           content:
             type: string
             minLength: 1
             maxLength: 5000
             description: "Memory content (required for store, optional for update)"
-          
+
           keywords:
             type: array
             items:
@@ -99,14 +152,14 @@ tools:
               maxLength: 50
             maxItems: 20
             description: "Keywords for categorization (optional for store/update, auto-extracted if not provided)"
-          
+
           importance:
             type: integer
             minimum: 1
             maximum: 10
             default: 5
             description: "Importance level 1-10 (optional for store/update, default: 5)"
-          
+
           tags:
             type: array
             items:
@@ -114,27 +167,27 @@ tools:
               maxLength: 50
             maxItems: 20
             description: "Tags for categorization (optional for store/update)"
-          
+
           # For recall/delete/update operations
           memory_id:
             type: string
             pattern: "^mem_[0-9]{3,8}(_[0-9]{6}_[a-f0-9]{8})?$"
             description: "Memory ID (required for recall/delete/update operations)"
-          
+
           # For search operation
           query:
             type: string
             minLength: 1
             maxLength: 500
             description: "Search query for semantic search (required for search operation)"
-          
+
           n_results:
             type: integer
             minimum: 1
             maximum: 20
             default: 3
             description: "Number of search results to return (for search operation)"
-          
+
           # For list operation
           limit:
             type: integer
@@ -142,24 +195,24 @@ tools:
             maximum: 100
             default: 50
             description: "Maximum results to return (for list operation)"
-          
+
           offset:
             type: integer
             minimum: 0
             default: 0
             description: "Number of results to skip for pagination (for list operation)"
-          
+
           sort_by:
             type: string
             enum: ["created", "updated", "accessed", "importance"]
             default: "accessed"
             description: "Sort criterion for list operation"
-          
+
           sort_order:
             type: string
             enum: ["asc", "desc"]
             default: "desc"
             description: "Sort order for list operation"
-        
+
         required: ["operation"]
         additionalProperties: false

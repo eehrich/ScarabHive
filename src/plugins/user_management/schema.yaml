@@ -21,7 +21,7 @@ web_ui:
         section: "admin"  # Admin section within user menu
         label: "Manage Users"
         action: "openPanel"
-        panel_id: "user_management"
+        panel_id: "{{ name }}"
         icon: "👥"
         requires_admin: true
         order: 50
@@ -31,6 +31,7 @@ web_ui:
   panel:
     enabled: true
     title: "User Management"
+    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
     type: "iframe"  # Load as iframe - X-Frame-Options set to SAMEORIGIN in endpoints.py
     description: "Admin dashboard for managing user accounts, roles, and permissions"
@@ -40,27 +41,67 @@ web_ui:
   requires_role: "admin"
   
   endpoints:
-    - path: "/user-management"
+    - path: "/"
       method: "GET"
+      handler: "user_management_home"
+      response_type: "html"
       description: "Main user management dashboard UI"
-    - path: "/user-management/users"
+    
+    - path: "/users/list"
       method: "GET"
+      handler: "list_users"
+      response_type: "json"
       description: "List all users (admin only)"
-    - path: "/user-management/users"
+    
+    - path: "/users"
       method: "POST"
+      handler: "create_user"
+      response_type: "json"
       description: "Create new user (admin only)"
-    - path: "/user-management/users/{user_id}"
-      method: "PUT"
-      description: "Update user details (admin only)"
-    - path: "/user-management/users/{user_id}"
-      method: "DELETE"
-      description: "Delete user (admin only)"
-    - path: "/user-management/users/{user_id}/activate"
-      method: "POST"
-      description: "Activate user account (admin only)"
-    - path: "/user-management/users/{user_id}/deactivate"
-      method: "POST"
-      description: "Deactivate user account (admin only)"
-    - path: "/static/{file_path}"
+    
+    - path: "/users/{user_id}"
       method: "GET"
+      handler: "get_user"
+      response_type: "json"
+      description: "Get user details (admin only)"
+    
+    - path: "/users/{user_id}"
+      method: "PUT"
+      handler: "update_user"
+      response_type: "json"
+      description: "Update user details (admin only)"
+    
+    - path: "/users/{user_id}/toggle-active"
+      method: "POST"
+      handler: "toggle_user_active"
+      response_type: "json"
+      description: "Toggle user active status (admin only)"
+    
+    - path: "/users/{user_id}/change-role"
+      method: "POST"
+      handler: "change_user_role"
+      response_type: "json"
+      description: "Change user role (admin only)"
+    
+    - path: "/users/{user_id}"
+      method: "DELETE"
+      handler: "delete_user"
+      response_type: "json"
+      description: "Delete user (admin only)"
+    
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get user statistics (admin only)"
+    
+    - path: "/static/{file_path:path}"
+      method: "GET"
+      handler: "serve_static"
+      response_type: "response"
       description: "Static assets (CSS, JS, images)"
+
+config:
+  items_per_page: 20
+  allow_self_delete: false
+  show_api_keys: true

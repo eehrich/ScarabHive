@@ -34,32 +34,32 @@ def get_hook_registry() -> HookRegistry:
 class HookRegistry:
     """
     Central registry for managing plugin hooks.
-    
+
     Responsibilities:
     - Register hooks with ordering specifications
     - Resolve dependency ordering using topological sort
     - Execute hooks in correct order with error isolation
     - Track hook execution timing and errors
-    
+
     Thread-safe for registration, execution managed by asyncio.
     """
-    
+
     def __init__(self, default_timeout: float = 30.0):
         """
         Initialize hook registry.
-        
+
         Args:
             default_timeout: Default timeout for hook execution in seconds
         """
         self.default_timeout = default_timeout
-        
+
         # Hook storage: hook_type -> list of (hook_name, hook_instance, order_spec, metadata)
         # metadata contains: enabled, timeout, description
         self._hooks: Dict[HookType, List[tuple[str, PluginHook, Dict[str, List[str]], Dict[str, Any]]]] = defaultdict(list)
-        
+
         # Lock for thread-safe registration
         self._lock = asyncio.Lock()
-        
+
         # Execution statistics
         self._stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
             "executions": 0,
@@ -68,7 +68,7 @@ class HookRegistry:
             "total_time": 0.0,
             "avg_time": 0.0,
         })
-    
+
     async def register_hook(
         self,
         hook_type: HookType,
@@ -83,7 +83,7 @@ class HookRegistry:
     ) -> None:
         """
         Register a hook for a specific lifecycle point.
-        
+
         Args:
             hook_type: Type of hook (PRE_LLM_CALL, POST_LLM_CALL, etc.)
             hook_name: Unique name for this hook
@@ -94,7 +94,7 @@ class HookRegistry:
             description: Human-readable description of the hook
             category: Optional category/tag for grouping hooks (e.g., "inject", "optimize")
             **extra_metadata: Additional metadata to store with the hook
-            
+
         Raises:
             ValueError: If hook with same name already registered for this type
         """
@@ -103,17 +103,17 @@ class HookRegistry:
             existing_names = [name for name, _, _, _ in self._hooks[hook_type]]
             if hook_name in existing_names:
                 raise ValueError(f"Hook '{hook_name}' already registered for {hook_type.value}")
-            
+
             # Use hook's own order spec if not provided
             if order_spec is None:
                 order_spec = hook.get_order_spec()
-            
+
             # Ensure order spec has required keys
             if "before" not in order_spec:
                 order_spec["before"] = []
             if "after" not in order_spec:
                 order_spec["after"] = []
-            
+
             # Build metadata
             metadata = {
                 "enabled": enabled,
@@ -122,23 +122,23 @@ class HookRegistry:
                 "category": category,  # Store category for dependency resolution
                 **extra_metadata  # Include any additional metadata
             }
-            
+
             # Register the hook with metadata
             self._hooks[hook_type].append((hook_name, hook, order_spec, metadata))
-            
+
             logger.debug(
                 f"Registered hook '{hook_name}' for {hook_type.value} "
                 f"(category={category}, before={order_spec.get('before', [])}, after={order_spec.get('after', [])}), enabled={enabled}"
             )
-    
+
     async def unregister_hook(self, hook_type: HookType, hook_name: str) -> bool:
         """
         Unregister a hook.
-        
+
         Args:
             hook_type: Type of hook
             hook_name: Name of hook to unregister
-            
+
         Returns:
             True if hook was found and removed, False otherwise
         """
@@ -150,7 +150,7 @@ class HookRegistry:
                     logger.debug(f"Unregistered hook '{hook_name}' from {hook_type.value}")
                     return True
             return False
-    
+
     async def execute_hooks(
         self,
         hook_type: HookType,
@@ -160,16 +160,16 @@ class HookRegistry:
     ) -> HookContext:
         """
         Execute all registered hooks for a specific type in dependency order.
-        
+
         Args:
             hook_type: Type of hooks to execute
             context: Hook context to pass to hooks
             timeout: Optional timeout override (seconds)
             hook_filter: Optional filter function(hook_name: str) -> bool to skip hooks
-            
+
         Returns:
             Modified context after all hooks executed
-            
+
         Note:
             Hooks are executed sequentially in dependency order.
             Errors in individual hooks are logged but do not stop execution.
@@ -177,15 +177,15 @@ class HookRegistry:
             hook_filter allows agent-specific hook filtering (e.g., disabled_hooks)
         """
         timeout = timeout or self.default_timeout
-        
+
         # Get hooks for this type
         async with self._lock:
             hooks_list = list(self._hooks[hook_type])
-        
+
         if not hooks_list:
             logger.debug(f"No hooks registered for {hook_type.value}")
             return context
-        
+
         # Resolve execution order
         try:
             ordered_hooks = self._topological_sort(hooks_list)
@@ -193,18 +193,18 @@ class HookRegistry:
             logger.error(f"Circular dependency in hooks for {hook_type.value}: {e}")
             # Continue with original order if we can't resolve dependencies
             ordered_hooks = [(name, hook, meta) for name, hook, _, meta in hooks_list]
-        
+
         logger.debug(
             f"Executing {len(ordered_hooks)} hooks for {hook_type.value}: "
             f"{[name for name, _, _ in ordered_hooks]}"
         )
-        
+
         # Execute hooks in order
         current_context = context
         for hook_name, hook_instance, metadata in ordered_hooks:
             # Get default enabled state from hook metadata
             hook_enabled_by_default = metadata.get("enabled", True)
-            
+
             # Apply agent-specific hook filter if provided
             # Pass default state so filter can make informed decision
             if hook_filter:
@@ -219,7 +219,7 @@ class HookRegistry:
                         # Old signature: hook_filter(hook_name)
                         # Filter will handle override logic internally
                         agent_wants_hook = hook_filter(hook_name)
-                        
+
                         if agent_wants_hook and not hook_enabled_by_default:
                             logger.debug(f"Enabling hook '{hook_name}' (enabled by agent config override)")
                             should_execute = True
@@ -235,7 +235,7 @@ class HookRegistry:
                     # Fallback: assume new signature and log error
                     logger.warning(f"Error inspecting hook_filter signature: {e}. Assuming new signature.")
                     should_execute = hook_filter(hook_name, hook_enabled_by_default)
-                
+
                 if not should_execute:
                     continue
             else:
@@ -243,24 +243,39 @@ class HookRegistry:
                 if not hook_enabled_by_default:
                     logger.debug(f"Skipping disabled hook '{hook_name}'")
                     continue
-            
+
             # Use hook-specific timeout if available, otherwise use registry default
             hook_timeout = metadata.get("timeout", timeout)
-            
+
             try:
                 # Deep copy context for isolation
                 hook_context = self._deep_copy_context(current_context)
-                
+
+                # Inject per-agent hook config from agent's hooks.overrides.
+                # This strips standard hook-system keys (enabled, timeout,
+                # order) and exposes only custom config to the handler via
+                # context.hook_config.  Allows agents to pass arbitrary
+                # config to any hook without framework changes.
+                hook_context.hook_config = self._extract_agent_hook_config(
+                    hook_context, hook_name
+                )
+
+                # Tell SchemaBasedPluginHook which specific hook to
+                # dispatch (strip plugin prefix to get the short name).
+                hook_context.target_hook_name = (
+                    hook_name.rsplit(".", 1)[-1] if "." in hook_name else hook_name
+                )
+
                 # Execute the appropriate hook method with timeout
                 start_time = asyncio.get_event_loop().time()
-                
+
                 result = await asyncio.wait_for(
                     self._execute_hook_method(hook_type, hook_instance, hook_context),
                     timeout=hook_timeout
                 )
-                
+
                 exec_time = asyncio.get_event_loop().time() - start_time
-                
+
                 # Validate hook result
                 validation_error = self._validate_hook_result(result, hook_name)
                 if validation_error:
@@ -270,10 +285,10 @@ class HookRegistry:
                     )
                     self._update_stats(hook_name, success=False, exec_time=exec_time)
                     continue
-                
+
                 # Update statistics
                 self._update_stats(hook_name, success=result.success, exec_time=exec_time)
-                
+
                 if result.success:
                     if result.modified and result.context:
                         # Audit log the modification
@@ -286,11 +301,11 @@ class HookRegistry:
                         )
                         # Use modified context for next hook
                         current_context = result.context
-                        
+
                         # Merge hook result metadata into context metadata
                         if result.metadata:
                             current_context.metadata.update(result.metadata)
-                        
+
                         logger.debug(f"Hook '{hook_name}' modified context")
                     else:
                         # Even if not modified, update metadata from hook result
@@ -302,14 +317,14 @@ class HookRegistry:
                         f"Hook '{hook_name}' failed: {result.error}",
                         extra={"hook_name": hook_name, "hook_type": hook_type.value}
                     )
-                
+
             except asyncio.TimeoutError:
                 logger.error(
                     f"Hook '{hook_name}' timed out after {hook_timeout}s",
                     extra={"hook_name": hook_name, "hook_type": hook_type.value, "timeout": hook_timeout}
                 )
                 self._update_stats(hook_name, success=False, exec_time=hook_timeout)
-                
+
             except Exception as e:
                 logger.error(
                     f"Hook '{hook_name}' raised exception: {e}",
@@ -317,9 +332,9 @@ class HookRegistry:
                     extra={"hook_name": hook_name, "hook_type": hook_type.value}
                 )
                 self._update_stats(hook_name, success=False, exec_time=0.0)
-        
+
         return current_context
-    
+
     async def _execute_hook_method(
         self,
         hook_type: HookType,
@@ -343,20 +358,20 @@ class HookRegistry:
             return await hook.on_session_end(context)
         else:
             raise ValueError(f"Unknown hook type: {hook_type}")
-    
+
     def _topological_sort(
         self,
         hooks_list: List[tuple[str, PluginHook, Dict[str, List[str]], Dict[str, Any]]]
     ) -> List[tuple[str, PluginHook, Dict[str, Any]]]:
         """
         Sort hooks by dependency order using topological sort.
-        
+
         Args:
             hooks_list: List of (name, hook, order_spec, metadata) tuples
-            
+
         Returns:
             List of (name, hook, metadata) tuples in execution order
-            
+
         Raises:
             CircularDependencyError: If circular dependencies detected
         """
@@ -365,32 +380,32 @@ class HookRegistry:
         hooks_map = {name: hook for name, hook, _, _ in hooks_list}
         order_specs = {name: spec for name, _, spec, _ in hooks_list}
         metadata_map = {name: meta for name, _, _, meta in hooks_list}
-        
+
         # Build category map: category -> set of hook names
         category_map: Dict[str, Set[str]] = defaultdict(set)
         for hook_name, meta in metadata_map.items():
             category = meta.get("category")
             if category:
                 category_map[category].add(hook_name)
-        
+
         # Build adjacency list (hook -> hooks that must come after it)
         # and track in-degree (number of dependencies)
         graph: Dict[str, Set[str]] = defaultdict(set)
         in_degree: Dict[str, int] = defaultdict(int)
-        
+
         # Initialize all hooks with 0 in-degree
         for hook_name in hooks_map:
             in_degree[hook_name] = 0
-        
+
         # Add virtual "begin" and "end" nodes for absolute positioning
         in_degree["begin"] = 0
         in_degree["end"] = 0
-        
+
         # Process ordering specifications to build the dependency graph
         # Edge A->B means "A must execute before B" (B depends on A)
         # Use a set to track which edges we've already added to avoid duplicates
         edges_added: Set[tuple[str, str]] = set()
-        
+
         # Helper function to resolve a reference to actual hook names
         def resolve_reference(ref: str) -> List[str]:
             """Resolve a reference to hook name(s). Can be hook name, category, or virtual node."""
@@ -401,22 +416,22 @@ class HookRegistry:
                 return list(category_map[ref])
             else:
                 return []
-        
+
         for hook_name, order_spec in order_specs.items():
             # "after" relationships: hook comes after these predecessors
             # If hook says "after: [A]", then A -> hook (A must execute before hook)
             for predecessor in order_spec.get("after", []):
                 pred_key = str(predecessor)
                 resolved_preds = resolve_reference(pred_key)
-                
+
                 if not resolved_preds:
-                    # Warn about non-existent hook/category reference
-                    logger.warning(
-                        f"Hook '{hook_name}' references non-existent hook/category '{pred_key}' in 'after' clause. "
-                        f"This dependency will be ignored."
+                    # Debug level - it's normal for referenced hooks/categories to be disabled
+                    logger.debug(
+                        f"Hook '{hook_name}' references inactive hook/category '{pred_key}' in 'after' clause. "
+                        f"Dependency ignored (hook may be disabled)."
                     )
                     continue
-                
+
                 # Add edges for all resolved predecessors
                 for resolved_pred in resolved_preds:
                     edge = (resolved_pred, hook_name)
@@ -433,21 +448,21 @@ class HookRegistry:
                         graph[resolved_pred].add(hook_name)
                         in_degree[hook_name] += 1
                         edges_added.add(edge)
-            
+
             # "before" relationships: hook comes before these successors
             # If hook says "before: [B]", then hook -> B (hook must execute before B)
             for successor in order_spec.get("before", []):
                 succ_key = str(successor)
                 resolved_succs = resolve_reference(succ_key)
-                
+
                 if not resolved_succs:
-                    # Warn about non-existent hook/category reference
-                    logger.warning(
-                        f"Hook '{hook_name}' references non-existent hook/category '{succ_key}' in 'before' clause. "
-                        f"This dependency will be ignored."
+                    # Debug level - it's normal for referenced hooks/categories to be disabled
+                    logger.debug(
+                        f"Hook '{hook_name}' references inactive hook/category '{succ_key}' in 'before' clause. "
+                        f"Dependency ignored (hook may be disabled)."
                     )
                     continue
-                
+
                 # Add edges for all resolved successors
                 for resolved_succ in resolved_succs:
                     edge = (hook_name, resolved_succ)
@@ -464,30 +479,30 @@ class HookRegistry:
                         graph[hook_name].add(resolved_succ)
                         in_degree[resolved_succ] += 1
                         edges_added.add(edge)
-        
+
         # Kahn's algorithm for topological sort
         queue = [node for node in in_degree if in_degree[node] == 0]
         result = []
         processed_count = 0
-        
+
         while queue:
             # Sort queue for deterministic ordering when multiple nodes have no dependencies
             queue.sort()
-            
+
             # Process node with no incoming edges
             current = queue.pop(0)
             processed_count += 1
-            
+
             # Skip virtual nodes in output, but include real hooks
             if current in hooks_map:
                 result.append(current)
-            
+
             # Reduce in-degree for all successors of current node
             for successor in graph[current]:
                 in_degree[successor] -= 1
                 if in_degree[successor] == 0:
                     queue.append(successor)
-        
+
         # Check for cycles - if we didn't process all nodes (including virtual), there's a cycle
         total_nodes = len(hooks_map) + 2  # All hooks + "begin" + "end"
         if processed_count != total_nodes:
@@ -498,15 +513,15 @@ class HookRegistry:
             raise CircularDependencyError(
                 f"Circular dependency detected in hooks: {sorted(remaining)}"
             )
-        
+
         # Return sorted hooks with metadata
         return [(name, hooks_map[name], metadata_map[name]) for name in result]
-    
+
     def _deep_copy_context(self, context: HookContext) -> HookContext:
         """
         Create a deep copy of context for hook isolation.
-        
-        Note: Some fields (agent, llm) are copied by reference since they're
+
+        Note: Some fields (agent, llm, cancellation_token) are copied by reference since they're
         stateful objects that hooks should not modify directly.
         """
         return HookContext(
@@ -522,48 +537,92 @@ class HookRegistry:
             output=context.output,  # String is immutable
             output_format=context.output_format,  # Add output_format for format hooks
             metadata=copy.deepcopy(context.metadata),
+            hook_config=copy.deepcopy(context.hook_config) if context.hook_config else {},
             step=context.step,
             llm=context.llm,  # Reference copy
+            cancellation_token=context.cancellation_token,  # Reference copy
         )
-    
+
+    # Keys managed by the hook system itself — stripped from hook_config
+    _HOOK_SYSTEM_KEYS = frozenset({"enabled", "timeout", "order"})
+
+    def _extract_agent_hook_config(
+        self, context: HookContext, hook_name: str
+    ) -> Dict[str, Any]:
+        """Extract custom per-agent config for a specific hook.
+
+        Reads the agent's ``hooks.overrides[hook_name]`` dict, strips
+        hook-system keys (``enabled``, ``timeout``, ``order``), and
+        returns the remaining entries.  This lets agents pass arbitrary
+        config to any hook via their agent YAML::
+
+            hooks:
+              overrides:
+                my_plugin.my_hook:
+                  enabled: true        # ← system key (stripped)
+                  custom_key: "value"  # ← passed in hook_config
+
+        Returns:
+            Dict with custom config (may be empty).
+        """
+        agent = context.agent
+        if agent is None:
+            return {}
+        try:
+            hooks_cfg = getattr(
+                getattr(agent, "agent_config", None), "hooks", None
+            )
+            if hooks_cfg is None or not hasattr(hooks_cfg, "overrides"):
+                return {}
+            override = hooks_cfg.overrides.get(hook_name)
+            if not override or not isinstance(override, dict):
+                return {}
+            # Return only non-system keys
+            return {
+                k: v for k, v in override.items()
+                if k not in self._HOOK_SYSTEM_KEYS
+            }
+        except Exception:
+            return {}
+
     def _validate_hook_result(self, result: Any, hook_name: str) -> Optional[str]:
         """
         Validate hook result conforms to expected schema.
-        
+
         Args:
             result: Result returned by hook
             hook_name: Name of hook (for error reporting)
-            
+
         Returns:
             Error message if validation fails, None if valid
         """
         # Check result is HookResult instance
         if not isinstance(result, HookResult):
             return f"Result must be HookResult instance, got {type(result).__name__}"
-        
+
         # Check required fields
         if not hasattr(result, "success"):
             return "Result missing required 'success' field"
-        
+
         if not isinstance(result.success, bool):
             return f"Result 'success' must be bool, got {type(result.success).__name__}"
-        
+
         # If modified=True, context must be provided
         if getattr(result, "modified", False) and not getattr(result, "context", None):
             return "Result has modified=True but no context provided"
-        
+
         # If context is provided, validate it's a HookContext
         if hasattr(result, "context") and result.context is not None:
             if not isinstance(result.context, HookContext):
                 return f"Result context must be HookContext, got {type(result.context).__name__}"
-        
+
         # Validate metadata is dict if provided
         if hasattr(result, "metadata") and result.metadata is not None:
             if not isinstance(result.metadata, dict):
                 return f"Result metadata must be dict, got {type(result.metadata).__name__}"
-        
+
         return None
-    
+
     def _audit_log_modification(
         self,
         hook_name: str,
@@ -574,7 +633,7 @@ class HookRegistry:
     ) -> None:
         """
         Log hook modifications for audit trail.
-        
+
         Args:
             hook_name: Name of hook that made modification
             hook_type: Type of hook
@@ -592,31 +651,31 @@ class HookRegistry:
             "modifications": {},
             "metadata": metadata
         }
-        
+
         # Detect and log specific modifications
         if original_context.messages != modified_context.messages:
             audit_entry["modifications"]["messages"] = {
                 "original_count": len(original_context.messages) if original_context.messages else 0,
                 "modified_count": len(modified_context.messages) if modified_context.messages else 0,
             }
-        
+
         if original_context.llm_response != modified_context.llm_response:
             audit_entry["modifications"]["llm_response"] = True
-        
+
         if original_context.tool_call != modified_context.tool_call:
             audit_entry["modifications"]["tool_call"] = True
-        
+
         if original_context.tool_result != modified_context.tool_result:
             audit_entry["modifications"]["tool_result"] = True
-        
+
         if original_context.output != modified_context.output:
             audit_entry["modifications"]["output"] = True
-        
+
         if original_context.metadata != modified_context.metadata:
             audit_entry["modifications"]["metadata"] = True
-        
-        # Log at INFO level for audit trail
-        logger.info(
+
+        # Log at DEBUG level for audit trail (only visible when debugging)
+        logger.debug(
             f"Hook modification audit: {hook_name}",
             extra={
                 "audit_type": "hook_modification",
@@ -627,7 +686,7 @@ class HookRegistry:
                 "session_id": original_context.session_id
             }
         )
-    
+
     def _update_stats(self, hook_name: str, success: bool, exec_time: float) -> None:
         """Update execution statistics for a hook."""
         stats = self._stats[hook_name]
@@ -638,28 +697,28 @@ class HookRegistry:
             stats["failures"] += 1
         stats["total_time"] += exec_time
         stats["avg_time"] = stats["total_time"] / stats["executions"]
-    
+
     def get_stats(self, hook_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Get execution statistics.
-        
+
         Args:
             hook_name: Optional hook name to get stats for (None = all hooks)
-            
+
         Returns:
             Statistics dictionary
         """
         if hook_name:
             return dict(self._stats.get(hook_name, {}))
         return {name: dict(stats) for name, stats in self._stats.items()}
-    
+
     def list_hooks(self, hook_type: Optional[HookType] = None) -> Dict[str, List[str]]:
         """
         List registered hooks.
-        
+
         Args:
             hook_type: Optional hook type to filter by
-            
+
         Returns:
             Dictionary mapping hook types to lists of hook names
         """
@@ -670,14 +729,14 @@ class HookRegistry:
             for htype, hooks_list in self._hooks.items():
                 result[htype.value] = [name for name, _, _, _ in hooks_list]
         return result
-    
+
     def get_hook_info(self, hook_name: str) -> Optional[Dict[str, Any]]:
         """
         Get detailed information about a hook.
-        
+
         Args:
             hook_name: Name of the hook
-            
+
         Returns:
             Dictionary with hook information or None if not found
         """

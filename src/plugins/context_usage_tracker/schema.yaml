@@ -13,25 +13,38 @@ web_ui:
   button:
     enabled: true
     icon: "📊"
-    label: "Context Usage"
+    text: "Context Usage"
     tooltip: "View context and token usage statistics"
     
   panel:
     enabled: true
     title: "Context Usage Debug"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     default_height: 600
     
   endpoints:
-    - path: "/plugins/{{ name }}/panel"
+    - path: "/"
       method: "GET"
+      handler: "get_panel"
+      response_type: "html"
       description: "Render the context usage debug panel"
-    - path: "/plugins/{{ name }}/usage"
+    - path: "/usage"
       method: "GET"
+      handler: "get_usage"
+      response_type: "json"
       description: "Get current usage statistics"
-    - path: "/plugins/{{ name }}/history"
+    - path: "/history"
       method: "GET"
+      handler: "get_history"
+      response_type: "json"
       description: "Get historical usage data"
-    - path: "/plugins/{{ name }}/clear"
+    - path: "/clear"
       method: "POST"
+      handler: "clear_history"
+      response_type: "json"
       description: "Clear usage history"
+
+config:
+  context_window: 0

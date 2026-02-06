@@ -8,8 +8,10 @@ import logging
 import httpx
 
 from ..utils.id import short_id
-from .models import ChatMessage, LLMClient
+from .models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from ..config.models import ModelCapabilitiesConfig
+from .retry_utils import execute_with_cancellation
+from . import openai_utils
 
 
 class OpenAIAsyncClient(LLMClient):
@@ -20,7 +22,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, max_tokens: Optional[int] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -94,69 +96,58 @@ class OpenAIAsyncClient(LLMClient):
         self.api_key = api_key  # Store for Realtime API
         self.provider = "openai"
         self.context_window = context_window
+        self.max_tokens = max_tokens  # Limit output tokens (None = provider default)
         self._default_extra = default_extra or {}
         self._timeout = timeout
         self.capabilities = capabilities  # Pydantic model or None
+        
+        # OpenRouter requires "usage": {"include": true} for detailed usage (cached_tokens, cost)
+        # Other APIs reject this parameter with 400 Bad Request
+        self._is_openrouter = base_url and "openrouter.ai" in base_url.lower() if base_url else False
 
-    async def _execute_with_cancellation(self, llm_task: asyncio.Task, cancellation_token):
-        """Execute LLM task with efficient event-based cancellation monitoring.
-
-        Instead of polling with timeouts (which throws exceptions every 0.5s),
-        uses asyncio.wait() to efficiently wait for either completion or cancellation.
-
-        Returns:
-            The result of llm_task when completed
-
-        Raises:
-            Exception: When cancelled by user
+    def _create_multimodal_injection(self, tool_msg: ChatMessage) -> Optional[dict]:
+        """Create injected user message for multimodal tool content.
+        
+        Delegates to the central utility function in multimodal_tool_content.py.
         """
-        cancel_event = asyncio.Event()
-
-        async def check_cancellation():
-            """Background task that monitors cancellation without polling exceptions"""
-            while not llm_task.done():
-                if cancellation_token.is_cancelled:
-                    cancel_event.set()
-                    break
-                await asyncio.sleep(0.1)  # Check every 100ms, doesn't block main task
-
-        cancel_task = asyncio.create_task(check_cancellation())
-
-        # Wait for either LLM completion or cancellation (efficient, no exceptions!)
-        done, pending = await asyncio.wait(
-            {llm_task, cancel_task},
-            return_when=asyncio.FIRST_COMPLETED
+        from ..utils.multimodal_tool_content import create_multimodal_injection, check_vision_support
+        
+        # Check if model supports audio input
+        supports_audio = False
+        if self.capabilities:
+            supports_audio = getattr(self.capabilities, 'audio_input', False)
+        
+        return create_multimodal_injection(
+            tool_msg=tool_msg,
+            supports_vision=check_vision_support(self.capabilities),
+            model_name=self.model,
+            supports_audio=supports_audio
         )
-
-        if cancel_event.is_set():
-            # Cancellation requested - clean up LLM task
-            llm_task.cancel()
-            try:
-                await llm_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                cancel_task.cancel()
-                try:
-                    await cancel_task
-                except asyncio.CancelledError:
-                    pass
-            raise Exception("Request cancelled by user during LLM call")
-
-        # LLM completed - clean up cancel task
-        cancel_task.cancel()
-        try:
-            await cancel_task
-        except asyncio.CancelledError:
-            pass
-
-        return await llm_task
 
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         logger = logging.getLogger(__name__)
         try:
-            opts = {"model": self.model, "messages": [m.model_dump(exclude_none=True, mode='json') for m in messages]}
+            # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
+            def _serialize() -> list:
+                result = []
+                for m in messages:
+                    d = m.model_dump(exclude_none=True, mode='json')
+                    # Normalize content for OpenAI API
+                    if isinstance(d.get('content'), list):
+                        d['content'] = openai_utils.normalize_content_list(d['content'])
+                        if not d['content']:
+                            d['content'] = ""
+                    result.append(d)
+                return result
+            serialized = await asyncio.to_thread(_serialize)
+            
+            opts = {"model": self.model, "messages": serialized}
             opts.update(self._default_extra)
+            
+            # Add max_tokens if configured
+            if self.max_tokens:
+                opts["max_tokens"] = self.max_tokens
+                
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff
             resp = None
@@ -181,7 +172,7 @@ class OpenAIAsyncClient(LLMClient):
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        resp = await self._execute_with_cancellation(llm_task, cancellation_token)
+                        resp = await execute_with_cancellation(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break
@@ -223,7 +214,15 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during rate limit backoff")
-                        await asyncio.sleep(wait)
+                        await self._cancellable_sleep(wait, cancellation_token)
+                        continue
+                    # Handle server errors (5xx) - retry with exponential backoff
+                    if status is not None and status >= 500 and attempt < max_attempts:
+                        wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
+                        logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
+                        if cancellation_token and cancellation_token.is_cancelled:
+                            raise Exception("Request cancelled by user during server error backoff")
+                        await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     if status == 400:
                         error_text = str(e)
@@ -234,6 +233,10 @@ class OpenAIAsyncClient(LLMClient):
                                 original_exception=e
                             )
                     raise
+            # Check if resp is None after retry loop (e.g., all attempts failed with rate limiting)
+            if resp is None:
+                return json.dumps({"_llm_error": {"error": True, "message": f"OpenAI API request failed after {max_attempts} attempts (rate limiting or other errors)"}}, ensure_ascii=False)
+            
             try:
                 logger.debug("OpenAI resp id=%s choices=%d", getattr(resp, "id", None), len(getattr(resp, "choices", []) or []))
             except Exception as e:
@@ -280,7 +283,7 @@ class OpenAIAsyncClient(LLMClient):
                     except Exception as e:
                         logger.debug(f"Failed to extract status code from error response: {e}")
                         status = None
-                err_payload: dict[str, Any] = {"error": True, "message": str(e), "status": status}
+                err_payload: dict[str, Any] = {"error": str(e), "status": status}
                 if resp_obj is not None:
                     try:
                         data = getattr(resp_obj, "json", lambda: None)()
@@ -294,7 +297,7 @@ class OpenAIAsyncClient(LLMClient):
                 logger.exception("OpenAI chat failed (secondary error building payload): %s", e)
                 return ""
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
         """Dispatch to appropriate API based on model capabilities.
 
         Routes to either Chat Completions API or Realtime API based on
@@ -305,16 +308,49 @@ class OpenAIAsyncClient(LLMClient):
         if api_type == 'realtime':
             return await self._chat_tools_realtime(messages, tools, cancellation_token)
         else:
-            return await self._chat_tools_chat_completions(messages, tools, cancellation_token)
+            return await self._chat_tools_chat_completions(messages, tools, cancellation_token, status_scope)
 
-    async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+    async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
         """Original Chat Completions API implementation."""
         logger = logging.getLogger(__name__)
-        msgs: list[dict] = []
-        for m in messages:
-            # Use model_dump() to properly serialize nested Pydantic models
-            d = m.model_dump(exclude_none=True, mode='json')
-            msgs.append(d)
+        
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
+        
+        # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
+        def _serialize_messages() -> list[dict]:
+            result = []
+            for m in messages:
+                # Use model_dump() to properly serialize nested Pydantic models
+                d = m.model_dump(exclude_none=True, mode='json')
+                # Remove multimodal_content from serialized dict - it's processed separately
+                d.pop('multimodal_content', None)
+                
+                # Filter out audio content from user messages - OpenAI Chat Completions
+                # Normalize content for OpenAI API
+                if isinstance(d.get('content'), list):
+                    d['content'] = openai_utils.normalize_content_list(d['content'])
+                    if not d['content']:
+                        d['content'] = ""
+                
+                result.append(d)
+                
+                # Inject multimodal content as synthetic user message after tool response
+                # OpenAI doesn't support native multimodal tool responses, so we inject
+                # the content as a user message with a clear prefix
+                if m.role == "tool" and m.multimodal_content:
+                    injection = self._create_multimodal_injection(m)
+                    if injection:
+                        result.append(injection)
+            return result
+        
+        msgs = await asyncio.to_thread(_serialize_messages)
 
         normalized_tools: list[dict] = []
         for idx, t in enumerate(tools):
@@ -340,6 +376,10 @@ class OpenAIAsyncClient(LLMClient):
         tools = normalized_tools
         try:
             opts = {"model": self.model, "messages": msgs}
+            
+            # OpenRouter: request detailed usage (cached_tokens, cost)
+            if self._is_openrouter:
+                opts["usage"] = {"include": True}
 
             # Only include tools if we have at least one tool (some providers reject empty arrays)
             if tools:
@@ -347,6 +387,11 @@ class OpenAIAsyncClient(LLMClient):
                 opts["tool_choice"] = "auto"
 
             opts.update(self._default_extra)
+            
+            # Add max_tokens if configured
+            if self.max_tokens:
+                opts["max_tokens"] = self.max_tokens
+                
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff
             resp = None
@@ -371,7 +416,7 @@ class OpenAIAsyncClient(LLMClient):
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        resp = await self._execute_with_cancellation(llm_task, cancellation_token)
+                        resp = await execute_with_cancellation(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break
@@ -410,10 +455,33 @@ class OpenAIAsyncClient(LLMClient):
                             wait = max(retry_after, self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
                         else:
                             wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
-                        logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                        if attempt < max_attempts:
+                            await report_status(f"Rate limit, waiting {wait:.0f}s, retry {attempt}/{max_attempts}: {self.model}")
+                            logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                            if cancellation_token and cancellation_token.is_cancelled:
+                                raise Exception("Request cancelled by user during rate limit backoff")
+                            await self._cancellable_sleep(wait, cancellation_token)
+                            continue
+                        # Retries exhausted - raise for fallback
+                        await report_status(f"Rate limit exceeded after {max_attempts} attempts: {self.model}")
+                        error_text = str(e)
+                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {error_text}",
+                                provider="openai", model=self.model, retry_after=wait
+                            )
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            provider="openai", model=self.model, retry_after=wait
+                        )
+                    # Handle server errors (5xx) - retry with exponential backoff
+                    if status is not None and status >= 500 and attempt < max_attempts:
+                        wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
+                        await report_status(f"Server error ({status}), retry {attempt}/{max_attempts} in {wait:.0f}s: {self.model}")
+                        logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
-                            raise Exception("Request cancelled by user during rate limit backoff")
-                        await asyncio.sleep(wait)
+                            raise Exception("Request cancelled by user during server error backoff")
+                        await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     if status == 400:
                         error_text = str(e)
@@ -424,6 +492,11 @@ class OpenAIAsyncClient(LLMClient):
                                 original_exception=e
                             )
                     raise
+            
+            # Check if resp is None after retry loop (e.g., all attempts failed with rate limiting)
+            if resp is None:
+                raise Exception(f"OpenAI API request failed after {max_attempts} attempts (rate limiting or other errors)")
+            
             choice = resp.choices[0] if resp.choices else None
             if not choice:
                 return {"assistant": {"role": "assistant", "content": ""}}
@@ -449,11 +522,24 @@ class OpenAIAsyncClient(LLMClient):
             if hasattr(resp, 'usage'):
                 logger.debug("OpenAI response usage value: %s", resp.usage)
                 if resp.usage:
-                    result["usage"] = {
+                    usage_data = {
                         "prompt_tokens": resp.usage.prompt_tokens,
                         "completion_tokens": resp.usage.completion_tokens,
                         "total_tokens": resp.usage.total_tokens
                     }
+                    # Extract prompt_tokens_details (cached_tokens) if available
+                    if hasattr(resp.usage, 'prompt_tokens_details') and resp.usage.prompt_tokens_details:
+                        ptd = resp.usage.prompt_tokens_details
+                        usage_data["prompt_tokens_details"] = {
+                            "cached_tokens": getattr(ptd, 'cached_tokens', 0) or 0
+                        }
+                    # Extract completion_tokens_details if available
+                    if hasattr(resp.usage, 'completion_tokens_details') and resp.usage.completion_tokens_details:
+                        ctd = resp.usage.completion_tokens_details
+                        usage_data["completion_tokens_details"] = {
+                            "reasoning_tokens": getattr(ctd, 'reasoning_tokens', 0) or 0
+                        }
+                    result["usage"] = usage_data
                     logger.debug("Added usage to result: %s", result["usage"])
                 else:
                     logger.debug("OpenAI response usage is None")
@@ -493,7 +579,7 @@ class OpenAIAsyncClient(LLMClient):
             from .realtime_adapter import RealtimeMessageAdapter
         except ImportError as e:
             logger.error("Failed to import Realtime API modules: %s", e)
-            return {"assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": "Realtime API modules not available"}}}
+            return {"assistant": {"role": "assistant", "content": "", "error": {"error": "Realtime API modules not available"}}}
 
         try:
             # Create and connect session
@@ -559,9 +645,7 @@ class OpenAIAsyncClient(LLMClient):
                                 "role": "assistant",
                                 "content": "",
                                 "error": {
-                                    "error": True,
-                                    "message": error_data.get("message", "Unknown error"),
-                                    "type": error_data.get("type", "unknown")
+                                    "error": f"{error_data.get('type', 'unknown')}: {error_data.get('message', 'Unknown error')}"
                                 }
                             }
                         }
@@ -590,14 +674,12 @@ class OpenAIAsyncClient(LLMClient):
                     "role": "assistant",
                     "content": "",
                     "error": {
-                        "error": True,
-                        "message": str(e),
-                        "type": "realtime_api_error"
+                        "error": f"realtime_api_error: {str(e)}"
                     }
                 }
             }
 
-    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
         """Dispatch streaming to appropriate API based on model capabilities."""
         api_type = self.get_api_type()
 
@@ -605,16 +687,46 @@ class OpenAIAsyncClient(LLMClient):
             async for event in self._chat_tools_streaming_realtime(messages, tools, cancellation_token):
                 yield event
         else:
-            async for event in self._chat_tools_streaming_chat_completions(messages, tools, cancellation_token):
+            async for event in self._chat_tools_streaming_chat_completions(messages, tools, cancellation_token, status_scope):
                 yield event
 
-    async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+    async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
         """Original Chat Completions API streaming implementation."""
         logger = logging.getLogger(__name__)
-        msgs: list[dict] = []
-        for m in messages:
-            d = m.model_dump(exclude_none=True, mode='json')
-            msgs.append(d)
+        
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
+        
+        # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
+        def _serialize_messages() -> list[dict]:
+            result = []
+            for m in messages:
+                d = m.model_dump(exclude_none=True, mode='json')
+                # Remove multimodal_content from serialized dict - it's processed separately
+                d.pop('multimodal_content', None)
+                
+                # Normalize content for OpenAI API
+                if isinstance(d.get('content'), list):
+                    d['content'] = openai_utils.normalize_content_list(d['content'])
+                    if not d['content']:
+                        d['content'] = ""
+                
+                result.append(d)
+                
+                # Inject multimodal content as synthetic user message after tool response
+                if m.role == "tool" and m.multimodal_content:
+                    injection = self._create_multimodal_injection(m)
+                    if injection:
+                        result.append(injection)
+            return result
+        
+        msgs = await asyncio.to_thread(_serialize_messages)
 
         # Normalize tools (same as non-streaming)
         normalized_tools: list[dict] = []
@@ -639,107 +751,173 @@ class OpenAIAsyncClient(LLMClient):
 
         tools = normalized_tools
 
-        try:
-            opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
-            if tools:
-                opts["tools"] = tools
-                opts["tool_choice"] = "auto"
-            opts.update(self._default_extra)
+        # Retry logic for stream interruptions
+        max_retries = 3
+        retry_backoff = 1.0
 
-            # Accumulated state
-            accumulated_content = []
-            accumulated_tool_calls = {}
-            accumulated_usage = None  # usage information from final chunk
+        for attempt in range(max_retries + 1):
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise Exception("Request cancelled by user")
 
-            client_any = cast(Any, self._client)
+            try:
+                opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
+                
+                # OpenRouter: request detailed usage (cached_tokens, cost)
+                if self._is_openrouter:
+                    opts["usage"] = {"include": True}
+                    
+                if tools:
+                    opts["tools"] = tools
+                    opts["tool_choice"] = "auto"
+                opts.update(self._default_extra)
+                
+                # Add max_tokens if configured
+                if self.max_tokens:
+                    opts["max_tokens"] = self.max_tokens
 
-            # OpenAI SDK's create() is async and returns AsyncStream when awaited
-            stream = await client_any.chat.completions.create(**opts)
+                # Accumulated state
+                accumulated_content = []
+                accumulated_tool_calls = {}
+                accumulated_usage = None  # usage information from final chunk
 
-            # Process stream chunks
-            async for chunk in stream:
-                if cancellation_token and cancellation_token.is_cancelled:
-                    raise Exception("Request cancelled by user")
+                client_any = cast(Any, self._client)
 
-                # Extract usage if available (appears in final chunk when stream_options={'include_usage': True})
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    accumulated_usage = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens
-                    }
+                # OpenAI SDK's create() is async and returns AsyncStream when awaited
+                stream = await client_any.chat.completions.create(**opts)
 
-                choices = chunk.choices if hasattr(chunk, 'choices') else []
-                if not choices:
-                    continue
+                # Process stream chunks with timeout per chunk from config
+                chunk_timeout = self._timeout if isinstance(self._timeout, (int, float)) else (self._timeout.read if hasattr(self._timeout, 'read') else 60.0)
+                stream_iter = stream.__aiter__()
+                
+                while True:
+                    if cancellation_token and cancellation_token.is_cancelled:
+                        raise Exception("Request cancelled by user")
+                    
+                    try:
+                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_timeout)
+                    except StopAsyncIteration:
+                        break  # Stream completed normally
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Stream chunk timeout after {chunk_timeout}s (attempt {attempt + 1}/{max_retries + 1})")
+                        raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
 
-                delta = choices[0].delta if hasattr(choices[0], 'delta') else None
-                if not delta:
-                    continue
-
-                # Handle content delta
-                if hasattr(delta, 'content') and delta.content:
-                    accumulated_content.append(delta.content)
-                    yield {
-                        "type": "content_delta",
-                        "delta": delta.content,
-                        "accumulated": "".join(accumulated_content)
-                    }
-
-                # Handle tool call deltas
-                if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        index = tc_delta.index if hasattr(tc_delta, 'index') else 0
-
-                        if index not in accumulated_tool_calls:
-                            accumulated_tool_calls[index] = {
-                                "id": getattr(tc_delta, "id", None) or f"call_{short_id()}",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""}
+                    # Extract usage if available (appears in final chunk when stream_options={'include_usage': True})
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        accumulated_usage = {
+                            "prompt_tokens": chunk.usage.prompt_tokens,
+                            "completion_tokens": chunk.usage.completion_tokens,
+                            "total_tokens": chunk.usage.total_tokens
+                        }
+                        # Extract prompt_tokens_details (cached_tokens) if available
+                        if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
+                            ptd = chunk.usage.prompt_tokens_details
+                            accumulated_usage["prompt_tokens_details"] = {
+                                "cached_tokens": getattr(ptd, 'cached_tokens', 0) or 0
+                            }
+                        # Extract completion_tokens_details if available
+                        if hasattr(chunk.usage, 'completion_tokens_details') and chunk.usage.completion_tokens_details:
+                            ctd = chunk.usage.completion_tokens_details
+                            accumulated_usage["completion_tokens_details"] = {
+                                "reasoning_tokens": getattr(ctd, 'reasoning_tokens', 0) or 0
                             }
 
-                        # Accumulate function name
-                        if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'name') and tc_delta.function.name:
-                            accumulated_tool_calls[index]["function"]["name"] += tc_delta.function.name
+                    choices = chunk.choices if hasattr(chunk, 'choices') else []
+                    if not choices:
+                        continue
 
-                        # Accumulate arguments
-                        if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
-                            accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
+                    delta = choices[0].delta if hasattr(choices[0], 'delta') else None
+                    if not delta:
+                        continue
 
-                        # Update ID if provided
-                        if hasattr(tc_delta, 'id') and tc_delta.id:
-                            accumulated_tool_calls[index]["id"] = tc_delta.id
-
+                    # Handle reasoning/thinking delta (Gemini thinking tokens)
+                    if hasattr(delta, 'reasoning') and delta.reasoning:
                         yield {
-                            "type": "tool_call_delta",
-                            "index": index,
-                            "delta": {
-                                "id": getattr(tc_delta, "id", None),
-                                "function": {
-                                    "name": getattr(getattr(tc_delta, "function", None), "name", None),
-                                    "arguments": getattr(getattr(tc_delta, "function", None), "arguments", None)
-                                }
-                            },
-                            "accumulated": accumulated_tool_calls[index]
+                            "type": "thinking_delta",
+                            "delta": delta.reasoning
                         }
 
-            # Build final message
-            assistant = {"role": "assistant", "content": "".join(accumulated_content) if accumulated_content else None}
+                    # Handle content delta
+                    if hasattr(delta, 'content') and delta.content:
+                        accumulated_content.append(delta.content)
+                        yield {
+                            "type": "content_delta",
+                            "delta": delta.content,
+                            "accumulated": "".join(accumulated_content)
+                        }
 
-            if accumulated_tool_calls:
-                tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
-                assistant["tool_calls"] = tool_calls_list
+                    # Handle tool call deltas
+                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            index = tc_delta.index if hasattr(tc_delta, 'index') else 0
 
-            # Build final result with usage
-            final_result = {"assistant": assistant}
-            if accumulated_usage:
-                final_result["usage"] = accumulated_usage
+                            if index not in accumulated_tool_calls:
+                                accumulated_tool_calls[index] = {
+                                    "id": getattr(tc_delta, "id", None) or f"call_{short_id()}",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""}
+                                }
 
-            yield {"type": "final", **final_result}
+                            # Accumulate function name
+                            if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'name') and tc_delta.function.name:
+                                accumulated_tool_calls[index]["function"]["name"] += tc_delta.function.name
 
-        except Exception as e:
-            logger.exception("OpenAI streaming failed: %s", e)
-            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+                            # Accumulate arguments
+                            if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
+                                accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
+
+                            # Update ID if provided
+                            if hasattr(tc_delta, 'id') and tc_delta.id:
+                                accumulated_tool_calls[index]["id"] = tc_delta.id
+
+                            yield {
+                                "type": "tool_call_delta",
+                                "index": index,
+                                "delta": {
+                                    "id": getattr(tc_delta, "id", None),
+                                    "function": {
+                                        "name": getattr(getattr(tc_delta, "function", None), "name", None),
+                                        "arguments": getattr(getattr(tc_delta, "function", None), "arguments", None)
+                                    }
+                                },
+                                "accumulated": accumulated_tool_calls[index]
+                            }
+
+                # Build final message
+                assistant = {"role": "assistant", "content": "".join(accumulated_content) if accumulated_content else None}
+
+                if accumulated_tool_calls:
+                    tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
+                    assistant["tool_calls"] = tool_calls_list
+
+                # Build final result with usage
+                final_result = {"assistant": assistant}
+                if accumulated_usage:
+                    final_result["usage"] = accumulated_usage
+
+                yield {"type": "final", **final_result}
+                return  # Success - exit retry loop
+
+            except (httpx.RemoteProtocolError, httpx.NetworkError, httpx.ConnectError) as e:
+                if attempt < max_retries:
+                    backoff_time = retry_backoff * (2 ** attempt)
+                    await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
+                    logger.warning(f"OpenAI stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
+                    # Reset accumulated state for retry
+                    accumulated_content = []
+                    accumulated_tool_calls = {}
+                    accumulated_usage = None
+                    continue
+                else:
+                    await report_status(f"Stream failed after {max_retries + 1} attempts: {self.model}")
+                    logger.error(f"OpenAI streaming failed after {max_retries + 1} attempts: {e}")
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    return
+
+            except Exception as e:
+                logger.exception("OpenAI streaming failed: %s", e)
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": str(e)}}}
+                return
 
     async def _chat_tools_streaming_realtime(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
         """Realtime API streaming implementation.
@@ -753,7 +931,7 @@ class OpenAIAsyncClient(LLMClient):
             from .realtime_adapter import RealtimeMessageAdapter
         except ImportError as e:
             logger.error("Failed to import Realtime API modules: %s", e)
-            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": "Realtime API modules not available"}}}
+            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": "Realtime API modules not available"}}}
             return
 
         try:
@@ -852,9 +1030,7 @@ class OpenAIAsyncClient(LLMClient):
                                 "role": "assistant",
                                 "content": "",
                                 "error": {
-                                    "error": True,
-                                    "message": error_data.get("message", "Unknown error"),
-                                    "type": error_data.get("type", "unknown")
+                                    "error": f"{error_data.get('type', 'unknown')}: {error_data.get('message', 'Unknown error')}"
                                 }
                             }
                         }
@@ -884,9 +1060,7 @@ class OpenAIAsyncClient(LLMClient):
                     "role": "assistant",
                     "content": "",
                     "error": {
-                        "error": True,
-                        "message": str(e),
-                        "type": "realtime_api_error"
+                        "error": f"realtime_api_error: {str(e)}"
                     }
                 }
             }

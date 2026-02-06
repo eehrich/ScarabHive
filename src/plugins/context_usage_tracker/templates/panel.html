@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Context Usage Tracker</title>
+    <link rel="stylesheet" href="/static/css/scrollbar.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * {
@@ -33,7 +34,7 @@
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
+            gap: 12px;
             margin-bottom: 30px;
         }
 
@@ -41,19 +42,25 @@
             background: #252526;
             border: 1px solid #3e3e42;
             border-radius: 6px;
-            padding: 15px;
+            padding: 12px;
+            min-width: 0;
+            overflow: hidden;
         }
 
         .stat-label {
-            font-size: 12px;
+            font-size: 11px;
             color: #858585;
             margin-bottom: 5px;
+            white-space: nowrap;
         }
 
         .stat-value {
-            font-size: 24px;
+            font-size: clamp(12px, 3vw, 22px);
             font-weight: 600;
             color: #4ec9b0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .agent-section {
@@ -82,8 +89,9 @@
             border-radius: 4px;
             padding: 12px;
             display: grid;
-            grid-template-columns: 2fr 1fr 1fr 1fr;
-            gap: 15px;
+            grid-template-columns: minmax(120px, 1.5fr) repeat(5, minmax(60px, 1fr));
+            gap: 10px;
+            align-items: center;
         }
 
         .agent-name {
@@ -176,8 +184,9 @@
             border: 1px solid #3e3e42;
             border-radius: 6px;
             padding: 20px;
-            margin-bottom: 20px;
-            height: 300px;
+            padding-bottom: 40px;
+            margin-bottom: 30px;
+            height: 320px;
             position: relative;
         }
 
@@ -195,10 +204,124 @@
             margin-bottom: 20px;
         }
 
+        .success {
+            color: #4ec9b0;
+            padding: 10px;
+            background: #1e3e1e;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
         .no-data {
             color: #858585;
             text-align: center;
             padding: 40px;
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-content {
+            background-color: #1e1e1e;
+            margin: 15% auto;
+            padding: 0;
+            border-radius: 8px;
+            max-width: 450px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            animation: slideDown 0.3s ease;
+            border: 1px solid #569cd6;
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            background: #2d2d2d;
+            color: white;
+            padding: 20px 25px;
+            border-radius: 8px 8px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #569cd6;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.3rem;
+            color: #dcdcaa;
+        }
+
+        .close {
+            color: #858585;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+            transition: color 0.2s ease;
+        }
+
+        .close:hover {
+            color: #f48771;
+        }
+
+        .modal-body {
+            padding: 25px;
+            color: #d4d4d4;
+            line-height: 1.6;
+        }
+
+        .modal-footer {
+            padding: 15px 25px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            border-top: 1px solid #3e3e3e;
+        }
+
+        .modal-footer button {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+        }
+
+        .modal-footer button.cancel {
+            background: #3e3e3e;
+            color: #d4d4d4;
+        }
+
+        .modal-footer button.cancel:hover {
+            background: #4e4e4e;
+        }
+
+        .modal-footer button.danger {
+            background: #f48771;
+            color: white;
+        }
+
+        .modal-footer button.danger:hover {
+            background: #e06c5c;
         }
     </style>
 </head>
@@ -210,14 +333,14 @@
             <button class="icon-only" onclick="refreshData()" title="Refresh">
                 🔄
             </button>
-            <button class="icon-only" onclick="clearHistory()" title="Clear History">
-                🗑️
-            </button>
             <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
                 ⏱️
             </button>
             <button class="icon-only active" id="session-filter-btn" onclick="toggleSessionFilter()" title="Showing: Current Session">
                 🎯
+            </button>
+            <button class="icon-only" onclick="clearHistory()" title="Clear History" style="margin-left: auto;">
+                🗑️
             </button>
         </div>
 
@@ -229,8 +352,16 @@
                 <div class="stat-value" id="current-tokens">-</div>
             </div>
             <div class="stat-card">
+                <div class="stat-label">Current Cached</div>
+                <div class="stat-value" id="current-cached" style="color: #9cdcfe;">-</div>
+            </div>
+            <div class="stat-card">
                 <div class="stat-label">Accumulated Tokens</div>
                 <div class="stat-value" id="accumulated-tokens">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Accumulated Cached</div>
+                <div class="stat-value" id="accumulated-cached" style="color: #9cdcfe;">-</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Usage %</div>
@@ -267,9 +398,32 @@
     </div>
 
     <script>
+        // Prevent parent page scroll when scrolling in this panel
+        document.addEventListener('wheel', function(e) {
+            const scrollable = document.scrollingElement || document.documentElement;
+            const atTop = scrollable.scrollTop === 0;
+            const atBottom = scrollable.scrollHeight - scrollable.scrollTop === scrollable.clientHeight;
+            
+            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+
         let autoRefreshInterval = null;
         let tokenChart = null;
         let currentSessionOnly = true; // Filter by current session by default
+
+        // Format large numbers compactly (e.g., 1.18M, 234K)
+        function formatCompact(num) {
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(2) + 'M';
+            } else if (num >= 100000) {
+                return (num / 1000).toFixed(0) + 'K';
+            } else if (num >= 10000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toLocaleString();
+        }
 
         function getCurrentSessionId() {
             // Method 1: Try to get from parent window's sessionManager
@@ -279,7 +433,7 @@
                     if (sessionId) return sessionId;
                 }
             } catch (e) {
-                console.log('[Context Tracker] Cannot access parent sessionManager:', e.message);
+                console.error('[Context Tracker] Cannot access parent sessionManager:', e.message);
             }
 
             // Method 2: Try to get from parent window's chat module
@@ -289,7 +443,7 @@
                     if (sessionId) return sessionId;
                 }
             } catch (e) {
-                console.log('[Context Tracker] Cannot access parent chatModule:', e.message);
+                console.error('[Context Tracker] Cannot access parent chatModule:', e.message);
             }
 
             // Method 3: Parse from parent's DOM
@@ -301,7 +455,7 @@
                     }
                 }
             } catch (e) {
-                console.log('[Context Tracker] Cannot access parent DOM:', e.message);
+                console.error('[Context Tracker] Cannot access parent DOM:', e.message);
             }
 
             // Method 4: URL parameter
@@ -343,6 +497,14 @@
                         backgroundColor: 'rgba(206, 145, 120, 0.1)',
                         tension: 0.4,
                         fill: true
+                    }, {
+                        label: 'Cached Tokens',
+                        data: [],
+                        borderColor: '#9cdcfe',
+                        backgroundColor: 'rgba(156, 220, 254, 0.1)',
+                        tension: 0.4,
+                        fill: false,
+                        borderDash: [5, 5]
                     }]
                 },
                 options: {
@@ -385,6 +547,7 @@
             tokenChart.data.datasets[0].data = data.map(item => item.total_tokens);
             tokenChart.data.datasets[1].data = data.map(item => item.prompt_tokens);
             tokenChart.data.datasets[2].data = data.map(item => item.completion_tokens);
+            tokenChart.data.datasets[3].data = data.map(item => item.cached_tokens || 0);
             tokenChart.update('none');
         }
 
@@ -392,7 +555,6 @@
             try {
                 const currentSessionId = getCurrentSessionId();
                 const sessionId = currentSessionOnly ? currentSessionId : null;
-                console.log('[Context Tracker] Session ID:', currentSessionId, '| Filter:', currentSessionOnly ? 'Current Session' : 'All Sessions');
 
                 // Build URLs with session_id parameter if filtering
                 const usageUrl = `/plugins/context_usage_tracker/usage${sessionId ? '?session_id=' + sessionId : ''}`;
@@ -402,14 +564,33 @@
                 const usageData = await usageResp.json();
 
                 const latest = usageData.latest || {};
+                const currentTotalTokens = latest.total_tokens || 0;
+                const currentCachedTokens = latest.cached_tokens || 0;
+                const currentCachedPercent = currentTotalTokens > 0
+                    ? ((currentCachedTokens / currentTotalTokens) * 100).toFixed(0)
+                    : 0;
+
                 document.getElementById('current-tokens').textContent =
-                    latest.total_tokens?.toLocaleString() || '0';
+                    currentTotalTokens.toLocaleString();
+                document.getElementById('current-cached').textContent =
+                    `${currentCachedTokens.toLocaleString()} (${currentCachedPercent}%)`;
                 document.getElementById('usage-percent').textContent =
                     latest.usage_percentage ? latest.usage_percentage.toFixed(1) + '%' : '0%';
                 document.getElementById('message-count').textContent =
                     latest.message_count || '0';
 
                 const agents = usageData.agents || {};
+
+                // Calculate accumulated cached tokens from all agents
+                const accumulatedCachedTokens = Object.values(agents).reduce((sum, agent) =>
+                    sum + (agent.total_cached_tokens || 0), 0);
+                const accumulatedTotalTokens = Object.values(agents).reduce((sum, agent) =>
+                    sum + (agent.total_tokens || 0), 0);
+                const accumulatedCachedPercent = accumulatedTotalTokens > 0
+                    ? ((accumulatedCachedTokens / accumulatedTotalTokens) * 100).toFixed(0)
+                    : 0;
+                document.getElementById('accumulated-cached').textContent =
+                    `${formatCompact(accumulatedCachedTokens)} (${accumulatedCachedPercent}%)`;
 
                 // Get history data (already filtered by backend if sessionId provided)
                 const historyResp = await fetch(historyUrl);
@@ -424,11 +605,16 @@
 
                 document.getElementById('total-calls').textContent = totalCalls;
                 document.getElementById('accumulated-tokens').textContent =
-                    accumulatedTokens.toLocaleString();
+                    formatCompact(accumulatedTokens);
 
                 const agentList = document.getElementById('agent-list');
                 if (Object.keys(agents).length > 0) {
-                    agentList.innerHTML = Object.values(agents).map(agent => `
+                    agentList.innerHTML = Object.values(agents).map(agent => {
+                        const cachedPercent = agent.total_tokens > 0
+                            ? ((agent.total_cached_tokens || 0) / agent.total_tokens * 100).toFixed(0)
+                            : 0;
+                        const cachedColor = cachedPercent < 30 ? '#f48771' : cachedPercent < 60 ? '#dcdcaa' : '#4ec9b0';
+                        return `
                         <div class="agent-item">
                             <div>
                                 <div class="agent-name">${agent.agent_name}</div>
@@ -443,11 +629,19 @@
                                 <div class="agent-stat-label">Accumulated</div>
                             </div>
                             <div>
+                                <div class="agent-stat">${(agent.total_cached_tokens || 0).toLocaleString()}</div>
+                                <div class="agent-stat-label">Cached</div>
+                            </div>
+                            <div>
+                                <div class="agent-stat" style="color: ${cachedColor}">${cachedPercent}%</div>
+                                <div class="agent-stat-label">Cache %</div>
+                            </div>
+                            <div>
                                 <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div>
                                 <div class="agent-stat-label">Peak Tokens</div>
                             </div>
                         </div>
-                    `).join('');
+                    `}).join('');
                 } else {
                     agentList.innerHTML = '<div class="no-data">No agent data available</div>';
                 }
@@ -459,13 +653,16 @@
                     const historyList = document.getElementById('history-list');
                     historyList.innerHTML = history.slice().reverse().slice(0, 50).map(item => {
                         const date = new Date(item.timestamp * 1000);
+                        const cachePercent = item.total_tokens > 0
+                            ? ((item.cached_tokens || 0) / item.total_tokens * 100).toFixed(0)
+                            : 0;
+                        const cachedInfo = item.cached_tokens > 0 ? ` (${cachePercent}% cached)` : '';
                         return `
                             <div class="history-item">
                                 <div class="history-time">${date.toLocaleString()}</div>
                                 <div>
                                     <strong>${item.agent_name}</strong> -
-                                    ${item.total_tokens} tokens
-                                    (${item.usage_percentage.toFixed(1)}%) -
+                                    ${item.total_tokens} tokens${cachedInfo} -
                                     ${item.message_count} messages
                                 </div>
                             </div>
@@ -485,15 +682,37 @@
             }
         }
 
-        async function clearHistory() {
-            if (!confirm('Clear all usage history?')) return;
+        function clearHistory() {
+            console.log('clearHistory() called - showing modal');
+            document.getElementById('clearHistoryModal').style.display = 'block';
+        }
 
+        function closeClearHistoryModal() {
+            console.log('closeClearHistoryModal() called');
+            document.getElementById('clearHistoryModal').style.display = 'none';
+        }
+
+        async function confirmClearHistory() {
+            console.log('confirmClearHistory() called');
+            const errorContainer = document.getElementById('error-container');
+            
+            // Close modal
+            closeClearHistoryModal();
+            
             try {
-                await fetch('/plugins/context_usage_tracker/clear', { method: 'POST' });
+                errorContainer.innerHTML = '<div class="success">⏳ Clearing history...</div>';
+                const response = await fetch('/plugins/context_usage_tracker/clear', { method: 'POST' });
+                console.log('Clear response:', response.status);
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                errorContainer.innerHTML = '<div class="success">✅ History cleared successfully!</div>';
+                setTimeout(() => { errorContainer.innerHTML = ''; }, 3000);
                 await refreshData();
             } catch (error) {
                 console.error('Error clearing history:', error);
-                alert('Error clearing history: ' + error.message);
+                errorContainer.innerHTML = `<div class="error">❌ Error clearing history: ${error.message}</div>`;
             }
         }
 
@@ -530,9 +749,35 @@
             refreshData();
         }
 
+        // Close modal when clicking outside of it
+        window.onclick = function(event) {
+            const modal = document.getElementById('clearHistoryModal');
+            if (event.target === modal) {
+                closeClearHistoryModal();
+            }
+        }
+
         initChart();
         refreshData();
         autoRefreshInterval = setInterval(refreshData, 5000);
     </script>
+
+    <!-- Clear History Modal -->
+    <div id="clearHistoryModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚠️ Clear History</h2>
+                <span class="close" onclick="closeClearHistoryModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to clear all context usage history?</p>
+                <p><strong>This action cannot be undone.</strong></p>
+            </div>
+            <div class="modal-footer">
+                <button class="cancel" onclick="closeClearHistoryModal()">Cancel</button>
+                <button class="danger" onclick="confirmClearHistory()">Clear History</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

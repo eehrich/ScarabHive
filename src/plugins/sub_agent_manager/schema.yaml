@@ -5,95 +5,151 @@ tools:
     function:
       name: "{{ name }}_manage_sub_agent"
       description: |
-        Manage persistent sub-agent instances for delegation of specialized tasks.
-        Sub-agents maintain conversation history and can be continued across multiple requests.
+        Manage persistent sub-agents. They maintain history and can be continued.
 
         Operations:
-        - create: Spawn new sub-agent and execute initial task (BLOCKING - returns result)
-        - continue: Send new message to existing sub-agent (BLOCKING - returns result)
-        - list: Get all active sub-agents for current session
-        - info: Get detailed status and recent activity of specific sub-agent
-        - delete: Archive sub-agent instance
+        - create: Spawn+execute (blocking=true default, false=async)
+        - continue: Send new message to existing agent (blocking=true default, false=async)
+        - poll: Check async status (NON-BLOCKING) -> Do not poll too frequently!
+        - wait/wait_all: Wait for completion (BLOCKING)
+        - cancel: Stop running agent
+        - list: Active sub-agents
+        - info: Detailed status
+        - delete: Archive instance
 
-        IMPORTANT: 
-        - Operations are BLOCKING - you receive full result before tool returns.
-        - Same instance_id cannot run concurrently. Use different instances for parallel work.
+        Async: create(blocking=false) + wait_all for parallel execution.
+        Same instance_id cannot run concurrently.
+
+        Important!: Do **not** recreate agents (delete+create) - use existing ones via continue. They have the useful history. Recreate only on Major-Errors.
 
       parameters:
         type: object
         properties:
           operation:
             type: string
-            enum: [create, continue, list, info, delete]
-            description: |
-              Operation to perform:
-              - create: Create and execute new sub-agent
-              - continue: Continue existing sub-agent with new message
-              - list: List all active sub-agents
-              - info: Get detailed info about specific sub-agent
-              - delete: Archive sub-agent instance
-          
-          # Parameters for 'create' operation
+            enum: [create, continue, poll, wait, wait_all, cancel, list, info, delete]
+            description: "create|continue|poll|wait|wait_all|cancel|list|info|delete"
+
           agent_type:
             type: string
             description: |
-              Agent type to spawn (required for 'create').
-              Available agents: {{ allowed_agents }}
-          
+              Agent to spawn (create). Available: {{ allowed_agents }}
+              {% if phase_filtering_enabled %}
+              NOTE: Phase filtering is active. Available agents change based on current workflow phase ({{ phase_variable }}).
+              {% endif %}
+
           task:
             type: string
-            description: |
-              Initial task description (required for 'create').
-              This will be the first message in the sub-agent's session.
-          
+            description: "Initial message (create)"
+
           instance_label:
             type: string
-            description: |
-              Optional custom label for readability (create only).
-              Auto-generated if omitted. Format: alphanumeric, underscore, hyphen.
-          
-          # Parameters for 'continue', 'info', 'delete' operations
+            description: "Optional label (create). Response contains instance_id for follow-ups."
+
+          blocking:
+            type: boolean
+            description: "Wait for completion (create, default=true). false=async"
+            default: true
+
+          use_advanced_model:
+            type: boolean
+            description: "Use better LLM (create/continue, default=false)"
+            default: false
+
           instance_id:
             type: string
-            description: |
-              Sub-agent instance ID (required for continue/info/delete).
-              This was returned when the sub-agent was created.
-          
+            description: "Instance ID (continue/poll/wait/cancel/info/delete). Use 'instance_id' from create response, NOT instance_label."
+
+          instance_ids:
+            type: array
+            items:
+              type: string
+            description: "Instance IDs array (wait_all, delete). All must exist. For delete: archives multiple sub-agents at once."
+
           message:
             type: string
-            description: |
-              New message for sub-agent (required for 'continue').
-              The sub-agent sees this in context of previous conversation.
-          
-          # Parameters for 'list' operation
+            description: "New message (continue). Sub-agent sees previous conversation context."
+
           include_completed:
             type: boolean
             description: |
               Include archived sub-agents in list (list only, default: false).
             default: false
-        
+
         required: [operation]
 
 # Web UI configuration
 web_ui:
   button:
     enabled: true
-    text: "Sub-Agents"
+    text: "Sub-Agent Manager"
     icon: "🤖"
-  
+
+  # Dropdown menu integration
+  menu:
+    enabled: true
+    items:
+      - id: "sub_agents"
+        menu_id: "user"
+        section: "Tools"
+        label: "Sub-Agent Manager"
+        action: "openPanel"
+        icon: "🤖"
+        requires_admin: false
+        order: 100
+        tooltip: "Sub-Agent Manager"
+
   panel:
     enabled: true
-    title: "Sub-Agent Manager"
-    endpoint: "/plugins/{{ name }}/panel"
+    title: "Sub-Agent Manager"  # Shared title for grouped panel
+    panel_id: "sub_agent_manager"  # Shared ID for all instances
+    panel_group: "sub_agent_manager"  # Enables tab grouping
+    endpoint: "/plugins/{{ name }}/"  # Instance-specific endpoint
     type: "iframe"
     width: "1000px"
     height: "800px"
+
+  # Access control
+  requires_auth: true
+  requires_role: null  # No role restriction - all authenticated users
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "get_panel"
+      response_type: "html"
+      description: "Sub-agent manager web UI panel"
+    - path: "/sub-agents"
+      method: "GET"
+      handler: "get_sub_agents_json"
+      response_type: "json"
+      description: "List all sub-agents for current session"
+    - path: "/sub-agents/{agent_id}"
+      method: "GET"
+      handler: "get_sub_agent_detail"
+      response_type: "json"
+      description: "Get details of specific sub-agent"
+    - path: "/sub-agents/{agent_id}"
+      method: "DELETE"
+      handler: "delete_sub_agent"
+      response_type: "json"
+      description: "Delete/archive sub-agent instance"
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get statistics for current session (total, active, archived)"
+    - path: "/phase-info"
+      method: "GET"
+      handler: "get_phase_info"
+      response_type: "json"
+      description: "Get phase filtering info (current phase, allowed agents per phase)"
 
 # Hook configuration
 hooks:
   - name: inject_sub_agent_context
     type: pre_llm_call
-    enabled: true
+    enabled: false # by default false, must be activate if sub agents are used
     description: |
       Injects active sub-agent information into system prompt before LLM calls.
       Provides coordinator agent with awareness of available sub-agents.
@@ -101,3 +157,45 @@ hooks:
     order:
       after: ["begin"]  # Run after initialization hooks
       before: ["end"]   # Run before finalization hooks
+
+config:
+  max_sub_agents_per_session: 10
+  max_nesting_depth: 5
+  max_message_history: 100
+  max_sub_agents_per_type: 3
+  default_wait_timeout: 3600  # Default timeout in seconds for wait/wait_all operations (1 hour)
+  allowed_agents:
+    - basic_agent
+    - web_research_agent
+    - financial_analyst_agent
+    - code_reviewer_agent
+    - meta_web_research_agent
+    - parallel_thinking_agent
+    - thinking_agent
+  blocked_agents:
+  hook_config:
+    enabled: true
+    inject_sub_agent_context:
+      # Injects active sub-agent list into coordinator's system prompt
+      # Gives coordinator agent visibility into available sub-agents for follow-up tasks
+      enabled: true
+      # Limits number of sub-agents shown to prevent system prompt bloat
+      # Only shows N most recently active sub-agents
+      max_sub_agents_shown: 5
+      show_completed: false
+      show_tool_state: true
+      format: markdown
+      # Phase-based agent filtering (optional)
+      # Filters the "Available agents" list based on a session template variable
+      # Example: Show only planning agents when workflow_phase="planning"
+      phase_filtering:
+        enabled: false
+        phase_variable: "workflow_phase"  # Name of the template variable to read
+        phase_agents:  # Map of phase -> allowed agents for that phase
+          # planning:
+          #   - story_designer
+          #   - story_reviewer
+          # characters:
+          #   - character_designer
+          #   - character_reviewer
+          _default: []  # Fallback if phase not in map (empty = show all allowed_agents)

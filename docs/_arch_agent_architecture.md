@@ -40,6 +40,7 @@ MCPServer (base protocol implementation)
 - Hook integration (pre/post message, context optimization)
 - Session management (message history, context)
 - Error handling and retry logic
+- **LLM fallback system** with automatic recovery for rate limits and quota exhaustion
 
 **Use When:**
 - Building custom agents with **programmatic tool definitions**
@@ -344,15 +345,16 @@ server_config:
   max_tokens: 2000
 ```
 
-**`config/plugins.yaml`:**
+**Plugin configuration in `plugins:` section:**
 ```yaml
 plugins:
-  - name: my_agent
-    servers:
-      - instance_name: research_agent_1
-        enabled: true
-        config:
-          model: "gpt-4"
+  servers:
+    research_agent_1:
+      type: my_agent
+      enabled: true
+      config:
+        model: "gpt-4"
+        max_tokens: 2000
 ```
 
 ## Testing
@@ -546,6 +548,125 @@ Choose based on your needs:
 - **10% of agents** → Use `Agent` (dynamic tools, complex logic)
 
 Both integrate seamlessly with the Agent System's LLM, hooks, and plugin infrastructure.
+
+---
+
+## LLM Fallback & Automatic Recovery
+
+The Agent system includes built-in resilience for LLM provider failures through automatic fallback and recovery mechanisms.
+
+### Configuration
+
+Agents can specify fallback LLM profiles in their configuration:
+
+```yaml
+my_agent:
+  type: basic_agent
+  agent_config:
+    llm_profile: "gemini"                    # Primary LLM
+    llm_profile_fallbacks:                   # Fallback chain
+      - "openai"                             # First fallback
+      - "anthropic"                          # Second fallback
+    fallback_recovery_seconds: 1800          # Try primary again after 30min (default: 3600)
+```
+
+### Fallback Behavior
+
+**Triggering Conditions:**
+- `LLMRateLimitError` (HTTP 429) - Temporary rate limit (TPM/RPM/RPD exceeded)
+- `LLMQuotaExhaustedError` - Daily/monthly quota exhausted
+
+**Fallback Activation:**
+1. Primary LLM fails with rate limit or quota error
+2. Agent switches to first fallback profile
+3. Fallback becomes **persistent** across all subsequent requests
+4. Status updates show active profile: `"gemini:fallback"` → `"openai:fallback"`
+
+**Automatic Recovery:**
+1. After `fallback_recovery_seconds` elapsed (default: 1 hour)
+2. Next request automatically tries original primary LLM
+3. If successful: switches back to primary profile
+4. If failed: re-activates fallback for another recovery period
+
+**No Fallback Available:**
+- If all fallbacks exhausted, raises original error to caller
+- Logged as error with full error chain
+
+### Implementation Details
+
+**State Tracking:**
+```python
+# In Agent class
+self._active_fallback_llm: Optional[Any] = None           # Current fallback LLM instance
+self._active_fallback_profile: Optional[str] = None       # Current fallback profile name
+self._fallback_activated_at: Optional[float] = None       # Unix timestamp of activation
+```
+
+**Recovery Check:**
+- Runs at start of each request: `self._check_fallback_recovery()`
+- Compares elapsed time against `fallback_recovery_seconds`
+- Automatically calls `reset_fallback()` when recovery period elapsed
+
+**Manual Reset:**
+```python
+# Force immediate recovery attempt (for testing/debugging)
+agent.reset_fallback()
+```
+
+### Use Cases
+
+| Scenario | Primary | Fallback | Recovery Time | Reason |
+|----------|---------|----------|---------------|--------|
+| **Cost Optimization** | Gemini Free | OpenAI Paid | 1 hour | Daily quota reset |
+| **Rate Limit Management** | Claude Opus | Gemini Flash | 30 min | TPM limit temporary |
+| **High Availability** | Primary API | Secondary API | 5 min | Service outage |
+| **Development** | Local LLM | Cloud LLM | N/A | Local testing |
+
+### Status Events
+
+Agents emit detailed status events for monitoring:
+
+```json
+{
+  "type": "progress",
+  "message": "Rate limit hit, switching to openai",
+  "meta": {
+    "step": 3,
+    "fallback": "openai",
+    "persistent": true,
+    "recovery_seconds": 1800
+  }
+}
+```
+
+Recovery events:
+```json
+{
+  "type": "info",
+  "message": "Fallback recovery period (1800s) elapsed. Trying original LLM again after 1823s in fallback mode."
+}
+```
+
+### Best Practices
+
+✅ **Set appropriate recovery times:**
+- Rate limits (TPM/RPM): 5-30 minutes
+- Daily quota: 1-24 hours (until quota resets)
+- API outages: 1-5 minutes
+
+✅ **Order fallbacks by cost:**
+- Primary: Cheapest/free tier
+- Fallback 1: Mid-tier
+- Fallback 2: Premium/expensive
+
+✅ **Monitor fallback usage:**
+- Check logs for `"Switched to {profile} permanently"`
+- Track recovery success rates
+- Adjust recovery times based on patterns
+
+❌ **Don't set recovery too short:**
+- < 1 minute risks hitting rate limits repeatedly
+- Causes wasted API calls and quota consumption
 
 ---
 

@@ -4,21 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>User Management - AgentSystem</title>
+    <link rel="stylesheet" href="/static/css/scrollbar.css">
     <link rel="stylesheet" href="/plugins/user_management/static/dashboard.css">
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>👥 User Management</h1>
-            <div class="stats">
-                <div class="stat-box">
-                    <div class="number">{{ total_users }}</div>
-                    <div class="label">Total Users</div>
-                </div>
-                <div class="stat-box">
-                    <div class="number" id="active-count">-</div>
-                    <div class="label">Active</div>
-                </div>
+        <h1>👥 User Management</h1>
+        
+        <div class="stats">
+            <div class="stat-box">
+                <div class="label">Total Users</div>
+                <div class="number">{{ total_users }}</div>
+            </div>
+            <div class="stat-box">
+                <div class="label">Active</div>
+                <div class="number" id="active-count">-</div>
             </div>
         </div>
         

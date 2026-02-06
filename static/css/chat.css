@@ -2,6 +2,50 @@
   chat.css — Chat area and message styles for Agent System
 */
 
+/* Read-Only Banner */
+.read-only-banner {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(255, 152, 0, 0.15);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  backdrop-filter: blur(10px);
+}
+
+.read-only-banner .banner-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.read-only-banner .banner-icon {
+  font-size: 24px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.read-only-banner .banner-text {
+  flex: 1;
+}
+
+.read-only-banner .banner-text strong {
+  display: block;
+  color: #ffa726;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.read-only-banner .banner-text p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 /* Chat Container */
 .chat {
   display: flex;
@@ -74,6 +118,8 @@
   align-items: center;
   padding-top: 0;
   padding-bottom: 12px;
+  padding-left: 12px; /* Small margin on sides */
+  padding-right: 12px; /* Small margin on sides */
   z-index: 20; /* ensure input bar sits above request id display */
 }
 
@@ -95,18 +141,23 @@
   align-items: center;
   padding-top: 8px;
   gap: 16px;
+  flex-wrap: wrap; /* Allow wrapping on very small screens */
 }
 
 .input-bar-top .selector-group {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0; /* Allow shrinking */
+  flex-shrink: 1; /* Allow group to shrink */
 }
 
 .input-bar-top .selector-group label {
   color: #64748b;
   font-weight: 500;
   font-size: 12px;
+  white-space: nowrap; /* Prevent label wrapping */
+  flex-shrink: 0; /* Label stays full width */
 }
 
 .input-bar-top .selector-group select {
@@ -118,6 +169,12 @@
   font-size: 12px;
   outline: none;
   cursor: pointer;
+  min-width: 80px; /* Minimum readable width */
+  max-width: 150px; /* Prevent excessive width */
+  width: 100%; /* Take available space */
+  overflow: hidden; /* Cut off long text */
+  text-overflow: ellipsis; /* Show ... for cut text */
+  white-space: nowrap; /* Don't wrap option text */
 }
 
 .input-bar-top .selector-group select:disabled {
@@ -290,7 +347,7 @@ form {
 }
 
 .stop-btn.cancelling { background: rgba(239,68,68,0.12); color: white; }
-.stop-btn.cancelled { background: rgba(16,185,129,0.12); color: #10b981; }
+.stop-btn.cancelled { background: rgba(239,68,68,0.12); color: #ef4444; }
 .stop-btn.cancel-failed { background: rgba(239,68,68,0.12); color: #ef4444; }
 
 /* File Upload Button */
@@ -497,6 +554,22 @@ form {
   font-style: italic;
 }
 
+/* Reconnect info message */
+.response-text.reconnect-info {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+
+.response-text.reconnect-info em {
+  color: #8b949e;
+  display: block;
+  margin-top: 4px;
+}
+
 /* Base font size for all response content */
 .response-text {
   font-size: 1em !important;
@@ -607,7 +680,12 @@ form {
   background: var(--bg-darkest);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
-  overflow: hidden;
+}
+
+/* Table header styling */
+.container-section .response-text table thead,
+.container-section .response-text .markdown-table thead {
+  background: var(--border-normal);
 }
 
 .container-section .response-text table th,
@@ -618,40 +696,47 @@ form {
   padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border-strong);
-  border-right: 1px solid var(--border-subtle);  /* Spalten-Trenner */
+  border-right: 1px solid var(--border-subtle);
 }
 
 .container-section .response-text table th:last-child,
 .container-section .response-text .markdown-table th:last-child {
-  border-right: none;  /* Kein Trenner bei letzter Spalte */
+  border-right: none;
+}
+
+/* Table body styling */
+.container-section .response-text table tbody,
+.container-section .response-text .markdown-table tbody {
+  background: var(--bg-darkest);
 }
 
 .container-section .response-text table td,
 .container-section .response-text .markdown-table td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
-  border-right: 1px solid var(--border-subtle);  /* Spalten-Trenner */
+  border-right: 1px solid var(--border-subtle);
   color: #e6edf3;
+  text-align: left;
 }
 
 .container-section .response-text table td:last-child,
 .container-section .response-text .markdown-table td:last-child {
-  border-right: none;  /* Kein Trenner bei letzter Spalte */
+  border-right: none;
 }
 
-.container-section .response-text table tr:last-child td,
-.container-section .response-text .markdown-table tr:last-child td {
+.container-section .response-text table tbody tr:last-child td,
+.container-section .response-text .markdown-table tbody tr:last-child td {
   border-bottom: none;
 }
 
-/* Zebra-Streifen: ungerade Zeilen mit leicht hellerem Hintergrund */
+/* Zebra-Streifen für bessere Lesbarkeit */
 .container-section .response-text table tbody tr:nth-child(odd),
-.container-section .response-text .markdown-table tr:nth-child(odd) {
-  background: rgba(56, 139, 253, 0.08);  /* Leicht blau-transparenter Hintergrund */
+.container-section .response-text .markdown-table tbody tr:nth-child(odd) {
+  background: rgba(56, 139, 253, 0.08);
 }
 
 .container-section .response-text table tbody tr:nth-child(even),
-.container-section .response-text .markdown-table tr:nth-child(even) {
+.container-section .response-text .markdown-table tbody tr:nth-child(even) {
   background: var(--bg-darkest);
 }
 
@@ -821,6 +906,33 @@ form {
 .msg.user {
   margin-left: auto;
   max-width: 75%;
+}
+
+/* Auto-continuation injected message */
+.msg.user.continuation-msg {
+  background: var(--bg-darker, #1a1a2e);
+  border: 1px dashed var(--border-strong, #555);
+  opacity: 0.85;
+  font-size: 0.9em;
+  max-width: 65%;
+}
+
+.continuation-badge {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--accent, #58a6ff);
+  margin-bottom: 4px;
+}
+
+.continuation-reason {
+  font-size: 0.75em;
+  color: var(--text-muted, #888);
+  margin-bottom: 6px;
+  font-style: italic;
+}
+
+.continuation-text {
+  color: var(--text-secondary, #bbb);
 }
 
 .msg.assistant {
@@ -1327,4 +1439,91 @@ div .container-section .container-header .toggle-arrow {
 /* Smooth scrolling for streaming content */
 .think-section.streaming {
   scroll-behavior: smooth;
+}
+/* ==========================================
+   RESPONSIVE STYLES - Chat & Input
+   ========================================== */
+
+@media (max-width: 768px) {
+  /* Input bar adjustments */
+  .input-bar-container {
+    max-width: 100%;
+    margin: 0 8px;
+  }
+  
+  /* Textarea smaller on mobile */
+  #task {
+    font-size: 14px;
+  }
+  
+  /* Code blocks scroll horizontally */
+  .msg pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  
+  /* Tool calls more compact */
+  .tool-call {
+    padding: 8px;
+  }
+  
+  .tool-call-header {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  
+  /* Think sections more compact */
+  .think-section {
+    padding: 8px 10px;
+    margin: 6px 0;
+  }
+  
+  /* Artifacts responsive */
+  .artifact-wrapper {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Even smaller textarea */
+  #task {
+    font-size: 13px;
+    min-height: 36px;
+  }
+  
+  /* Compact input bar */
+  .input-bar-container {
+    margin: 0 4px;
+    padding: 6px 8px;
+  }
+  
+  /* Hide labels, show only icons/selects */
+  .input-bar-top .selector-group label {
+    display: none;
+  }
+  
+  .input-bar-top .selector-group select {
+    padding: 6px;
+  }
+  
+  /* Smaller run/stop buttons */
+  .icon-action {
+    padding: 6px;
+  }
+  
+  /* Code blocks smaller font */
+  .msg pre code {
+    font-size: 11px;
+  }
+  
+  /* User image previews smaller */
+  .user-image-previews img {
+    max-width: 120px;
+    max-height: 120px;
+  }
+  
+  /* Message bubbles full width */
+  .msg {
+    max-width: 98%;
+  }
 }

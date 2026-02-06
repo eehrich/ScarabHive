@@ -95,7 +95,8 @@ author: "Enrico Ehrich"
 version: 0.1.0
 description: "Specialized web research agent"
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+  - mcp-server
 category: tools
 visibility: both  # Optional: "ui", "tool", "both" (default), or "private"
 ```

@@ -6,6 +6,20 @@ from datetime import datetime
 from enum import Enum
 
 
+class LLMRateLimitError(Exception):
+    """Raised when LLM rate limit is hit - triggers fallback to alternative profile."""
+    def __init__(self, message: str, provider: str = "", model: str = "", retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.retry_after = retry_after
+
+
+class LLMQuotaExhaustedError(LLMRateLimitError):
+    """Raised when daily/monthly quota is exhausted - triggers fallback."""
+    pass
+
+
 class ContentType(str, Enum):
     """Types of content in multimodal messages."""
     TEXT = "text"
@@ -40,6 +54,7 @@ class ImageContent(BaseModel):
     source: Optional[ImageSource] = None  # Anthropic format
     image_url: Optional[Union[str, Dict[str, str]]] = None  # OpenAI format
     detail: Optional[ImageDetail] = None  # OpenAI image detail control
+    name: Optional[str] = None  # Original filename
 
 
 class TextContent(BaseModel):
@@ -58,6 +73,8 @@ class AudioContent(BaseModel):
     source: Optional[ImageSource] = None  # Reuse ImageSource for consistent structure
     audio_url: Optional[str] = None
     media_type: Optional[str] = None  # e.g., "audio/wav", "audio/mp3"
+    name: Optional[str] = None  # Original filename
+    duration_seconds: Optional[float] = None  # Audio duration for accurate token estimation
 
 
 class VideoContent(BaseModel):
@@ -70,8 +87,31 @@ class VideoContent(BaseModel):
     media_type: Optional[str] = None  # e.g., "video/mp4", "video/webm"
 
 
+class TextFileContent(BaseModel):
+    """Text file content for multimodal messages (displayed separately from main text)."""
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["text_file"] = "text_file"
+    content: str  # File text content
+    name: Optional[str] = None  # Original filename
+
+
+class MultimodalToolContent(BaseModel):
+    """Multimodal content returned by a tool for LLM analysis.
+    
+    This is attached to tool response messages (role='tool') and processed
+    by LLM clients according to their capabilities:
+    - Gemini: Native multimodal tool response
+    - OpenAI/Anthropic: Injected as synthetic user message
+    """
+    type: str  # "image", "audio", "video"
+    path: str  # Local file path to the content
+    mime_type: str  # e.g., "image/png", "audio/wav"
+    description: Optional[str] = None  # Optional description for context
+
+
 # Union type for all content types
-ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, str, Dict[str, Any]]
+ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextFileContent, str, Dict[str, Any]]
 
 
 class ChatMessage(BaseModel):
@@ -116,6 +156,10 @@ class ChatMessage(BaseModel):
     tool_calls: Optional[List[Dict[str, Any]]] = None
     content_format: Optional[str] = None  # 'text', 'html', 'markdown', 'ansi', etc.
     timestamp: Optional[datetime] = None  # Timestamp when message was created
+    # Multimodal content from tool responses - processed by LLM clients
+    multimodal_content: Optional[List[MultimodalToolContent]] = None
+    # Reasoning/thinking content from models like DeepSeek, OpenAI o-series
+    reasoning_content: Optional[str] = None
 
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""
@@ -133,7 +177,7 @@ class ChatMessage(BaseModel):
         return False
 
     def get_text_content(self) -> str:
-        """Extract text content from message."""
+        """Extract text content from message (including text file content)."""
         if isinstance(self.content, str):
             return self.content
         if isinstance(self.content, list):
@@ -143,9 +187,20 @@ class ChatMessage(BaseModel):
                     texts.append(item)
                 elif isinstance(item, TextContent):
                     texts.append(item.text)
-                elif hasattr(item, "type") and getattr(item, "type") == "text":
-                    # Pydantic model with text
-                    texts.append(getattr(item, "text", ""))
+                elif isinstance(item, TextFileContent):
+                    # Include text file content with filename header
+                    filename = item.name or "file"
+                    texts.append(f"[File: {filename}]\n{item.content}")
+                elif hasattr(item, "type"):
+                    item_type = getattr(item, "type", "")
+                    if item_type == "text":
+                        # Pydantic model with text
+                        texts.append(getattr(item, "text", ""))
+                    elif item_type == "text_file":
+                        # Dict-style text file content
+                        filename = getattr(item, "name", None) or "file"
+                        content = getattr(item, "content", "")
+                        texts.append(f"[File: {filename}]\n{content}")
             return " ".join(texts)
         return ""
 
@@ -181,13 +236,48 @@ class ChatMessage(BaseModel):
 class LLMClient:
     """Base class for LLM clients with streaming support."""
 
-    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
+    async def _cancellable_sleep(
+        self,
+        duration: float,
+        cancellation_token,
+        check_interval: float = 0.5
+    ) -> None:
+        """Sleep that can be cancelled.
+        
+        Instead of blocking for the full duration, checks cancellation
+        periodically and raises CancelledError if cancelled.
+        
+        Args:
+            duration: Total sleep duration in seconds
+            cancellation_token: Token to check for cancellation
+            check_interval: How often to check cancellation (seconds)
+        """
+        import asyncio
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not cancellation_token:
+            await asyncio.sleep(duration)
+            return
+        
+        elapsed = 0.0
+        while elapsed < duration:
+            if cancellation_token.is_cancelled:
+                logger.info(f"[LLMClient] Sleep interrupted by cancellation after {elapsed:.1f}s")
+                raise asyncio.CancelledError("Request cancelled during retry wait")
+            
+            # Sleep for check_interval or remaining time, whichever is smaller
+            sleep_time = min(check_interval, duration - elapsed)
+            await asyncio.sleep(sleep_time)
+            elapsed += sleep_time
+
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         raise NotImplementedError
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
         raise NotImplementedError
 
-    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
         """Stream LLM responses with tool calls.
 
         Yields chunks in the format:
@@ -196,8 +286,14 @@ class LLMClient:
         - {"type": "final", "assistant": {...}}
 
         Default implementation falls back to non-streaming.
+        
+        Args:
+            messages: Chat messages
+            tools: Tool definitions
+            cancellation_token: Optional cancellation token
+            status_scope: Optional status scope for progress reporting (batch status, etc.)
         """
-        result = await self.chat_tools(messages, tools, cancellation_token)
+        result = await self.chat_tools(messages, tools, cancellation_token, status_scope)
         yield {"type": "final", "assistant": result["assistant"]}
 
     def supports_streaming(self) -> bool:

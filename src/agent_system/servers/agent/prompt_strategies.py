@@ -31,6 +31,7 @@ class PromptContext:
     max_steps: int
     current_step: int  # Current step number (1-indexed, updated per-step)
     agent_instance: Any  # The actual agent instance for hook calls
+    session_template_vars: Optional[Dict[str, Any]] = None  # Session-scoped vars (override agent_config)
 
 
 class PromptStrategy(ABC):
@@ -67,6 +68,17 @@ class PromptStrategy(ABC):
                 context.system_config.context.location
             )
             context_vals.update(dt_ctx)
+        
+        # Add custom template variables from agent config
+        # These override built-in variables if there's a conflict
+        if context.agent_config.template_vars:
+            context_vals.update(context.agent_config.template_vars)
+        
+        # Add session-scoped template variables (highest priority)
+        # These override BOTH built-in AND agent_config template_vars
+        # CRITICAL: This ensures session isolation - each session has its own vars
+        if context.session_template_vars:
+            context_vals.update(context.session_template_vars)
         
         return context_vals
 

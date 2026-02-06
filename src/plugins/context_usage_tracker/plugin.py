@@ -6,10 +6,11 @@ Provides web UI for viewing usage statistics and history.
 """
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.factory import resolve_llm_config_for_agent
+from agent_system.llm.token_utils import estimate_tools_token_count
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .tracker import UsageTracker
 from .web_endpoints import ContextUsageWebFactory
@@ -59,6 +60,13 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             total_tokens = usage.get("total_tokens", 0)
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
+            
+            # Extract cached_tokens from OpenAI's prompt_tokens_details
+            # Format: {"prompt_tokens_details": {"cached_tokens": 1920}}
+            cached_tokens = 0
+            prompt_tokens_details = usage.get("prompt_tokens_details")
+            if prompt_tokens_details and isinstance(prompt_tokens_details, dict):
+                cached_tokens = prompt_tokens_details.get("cached_tokens", 0)
 
             # Get context_window from the actual LLM instance (respects llm_override)
             # instead of resolving from agent_config (which uses agent's default profile)
@@ -85,6 +93,17 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             agent_name = context.agent_name or "unknown"
             session_id = context.session_id or "unknown"
 
+            # Estimate tool definition tokens from agent's current tool schemas
+            tool_definition_tokens = 0
+            if context.agent and hasattr(context.agent, '_current_tools_schema'):
+                tools_schema = context.agent._current_tools_schema
+                if tools_schema and isinstance(tools_schema, list):
+                    tool_definition_tokens = estimate_tools_token_count(tools_schema)
+                    logger.debug(
+                        f"Estimated tool definition tokens: {tool_definition_tokens} "
+                        f"({len(tools_schema)} tools)"
+                    )
+
             # Record usage in tracker
             self.tracker.record_usage(
                 agent_id=agent_id,
@@ -95,6 +114,8 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 completion_tokens=completion_tokens,
                 message_count=message_count,
                 context_window=context_window,
+                cached_tokens=cached_tokens,
+                tool_definition_tokens=tool_definition_tokens,
             )
 
             return HookResult(success=True, modified=False, context=context)
@@ -129,7 +150,7 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
         self.hooks_plugin = ContextUsageTrackerHooks(plugin_dir, self.tracker)
 
         # Initialize web factory
-        self.web_factory = ContextUsageWebFactory(self.tracker)
+        self.web_factory = ContextUsageWebFactory(server=self)
 
         logger.info(f"Context Usage Tracker Plugin initialized: {name}")
 
@@ -144,14 +165,6 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
     def get_web_router(self):
         """Get the web router for this plugin."""
         return self.web_factory.get_web_router()
-
-    def get_panels(self) -> List[Dict[str, Any]]:
-        """Get panel definitions for this plugin."""
-        return self.web_factory.get_panels()
-
-    def get_static_assets(self) -> Dict[str, Path]:
-        """Get static assets for this plugin."""
-        return self.web_factory.get_static_assets()
 
 
 # Plugin factory

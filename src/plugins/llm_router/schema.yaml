@@ -33,3 +33,9 @@ tools:
         type: object
         properties: {}
         additionalProperties: false
+
+config:
+  model_ref: unknown
+  description: No description available
+  max_steps: unlimited
+  provider: null

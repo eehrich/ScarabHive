@@ -29,22 +29,40 @@ def load_schema_from_dir(
 
     text = schema_file.read_text(encoding="utf-8")
     # Render using Jinja2 (Jinja2 is required by this project)
-    env = Environment(loader=FileSystemLoader(str(p)), autoescape=select_autoescape())
-    # render using the filename as template name so includes work
-    template = env.get_template("schema.yaml")
-    # Render with provided template vars
-    text = template.render(**(template_vars or {}))
-    logger.debug("Rendered schema for %s with template_vars=%s", schema_file, template_vars)
+    try:
+        env = Environment(loader=FileSystemLoader(str(p)), autoescape=select_autoescape())
+        # render using the filename as template name so includes work
+        template = env.get_template("schema.yaml")
+        # Render with provided template vars
+        text = template.render(**(template_vars or {}))
+        logger.debug("Rendered schema for %s with template_vars=%s", schema_file, template_vars)
+    except Exception as e:
+        logger.error(f"Jinja2 template rendering failed for {schema_file}: {e}")
+        raise RuntimeError(f"Failed to render schema template {schema_file}: {e}") from e
 
     try:
         data = yaml.safe_load(text)
         if isinstance(data, dict):
             return data
-    except Exception:
-        # try JSON as last resort
-        try:
-            return json.loads(text)
-        except Exception:
+        else:
+            logger.error(f"Schema file {schema_file} did not parse to a dictionary, got {type(data)}")
             return None
+    except yaml.YAMLError as e:
+        logger.error(f"YAML syntax error in {schema_file}: {e}")
+        raise RuntimeError(f"Invalid YAML syntax in {schema_file}: {e}") from e
+    except Exception as e:
+        # try JSON as last resort
+        logger.debug(f"YAML parsing failed for {schema_file}, trying JSON: {e}")
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                logger.warning(f"Schema {schema_file} parsed as JSON instead of YAML")
+                return data
+            else:
+                logger.error(f"Schema {schema_file} JSON parse result is not a dictionary")
+                return None
+        except Exception as json_err:
+            logger.error(f"Failed to parse {schema_file} as YAML or JSON: YAML error: {e}, JSON error: {json_err}")
+            raise RuntimeError(f"Failed to parse schema {schema_file}: {e}") from e
 
     return None

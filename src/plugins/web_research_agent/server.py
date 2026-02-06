@@ -63,7 +63,7 @@ Please provide:
 - Different perspectives or viewpoints
 - Source URLs for verification
 """
-        return await self._run_task(research_prompt, request_id, params.get("_status"))
+        return await self._run_task(research_prompt, request_id, params.get("_session_id"), params.get("_status"))
     
     async def fact_check(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Fact-check a specific claim.
@@ -93,7 +93,7 @@ Please provide:
 - Important context or nuances
 - Source URLs for verification
 """
-        return await self._run_task(fact_check_prompt, request_id, params.get("_status"))
+        return await self._run_task(fact_check_prompt, request_id, params.get("_session_id"), params.get("_status"))
     
     async def source_analysis(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze and compare sources for a topic.
@@ -124,7 +124,7 @@ Please provide:
 - Synthesis of the most reliable information
 - Source URLs for each perspective
 """
-        return await self._run_task(compare_prompt, request_id, params.get("_status"))
+        return await self._run_task(compare_prompt, request_id, params.get("_session_id"), params.get("_status"))
     
     async def research_assistant(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """General research assistant for any task.
@@ -138,13 +138,13 @@ Please provide:
         request_id = params.get("request_id") or params.get("requestId")
         
         # For general tasks, just pass through to the agent
-        return await self._run_task(task, request_id, params.get("_status"))
+        return await self._run_task(task, request_id, params.get("_session_id"), params.get("_status"))
 
-    async def _run_task(self, prompt: str, request_id: str, status) -> Dict[str, Any]:
+    async def _run_task(self, prompt: str, request_id: str, session_id: str | None, status) -> Dict[str, Any]:
         """Run a task by streaming agent events and collecting results."""
         result: Dict[str, Any] = {"task": prompt, "calls": []}
         try:
-            async for event in self.run_events(prompt, request_id=request_id):
+            async for event in self.run_events(prompt, request_id=request_id, session_id=session_id):
                 event_type = event.get("type")
                 if event_type == "mcp_call":
                     filtered_params = {k: v for k, v in event.get("params", {}).items() if not k.startswith('_')}

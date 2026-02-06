@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performance Profiling</title>
+    <link rel="stylesheet" href="/static/css/scrollbar.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #3e3e42;
+            padding-bottom: 0;
+        }
+
+        .nav-tabs a {
+            color: #858585;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .nav-tabs a:hover {
+            color: #d4d4d4;
+            background: #2d2d30;
+        }
+
+        .nav-tabs a.active {
+            color: #569cd6;
+            background: #252526;
+            border: 1px solid #3e3e42;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 12px;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #858585;
+            margin-bottom: 5px;
+            white-space: nowrap;
+        }
+
+        .stat-value {
+            font-size: clamp(12px, 3vw, 22px);
+            font-weight: 600;
+            color: #4ec9b0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .stat-value.warning {
+            color: #dcdcaa;
+        }
+
+        .stat-value.danger {
+            color: #f48771;
+        }
+
+        .section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section h2 {
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: #ce9178;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+
+        button.icon-only.active {
+            background: #16825d;
+        }
+
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #3e3e42;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            max-width: 300px;
+        }
+
+        th {
+            color: #569cd6;
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 500;
+        }
+
+        .task-item {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 5px 0;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            word-break: break-all;
+        }
+
+        .two-columns {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+
+        .threads-list {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            color: #858585;
+        }
+
+        #lastUpdate {
+            color: #858585;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+
+        .empty-state {
+            color: #858585;
+            font-style: italic;
+            padding: 10px 0;
+        }
+
+        .status-done { color: #4ec9b0; }
+        .status-running { color: #dcdcaa; }
+        .status-cancelled { color: #f48771; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔬 Performance Profiling</h1>
+        
+        <nav class="nav-tabs">
+            <a href="/debug/profile/dashboard" class="active">🔬 Performance</a>
+            <a href="/debug/memory/dashboard">🧠 Memory</a>
+        </nav>
+        
+        <div class="controls">
+            <button class="icon-only" onclick="refresh()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only active" id="autoRefreshBtn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
+                ⏱️
+            </button>
+            <span id="lastUpdate"></span>
+        </div>
+        
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <div class="stat-label">Loading...</div>
+                <div class="stat-value">-</div>
+            </div>
+        </div>
+        
+        <div class="two-columns">
+            <div class="section" id="activeRequests">
+                <h2>🚨 Active Requests</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+            
+            <div class="section" id="slowRequests">
+                <h2>🐢 Slow Requests (Recent)</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+        
+        <div class="two-columns">
+            <div class="section" id="asyncTasks">
+                <h2>⚡ Async Tasks</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+            
+            <div class="section" id="threads">
+                <h2>🧵 Threads</h2>
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+        
+        <div class="section" id="requestStats">
+            <h2>📈 Request Stats by Path</h2>
+            <div class="empty-state">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        let refreshInterval;
+        
+        async function refresh() {
+            try {
+                const response = await fetch('/debug/profile');
+                const data = await response.json();
+                renderDashboard(data);
+                document.getElementById('lastUpdate').textContent = 
+                    'Updated: ' + new Date().toLocaleTimeString();
+            } catch (error) {
+                console.error('Failed to fetch profile data:', error);
+            }
+        }
+        
+        function getValueClass(value, warningThreshold, dangerThreshold) {
+            if (value >= dangerThreshold) return 'danger';
+            if (value >= warningThreshold) return 'warning';
+            return '';
+        }
+        
+        function renderDashboard(data) {
+            // Stats grid
+            const lagClass = getValueClass(data.event_loop.current_ms || 0, 50, 100);
+            const memClass = getValueClass(data.memory.rss_mb || 0, 500, 1000);
+            
+            document.getElementById('statsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">Active Requests</div>
+                    <div class="stat-value">${data.requests.active.length}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Async Tasks</div>
+                    <div class="stat-value">${data.async_tasks.total_count}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Event Loop Lag</div>
+                    <div class="stat-value ${lagClass}">${(data.event_loop.current_ms || 0).toFixed(1)}ms</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Memory (RSS)</div>
+                    <div class="stat-value ${memClass}">${(data.memory.rss_mb || 0).toFixed(0)}MB</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Threads</div>
+                    <div class="stat-value">${data.threads.count}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Peak Lag</div>
+                    <div class="stat-value ${getValueClass(data.event_loop.peak_ms || 0, 100, 500)}">${(data.event_loop.peak_ms || 0).toFixed(0)}ms</div>
+                </div>
+            `;
+            
+            // Active Requests
+            const activeReqs = data.requests.active;
+            document.getElementById('activeRequests').innerHTML = `
+                <h2>🚨 Active Requests</h2>
+                ${activeReqs.length === 0 ? '<div class="empty-state">No active requests</div>' : `
+                <table>
+                    <tr><th>Path</th><th>Method</th><th>Duration</th></tr>
+                    ${activeReqs.map(r => `
+                        <tr>
+                            <td>${r.path}</td>
+                            <td>${r.method}</td>
+                            <td class="${r.duration_ms > 1000 ? 'danger' : ''}">${(r.duration_ms || 0).toFixed(0)}ms</td>
+                        </tr>
+                    `).join('')}
+                </table>`}
+            `;
+            
+            // Slow Requests
+            const slowReqs = data.requests.slow_recent || [];
+            document.getElementById('slowRequests').innerHTML = `
+                <h2>🐢 Slow Requests (Recent)</h2>
+                ${slowReqs.length === 0 ? '<div class="empty-state">No slow requests recorded</div>' : `
+                <table>
+                    <tr><th>Path</th><th>Duration</th><th>Status</th></tr>
+                    ${slowReqs.map(r => `
+                        <tr>
+                            <td>${r.path}</td>
+                            <td class="danger">${(r.duration_ms || 0).toFixed(0)}ms</td>
+                            <td>${r.status || '-'}</td>
+                        </tr>
+                    `).join('')}
+                </table>`}
+            `;
+            
+            // Async Tasks
+            const tasks = data.async_tasks.tasks.slice(0, 15);
+            document.getElementById('asyncTasks').innerHTML = `
+                <h2>⚡ Async Tasks (${data.async_tasks.total_count})</h2>
+                ${tasks.length === 0 ? '<div class="empty-state">No tasks running</div>' : 
+                tasks.map(t => `
+                    <div class="task-item">
+                        <strong>${t.name}</strong><br>
+                        <span style="color: #858585">${t.coro}</span><br>
+                        <span class="${t.done ? 'status-done' : t.cancelled ? 'status-cancelled' : 'status-running'}">
+                            ${t.done ? '✓ Done' : t.cancelled ? '✗ Cancelled' : '⏳ Running'}
+                        </span>
+                    </div>
+                `).join('')}
+            `;
+            
+            // Threads
+            const activeCount = data.threads.active_count || 0;
+            const idleCount = data.threads.idle_count || 0;
+            document.getElementById('threads').innerHTML = `
+                <h2>🧵 Threads (${data.threads.count}) - ${activeCount} active, ${idleCount} idle</h2>
+                <div class="threads-list">
+                    ${data.threads.threads ? data.threads.threads.map(t => {
+                        const state = t.idle ? `<span style="color: #666">💤 ${t.idle_reason || 'idle'}</span>` : `<span style="color: #4CAF50">⚡ active</span>`;
+                        return `<div>${t.name} - ${state}</div>`;
+                    }).join('') : data.threads.names.map(n => `<div>${n}</div>`).join('')}
+                </div>
+            `;
+            
+            // Request Stats
+            const stats = data.requests.stats_by_path || {};
+            const statEntries = Object.entries(stats);
+            document.getElementById('requestStats').innerHTML = `
+                <h2>📈 Request Stats by Path</h2>
+                ${statEntries.length === 0 ? '<div class="empty-state">No request stats yet</div>' : `
+                <table>
+                    <tr><th>Path</th><th>Count</th><th>Avg</th><th>Min</th><th>Max</th><th>Slow %</th></tr>
+                    ${statEntries.map(([path, s]) => `
+                        <tr>
+                            <td>${path}</td>
+                            <td>${s.count}</td>
+                            <td>${(s.avg_ms || 0).toFixed(0)}ms</td>
+                            <td>${(s.min_ms || 0).toFixed(0)}ms</td>
+                            <td>${(s.max_ms || 0).toFixed(0)}ms</td>
+                            <td class="${(s.slow_pct || 0) > 10 ? 'danger' : ''}">${(s.slow_pct || 0).toFixed(1)}%</td>
+                        </tr>
+                    `).join('')}
+                </table>`}
+            `;
+        }
+        
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('autoRefreshBtn');
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Paused';
+            } else {
+                refreshInterval = setInterval(refresh, 5000);
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
+            }
+        }
+        
+        // Initial load
+        refresh();
+        
+        // Start auto-refresh by default
+        refreshInterval = setInterval(refresh, 5000);
+    </script>
+</body>
+</html>

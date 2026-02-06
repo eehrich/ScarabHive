@@ -1,22 +1,20 @@
 name: example
 version: 1.0.0
-author: "AgentSystem Team"
-description: "Reference implementation demonstrating MCP plugin best practices with calculator, formatter, and status tools"
+author: Enrico Ehrich
+description: Reference implementation demonstrating MCP plugin best practices with
+  calculator, formatter, and status tools
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+- mcp-server
 category: tools
 tags:
-  - example
-  - reference
-  - calculator
-  - formatter
-  - demo
-
-# Dependencies (automatically installed)
+- example
+- reference
+- calculator
+- formatter
+- demo
 dependencies:
-  - pydantic>=2.0.0
-
-# Minimum requirements
+- pydantic>=2.0.0
 requires:
-  python: ">=3.8"
-  agent_system: ">=1.0.0"
+  python: '>=3.8'
+  agent_system: '>=0.4.0'

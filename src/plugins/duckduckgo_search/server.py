@@ -70,14 +70,12 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
                 return cached_result
             
         try:
-            try:
-                from ddgs import DDGS  # preferred package
-                pkg = "ddgs"
-            except Exception:
-                from duckduckgo_search import DDGS  # fallback legacy
-                pkg = "duckduckgo_search"
-        except Exception as e:
-            raise RuntimeError("Install `ddgs` (preferred) or `duckduckgo-search` for duckduckgo_search server.") from e
+            # Note: The 'ddgs' package on PyPI was hijacked by another project at v9.x
+            # We now only use duckduckgo-search which provides the original DDGS class
+            from duckduckgo_search import DDGS
+            pkg = "duckduckgo_search"
+        except ImportError as e:
+            raise RuntimeError("Install `duckduckgo-search` for duckduckgo_search server: pip install duckduckgo-search") from e
 
         # Update status with search progress
         await status.progress(f"🔍 Searching: {query}")
@@ -101,8 +99,12 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
                         logger.debug("Search attempt %d failed, retrying in %.2f seconds", attempt, delay)
                         await asyncio.sleep(delay)
                     
-                    with DDGS() as ddgs:
-                        results = list(ddgs.text(query, max_results=max_results))
+                    # Run sync ddgs call in thread pool to avoid blocking event loop
+                    def _search_sync() -> list:
+                        with DDGS() as ddgs:
+                            return list(ddgs.text(query, max_results=max_results))
+                    
+                    results = await asyncio.to_thread(_search_sync)
                     break  # Success, exit retry loop
                     
                 except Exception as e:

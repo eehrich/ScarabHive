@@ -26,20 +26,25 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
     Configuration is loaded from schema.yaml.
     """
     
-    def __init__(self, plugin_dir: Path | str, message_history: List[Dict[str, Any]] | None = None):
+    def __init__(self, plugin_dir: Path | str, message_history: List[Dict[str, Any]] | None = None, mcp_config: Any = None):
         """Initialize the message debugger plugin.
         
         Args:
             plugin_dir: Directory containing schema.yaml
             message_history: Optional list to track message snapshots for web UI
+            mcp_config: MCP configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
         
         # Shared history for web UI
         self.message_history = message_history if message_history is not None else []
         
-        # Load config from schema.yaml
+        # Load config from schema.yaml defaults
         config = self.get_config()
+        
+        # Merge with mcp_config.config if provided (overrides schema defaults)
+        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
+            config.update(mcp_config.config)
         self.max_history = int(config.get('max_history_entries', 100))
         self.capture_enabled = bool(config.get('capture_enabled', True))
         self.capture_pre_llm = bool(config.get('capture_pre_llm', True))

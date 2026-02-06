@@ -19,6 +19,7 @@ from agent_system.auth.models import (
     UserUpdate,
     Token,
     LoginRequest,
+    RefreshTokenRequest,
     PasswordResetRequest,
     PasswordReset,
     APIKeyResponse,
@@ -27,7 +28,9 @@ from agent_system.auth.database import get_db, UserDatabase, create_user
 from agent_system.auth.security import (
     verify_password,
     create_access_token,
+    decode_access_token,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from agent_system.auth.dependencies import get_current_active_user
 
@@ -49,21 +52,21 @@ async def register(
 ) -> User:
     """
     Register a new user.
-    
+
     Args:
         user_data: User registration data
         db: Database instance
-    
+
     Returns:
         Created user (without password)
-    
+
     Raises:
         HTTPException: If username or email already exists
     """
     try:
         user_in_db = create_user(user_data)
         logger.info(f"User registered: {user_in_db.username}")
-        
+
         # Convert to User (remove sensitive data)
         return User(
             id=user_in_db.id,
@@ -91,18 +94,18 @@ async def login(
 ) -> Token:
     """
     Login and get access token.
-    
+
     Accepts either username or email for login.
     Sets both JSON response and HttpOnly cookie for compatibility.
-    
+
     Args:
         login_data: Login credentials (username or email + password)
         response: FastAPI response object to set cookie
         db: Database instance
-    
+
     Returns:
         JWT access token
-    
+
     Raises:
         HTTPException: If credentials are invalid
     """
@@ -111,7 +114,7 @@ async def login(
     if not user:
         # Try as email if username lookup failed
         user = db.get_user_by_email(login_data.username)
-    
+
     # Verify credentials
     if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
@@ -119,14 +122,14 @@ async def login(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Check if user is active
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive"
         )
-    
+
     # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -136,25 +139,42 @@ async def login(
             "role": user.role.value,
         },
         expires_delta=access_token_expires,
+        token_type="access",
     )
-    
+
+    # Create refresh token
+    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_token = create_access_token(
+        data={
+            "sub": user.username,
+            "user_id": user.id,
+            "role": user.role.value,
+        },
+        expires_delta=refresh_token_expires,
+        token_type="refresh",
+    )
+
     # Update last login
     db.update_last_login(user.id)
-    
+
     # Set secure cookie for browser clients
+    # Use both max_age and expires for maximum browser compatibility
+    cookie_max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60  # 7 days in seconds
     response.set_cookie(
         key="access_token",
         value=access_token,
-        httponly=False,  # Allow JavaScript access for development
-        secure=False,    # Allow HTTP for local development
-        samesite="lax",  # Relaxed for development (use "strict" in production)
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Same as token expiry
+        httponly=True,  # Secure: JavaScript cannot access
+        secure=False,   # Allow HTTP for local development (set True in production)
+        samesite="lax",  # CSRF protection
+        max_age=cookie_max_age,  # 7 days (in seconds)
+        expires=cookie_max_age,  # 7 days (also set expires for older browsers)
     )
-    
+
     logger.info(f"User logged in: {user.username}")
-    
+
     return Token(
         access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
         expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
@@ -167,30 +187,100 @@ async def logout(
 ) -> MessageResponse:
     """
     Logout (removes HttpOnly cookie and returns success message).
-    
+
     Note: JWT tokens are stateless, so logout is handled by:
     1. Removing the HttpOnly cookie (server-side)
     2. Client should also clear localStorage/sessionStorage tokens
-    
+
     Args:
         response: FastAPI response object to delete cookie
         current_user: Current authenticated user
-    
+
     Returns:
         Success message
     """
     # Delete the cookie
     response.delete_cookie(
         key="access_token",
-        httponly=False,
+        httponly=True,
         secure=False,
         samesite="lax"
     )
-    
+
     logger.info(f"User logged out: {current_user.username}")
     return MessageResponse(
         message="Logged out successfully",
         detail="Remove the token from your client"
+    )
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_token(
+    refresh_request: RefreshTokenRequest,
+    db: UserDatabase = Depends(get_db),
+) -> Token:
+    """
+    Refresh access token using refresh token.
+
+    Args:
+        refresh_request: Refresh token request with refresh_token
+        db: Database instance
+
+    Returns:
+        New access token (and optionally new refresh token)
+
+    Raises:
+        HTTPException: If refresh token is invalid or expired
+    """
+    # Decode and validate refresh token
+    token_data = decode_access_token(refresh_request.refresh_token)
+
+    if not token_data or token_data.token_type != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Get user from database
+    user = db.get_user_by_username(token_data.username)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
+
+    # Create new access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={
+            "sub": user.username,
+            "user_id": user.id,
+            "role": user.role.value,
+        },
+        expires_delta=access_token_expires,
+        token_type="access",
+    )
+
+    # Optionally create new refresh token (rotation)
+    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    new_refresh_token = create_access_token(
+        data={
+            "sub": user.username,
+            "user_id": user.id,
+            "role": user.role.value,
+        },
+        expires_delta=refresh_token_expires,
+        token_type="refresh",
+    )
+
+    logger.info(f"Token refreshed for user: {user.username}")
+
+    return Token(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -200,10 +290,10 @@ async def get_current_user_info(
 ) -> User:
     """
     Get current user information.
-    
+
     Args:
         current_user: Current authenticated user
-    
+
     Returns:
         Current user data
     """
@@ -218,24 +308,24 @@ async def update_current_user(
 ) -> User:
     """
     Update current user information.
-    
+
     Users can update their own email, full_name, and password.
     Only admins can change role or is_active status.
-    
+
     Args:
         user_update: User update data
         current_user: Current authenticated user
         db: Database instance
-    
+
     Returns:
         Updated user data
-    
+
     Raises:
         HTTPException: If update fails or unauthorized
     """
     # Users can only update their own email, full_name, and password
     # Role and is_active changes are restricted to admins (could be enforced in admin endpoints)
-    
+
     try:
         # Get the current user from database to update
         user_in_db = db.get_user_by_id(current_user.id)
@@ -244,7 +334,7 @@ async def update_current_user(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-        
+
         # Update user
         updated_user = db.update_user(current_user.id, user_update)
         if not updated_user:
@@ -252,9 +342,9 @@ async def update_current_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Failed to update user"
             )
-        
+
         logger.info(f"User {current_user.username} updated their profile")
-        
+
         # Return User model (without sensitive data)
         return User(
             id=updated_user.id,
@@ -267,7 +357,7 @@ async def update_current_user(
             updated_at=updated_user.updated_at,
             last_login=updated_user.last_login,
         )
-        
+
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -288,26 +378,26 @@ async def generate_api_key(
 ) -> APIKeyResponse:
     """
     Generate a new API key for the current user.
-    
+
     Warning: The API key is only shown once. Save it securely.
-    
+
     Args:
         current_user: Current authenticated user
         db: Database instance
-    
+
     Returns:
         Generated API key
     """
     api_key = db.generate_user_api_key(current_user.id)
-    
+
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate API key"
         )
-    
+
     logger.info(f"API key generated for user: {current_user.username}")
-    
+
     from datetime import datetime
     return APIKeyResponse(
         api_key=api_key,
@@ -322,11 +412,11 @@ async def revoke_api_key(
 ) -> MessageResponse:
     """
     Revoke the current user's API key.
-    
+
     Args:
         current_user: Current authenticated user
         db: Database instance
-    
+
     Returns:
         Success message
     """
@@ -347,24 +437,24 @@ async def request_password_reset(
 ) -> MessageResponse:
     """
     Request a password reset (placeholder - requires email service).
-    
+
     Note: This is a placeholder. In production, this would send an email
     with a reset token.
-    
+
     Args:
         reset_request: Password reset request data
         db: Database instance
-    
+
     Returns:
         Success message
     """
     # Check if user exists (but don't reveal if email is registered)
     user = db.get_user_by_email(reset_request.email)
-    
+
     if user:
         logger.info(f"Password reset requested for: {user.username}")
         # TODO: Send email with reset token
-    
+
     # Always return success to prevent user enumeration
     return MessageResponse(
         message="If the email exists, a password reset link has been sent",
@@ -378,19 +468,19 @@ async def reset_password(
 ) -> MessageResponse:
     """
     Reset password with token (placeholder - requires token validation).
-    
+
     Note: This is a placeholder. In production, this would validate a
     reset token and update the password.
-    
+
     Args:
         reset_data: Password reset data with token
-    
+
     Returns:
         Success message
     """
     # TODO: Implement token validation and password reset
     logger.warning("Password reset endpoint called but not fully implemented")
-    
+
     return MessageResponse(
         message="Password reset functionality not yet implemented",
         detail="Use admin tools to reset passwords"

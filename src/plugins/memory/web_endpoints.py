@@ -2,11 +2,16 @@
 
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
 
 from fastapi import APIRouter, Request, Query, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+
+from agent_system.plugins.schema_router import create_schema_router
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +33,37 @@ class MemoryWebFactory:
     
     def get_web_router(self) -> APIRouter:
         """Get the FastAPI router for this plugin's web endpoints."""
-        router = APIRouter(prefix=f"/plugins/{self.server.name}")
+        # Get schema from server (already loaded with Jinja2 templates rendered)
+        schema = self.server.get_schema_data() if hasattr(self.server, 'get_schema_data') else {}
         
-        @router.get("/panel", response_class=HTMLResponse)
-        async def get_panel(request: Request):
-            """Render the Memory management dashboard."""
-            return self.render_panel(request)
-        
-        @router.get("/memories")
-        async def get_memories(
-            session_id: str = Query(..., description="Session ID"),
-            limit: int = Query(50, ge=1, le=500),
-            offset: int = Query(0, ge=0),
-            sort_by: str = Query("accessed"),
-            sort_order: str = Query("desc")
-        ):
+        # Generate router from schema
+        return create_schema_router(
+            plugin_name=self.server.name,
+            schema=schema,
+            handler_class=self
+        )
+    
+    # Handler methods (called by schema router)
+    
+    async def get_panel(self, request: Request) -> HTMLResponse:
+        """Render the Memory management dashboard."""
+        return self.templates.TemplateResponse(
+            "panel.html",
+            {
+                "request": request,
+                "name": self.server.name
+            }
+        )
+    
+    async def get_memories(
+        self,
+        request: Request,
+        session_id: str = Query(..., description="Session ID"),
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        sort_by: str = Query("accessed"),
+        sort_order: str = Query("desc")
+    ) -> JSONResponse:
             """
             Get memories with pagination and sorting (JSON).
             
@@ -70,12 +91,13 @@ class MemoryWebFactory:
                     {"error": str(e), "memories": []},
                     status_code=500
                 )
-        
-        @router.get("/memories/{memory_id}")
-        async def get_memory(
-            memory_id: str,
-            session_id: str = Query(..., description="Session ID")
-        ):
+    
+    async def get_memory(
+        self,
+        request: Request,
+        memory_id: str,
+        session_id: str = Query(..., description="Session ID")
+    ) -> JSONResponse:
             """
             Get a single memory by ID (JSON).
             
@@ -97,12 +119,12 @@ class MemoryWebFactory:
                     {"error": str(e)},
                     status_code=404 if "not found" in str(e).lower() else 500
                 )
-        
-        @router.post("/memories/search")
-        async def search_memories(
-            request: Request,
-            session_id: str = Query(..., description="Session ID")
-        ):
+    
+    async def search_memories(
+        self,
+        request: Request,
+        session_id: str = Query(..., description="Session ID")
+    ) -> JSONResponse:
             """
             Semantic search for memories (JSON).
             
@@ -135,12 +157,12 @@ class MemoryWebFactory:
                     {"error": str(e), "results": []},
                     status_code=500
                 )
-        
-        @router.post("/memories")
-        async def create_memory(
-            request: Request,
-            session_id: str = Query(..., description="Session ID")
-        ):
+    
+    async def create_memory(
+        self,
+        request: Request,
+        session_id: str = Query(..., description="Session ID")
+    ) -> JSONResponse:
             """
             Create a new memory (JSON).
             
@@ -182,12 +204,13 @@ class MemoryWebFactory:
                     {"error": str(e)},
                     status_code=500
                 )
-        
-        @router.delete("/memories/{memory_id}")
-        async def delete_memory(
-            memory_id: str,
-            session_id: str = Query(..., description="Session ID")
-        ):
+    
+    async def delete_memory(
+        self,
+        request: Request,
+        memory_id: str,
+        session_id: str = Query(..., description="Session ID")
+    ) -> JSONResponse:
             """
             Delete a memory (JSON).
             
@@ -209,9 +232,8 @@ class MemoryWebFactory:
                     {"error": str(e)},
                     status_code=404 if "not found" in str(e).lower() else 500
                 )
-        
-        @router.get("/stats")
-        async def get_stats(session_id: str = Query(..., description="Session ID")):
+    
+    async def get_stats(self, request: Request, session_id: str = Query(..., description="Session ID")) -> JSONResponse:
             """
             Get summary statistics (JSON).
             
@@ -281,32 +303,3 @@ class MemoryWebFactory:
                     {"error": str(e)},
                     status_code=500
                 )
-        
-        return router
-    
-    def get_panels(self) -> List[Dict[str, Any]]:
-        """Get panel definitions for this plugin."""
-        return [
-            {
-                "id": "memory",
-                "title": "Memory Manager",
-                "icon": "💾",
-                "endpoint": "/plugins/memory/panel",
-                "type": "iframe",
-                "default_height": 800,
-            }
-        ]
-    
-    def get_static_assets(self) -> Dict[str, Path]:
-        """Get static assets for this plugin."""
-        return {}
-    
-    def render_panel(self, request: Request) -> HTMLResponse:
-        """Render the Memory management dashboard."""
-        return self.templates.TemplateResponse(
-            "panel.html",
-            {
-                "request": request,
-                "name": self.server.name
-            }
-        )
