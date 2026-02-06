@@ -251,6 +251,21 @@ class HookRegistry:
                 # Deep copy context for isolation
                 hook_context = self._deep_copy_context(current_context)
 
+                # Inject per-agent hook config from agent's hooks.overrides.
+                # This strips standard hook-system keys (enabled, timeout,
+                # order) and exposes only custom config to the handler via
+                # context.hook_config.  Allows agents to pass arbitrary
+                # config to any hook without framework changes.
+                hook_context.hook_config = self._extract_agent_hook_config(
+                    hook_context, hook_name
+                )
+
+                # Tell SchemaBasedPluginHook which specific hook to
+                # dispatch (strip plugin prefix to get the short name).
+                hook_context.target_hook_name = (
+                    hook_name.rsplit(".", 1)[-1] if "." in hook_name else hook_name
+                )
+
                 # Execute the appropriate hook method with timeout
                 start_time = asyncio.get_event_loop().time()
 
@@ -522,10 +537,53 @@ class HookRegistry:
             output=context.output,  # String is immutable
             output_format=context.output_format,  # Add output_format for format hooks
             metadata=copy.deepcopy(context.metadata),
+            hook_config=copy.deepcopy(context.hook_config) if context.hook_config else {},
             step=context.step,
             llm=context.llm,  # Reference copy
             cancellation_token=context.cancellation_token,  # Reference copy
         )
+
+    # Keys managed by the hook system itself — stripped from hook_config
+    _HOOK_SYSTEM_KEYS = frozenset({"enabled", "timeout", "order"})
+
+    def _extract_agent_hook_config(
+        self, context: HookContext, hook_name: str
+    ) -> Dict[str, Any]:
+        """Extract custom per-agent config for a specific hook.
+
+        Reads the agent's ``hooks.overrides[hook_name]`` dict, strips
+        hook-system keys (``enabled``, ``timeout``, ``order``), and
+        returns the remaining entries.  This lets agents pass arbitrary
+        config to any hook via their agent YAML::
+
+            hooks:
+              overrides:
+                my_plugin.my_hook:
+                  enabled: true        # ← system key (stripped)
+                  custom_key: "value"  # ← passed in hook_config
+
+        Returns:
+            Dict with custom config (may be empty).
+        """
+        agent = context.agent
+        if agent is None:
+            return {}
+        try:
+            hooks_cfg = getattr(
+                getattr(agent, "agent_config", None), "hooks", None
+            )
+            if hooks_cfg is None or not hasattr(hooks_cfg, "overrides"):
+                return {}
+            override = hooks_cfg.overrides.get(hook_name)
+            if not override or not isinstance(override, dict):
+                return {}
+            # Return only non-system keys
+            return {
+                k: v for k, v in override.items()
+                if k not in self._HOOK_SYSTEM_KEYS
+            }
+        except Exception:
+            return {}
 
     def _validate_hook_result(self, result: Any, hook_name: str) -> Optional[str]:
         """

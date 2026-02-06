@@ -42,6 +42,7 @@ class ContextUsageSnapshot:
     context_window: int
     usage_percentage: float
     cached_tokens: int = 0  # OpenAI cached prompt tokens
+    tool_definition_tokens: int = 0  # Estimated tokens for tool schemas/definitions
 
 
 @dataclass
@@ -88,7 +89,8 @@ class UsageTracker:
                     completion_tokens: int = 0,
                     message_count: int = 0,
                     context_window: int = 0,
-                    cached_tokens: int = 0) -> None:
+                    cached_tokens: int = 0,
+                    tool_definition_tokens: int = 0) -> None:
         """Record a context usage snapshot."""
 
         usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
@@ -105,6 +107,7 @@ class UsageTracker:
             context_window=context_window,
             usage_percentage=usage_percentage,
             cached_tokens=cached_tokens,
+            tool_definition_tokens=tool_definition_tokens,
         )
 
         with self._lock:
@@ -408,18 +411,22 @@ class UsageTracker:
                 # Load history snapshots
                 history_data = data.get("history", [])
                 for snapshot_dict in history_data:
-                    # Handle missing cached_tokens field for backwards compatibility
+                    # Handle missing fields for backwards compatibility
                     if "cached_tokens" not in snapshot_dict:
                         snapshot_dict["cached_tokens"] = 0
+                    if "tool_definition_tokens" not in snapshot_dict:
+                        snapshot_dict["tool_definition_tokens"] = 0
                     snapshot = ContextUsageSnapshot(**snapshot_dict)
                     self._history.append(snapshot)
 
                 # Load latest snapshot
                 latest_data = data.get("latest")
                 if latest_data:
-                    # Handle missing cached_tokens field for backwards compatibility
+                    # Handle missing fields for backwards compatibility
                     if "cached_tokens" not in latest_data:
                         latest_data["cached_tokens"] = 0
+                    if "tool_definition_tokens" not in latest_data:
+                        latest_data["tool_definition_tokens"] = 0
                     self._latest_snapshot = ContextUsageSnapshot(**latest_data)
 
             logger.info(

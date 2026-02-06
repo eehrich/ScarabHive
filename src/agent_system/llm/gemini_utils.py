@@ -601,6 +601,24 @@ def convert_openai_messages_to_gemini(
     # This can happen when auto-injected "Continue" messages accumulate in session history.
     contents = _merge_consecutive_same_role_messages(contents, "user")
 
+    # FALLBACK: Ensure contents is never empty
+    # Gemini API returns 400 "contents are required" if we send empty contents.
+    # This can happen when:
+    # - All messages were system messages (handled separately in systemInstruction)
+    # - All user/assistant messages had empty content
+    # - Context Engineer removed all user messages during compaction
+    # - Message conversion filtered out all content
+    if not contents:
+        logger.warning(
+            "[Gemini] Empty contents after conversion! "
+            f"Original messages: {len(messages)}, System instruction: {system_instruction is not None}. "
+            "Adding fallback user message to prevent API error."
+        )
+        contents.append({
+            "role": "user",
+            "parts": [{"text": "Continue with the task."}]
+        })
+
     return system_instruction, contents
 
 

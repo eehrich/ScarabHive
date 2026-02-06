@@ -906,6 +906,30 @@
           });
         }
         break;
+      case 'continuation':
+        // Auto-continuation: system injected a user message to keep the agent working
+        // Display it in the chat as a system-injected user message
+        {
+          const contRow = document.createElement('div');
+          contRow.className = 'row';
+          const contMsg = document.createElement('div');
+          contMsg.className = 'msg user continuation-msg';
+          contMsg.innerHTML = `<div class="continuation-badge">🔄 Auto-Continue #${data.count || '?'}</div><div class="continuation-reason">${escapeHtml(data.reason || '')}</div><div class="continuation-text">${formatTextWithLineBreaks(data.message || '')}</div>`;
+          contRow.appendChild(contMsg);
+          chatContainer.appendChild(contRow);
+          // Create a new assistant block for the next response and update blk in-place
+          const newBlk = addAssistantBlock(chatContainer);
+          blk.row = newBlk.row;
+          blk.box = newBlk.box;
+          blk.t = newBlk.t;
+          blk.think = newBlk.think;
+          blk.status = newBlk.status;
+          blk.thinkingSection = newBlk.thinkingSection;
+          blk.statusSection = newBlk.statusSection;
+          blk.responseSection = newBlk.responseSection;
+          scrollBottom();
+        }
+        break;
       case 'final':
         // Mark completion for reconnect logic
         sseReceivedFinalOrEnd = true;

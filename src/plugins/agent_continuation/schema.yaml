@@ -1,0 +1,78 @@
+# Hook definitions for agent_continuation plugin
+# Convention: hook name must match method name exactly
+
+hooks:
+  - name: evaluate_completion
+    type: post_llm_call
+    enabled: false
+    timeout: 30.0
+    description: >
+      Evaluates whether an agent text response is a final answer or an
+      intermediate status report.  Sets metadata["continue"] = True when
+      the agent should keep working.
+    category: "agent_continuation"
+    order:
+      # Run before any output formatting but after usage tracking
+      before: ["message_debugging"]
+
+# -----------------------------------------------------------------
+# Configuration schema (defaults — overridable in plugins.yaml)
+# -----------------------------------------------------------------
+config:
+  # Maximum auto-continuations per request (safety valve)
+  max_continuations:
+    type: integer
+    default: 10
+    minimum: 1
+    maximum: 50
+    description: "Maximum number of times the loop may be continued per request"
+
+  # Default user message injected to keep the agent going
+  default_continue_message:
+    type: string
+    default: >
+      Your previous response appears to be an intermediate status update,
+      not a final result.  Continue executing the remaining steps of your
+      task.  Do not repeat status information — proceed with the next
+      action.
+    description: "User message injected when continuation is triggered"
+
+  # Strategy: "rules", "llm", or "hybrid"
+  strategy:
+    type: string
+    default: "rules"
+    enum: ["rules", "llm", "hybrid"]
+    description: "Evaluation strategy — rules (fast), llm (smart), hybrid (rules first, llm fallback)"
+
+  # LLM profile used for the evaluator (only for "llm" / "hybrid")
+  llm_profile:
+    type: string
+    default: "turbo"
+    description: "LLM profile for the evaluator model"
+
+  # LLM evaluation prompt (Jinja2-like placeholders)
+  llm_prompt:
+    type: string
+    default: |
+      You are a completion evaluator.  Given an AI agent's response,
+      determine whether it is a FINAL answer or an INTERMEDIATE status
+      update that means the agent should keep working.
+
+      Agent name: {{ agent_name }}
+
+      Response (truncated):
+      ---
+      {{ response }}
+      ---
+
+      Reply with exactly one word: FINAL or CONTINUE
+    description: "Prompt template for LLM-based evaluation"
+
+  # Per-agent rule overrides (keyed by agent name)
+  agent_rules:
+    type: object
+    default: {}
+    description: >
+      Per-agent configuration.  Keys are agent names, values are objects
+      with optional keys: strategy, continue_message, default, rules.
+      Agents that don't appear here use the global strategy/defaults.

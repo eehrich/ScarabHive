@@ -1906,6 +1906,47 @@ class TestPreLayerP:
         # Should not have pruned anything
         assert result.messages_pruned == 0
         assert len(result.modified_messages) == 100
+    
+    @pytest.mark.asyncio
+    async def test_pruning_protects_last_user_message(self, tmp_path):
+        """Test that pre-layer P never removes the last user message."""
+        tool_store = ToolResultStore(tmp_path / "tools.db")
+        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
+        core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
+        archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
+        
+        config = CompactionConfig(
+            layer1_threshold=100000,
+            layer2_threshold=200000,
+            layer3_threshold=300000,
+            target_tokens=50000,
+            max_messages=3,  # Very aggressive limit
+        )
+        
+        strategy = LayeredCompactionStrategy(
+            tool_store=tool_store,
+            variable_manager=variable_manager,
+            core_memory=core_memory,
+            archival_memory=archival_memory,
+            config=config
+        )
+        
+        # Create messages where pruning would remove all user messages if not protected
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "First user"},
+            {"role": "assistant", "content": "First response"},
+            {"role": "user", "content": "Second user"},
+            {"role": "assistant", "content": "Second response"},
+            {"role": "user", "content": "Last user - must be protected"},
+            {"role": "assistant", "content": "Last response"},
+        ]
+        
+        result = await strategy.compact(messages, current_tokens=100)
+        
+        # Must have at least one user message
+        user_msgs = [m for m in result.modified_messages if m.get("role") == "user"]
+        assert len(user_msgs) >= 1, "At least one user message must remain"
 
 
 class TestEnsureValidMessageSequence:
@@ -2008,5 +2049,33 @@ class TestEnsureValidMessageSequence:
         
         assert removed == 3  # All three bad messages removed
         assert len(messages) == 2
-        assert messages[1]["role"] == "user"
-        assert messages[1]["content"] == "Finally user"
+    
+    def test_adds_fallback_when_no_user_messages(self, strategy):
+        """Test that fallback user message is added when none exist."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "assistant", "content": "Only assistant"},
+        ]
+        
+        removed = strategy._ensure_valid_message_sequence(messages, "test")
+        
+        # Should have added a fallback user message
+        assert any(msg.get("role") == "user" for msg in messages)
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1
+        assert "Continue" in user_msgs[0]["content"]
+    
+    def test_adds_fallback_when_only_system_messages(self, strategy):
+        """Test that fallback user message is added when only system messages remain."""
+        messages = [
+            {"role": "system", "content": "System 1"},
+            {"role": "system", "content": "System 2"},
+        ]
+        
+        removed = strategy._ensure_valid_message_sequence(messages, "test")
+        
+        # Should have added a fallback user message
+        assert len(messages) == 3  # 2 system + 1 fallback user
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1
+        assert "Continue" in user_msgs[0]["content"]

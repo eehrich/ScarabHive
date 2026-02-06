@@ -324,16 +324,32 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Build helpful error message
                 if phase_allowed:
                     current_phase = self._get_current_phase(params)
-                    raise ValueError(
+                    error_msg = (
                         f"Agent '{agent_name}' not allowed in current phase '{current_phase}'. "
                         f"Allowed agents for this phase: {', '.join(phase_allowed)}"
                     )
+                    logger.info(f"Phase filtering blocked agent: {error_msg}")
+                    if status:
+                        await status.error(error_msg)
+                    return {
+                        "status": "error",
+                        "error": error_msg,
+                        "error_type": "phase_blocked"
+                    }
                 else:
                     allowed_str = ', '.join(self.allowed_agents)
-                    raise ValueError(
+                    error_msg = (
                         f"Agent '{agent_name}' not allowed by this sub-agent manager. "
                         f"Allowed agents: {allowed_str}"
                     )
+                    logger.info(f"Agent filtering blocked agent: {error_msg}")
+                    if status:
+                        await status.error(error_msg)
+                    return {
+                        "status": "error",
+                        "error": error_msg,
+                        "error_type": "agent_blocked"
+                    }
 
             if status:
                 await status.progress(f"Creating sub-agent: {agent_name}")
@@ -680,6 +696,25 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
                 })
                 logger.debug(f"Set session metadata for continued sub-agent {instance_id}: user_id={user_id}")
+
+                # CRITICAL: Restore context_vars from sub-session to agent's template_vars
+                # Same pattern as _handle_create — inherits book_id, workflow_phase, etc.
+                # Without this, Jinja2 template variables in system prompts may be empty
+                # on continued sub-agents (e.g., workflow_phase guard, book_id references)
+                try:
+                    context_vars = sub_session_data.get("context_vars", {})
+                    if context_vars:
+                        # Set session-scoped template vars (preferred, session-isolated)
+                        agent._session_tracker.set_session_template_vars(instance_id, context_vars)
+                        # Also set agent-level template_vars for backward compatibility
+                        if agent.agent_config.template_vars is None:
+                            agent.agent_config.template_vars = {}
+                        agent.agent_config.template_vars.update(context_vars)
+                        logger.debug(
+                            f"Restored context_vars for continued sub-agent: {list(context_vars.keys())}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not restore context_vars for continued sub-agent: {e}")
 
                 if status:
                     await status.progress(f"Continuing {agent_type} with new message...")
@@ -1735,13 +1770,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         return False
 
     def _get_current_phase(self, params: dict[str, Any]) -> Optional[str]:
-        """Get current workflow phase from session template vars.
+        """Get current workflow phase from session template vars or agent config default.
         
         Args:
             params: Tool parameters with _agent reference
             
         Returns:
-            Current phase value or None
+            Current phase value (from session vars or agent config default) or None
         """
         if not self.phase_filtering_enabled:
             return None
@@ -1750,8 +1785,19 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             agent = params.get("_agent")
             session_id = params.get("_session_id")
             if agent and session_id and hasattr(agent, '_session_tracker'):
+                # First try session-scoped template vars (set via set_context)
                 session_vars = agent._session_tracker.get_session_template_vars(session_id)
-                return session_vars.get(self.phase_variable)
+                phase = session_vars.get(self.phase_variable)
+                if phase:
+                    return phase
+            
+            # Fallback to agent config default (e.g., workflow_phase: "planning" in yaml)
+            if agent and hasattr(agent, 'agent_config') and agent.agent_config:
+                if hasattr(agent.agent_config, 'template_vars') and agent.agent_config.template_vars:
+                    default_phase = agent.agent_config.template_vars.get(self.phase_variable)
+                    if default_phase:
+                        logger.debug(f"Using default phase from agent_config: {default_phase}")
+                        return default_phase
         except Exception as e:
             logger.debug(f"Could not get phase from session vars: {e}")
         

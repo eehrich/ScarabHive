@@ -1197,3 +1197,178 @@ class TestToolResponseJsonValidation:
         # String JSON values are now valid - no issues expected
         json_issues = [i for i in result.issues if i.type == "invalid_tool_response_json"]
         assert len(json_issues) == 0
+
+
+class TestInterleavedMessageInToolBlock:
+    """Test detection and repair of messages interleaved between assistant(tool_calls) and tool responses.
+    
+    This addresses the bug where a user message (e.g. loop detection warning) gets
+    inserted between an assistant message with tool_calls and the corresponding
+    tool response, breaking the OpenAI/DeepSeek message protocol.
+    """
+
+    def test_detect_user_message_interleaved(self):
+        """User message between assistant(tool_calls) and tool response is detected."""
+        messages = [
+            ChatMessage(role="user", content="Do something"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "my_tool"}}]
+            ),
+            ChatMessage(role="user", content="NOTICE: You've called this 3 times"),
+            ChatMessage(
+                role="tool",
+                content='{"result": "ok"}',
+                tool_call_id="call_1",
+                name="my_tool"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        interleaved = [i for i in result.issues if i.type == "interleaved_message_in_tool_block"]
+        assert len(interleaved) == 1
+        assert interleaved[0].message_index == 2
+        assert interleaved[0].severity == "error"
+        assert interleaved[0].details["interleaved_role"] == "user"
+
+    def test_repair_relocates_interleaved_message(self):
+        """Interleaved user message is moved after the tool response."""
+        messages = [
+            ChatMessage(role="user", content="Do something"),
+            ChatMessage(
+                role="assistant",
+                content="calling tool",
+                tool_calls=[{"id": "call_1", "function": {"name": "my_tool"}}]
+            ),
+            ChatMessage(role="user", content="NOTICE: loop warning"),
+            ChatMessage(
+                role="tool",
+                content='{"result": "ok"}',
+                tool_call_id="call_1",
+                name="my_tool"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        repaired = result.repaired_messages
+        # Expected order: user, assistant(tool_calls), tool, user(relocated)
+        assert len(repaired) == 4
+        assert repaired[0].role == "user"
+        assert repaired[1].role == "assistant"
+        assert repaired[1].tool_calls is not None
+        assert repaired[2].role == "tool"
+        assert repaired[2].tool_call_id == "call_1"
+        assert repaired[3].role == "user"
+        assert "loop warning" in repaired[3].content
+
+    def test_repair_with_multiple_tool_calls(self):
+        """Interleaved message is relocated after all tool responses in a batch."""
+        messages = [
+            ChatMessage(role="user", content="Do something"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {"id": "call_1", "function": {"name": "tool_a"}},
+                    {"id": "call_2", "function": {"name": "tool_b"}},
+                ]
+            ),
+            ChatMessage(role="user", content="Loop warning"),
+            ChatMessage(
+                role="tool",
+                content='{"a": 1}',
+                tool_call_id="call_1",
+                name="tool_a"
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"b": 2}',
+                tool_call_id="call_2",
+                name="tool_b"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        repaired = result.repaired_messages
+        # Expected: user, assistant, tool(call_1), tool(call_2), user(relocated)
+        assert len(repaired) == 5
+        assert repaired[0].role == "user"
+        assert repaired[1].role == "assistant"
+        assert repaired[2].role == "tool"
+        assert repaired[3].role == "tool"
+        assert repaired[4].role == "user"
+        assert "Loop warning" in repaired[4].content
+
+    def test_no_issue_when_tool_responses_immediate(self):
+        """No issue when tool responses immediately follow assistant(tool_calls)."""
+        messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "my_tool"}}]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"ok": true}',
+                tool_call_id="call_1",
+                name="my_tool"
+            ),
+            ChatMessage(role="assistant", content="Done!"),
+            ChatMessage(role="user", content="Thanks"),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        interleaved = [i for i in result.issues if i.type == "interleaved_message_in_tool_block"]
+        assert len(interleaved) == 0
+
+    def test_interleaved_at_session_reload(self):
+        """Simulate the exact scenario from the bug: session persisted with interleaved message."""
+        messages = [
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content="Start working"),
+            ChatMessage(
+                role="assistant",
+                content="I'll call the workflow tool",
+                tool_calls=[{"id": "call_k70", "function": {"name": "writer_workflow_set_task"}}]
+            ),
+            # This was injected by loop detection between tool_call and response
+            ChatMessage(
+                role="user",
+                content="NOTICE: You've called 'writer_workflow_set_task' 3 times with the same arguments."
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"status": "blocked", "task_name": "content"}',
+                tool_call_id="call_k70",
+                name="writer_workflow_set_task"
+            ),
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect and fix
+        interleaved = [i for i in result.issues if i.type == "interleaved_message_in_tool_block"]
+        assert len(interleaved) == 1
+
+        repaired = result.repaired_messages
+        # System, user, assistant(tool_calls), tool, user(relocated)
+        assert len(repaired) == 5
+        assert repaired[0].role == "system"
+        assert repaired[1].role == "user"
+        assert repaired[2].role == "assistant"
+        assert repaired[2].tool_calls is not None
+        assert repaired[3].role == "tool"
+        assert repaired[3].tool_call_id == "call_k70"
+        assert repaired[4].role == "user"
+        assert "NOTICE" in repaired[4].content

@@ -908,6 +908,33 @@ form {
   max-width: 75%;
 }
 
+/* Auto-continuation injected message */
+.msg.user.continuation-msg {
+  background: var(--bg-darker, #1a1a2e);
+  border: 1px dashed var(--border-strong, #555);
+  opacity: 0.85;
+  font-size: 0.9em;
+  max-width: 65%;
+}
+
+.continuation-badge {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--accent, #58a6ff);
+  margin-bottom: 4px;
+}
+
+.continuation-reason {
+  font-size: 0.75em;
+  color: var(--text-muted, #888);
+  margin-bottom: 6px;
+  font-style: italic;
+}
+
+.continuation-text {
+  color: var(--text-secondary, #bbb);
+}
+
 .msg.assistant {
   max-width: 90%;
 }

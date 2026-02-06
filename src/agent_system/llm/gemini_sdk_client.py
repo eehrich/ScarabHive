@@ -553,6 +553,10 @@ class GeminiSDKClient(LLMClient):
         system_instruction, contents = self._convert_messages_to_sdk(filtered_messages)
         sdk_tools = self._convert_tools_to_sdk(tools)
         
+        # Note: Empty contents fallback is now handled in convert_openai_messages_to_gemini()
+        # in gemini_utils.py. The _convert_messages_to_sdk method will always return at least
+        # one content item due to the centralized fallback.
+        
         # Accumulators
         accumulated_content = []  # Only non-thought content
         accumulated_thoughts = []  # Thought summaries

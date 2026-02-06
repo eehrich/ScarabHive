@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from agent_system.llm.token_utils import estimate_token_count
+from agent_system.llm.token_utils import estimate_token_count, estimate_tools_token_count
 
 
 def _utc_now() -> datetime:
@@ -88,23 +88,9 @@ class BatchRequest:
         if self.messages:
             total += estimate_token_count(self.messages)
         
-        # Add tokens for tools (roughly estimate based on JSON structure)
+        # Add tokens for tool definitions
         if self.tools:
-            # Each tool definition is roughly 50-200 tokens depending on schema
-            for tool in self.tools:
-                # Rough estimation: tool name + description + parameters
-                tool_tokens = 20  # Base overhead
-                if "function" in tool:
-                    func = tool["function"]
-                    tool_tokens += len(func.get("name", "")) // 4
-                    tool_tokens += len(func.get("description", "")) // 4
-                    # Parameters schema is typically verbose JSON
-                    params = func.get("parameters", {})
-                    if params:
-                        import json
-                        params_str = json.dumps(params)
-                        tool_tokens += len(params_str) // 4
-                total += tool_tokens
+            total += estimate_tools_token_count(self.tools)
         
         return total
 

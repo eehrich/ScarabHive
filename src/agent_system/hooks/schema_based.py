@@ -227,11 +227,29 @@ class SchemaBasedPluginHook(PluginHook):
             )
         return final_result
 
+    def _should_dispatch(self, hook: dict[str, Any], expected_type: str, context: HookContext) -> bool:
+        """Check whether a schema hook entry should be dispatched.
+
+        When the registry sets ``context.target_hook_name`` we dispatch
+        only the targeted hook (the registry already handled
+        enabled/disabled filtering).  Without a target we fall back to
+        the schema-level ``enabled`` flag for backward compatibility.
+        """
+        hook_type = hook.get("type", "").upper()
+        if hook_type != expected_type:
+            return False
+
+        target = getattr(context, "target_hook_name", None)
+        if target:
+            # Registry told us exactly which hook to run — match by name
+            return hook.get("name") == target
+        # Fallback: respect schema-level enabled flag
+        return hook.get("enabled", True)
+
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:
-            hook_type = hook.get("type", "").upper()
-            if hook_type == "PRE_LLM_CALL" and hook.get("enabled", True):
+            if self._should_dispatch(hook, "PRE_LLM_CALL", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:
@@ -242,8 +260,7 @@ class SchemaBasedPluginHook(PluginHook):
     async def on_post_llm_call(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:
-            hook_type = hook.get("type", "").upper()
-            if hook_type == "POST_LLM_CALL" and hook.get("enabled", True):
+            if self._should_dispatch(hook, "POST_LLM_CALL", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:
@@ -254,8 +271,7 @@ class SchemaBasedPluginHook(PluginHook):
     async def on_pre_tool_call(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:
-            hook_type = hook.get("type", "").upper()
-            if hook_type == "PRE_TOOL_CALL" and hook.get("enabled", True):
+            if self._should_dispatch(hook, "PRE_TOOL_CALL", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:
@@ -266,8 +282,7 @@ class SchemaBasedPluginHook(PluginHook):
     async def on_post_tool_call(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:
-            hook_type = hook.get("type", "").upper()
-            if hook_type == "POST_TOOL_CALL" and hook.get("enabled", True):
+            if self._should_dispatch(hook, "POST_TOOL_CALL", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:
@@ -278,8 +293,7 @@ class SchemaBasedPluginHook(PluginHook):
     async def on_format_output(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:
-            hook_type = hook.get("type", "").upper()
-            if hook_type == "FORMAT_OUTPUT" and hook.get("enabled", True):
+            if self._should_dispatch(hook, "FORMAT_OUTPUT", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:
@@ -290,8 +304,7 @@ class SchemaBasedPluginHook(PluginHook):
     async def on_session_start(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:
-            hook_type = hook.get("type", "").upper()
-            if hook_type == "SESSION_START" and hook.get("enabled", True):
+            if self._should_dispatch(hook, "SESSION_START", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:
@@ -302,8 +315,7 @@ class SchemaBasedPluginHook(PluginHook):
     async def on_session_end(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:
-            hook_type = hook.get("type", "").upper()
-            if hook_type == "SESSION_END" and hook.get("enabled", True):
+            if self._should_dispatch(hook, "SESSION_END", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:

@@ -381,6 +381,7 @@ plugins:
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
+        max_messages: 150
 
     context_optimizer:
       type: context_optimizer
@@ -483,6 +484,28 @@ plugins:
     message_debugger:
       type: message_debugger
       enabled: true
+
+    agent_continuation:
+      type: agent_continuation
+      enabled: true
+      config:
+        max_continuations: 10
+        strategy: "rules"
+        llm_profile: "turbo"
+        default_continue_message: >
+          Your previous response appears to be an intermediate status update,
+          not a final result.  Continue executing the remaining steps of your
+          task.  Do not repeat status information — proceed with the next
+          action.
+        # Per-agent rules can be configured here OR inline in the agent's
+        # hooks.overrides (preferred — keeps config with the agent).
+        # agent_rules:
+        #   my_agent:
+        #     strategy: "rules"
+        #     default: "continue"
+        #     rules:
+        #       - type: keyword_final
+        #         keywords: ["done", "completed"]
 
 
     terminal:

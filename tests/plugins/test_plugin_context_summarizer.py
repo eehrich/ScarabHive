@@ -66,6 +66,7 @@ def mock_agent():
 def mock_llm():
     """Create mock LLM for testing."""
     llm = AsyncMock()
+    llm.context_window = 100000  # Match the model config context_window
     llm.generate = AsyncMock(return_value={
         'content': 'This is a concise summary of the conversation discussing project plans and technical details.'
     })
@@ -219,3 +220,101 @@ async def test_status_messages_published(summarizer_plugin, mock_agent, mock_llm
     
     finally:
         pass
+
+
+@pytest.mark.asyncio
+async def test_max_messages_trigger(summarizer_plugin, mock_agent, mock_llm):
+    """Test that summarization triggers when message count exceeds max_messages."""
+    messages = create_test_messages(30)
+    summarizer_plugin.max_messages = 20  # Trigger when > 20 messages
+    summarizer_plugin.trigger_percentage = 0.99  # Token trigger should NOT fire (very high)
+    summarizer_plugin.preserve_recent = 5
+
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id='test-maxmsg-1',
+        session_id='session-maxmsg',
+        agent=mock_agent,
+        messages=messages,
+        llm=mock_llm
+    )
+
+    result = await summarizer_plugin.summarize_context(context)
+
+    # Should have triggered due to message count (30 > 20)
+    # Either modified (summarization done) or skipped for other reasons,
+    # but NOT 'below_threshold'
+    if not result.modified:
+        assert result.metadata.get('reason') != 'below_threshold', \
+            f"Should not be below_threshold with {len(messages)} messages > max_messages=20"
+
+
+@pytest.mark.asyncio
+async def test_max_messages_below_threshold(summarizer_plugin, mock_agent, mock_llm):
+    """Test that max_messages does NOT trigger when message count is below limit."""
+    messages = create_test_messages(10)
+    summarizer_plugin.max_messages = 50  # Well above message count
+    summarizer_plugin.trigger_percentage = 0.99  # Token trigger also won't fire
+
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id='test-maxmsg-2',
+        session_id='session-maxmsg-2',
+        agent=mock_agent,
+        messages=messages,
+        llm=mock_llm
+    )
+
+    result = await summarizer_plugin.summarize_context(context)
+
+    assert result.success is True
+    assert result.modified is False
+    # Should be below threshold (both token and message count)
+    assert result.metadata.get('reason') in ['below_threshold', 'no_context_window', 'insufficient_old_messages']
+
+
+@pytest.mark.asyncio
+async def test_max_messages_disabled_by_default(summarizer_plugin, mock_agent, mock_llm):
+    """Test that max_messages=0 (default) disables message-count trigger."""
+    messages = create_test_messages(10)
+    summarizer_plugin.max_messages = 0  # Disabled
+    summarizer_plugin.trigger_percentage = 0.99  # Token trigger won't fire either
+
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id='test-maxmsg-3',
+        session_id='session-maxmsg-3',
+        agent=mock_agent,
+        messages=messages,
+        llm=mock_llm
+    )
+
+    result = await summarizer_plugin.summarize_context(context)
+
+    assert result.success is True
+    assert result.modified is False
+
+
+@pytest.mark.asyncio
+async def test_max_messages_per_agent_override(summarizer_plugin, mock_agent, mock_llm):
+    """Test that max_messages can be overridden per agent via hook_config."""
+    messages = create_test_messages(15)
+    summarizer_plugin.max_messages = 0  # Globally disabled
+    summarizer_plugin.trigger_percentage = 0.99  # Token trigger won't fire
+
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id='test-maxmsg-4',
+        session_id='session-maxmsg-4',
+        agent=mock_agent,
+        messages=messages,
+        llm=mock_llm,
+        hook_config={'max_messages': 10},  # Agent-level override: trigger > 10
+    )
+
+    result = await summarizer_plugin.summarize_context(context)
+
+    # 15 messages > 10 max_messages override → should trigger
+    if not result.modified:
+        assert result.metadata.get('reason') != 'below_threshold', \
+            "Should not be below_threshold with 15 messages > hook_config max_messages=10"

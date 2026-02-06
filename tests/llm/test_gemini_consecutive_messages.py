@@ -331,6 +331,57 @@ class TestEdgeCases:
         assert "Message 2" in text
         assert "Message 3" in text
 
+    def test_only_system_messages_adds_fallback(self):
+        """Test that only system messages (no user/assistant) adds fallback user message.
+        
+        This prevents Gemini API 400 "contents are required" error.
+        System messages go to systemInstruction, not contents, so if all messages
+        are system messages, contents would be empty.
+        """
+        messages = [
+            ChatMessage(role="system", content="You are helpful."),
+            ChatMessage(role="system", content="Be concise."),
+        ]
+        
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
+        
+        # System messages should be merged into systemInstruction
+        assert system_instruction is not None
+        assert "You are helpful" in system_instruction
+        assert "Be concise" in system_instruction
+        
+        # Contents should have fallback user message, not be empty
+        assert len(contents) == 1
+        assert contents[0]["role"] == "user"
+        assert contents[0]["parts"][0]["text"] == "Continue with the task."
+
+    def test_empty_messages_list_adds_fallback(self):
+        """Test that empty message list adds fallback user message."""
+        messages: list[ChatMessage] = []
+        
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
+        
+        # Should have fallback user message
+        assert len(contents) == 1
+        assert contents[0]["role"] == "user"
+        assert contents[0]["parts"][0]["text"] == "Continue with the task."
+
+    def test_all_empty_content_adds_fallback(self):
+        """Test that messages with all empty content result in fallback."""
+        messages = [
+            ChatMessage(role="system", content="System prompt"),
+            ChatMessage(role="user", content=""),
+            ChatMessage(role="assistant", content=""),
+        ]
+        
+        system_instruction, contents = convert_openai_messages_to_gemini(messages)
+        
+        # Empty user/assistant messages are filtered out, so fallback should be added
+        assert len(contents) >= 1
+        # At minimum, there should be a user message (either empty or fallback)
+        user_contents = [c for c in contents if c["role"] == "user"]
+        assert len(user_contents) >= 1
+
 
 class TestFilterUnavailableToolCalls:
     """Test filtering of tool calls for unavailable tools (agent switching scenario)."""

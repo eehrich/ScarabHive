@@ -4,6 +4,7 @@ Tests for hook system registry and execution.
 
 import asyncio
 import pytest
+from unittest.mock import MagicMock
 
 from agent_system.hooks import (
     HookRegistry,
@@ -474,3 +475,201 @@ async def test_hook_category_nonexistent_debug_log(registry, base_context, caplo
         "inactive hook/category 'nonexistent_category'" in record.message
         for record in caplog.records
     )
+
+
+# ===========================================================================
+# Test hook_config injection
+# ===========================================================================
+
+
+class TestHookConfigExtraction:
+    """Test _extract_agent_hook_config strips system keys and passes custom config."""
+
+    def test_extracts_custom_keys(self, registry):
+        """Custom keys from agent hooks.overrides are extracted."""
+        agent = MagicMock()
+        agent.agent_config.hooks.overrides = {
+            "my_plugin.my_hook": {
+                "enabled": True,
+                "timeout": 30.0,
+                "order": {"before": ["end"]},
+                "strategy": "rules",
+                "default": "continue",
+                "custom_list": [1, 2, 3],
+            }
+        }
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+            agent=agent,
+            agent_name="test",
+        )
+
+        result = registry._extract_agent_hook_config(ctx, "my_plugin.my_hook")
+
+        assert result == {
+            "strategy": "rules",
+            "default": "continue",
+            "custom_list": [1, 2, 3],
+        }
+        # System keys must NOT be present
+        assert "enabled" not in result
+        assert "timeout" not in result
+        assert "order" not in result
+
+    def test_returns_empty_when_no_agent(self, registry):
+        """Returns empty dict when context has no agent."""
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+            agent=None,
+        )
+
+        assert registry._extract_agent_hook_config(ctx, "any.hook") == {}
+
+    def test_returns_empty_when_no_hooks_config(self, registry):
+        """Returns empty dict when agent has no hooks config."""
+        agent = MagicMock()
+        agent.agent_config.hooks = None
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+            agent=agent,
+        )
+
+        assert registry._extract_agent_hook_config(ctx, "any.hook") == {}
+
+    def test_returns_empty_when_hook_not_in_overrides(self, registry):
+        """Returns empty dict when hook name is not in overrides."""
+        agent = MagicMock()
+        agent.agent_config.hooks.overrides = {
+            "other_plugin.other_hook": {"enabled": True, "custom": "value"}
+        }
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+            agent=agent,
+        )
+
+        assert registry._extract_agent_hook_config(ctx, "my_plugin.my_hook") == {}
+
+    def test_returns_empty_when_only_system_keys(self, registry):
+        """Returns empty dict when override has only system keys."""
+        agent = MagicMock()
+        agent.agent_config.hooks.overrides = {
+            "my_plugin.my_hook": {
+                "enabled": True,
+                "timeout": 10.0,
+            }
+        }
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+            agent=agent,
+        )
+
+        assert registry._extract_agent_hook_config(ctx, "my_plugin.my_hook") == {}
+
+    @pytest.mark.asyncio
+    async def test_hook_config_injected_during_execution(self, registry):
+        """hook_config is populated on context before hook handler runs."""
+        received_config = {}
+
+        class ConfigCapturingHook(PluginHook):
+            def __init__(self):
+                super().__init__(name="capture_hook", config={})
+
+            async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+                received_config.update(context.hook_config)
+                return HookResult(success=True, modified=False)
+
+        hook = ConfigCapturingHook()
+        await registry.register_hook(HookType.PRE_LLM_CALL, "my_plugin.my_hook", hook)
+
+        agent = MagicMock()
+        agent.agent_config.hooks.overrides = {
+            "my_plugin.my_hook": {
+                "enabled": True,
+                "strategy": "hybrid",
+                "custom_key": 42,
+            }
+        }
+
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+            agent=agent,
+            agent_name="test",
+        )
+
+        await registry.execute_hooks(HookType.PRE_LLM_CALL, ctx)
+
+        assert received_config == {"strategy": "hybrid", "custom_key": 42}
+
+
+class TestTargetHookName:
+    """Tests for target_hook_name dispatch in the registry."""
+
+    @pytest.fixture
+    def registry(self):
+        return HookRegistry()
+
+    @pytest.mark.asyncio
+    async def test_target_hook_name_set_on_context(self, registry):
+        """Registry sets target_hook_name (short name) on HookContext."""
+        received_target = []
+
+        class CapturingHook(PluginHook):
+            def __init__(self):
+                super().__init__(name="cap", config={})
+
+            async def on_post_llm_call(self, context: HookContext) -> HookResult:
+                received_target.append(context.target_hook_name)
+                return HookResult(success=True, modified=False)
+
+        hook = CapturingHook()
+        await registry.register_hook(
+            HookType.POST_LLM_CALL, "my_plugin.my_hook", hook
+        )
+
+        ctx = HookContext(
+            hook_type=HookType.POST_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+        )
+        await registry.execute_hooks(HookType.POST_LLM_CALL, ctx)
+
+        assert received_target == ["my_hook"]
+
+    @pytest.mark.asyncio
+    async def test_target_hook_name_no_prefix(self, registry):
+        """If hook_name has no dot prefix, target_hook_name equals hook_name."""
+        received_target = []
+
+        class CapturingHook(PluginHook):
+            def __init__(self):
+                super().__init__(name="cap", config={})
+
+            async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+                received_target.append(context.target_hook_name)
+                return HookResult(success=True, modified=False)
+
+        hook = CapturingHook()
+        await registry.register_hook(
+            HookType.PRE_LLM_CALL, "standalone_hook", hook
+        )
+
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+        )
+        await registry.execute_hooks(HookType.PRE_LLM_CALL, ctx)
+
+        assert received_target == ["standalone_hook"]

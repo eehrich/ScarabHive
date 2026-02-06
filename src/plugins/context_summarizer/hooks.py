@@ -63,6 +63,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                                         '[Summary of {count} messages from {start_time} to {end_time}]'))
         self.max_preview_length = int(config.get('max_message_preview_length', 5000))
         self.min_time_between = float(config.get('min_time_between_summarizations', 200.0))
+        self.max_messages = int(config.get('max_messages', 0))  # 0 = disabled
         
         # Store system_config for later LLM instantiation
         self._system_config = None
@@ -70,6 +71,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
+            f"max_messages={self.max_messages or 'disabled'}, "
             f"chunk_size={self.chunk_size}, max_chunks={self.max_chunks}, preserve_recent={self.preserve_recent}, "
             f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
         )
@@ -156,11 +158,23 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             }
                         )
 
-            if not is_manual_trigger and total_tokens < trigger_tokens:
+            # Check per-agent max_messages override from hook_config
+            agent_max_messages = self.max_messages
+            if context.hook_config and 'max_messages' in context.hook_config:
+                agent_max_messages = int(context.hook_config['max_messages'])
+
+            # Determine if message count trigger fires
+            message_count = len(messages_as_dicts)
+            message_count_exceeded = (
+                agent_max_messages > 0 and message_count > agent_max_messages
+            )
+
+            if not is_manual_trigger and total_tokens < trigger_tokens and not message_count_exceeded:
                 logger.info(
                     f"[ContextSummarizer] Session {context.session_id}: Below threshold - "
                     f"total_tokens={total_tokens}, trigger_tokens={trigger_tokens} "
                     f"({self.trigger_percentage:.0%} of context_window={context_window})"
+                    f"{f', messages={message_count}/{agent_max_messages}' if agent_max_messages > 0 else ''}"
                 )
                 return HookResult(
                     success=True,
@@ -171,13 +185,21 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'total_tokens': total_tokens,
                         'threshold': trigger_tokens,
                         'threshold_percentage': self.trigger_percentage,
-                        'context_window': context_window
+                        'context_window': context_window,
+                        'message_count': message_count,
+                        'max_messages': agent_max_messages,
                     }
                 )
 
+            trigger_reason = 'manual' if is_manual_trigger else (
+                'message_count' if message_count_exceeded and total_tokens < trigger_tokens else 'token_limit'
+            )
             logger.info(
-                f"[ContextSummarizer] Context {'(manual trigger) ' if is_manual_trigger else ''}exceeds threshold: {total_tokens} {'forced' if is_manual_trigger else '> ' + str(trigger_tokens)} tokens "
-                f"({self.trigger_percentage:.0%} of {context_window}). Starting summarization for session {context.session_id}"
+                f"[ContextSummarizer] Context exceeds threshold (reason={trigger_reason}): "
+                f"{total_tokens} {'forced' if is_manual_trigger else '> ' + str(trigger_tokens)} tokens "
+                f"({self.trigger_percentage:.0%} of {context_window})"
+                f"{f', messages={message_count} > {agent_max_messages}' if message_count_exceeded else ''}"
+                f". Starting summarization for session {context.session_id}"
             )
 
             # Clean up orphaned tool_calls BEFORE categorization
@@ -467,6 +489,19 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             Maximum of actual or estimated token count
         """
         estimated_tokens = self._estimate_tokens(messages)
+
+        # Include tool definition tokens in estimation (they consume context window)
+        if context.agent and hasattr(context.agent, '_current_tools_schema'):
+            tools_schema = context.agent._current_tools_schema
+            if tools_schema and isinstance(tools_schema, list):
+                from agent_system.llm.token_utils import estimate_tools_token_count
+                tool_tokens = estimate_tools_token_count(tools_schema)
+                estimated_tokens += tool_tokens
+                logger.debug(
+                    f"[ContextSummarizer] Added {tool_tokens} tool definition tokens "
+                    f"({len(tools_schema)} tools)"
+                )
+
         actual_tokens = 0
 
         # Try to get actual tokens from context_usage_tracker's latest snapshot FOR THIS SESSION
