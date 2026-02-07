@@ -570,8 +570,8 @@ hooks:
     #   timeout: 5.0
 
     # Example: Configure hook ordering
-    # context_optimizer:
-    #   enabled: true
+    context_optimizer:
+      enabled: false
     #   timeout: 10.0
     #   order:
     #     after: ["begin"]
