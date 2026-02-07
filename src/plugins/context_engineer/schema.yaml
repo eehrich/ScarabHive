@@ -21,22 +21,24 @@ tools:
         Universal recall tool - retrieve ANY compacted/stored content from context.
         
         This single tool handles ALL content retrieval:
-        1. Archived messages - search conversation history
+        1. Archived messages - search conversation history + core memory facts
         2. Variables ($VAR_N) - retrieve stored content blocks  
         3. Tool results (TR_xxx) - retrieve stored tool outputs
         4. Media files - restore compacted audio/image/video
+        5. Core memory - search facts stored via store_fact
         
         The tool auto-detects what you need based on the query:
-        - Plain text query → searches archived messages
+        - Plain text query → searches archived messages AND core memory facts
         - "$VAR_1" or "VAR_1" → retrieves that variable
         - "TR_abc123" or hash → retrieves that tool result
         - File path ending in media extension → restores media
         
         Examples:
-        - recall(query="what did we decide about the API?") → archived search
+        - recall(query="book_id phase blocker") → searches archive + core memory facts
         - recall(query="$VAR_1") → get variable content
         - recall(query="TR_abc123") → get tool result
         - recall(query="/path/to/audio.wav") → restore media file
+        - recall(query="something I need to remember", mode="core_memory") → search only stored facts
       parameters:
         type: object
         properties:
@@ -45,9 +47,9 @@ tools:
             description: "What to recall: search text, $VAR_N, TR_xxx reference, or file path for media"
           mode:
             type: string
-            enum: ["auto", "archive", "variable", "tool_result", "media"]
+            enum: ["auto", "archive", "variable", "tool_result", "media", "core_memory"]
             default: "auto"
-            description: "Force specific recall type (default: auto-detect from query)"
+            description: "Force specific recall type (default: auto-detect from query). Use 'core_memory' to search only facts stored via store_fact."
           limit:
             type: integer
             minimum: 1

@@ -2079,3 +2079,51 @@ class TestEnsureValidMessageSequence:
         user_msgs = [m for m in messages if m.get("role") == "user"]
         assert len(user_msgs) == 1
         assert "Continue" in user_msgs[0]["content"]
+
+
+# =============================================================================
+# Recall Type Detection Tests
+# =============================================================================
+
+
+class TestDetectRecallType:
+    """Tests for _detect_recall_type pattern matching."""
+
+    @pytest.fixture
+    def hooks(self, tmp_path):
+        """Create a minimal ContextEngineerPlugin instance for testing."""
+        from unittest.mock import MagicMock
+        from plugins.context_engineer.hooks import ContextEngineerPlugin
+
+        hooks = ContextEngineerPlugin.__new__(ContextEngineerPlugin)
+        # _detect_recall_type is a pure function, needs no state
+        return hooks
+
+    def test_variable_detection(self, hooks):
+        assert hooks._detect_recall_type("$VAR_1") == "variable"
+        assert hooks._detect_recall_type("VAR_1") == "variable"
+        assert hooks._detect_recall_type("$VAR_99") == "variable"
+        assert hooks._detect_recall_type("  $VAR_3  ") == "variable"
+
+    def test_tool_result_simple(self, hooks):
+        assert hooks._detect_recall_type("TR_abc123") == "tool_result"
+        assert hooks._detect_recall_type("call_abc123") == "tool_result"
+
+    def test_tool_result_with_underscores(self, hooks):
+        """TR_00_GHGE9 pattern - real tool call IDs contain underscores."""
+        assert hooks._detect_recall_type("TR_00_GHGE9") == "tool_result"
+        assert hooks._detect_recall_type("TR_00_abc_def") == "tool_result"
+        assert hooks._detect_recall_type("call_00_GHGE9") == "tool_result"
+
+    def test_hex_hash(self, hooks):
+        assert hooks._detect_recall_type("a1b2c3d4e5f6") == "tool_result"
+        assert hooks._detect_recall_type("DEADBEEF") == "tool_result"
+
+    def test_media_path(self, hooks):
+        assert hooks._detect_recall_type("data/audio/test.wav") == "media"
+        assert hooks._detect_recall_type("/path/to/image.png") == "media"
+
+    def test_archive_fallback(self, hooks):
+        assert hooks._detect_recall_type("book_id phase blocker") == "archive"
+        assert hooks._detect_recall_type("what happened with scene 5") == "archive"
+        assert hooks._detect_recall_type("review feedback") == "archive"

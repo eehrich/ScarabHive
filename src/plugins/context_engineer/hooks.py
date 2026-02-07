@@ -722,8 +722,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         if re.match(r'^\$?VAR_\d+$', query_stripped, re.IGNORECASE):
             return 'variable'
         
-        # Pattern 2: Tool result reference (TR_xxx or hash-like)
-        if re.match(r'^TR_[a-zA-Z0-9]+$', query_stripped) or re.match(r'^call_[a-zA-Z0-9]+$', query_stripped):
+        # Pattern 2: Tool result reference (TR_xxx or call_xxx - may contain underscores in ID)
+        if re.match(r'^TR_[a-zA-Z0-9_]+$', query_stripped) or re.match(r'^call_[a-zA-Z0-9_]+$', query_stripped):
             return 'tool_result'
         
         # Pattern 3: Looks like a hex hash (8+ hex chars)
@@ -801,27 +801,68 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 session_id=session_id
             )
         
-        else:  # archive search
+        elif recall_type == 'core_memory':
+            # Search only core memory facts
+            components = self._get_session_components(session_id)
+            core_memory: CoreMemory = components["core_memory"]
+            query_lower = query.lower()
+            matching_facts = [
+                {
+                    "content": f.content,
+                    "category": f.category,
+                    "importance": f.importance,
+                    "created_at": f.created_at.isoformat()
+                }
+                for f in core_memory.facts
+                if query_lower in f.content.lower()
+            ]
+            return {
+                "recall_type": "core_memory",
+                "query": query,
+                "core_memory_facts": matching_facts,
+                "core_memory_total": len(matching_facts),
+                "hint": "No matching facts found. Facts are stored via store_fact tool." if not matching_facts else None
+            }
+        
+        else:  # archive search + core memory fallback
             components = self._get_session_components(session_id)
             archival: ArchivalMemory = components["archival_memory"]
+            core_memory: CoreMemory = components["core_memory"]
             
             results = archival.search(query, limit=limit)
+            
+            # Also search core memory facts (store_fact targets)
+            query_lower = query.lower()
+            matching_facts = [
+                {
+                    "content": f.content,
+                    "category": f.category,
+                    "importance": f.importance,
+                    "created_at": f.created_at.isoformat()
+                }
+                for f in core_memory.facts
+                if query_lower in f.content.lower()
+            ]
+            
+            archive_results = [
+                {
+                    "id": r.id,
+                    "role": r.role,
+                    "summary": r.summary,
+                    "content_preview": r.content[:500] + "..." if len(r.content) > 500 else r.content,
+                    "timestamp": r.timestamp.isoformat()
+                }
+                for r in results
+            ]
             
             return {
                 "recall_type": "archive",
                 "query": query,
-                "results": [
-                    {
-                        "id": r.id,
-                        "role": r.role,
-                        "summary": r.summary,
-                        "content_preview": r.content[:500] + "..." if len(r.content) > 500 else r.content,
-                        "timestamp": r.timestamp.isoformat()
-                    }
-                    for r in results
-                ],
-                "total_found": len(results),
-                "hint": "Use recall(query='$VAR_N') for variables, recall(query='TR_xxx') for tool results, or recall(query='/path/to/file.wav') for media" if not results else None
+                "results": archive_results,
+                "total_found": len(archive_results),
+                "core_memory_facts": matching_facts if matching_facts else None,
+                "core_memory_total": len(matching_facts) if matching_facts else 0,
+                "hint": "Use recall(query='$VAR_N') for variables, recall(query='TR_xxx') for tool results, or recall(query='/path/to/file.wav') for media" if not archive_results and not matching_facts else None
             }
     
     async def _handle_store_fact(

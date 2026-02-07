@@ -275,11 +275,44 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             if status:
                 recall_type = result.get("recall_type", detected_type)
                 if recall_type == "archive":
-                    await status.end(f"Found {result.get('total_found', 0)} relevant messages")
+                    archive_count = result.get('total_found', 0)
+                    core_count = result.get('core_memory_total', 0)
+                    parts = []
+                    if archive_count:
+                        parts.append(f"{archive_count} archived")
+                    if core_count:
+                        parts.append(f"{core_count} facts")
+                    if parts:
+                        # Calculate total chars returned
+                        total_chars = sum(
+                            len(r.get("content_preview", "")) for r in result.get("results", [])
+                        ) + sum(
+                            len(f.get("content", "")) for f in result.get("core_memory_facts", []) or []
+                        )
+                        await status.end(f"Found {' + '.join(parts)} ({total_chars} chars)")
+                    else:
+                        await status.end("Nothing found (0 results)")
+                elif recall_type == "core_memory":
+                    core_count = result.get('core_memory_total', 0)
+                    if core_count:
+                        total_chars = sum(len(f.get("content", "")) for f in result.get("core_memory_facts", []) or [])
+                        await status.end(f"Found {core_count} facts ({total_chars} chars)")
+                    else:
+                        await status.end("No matching facts found (0 results)")
                 elif recall_type == "variable":
-                    await status.end("Retrieved variable content")
+                    found = result.get("found", False)
+                    if found:
+                        total_chars = result.get("total_chars", 0)
+                        await status.end(f"Retrieved variable ({total_chars} chars)")
+                    else:
+                        await status.end(f"Variable not found: {result.get('variable_name', query)}")
                 elif recall_type == "tool_result":
-                    await status.end("Retrieved tool result")
+                    found = result.get("found", False)
+                    if found:
+                        total_chars = result.get("total_chars", 0)
+                        await status.end(f"Retrieved tool result ({total_chars} chars)")
+                    else:
+                        await status.end(f"Tool result not found: {query}")
                 elif recall_type == "media":
                     await status.end("Media file queued for restoration")
                 else:
