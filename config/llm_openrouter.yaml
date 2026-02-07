@@ -30,7 +30,7 @@ llm_system:
       model: google/gemini-3-flash-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
+      context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
       max_tokens: 8192
       capabilities:
@@ -52,9 +52,9 @@ llm_system:
       model: google/gemini-3-pro-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
+      context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 300
-      max_tokens: 8192
+      max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true

@@ -57,10 +57,10 @@ llm_system:
       model: gemini-3-flash-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000
+      context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
       include_thoughts: true
-      thinking_level: low  # Gemini 3 uses thinking_level: minimal, low, medium, high
+      thinking_level: high  # Gemini 3 uses thinking_level: minimal, low, medium, high
       max_tokens: 16384
       capabilities:
         tools: true
@@ -77,10 +77,10 @@ llm_system:
       model: gemini-3-flash-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000
+      context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
       include_thoughts: false
-      thinking_level: low  # Gemini 3 uses thinking_level: minimal, low, medium, high
+      thinking_level: high  # Gemini 3 uses thinking_level: minimal, low, medium, high
       max_tokens: 16384
       capabilities:
         tools: true
@@ -97,7 +97,7 @@ llm_system:
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000
+      context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
       include_thoughts: true
       thinking_level: high  # Gemini 3 uses thinking_level: low, high
@@ -117,7 +117,7 @@ llm_system:
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000
+      context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
       include_thoughts: false
       thinking_level: high  # Gemini 3 uses thinking_level: low, high
@@ -140,9 +140,9 @@ llm_system:
       batch_provider: gemini            # Which batch API to use
       model: gemini-3-flash-preview
       api_key: "***REMOVED***"
-      context_window: 200000
+      context_window: 200000  # 1M token context, but limited here for performance
       include_thoughts: false
-      thinking_level: low
+      thinking_level: high
       #max_tokens: 16384
       capabilities:
         tools: true
@@ -157,7 +157,7 @@ llm_system:
       batch_provider: gemini
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
-      context_window: 200000
+      context_window: 200000  # 1M token context, but limited here for performance
       include_thoughts: false      
       thinking_level: high
       max_tokens: 16384
