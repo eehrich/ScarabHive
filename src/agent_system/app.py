@@ -1650,35 +1650,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.exception("Unexpected error in /run: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.get("/events")
-    async def events(
+    async def _handle_events(
         request: Request,
         task: str,
-        session_id: Optional[str] = Query(default=None),
-        agent: Optional[str] = Query(default=None, alias="agent"),  # Accept both 'agent' and 'agent_name'
-        agent_name: Optional[str] = Query(default=None),
-        llm_profile: Optional[str] = Query(default=None),
-        request_id: Optional[str] = Query(default=None)  # For reconnecting to existing job
+        session_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        llm_profile: Optional[str] = None,
+        request_id: Optional[str] = None,
     ):
-        """Stream agent events for a task.
+        """Shared implementation for GET/POST /events endpoints.
 
-        Query parameters:
-        - task: The task to execute
-        - session_id: Optional session ID for conversation continuity
-        - agent or agent_name: Optional agent to use instead of default
-        - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
-        - request_id: Optional request ID to reconnect to an existing running job
-
-        Security:
-        - Requires authentication when auth.enabled=true
-        - Validates LLM request permissions
-        - If user is authenticated (JWT token or API key), sessions are saved to their account
-        - If not authenticated (when anonymous allowed), sessions use "anonymous" user_id
+        Streams agent SSE events for a task.
         """
         logger = logging.getLogger(__name__)
-
-        # Prioritize 'agent' parameter over 'agent_name' for backwards compatibility
-        agent_name = agent or agent_name
 
         # ========================================
         # SECURITY: Enforce endpoint authentication
@@ -1970,6 +1954,65 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             event_stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/events")
+    async def events_get(
+        request: Request,
+        task: str,
+        session_id: Optional[str] = Query(default=None),
+        agent: Optional[str] = Query(default=None, alias="agent"),
+        agent_name: Optional[str] = Query(default=None),
+        llm_profile: Optional[str] = Query(default=None),
+        request_id: Optional[str] = Query(default=None),
+    ):
+        """Stream agent events for a task (GET).
+
+        Query parameters:
+        - task: The task to execute
+        - session_id: Optional session ID for conversation continuity
+        - agent or agent_name: Optional agent to use
+        - llm_profile: Optional LLM profile override
+        - request_id: Optional request ID to reconnect to an existing running job
+
+        Note: For long task texts, prefer POST /events to avoid URL length limits.
+        """
+        # Prioritize 'agent' parameter over 'agent_name' for backwards compatibility
+        effective_agent_name = agent or agent_name
+        return await _handle_events(
+            request=request,
+            task=task,
+            session_id=session_id,
+            agent_name=effective_agent_name,
+            llm_profile=llm_profile,
+            request_id=request_id,
+        )
+
+    @app.post("/events")
+    async def events_post(request: Request):
+        """Stream agent events for a task (POST).
+
+        Accepts JSON body with fields:
+        - task: The task to execute (required)
+        - session_id: Optional session ID for conversation continuity
+        - agent_name: Optional agent to use
+        - llm_profile: Optional LLM profile override
+        - request_id: Optional request ID to reconnect to an existing running job
+
+        This endpoint avoids URL length limits that affect GET /events
+        when sending long task texts.
+        """
+        body = await request.json()
+        task = body.get("task")
+        if not task:
+            raise HTTPException(status_code=400, detail="Missing 'task' in request body")
+        return await _handle_events(
+            request=request,
+            task=task,
+            session_id=body.get("session_id"),
+            agent_name=body.get("agent_name") or body.get("agent"),
+            llm_profile=body.get("llm_profile"),
+            request_id=body.get("request_id"),
         )
 
     @app.get("/api/requests/{request_id}/status")

@@ -1400,8 +1400,7 @@
         return;
       }
 
-      // Text-only SSE-based request
-      let sseOk = false;
+      // Text-only SSE-based request via POST fetch (avoids URL length limits)
       
       // Reset reconnect state for new request
       sseReceivedFinalOrEnd = false;
@@ -1418,144 +1417,98 @@
       // Fallback to sessionStorage if currentSessionId not yet set (race condition on page load)
       const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
       
-      // Build event URL with agent and profile parameters
-      let eventUrl = `/events?task=${encodeURIComponent(task)}`;
-      if (effectiveSessionId) {
-        eventUrl += `&session_id=${encodeURIComponent(effectiveSessionId)}`;
-      }
-      if (selectedAgent) {
-        eventUrl += `&agent_name=${encodeURIComponent(selectedAgent)}`;
-      }
-      if (selectedLLMProfile) {
-        eventUrl += `&llm_profile=${encodeURIComponent(selectedLLMProfile)}`;
-      }
+      // Build POST body
+      const postBody = { task: task };
+      if (effectiveSessionId) postBody.session_id = effectiveSessionId;
+      if (selectedAgent) postBody.agent_name = selectedAgent;
+      if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
       
-      // Add authentication token as query parameter (EventSource doesn't support custom headers)
+      // Build headers
+      const postHeaders = { 'Content-Type': 'application/json' };
       const token = localStorage.getItem('token');
       if (token) {
-        eventUrl += `&token=${encodeURIComponent(token)}`;
+        postHeaders['Authorization'] = `Bearer ${token}`;
       }
-      
-      const es = new EventSource(eventUrl);
-      currentEventSource = es; // Track current event source
       
       // Close any existing status event source before starting a new one
       if (currentStatusEventSource) {
         currentStatusEventSource.close();
         currentStatusEventSource = null;
       }
-      
-      // Status events now come through /events SSE stream - no separate connection needed
 
-      es.onopen = () => { sseOk = true; };
+      try {
+        const response = await fetch('/events', {
+          method: 'POST',
+          headers: postHeaders,
+          body: JSON.stringify(postBody)
+        });
 
-      es.onmessage = ev => {
-        try {
-          const data = JSON.parse(ev.data);
-          handleSSEEvent(data, blk);
-        } catch (err) {
-          // ignore JSON parse errors
-        }
-      };
-
-      // Fallback when SSE doesn't work
-      setTimeout(async () => {
-        if (!sseOk) {
+        if (!response.ok) {
+          const errorText = await response.text();
+          let errorMsg = 'Request failed';
           try {
-            const r = await fetch('/run?task=' + encodeURIComponent(task), { method: 'POST' });
-            if (!r.ok) {
-              // Extract error message from response
-              const errorText = await r.text();
-              let errorMsg = 'Request failed';
-              try {
-                const errorJson = JSON.parse(errorText);
-                errorMsg = errorJson.detail || errorJson.error || errorMsg;
-                // Add status code info if available
-                if (errorJson.status_code) {
-                  errorMsg = `${errorMsg} (${errorJson.status_code})`;
-                }
-              } catch (e) {
-                errorMsg = errorText || errorMsg;
-              }
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
+            const errorJson = JSON.parse(errorText);
+            if (errorJson.status_code === 401 || response.status === 401) {
+              errorMsg = '🔒 ' + (errorJson.detail || 'Authentication required') + ' - Please log in';
+            } else if (errorJson.status_code === 403 || response.status === 403) {
+              errorMsg = '🚫 ' + (errorJson.detail || 'Access denied');
             } else {
-              const j = await r.json();
-              const content = j.summary || JSON.stringify(j, null, 2);
-              const contentFormat = j.content_format || 'text';
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-                Prism.highlightAllUnder(blk.t);
-              }
+              errorMsg = errorJson.detail || errorJson.error || errorMsg;
             }
           } catch (e) {
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(e))}</div>`;
+            errorMsg = errorText || errorMsg;
           }
-          runBtn.style.display = 'block'; // Show run button
-          stopBtn.style.display = 'none'; // Hide stop button
-          // Reset stop button state
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
+          runBtn.style.display = 'block';
+          stopBtn.style.display = 'none';
           stopBtn.setAttribute('title', 'Stop');
           stopBtn.setAttribute('aria-label', 'Stop');
           stopBtn.disabled = false;
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-          // Keep currentRequestId and Request ID display visible
-          // Clear any pending close timer
-          if (closeEventSourceTimer) {
-            clearTimeout(closeEventSourceTimer);
-            closeEventSourceTimer = null;
-          }
-          currentEventSource = null;
-          es.close();
-          if (currentStatusEventSource) {
-            currentStatusEventSource.close();
-            currentStatusEventSource = null;
-          }
-        }
-      }, 1500);
-
-      es.onerror = (event) => {
-        // Log connection error with available state information
-        const readyStateNames = ['CONNECTING', 'OPEN', 'CLOSED'];
-        const readyState = readyStateNames[es.readyState] || es.readyState;
-        console.warn('[SSE] Connection error, readyState:', readyState, 'event:', event, 'attempts:', sseReconnectAttempts);
-        
-        // Close current connection
-        es.close();
-        if (currentStatusEventSource) {
-          currentStatusEventSource.close();
-          currentStatusEventSource = null;
-        }
-        
-        // Clear any pending close timer
-        if (closeEventSourceTimer) {
-          clearTimeout(closeEventSourceTimer);
-          closeEventSourceTimer = null;
-        }
-        
-        // If we've already received final/end, this is just cleanup - don't show error
-        if (sseReceivedFinalOrEnd) {
-          console.debug('[SSE] Connection closed after completion');
-          currentEventSource = null;
           return;
         }
-        
-        // Check if we should attempt reconnection (for long-running batch jobs)
-        // Only reconnect if:
-        // 1. We haven't exceeded max attempts
-        // 2. We have an active request ID (something is still running)
-        // 3. Connection was lost mid-stream (not initial connection failure)
-        const shouldReconnect = sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS 
-            && currentRequestId 
-            && sseOk; // sseOk means we received at least one event
-        
-        if (shouldReconnect) {
+
+        // Parse SSE stream manually (same approach as file upload path)
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, {stream: true});
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (line.startsWith(':')) {
+              continue; // SSE comment / keepalive
+            }
+            if (line.startsWith('event:')) {
+              continue;
+            }
+            if (line.startsWith('data:')) {
+              const jsonStr = line.substring(5).trim();
+              if (!jsonStr) continue;
+              try {
+                const ev = JSON.parse(jsonStr);
+                handleSSEEvent(ev, blk);
+              } catch (e) {
+                console.error('Failed to parse SSE data:', e);
+              }
+            }
+          }
+        }
+
+      } catch (err) {
+        // Connection error - attempt reconnect if we have a request ID
+        if (currentRequestId && sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS && !sseReceivedFinalOrEnd) {
           sseReconnectAttempts++;
           const delay = SSE_BASE_RECONNECT_DELAY_MS * Math.pow(2, sseReconnectAttempts - 1);
-          console.debug(`[SSE] Will attempt reconnect #${sseReconnectAttempts} in ${delay}ms`);
+          console.debug(`[SSE] Connection error, will attempt reconnect #${sseReconnectAttempts} in ${delay}ms`);
           
-          // Show reconnecting status
           if (blk && blk.status) {
             addStatusEvent(blk.status, {
               type: 'status',
@@ -1565,144 +1518,78 @@
             });
           }
           
-          // Schedule reconnect
-          sseReconnectTimer = setTimeout(() => {
-            if (!currentRequestId || sseReceivedFinalOrEnd) {
-              console.debug('[SSE] Reconnect cancelled - request completed');
-              return;
-            }
-            
-            console.debug(`[SSE] Attempting reconnect #${sseReconnectAttempts}`);
-            
-            // Create new EventSource to status endpoint for this request
-            // Note: We can't resume the original stream, but we can poll for completion
-            const statusUrl = `/api/requests/${currentRequestId}/status`;
-            fetch(statusUrl)
-              .then(r => r.json())
-              .then(status => {
-                if (status.completed) {
-                  // Request completed while we were disconnected
-                  console.debug('[SSE] Request completed during reconnect');
-                  sseReceivedFinalOrEnd = true;
-                  if (status.result) {
-                    showSection(blk.t);
-                    const content = status.result.summary || status.result.content || JSON.stringify(status.result);
-                    const contentFormat = status.result.content_format || 'text';
-                    blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-                  }
-                  runBtn.style.display = 'block';
-                  stopBtn.style.display = 'none';
-                  sseReconnectAttempts = 0;
-                } else if (status.error) {
-                  // Request failed
-                  console.warn('[SSE] Request failed:', status.error);
+          // Poll for completion
+          sseReconnectTimer = setTimeout(async function pollStatus() {
+            if (!currentRequestId || sseReceivedFinalOrEnd) return;
+            try {
+              const statusUrl = `/api/requests/${currentRequestId}/status`;
+              const r = await fetch(statusUrl);
+              const status = await r.json();
+              if (status.completed) {
+                sseReceivedFinalOrEnd = true;
+                if (status.result) {
                   showSection(blk.t);
-                  blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(status.error)}</div>`;
-                  runBtn.style.display = 'block';
-                  stopBtn.style.display = 'none';
-                  sseReconnectAttempts = 0;
-                } else {
-                  // Request still running - schedule another check
-                  console.debug('[SSE] Request still running, scheduling next poll');
-                  if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
-                    sseReconnectTimer = setTimeout(() => {
-                      // Trigger another onerror to continue polling
-                      es.onerror(event);
-                    }, SSE_BASE_RECONNECT_DELAY_MS * 2); // Poll every 2s while waiting
-                  }
+                  const content = status.result.summary || status.result.content || JSON.stringify(status.result);
+                  const contentFormat = status.result.content_format || 'text';
+                  blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
                 }
-              })
-              .catch(err => {
-                console.warn('[SSE] Status poll failed:', err);
-                // Try again if we have attempts left
-                if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
-                  es.onerror(event);
-                } else {
-                  // Give up - show final error
-                  showSection(blk.t);
-                  const currentContent = blk.t.textContent || '';
-                  if (!currentContent.trim() || currentContent.includes('Thinking')) {
-                    blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Connection lost after ' + SSE_MAX_RECONNECT_ATTEMPTS + ' reconnect attempts')}</div>`;
-                  } else {
-                    const errorNotice = document.createElement('div');
-                    errorNotice.className = 'response-text error';
-                    errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ Connection lost - please check batch status');
-                    blk.t.appendChild(errorNotice);
-                  }
-                  runBtn.style.display = 'block';
-                  stopBtn.style.display = 'none';
-                  sseReconnectAttempts = 0;
-                }
-              });
-          }, delay);
-          
-          currentEventSource = null;
-          return; // Don't show error yet, we're reconnecting
-        }
-        
-        // No reconnect possible - check for auth errors first
-        if (!sseOk) {
-          // Initial connection failed - try to get error details via fetch
-          fetch(eventUrl)
-            .then(async (resp) => {
-              let errorMsg = 'Connection failed - server may be unreachable';
-              if (!resp.ok) {
-                try {
-                  const errorText = await resp.text();
-                  const errorJson = JSON.parse(errorText);
-                  if (errorJson.status_code === 401) {
-                    errorMsg = '🔒 ' + (errorJson.detail || 'Authentication required') + ' - Please log in';
-                  } else if (errorJson.status_code === 403) {
-                    errorMsg = '🚫 ' + (errorJson.detail || 'Access denied');
-                  } else {
-                    errorMsg = errorJson.detail || errorJson.error || errorMsg;
-                  }
-                } catch (e) {
-                  errorMsg = `HTTP ${resp.status}: ${resp.statusText}`;
-                }
-              }
-              showSection(blk.t);
-              const currentContent = blk.t.textContent || '';
-              if (!currentContent.trim() || currentContent.includes('Thinking')) {
-                blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
+                runBtn.style.display = 'block';
+                stopBtn.style.display = 'none';
+                sseReconnectAttempts = 0;
+              } else if (status.error) {
+                showSection(blk.t);
+                blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(status.error)}</div>`;
+                runBtn.style.display = 'block';
+                stopBtn.style.display = 'none';
+                sseReconnectAttempts = 0;
+              } else if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
+                sseReconnectAttempts++;
+                sseReconnectTimer = setTimeout(pollStatus, SSE_BASE_RECONNECT_DELAY_MS * 2);
               } else {
+                showSection(blk.t);
                 const errorNotice = document.createElement('div');
                 errorNotice.className = 'response-text error';
-                errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMsg);
+                errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ Connection lost after ' + SSE_MAX_RECONNECT_ATTEMPTS + ' reconnect attempts');
                 blk.t.appendChild(errorNotice);
+                runBtn.style.display = 'block';
+                stopBtn.style.display = 'none';
+                sseReconnectAttempts = 0;
               }
-            })
-            .catch(() => {
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Connection failed - server may be unreachable')}</div>`;
-            })
-            .finally(() => {
-              runBtn.style.display = 'block';
-              stopBtn.style.display = 'none';
-              stopBtn.setAttribute('title', 'Stop');
-              stopBtn.setAttribute('aria-label', 'Stop');
-              stopBtn.disabled = false;
-              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-              currentEventSource = null;
-              sseReconnectAttempts = 0;
-            });
-          return;
+            } catch (pollErr) {
+              console.warn('[SSE] Status poll failed:', pollErr);
+              if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
+                sseReconnectAttempts++;
+                sseReconnectTimer = setTimeout(pollStatus, SSE_BASE_RECONNECT_DELAY_MS * 2);
+              }
+            }
+          }, delay);
+          return; // Don't reset UI yet, reconnecting
         }
         
-        // Connection was lost mid-stream
-        const errorMessage = 'Connection lost - possible timeout or network issue';
-        
-        showSection(blk.t);
-        const currentContent = blk.t.textContent || '';
-        if (!currentContent.trim() || currentContent.includes('Thinking')) {
-          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMessage)}</div>`;
-        } else {
-          const errorNotice = document.createElement('div');
-          errorNotice.className = 'response-text error';
-          errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMessage);
-          blk.t.appendChild(errorNotice);
+        // No reconnect possible
+        if (!sseReceivedFinalOrEnd) {
+          const errorMessage = currentRequestId ? 'Connection lost - possible timeout or network issue' : 'Connection failed - server may be unreachable';
+          showSection(blk.t);
+          const currentContent = blk.t.textContent || '';
+          if (!currentContent.trim() || currentContent.includes('Thinking')) {
+            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMessage)}</div>`;
+          } else {
+            const errorNotice = document.createElement('div');
+            errorNotice.className = 'response-text error';
+            errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMessage);
+            blk.t.appendChild(errorNotice);
+          }
         }
-        
+      } finally {
+        // Clear any pending close timer
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
+          currentStatusEventSource = null;
+        }
         runBtn.style.display = 'block';
         stopBtn.style.display = 'none';
         stopBtn.setAttribute('title', 'Stop');
@@ -1711,7 +1598,7 @@
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
         currentEventSource = null;
         sseReconnectAttempts = 0;
-      };
+      }
     });
     
     // Check for active request to reconnect after page refresh

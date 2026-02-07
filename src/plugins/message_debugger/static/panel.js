@@ -3,6 +3,8 @@ const debugger_ = {
     autoRefreshInterval: null,
     autoRefreshEnabled: false,
     activeTab: 'turns',
+    copyDataStore: new Map(),
+    copyDataCounter: 0,
 
     // ---- Init ----
     init() {
@@ -200,6 +202,9 @@ const debugger_ = {
     // ---- Detail Modals ----
     async showTurnDetail(id) {
         try {
+            // Clear copy data store for fresh render
+            this.copyDataStore.clear();
+            this.copyDataCounter = 0;
             const res = await fetch(`/plugins/message_debugger/turns/${id}`);
             const t = await res.json();
             document.getElementById('modal-title').textContent = `Turn #${t.id} — ${t.snapshot_type} (${t.agent_name})`;
@@ -225,24 +230,28 @@ const debugger_ = {
                 html += `<div class="detail-section"><h3>Messages (${msgs.length})</h3>`;
                 msgs.forEach(m => {
                     const role = m.role || 'unknown';
-                    let content = m.content || '';
-                    if (content.length > 5000) content = content.substring(0, 5000) + '…[truncated]';
+                    const fullContent = m.content || '';
+                    let displayContent = fullContent;
+                    if (displayContent.length > 5000) displayContent = displayContent.substring(0, 5000) + '…[truncated]';
 
                     // Build content HTML — try JSON formatting for tool results
                     let contentHtml = '';
-                    if (content) {
+                    if (displayContent) {
                         if (m.is_tool_result) {
                             try {
-                                const parsed = JSON.parse(content);
+                                const parsed = JSON.parse(displayContent);
                                 contentHtml = `<div class="msg-content">${this.formatJson(parsed)}</div>`;
-                            } catch { contentHtml = `<div class="msg-content">${this.esc(content)}</div>`; }
+                            } catch { contentHtml = `<div class="msg-content">${this.esc(displayContent)}</div>`; }
                         } else {
-                            contentHtml = `<div class="msg-content">${this.esc(content)}</div>`;
+                            contentHtml = `<div class="msg-content">${this.esc(displayContent)}</div>`;
                         }
                     }
 
-                    const msgData = JSON.stringify({role, content, tool_calls: m.tool_calls});
-                    html += `<div class="msg-item ${role}" data-msg-content='${this.esc(msgData)}'>
+                    // Store full (non-truncated) copy data in JS Map to avoid HTML attribute issues
+                    const copyId = this.copyDataCounter++;
+                    const msgData = JSON.stringify({role, content: fullContent, tool_calls: m.tool_calls});
+                    this.copyDataStore.set(copyId, msgData);
+                    html += `<div class="msg-item ${role}" data-copy-id="${copyId}">
                         <div class="msg-role">
                             <span>${role}</span>
                             <span class="copy-icon msg-copy" title="Copy message">📋</span>
@@ -290,6 +299,9 @@ const debugger_ = {
 
     async showRequestDetail(id) {
         try {
+            // Clear copy data store for fresh render
+            this.copyDataStore.clear();
+            this.copyDataCounter = 0;
             const res = await fetch(`/plugins/message_debugger/llm-requests/${id}`);
             const r = await res.json();
             document.getElementById('modal-title').textContent = `LLM ${r.direction} #${r.id} — ${r.provider}/${r.model}`;
@@ -413,7 +425,9 @@ const debugger_ = {
     formatJson(obj) {
         if (!obj) return '';
         const json = JSON.stringify(obj, null, 2);
-        return `<pre data-copy-json='${this.esc(json)}'><code class="language-json">${this.esc(json)}</code></pre>`;
+        const copyId = this.copyDataCounter++;
+        this.copyDataStore.set(copyId, json);
+        return `<pre data-copy-id="${copyId}"><code class="language-json">${this.esc(json)}</code></pre>`;
     },
 
     copyToClipboard(text, iconElement) {
@@ -469,7 +483,8 @@ const debugger_ = {
             icon.onclick = (e) => {
                 e.stopPropagation();
                 const msgItem = icon.closest('.msg-item');
-                const msgData = msgItem.getAttribute('data-msg-content');
+                const copyId = parseInt(msgItem.getAttribute('data-copy-id'), 10);
+                const msgData = this.copyDataStore.get(copyId);
                 if (msgData) {
                     try {
                         const parsed = JSON.parse(msgData);
@@ -484,13 +499,14 @@ const debugger_ = {
 
         // Add copy icons to JSON blocks (in section headers)
         document.querySelectorAll('.detail-section').forEach(section => {
-            const pre = section.querySelector('pre[data-copy-json]');
+            const pre = section.querySelector('pre[data-copy-id]');
             if (!pre) return;
             
             const h3 = section.querySelector('h3');
             if (!h3 || h3.querySelector('.section-copy-icon')) return;
             
-            const json = pre.getAttribute('data-copy-json');
+            const copyId = parseInt(pre.getAttribute('data-copy-id'), 10);
+            const json = this.copyDataStore.get(copyId) || '';
             const icon = document.createElement('span');
             icon.className = 'copy-icon section-copy-icon';
             icon.textContent = '📋';
