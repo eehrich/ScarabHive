@@ -1054,7 +1054,7 @@ class GeminiSDKClient(LLMClient):
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
                         await report_status(f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                        await self._notify_retry("gemini_sdk", self.model, "", True, f"Rate limited (429)", attempt, self.max_retries + 1)
+                        await self._notify_retry("gemini_sdk", self.model, "", True, "Rate limited (429)", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators for retry
                         accumulated_content = []

@@ -246,28 +246,37 @@ class Agent(MCPServer):
         if self.llm is not None:
             self._hook_manager.wire_llm_hooks(self.llm)
         
-        # Initialize tool call loop detector to prevent infinite tool loops
-        # Especially important for Gemini which tends to get stuck
-        # Read config from agent_config.loop_detection
+        # Store loop detection config for per-request detector creation.
+        # Each request creates its own ToolCallLoopDetector to prevent
+        # cross-request contamination when the Agent singleton handles
+        # concurrent requests or sequential requests on the same session.
         loop_config = self.agent_config.loop_detection if self.agent_config else None
         if loop_config and loop_config.enabled:
-            self._loop_detector = ToolCallLoopDetector(
-                history_size=loop_config.history_size,
-                exact_match_threshold=loop_config.exact_match_threshold,
-                sequence_threshold=loop_config.sequence_threshold,
-                block_after_threshold=loop_config.block_after_threshold,
-                auto_unblock_after_steps=loop_config.auto_unblock_after_steps
-            )
+            self._loop_detection_config = {
+                "history_size": loop_config.history_size,
+                "exact_match_threshold": loop_config.exact_match_threshold,
+                "sequence_threshold": loop_config.sequence_threshold,
+                "block_after_threshold": loop_config.block_after_threshold,
+                "auto_unblock_after_steps": loop_config.auto_unblock_after_steps,
+            }
         else:
-            # Create a disabled detector (never triggers)
-            self._loop_detector = ToolCallLoopDetector(
-                exact_match_threshold=9999  # Effectively disabled
-            )
+            # Disabled config — detector will never trigger
+            self._loop_detection_config = {
+                "exact_match_threshold": 9999,
+            }
             if loop_config and not loop_config.enabled:
                 logger.debug(f"[{self.name}] Loop detection disabled via config")
 
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
+
+    def _create_loop_detector(self) -> ToolCallLoopDetector:
+        """Create a fresh loop detector for a single request.
+
+        Each request gets its own detector so concurrent requests don't
+        interfere, and previous-request history doesn't leak into new requests.
+        """
+        return ToolCallLoopDetector(**self._loop_detection_config)
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
@@ -974,11 +983,6 @@ class Agent(MCPServer):
         # Check if session is empty (new session), not just if it exists (setdefault creates it above)
         is_new_session = len(session_msgs) == 0
         if is_new_session:
-            # Reset loop detector for new sessions to avoid false positives
-            # from previous sessions
-            self._loop_detector.reset()
-            logger.debug(f"Reset loop detector for new session {session_id}")
-            
             modified_messages = await self._hook_manager.execute_session_start_hooks(
                 session_id, request_id, messages=messages
             )
@@ -1382,6 +1386,13 @@ class Agent(MCPServer):
         consecutive_empty_responses = 0
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
+
+        # Create a request-scoped loop detector.
+        # Each request gets its own detector so concurrent requests on the
+        # same Agent singleton don't contaminate each other's history, and
+        # history from a previous request on the same session doesn't
+        # cause false positives at the start of a new request.
+        loop_detector = self._create_loop_detector()
 
         # Helper function to yield any pending status events from per-request forwarder
         def yield_pending_status_events():
@@ -1799,7 +1810,7 @@ class Agent(MCPServer):
                 
                 # ===== TOOL CALL LOOP DETECTION =====
                 # Check for repeated tool call patterns that indicate the agent is stuck
-                loop_result = self._loop_detector.record_batch_and_check(tool_calls, step)
+                loop_result = loop_detector.record_batch_and_check(tool_calls, step)
                 
                 pending_intervention_msg: Optional[ChatMessage] = None
 

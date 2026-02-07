@@ -5,6 +5,7 @@ Verifies that the ToolCallLoopDetector correctly identifies:
 2. Repeated sequences of tool calls
 3. Generates appropriate intervention messages
 4. Blocks tools after threshold is reached
+5. Per-request isolation (no cross-contamination between requests)
 """
 
 import pytest
@@ -334,3 +335,94 @@ class TestInterventionMessages:
             result = detector.record_and_check(call, step=i)
         
         assert "CRITICAL" in result.intervention or "blocked" in result.intervention.lower()
+
+
+class TestPerRequestIsolation:
+    """Verify that separate ToolCallLoopDetector instances don't share state.
+
+    The Agent creates a fresh detector per request via _create_loop_detector()
+    so that concurrent requests and sequential requests don't contaminate each
+    other's loop history.
+    """
+
+    def test_separate_detectors_dont_share_history(self):
+        """Two detectors built from the same config must be independent."""
+        config = {"exact_match_threshold": 3, "block_after_threshold": 5}
+
+        det_a = ToolCallLoopDetector(**config)
+        det_b = ToolCallLoopDetector(**config)
+
+        call = {"function": {"name": "search", "arguments": '{"q": "x"}'}}
+
+        # Feed 2 identical calls into detector A (just below threshold)
+        det_a.record_and_check(call, step=0)
+        det_a.record_and_check(call, step=1)
+
+        # Detector B should still be empty — one more call should NOT trigger
+        result_b = det_b.record_and_check(call, step=0)
+        assert not result_b.intervention, (
+            "Fresh detector must not inherit history from another instance"
+        )
+
+    def test_sequential_request_isolation(self):
+        """Simulates two sequential requests each creating their own detector.
+
+        Even though both requests make the same calls, the second request's
+        detector starts fresh and should not trigger based on the first
+        request's history.
+        """
+        config = {"exact_match_threshold": 3, "block_after_threshold": 5}
+        call = {"function": {"name": "search", "arguments": '{"q": "x"}'}}
+
+        # --- First "request" ---
+        det_1 = ToolCallLoopDetector(**config)
+        for step in range(2):
+            det_1.record_and_check(call, step=step)
+        # det_1 has 2 consecutive identical calls (1 below threshold=3)
+
+        # --- Second "request" (fresh detector) ---
+        det_2 = ToolCallLoopDetector(**config)
+        result = det_2.record_and_check(call, step=0)
+        assert not result.intervention, (
+            "Second request's detector must not carry over from first request"
+        )
+
+    def test_concurrent_detectors_independent_blocking(self):
+        """Simulates two concurrent requests where only one exceeds threshold.
+
+        Detector A receives many repeated calls and triggers blocking.
+        Detector B receives the same call once — it must NOT block.
+        """
+        config = {"exact_match_threshold": 2, "block_after_threshold": 3}
+        call = {"function": {"name": "write_file", "arguments": '{"path": "/tmp/x"}'}}
+
+        det_a = ToolCallLoopDetector(**config)
+        det_b = ToolCallLoopDetector(**config)
+
+        # Drive detector A past the block threshold
+        for step in range(5):
+            result_a = det_a.record_and_check(call, step=step)
+        assert "write_file" in det_a.get_blocked_tools(), (
+            "Detector A should have blocked write_file"
+        )
+
+        # Detector B has only one call — no blocking
+        result_b = det_b.record_and_check(call, step=0)
+        assert not result_b.intervention
+        assert det_b.get_blocked_tools() == set(), (
+            "Independent detector B must have no blocked tools"
+        )
+
+    def test_factory_produces_independent_instances(self):
+        """create_loop_detector_from_config always yields independent objects."""
+        config = {
+            "exact_match_threshold": 2,
+            "block_after_threshold": 4,
+        }
+        det_x = create_loop_detector_from_config(config)
+        det_y = create_loop_detector_from_config(config)
+
+        assert det_x is not det_y, "Factory must not return the same object"
+        assert det_x._history is not det_y._history, (
+            "Instances must not share the same history deque"
+        )
