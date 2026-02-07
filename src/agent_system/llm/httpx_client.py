@@ -89,6 +89,16 @@ class HTTPXOpenAIClient(LLMClient):
             self._is_openrouter and "gemini" in model.lower()
         )
 
+        # Detect DeepSeek models — need special reasoning_content handling.
+        # DeepSeek thinking mode requires reasoning_content on ALL assistant messages
+        # (even empty string), otherwise returns HTTP 400.
+        # See: https://api-docs.deepseek.com/guides/thinking_mode#tool-call
+        _model_lower = model.lower()
+        self._is_deepseek = (
+            "deepseek" in _model_lower
+            or "deepseek" in base_url.lower()
+        )
+
         # Validate API type - HTTPX client only supports chat_completions
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
             api_type = self.capabilities.default_api_type
@@ -177,8 +187,9 @@ class HTTPXOpenAIClient(LLMClient):
         )
 
     # Fields accepted by the OpenAI Chat Completions API
-    # reasoning_content is used by DeepSeek/OpenAI o-series for chain-of-thought round-trip
-    _API_MESSAGE_FIELDS = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content"}
+    # Note: reasoning_content is NOT universally accepted — it's a DeepSeek extension.
+    # It's handled separately in _postprocess_messages_for_provider().
+    _API_MESSAGE_FIELDS = {"role", "content", "name", "tool_call_id", "tool_calls"}
 
     @staticmethod
     def _sanitize_tool_calls(tool_calls: list) -> list:
@@ -245,7 +256,33 @@ class HTTPXOpenAIClient(LLMClient):
         # Sanitize tool_calls sub-structures too
         if 'tool_calls' in clean and clean['tool_calls']:
             clean['tool_calls'] = cls._sanitize_tool_calls(clean['tool_calls'])
+        # Preserve reasoning_content if present (handled by _postprocess_messages_for_provider)
+        if 'reasoning_content' in d:
+            clean['reasoning_content'] = d['reasoning_content']
         return clean
+
+    def _postprocess_messages_for_provider(self, message_dicts: list) -> None:
+        """Post-process serialized messages for provider-specific requirements.
+        
+        DeepSeek thinking mode requires `reasoning_content` on ALL assistant messages
+        (even empty string ""), otherwise returns HTTP 400:
+          "Missing reasoning_content field in the assistant message"
+        See: https://api-docs.deepseek.com/guides/thinking_mode#tool-call
+        
+        For non-DeepSeek providers, `reasoning_content` is stripped since it's not
+        a standard OpenAI Chat Completions API field.
+        
+        Modifies message_dicts in-place.
+        """
+        if self._is_deepseek:
+            # DeepSeek: ensure ALL assistant messages have reasoning_content
+            for msg in message_dicts:
+                if msg.get("role") == "assistant":
+                    msg.setdefault("reasoning_content", "")
+        else:
+            # Other providers: strip reasoning_content (non-standard field)
+            for msg in message_dicts:
+                msg.pop("reasoning_content", None)
 
     def _filter_audio_from_content(self, content: Any) -> Any:
         """Filter and normalize content for OpenAI API.
@@ -410,6 +447,7 @@ class HTTPXOpenAIClient(LLMClient):
             return result
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
+        self._postprocess_messages_for_provider(message_dicts)
 
         payload = {
             "model": self.model,
@@ -623,6 +661,7 @@ class HTTPXOpenAIClient(LLMClient):
             return result
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
+        self._postprocess_messages_for_provider(message_dicts)
 
         payload = {
             "model": self.model,
