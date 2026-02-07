@@ -302,15 +302,21 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 elif recall_type == "variable":
                     found = result.get("found", False)
                     if found:
-                        total_chars = result.get("total_chars", 0)
-                        await status.end(f"Retrieved variable ({total_chars} chars)")
+                        returned = result.get("returned_chars", 0)
+                        total = result.get("total_chars", 0)
+                        truncated = result.get("truncated", False)
+                        size_info = f"{returned}/{total} chars" if truncated else f"{total} chars"
+                        await status.end(f"Retrieved variable ({size_info})")
                     else:
                         await status.end(f"Variable not found: {result.get('variable_name', query)}")
                 elif recall_type == "tool_result":
                     found = result.get("found", False)
                     if found:
-                        total_chars = result.get("total_chars", 0)
-                        await status.end(f"Retrieved tool result ({total_chars} chars)")
+                        returned = result.get("returned_chars", 0)
+                        total = result.get("total_chars", 0)
+                        truncated = result.get("truncated", False)
+                        size_info = f"{returned}/{total} chars" if truncated else f"{total} chars"
+                        await status.end(f"Retrieved tool result ({size_info})")
                     else:
                         await status.end(f"Tool result not found: {query}")
                 elif recall_type == "media":

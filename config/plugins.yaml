@@ -412,10 +412,10 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction
-        layer1_threshold: 60000   # Start reversible compaction (tool refs, variables)
-        layer2_threshold: 80000   # Start semi-reversible compaction (archival with summaries)
-        layer3_threshold: 120000  # Start irreversible compaction (drop old messages)
-        target_tokens: 40000      # Target token count after compaction
+        layer1_threshold: 70000   # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 90000   # Start semi-reversible compaction (archival with summaries)
+        layer3_threshold: 110000  # Start irreversible compaction (drop old messages)
+        target_tokens: 50000      # Target token count after compaction
 
         store_media_before_compaction: true  # Aktiviert MediaStore
         media_store_ttl_seconds: 604800      # 7 Tage
@@ -426,7 +426,7 @@ plugins:
         target_request_bytes: 73400320 # 70 MB - target after compaction
         
         # Core memory settings
-        core_memory_max_tokens: 3000   # Max tokens for always-present facts
+        core_memory_max_tokens: 5000   # Max tokens for always-present facts
         
         # Tool result storage settings
         tool_result_min_size: 500      # Min tokens to store tool result externally
