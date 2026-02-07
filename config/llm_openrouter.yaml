@@ -36,7 +36,7 @@ llm_system:
       capabilities:
         tools: true
         function_calling: true
-        streaming: true
+        streaming: false
         json_mode: true
         multimodal: true  # Native image/audio/video processing
 
@@ -58,7 +58,7 @@ llm_system:
       capabilities:
         tools: true
         function_calling: true
-        streaming: true
+        streaming: false
         json_mode: true
         multimodal: true  # Native image/audio/video processing
 
@@ -69,45 +69,7 @@ llm_system:
       # - Higher rate limits than direct Google API at Tier 1
       # - Pricing: ~$2 input / ~$12 output per 1M tokens
 
-    openrouter-gemini-2.5-flash:
-      provider: openai_httpx
-      model: google/gemini-2.5-flash
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
-      request_timeout: 240
-      max_tokens: 8192
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-        multimodal: true  # Native image/audio/video processing
 
-      # Notes:
-      # - Previous generation Flash model
-      # - Still excellent for most tasks at lower cost than 3.0
-      # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
-
-    openrouter-gemini-2.5-pro:
-      provider: openai_httpx
-      model: google/gemini-2.5-pro
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
-      request_timeout: 300
-      max_tokens: 8192
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-        multimodal: true  # Native image/audio/video processing
-
-      # Notes:
-      # - Previous generation Pro model
-      # - Still very capable for complex reasoning
-      # - Pricing: ~$1.25 input / ~$10 output per 1M tokens
 
   # =============================================================================
   # PROFILES for easy access
@@ -123,7 +85,3 @@ llm_system:
       description: "OpenRouter Gemini 3 Pro - Best quality with audio/video support"
       max_steps: 500
     
-    or-gemini-2.5-flash:
-      model_ref: openrouter-gemini-2.5-flash
-      description: "OpenRouter Gemini 2.5 Flash - Good quality at lower cost"
-      max_steps: 500
