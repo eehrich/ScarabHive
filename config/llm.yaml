@@ -570,6 +570,19 @@ llm_system:
         streaming: true
         json_mode: true
 
+    deepseek-reasoner:
+      provider: openai_httpx
+      model: deepseek-reasoner
+      api_key: "***REMOVED***"
+      base_url: https://api.deepseek.com/v1
+      context_window: 100000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true        
+
     deepseek-chat-nostream:
       provider: openai_httpx
       model: deepseek-chat
@@ -582,6 +595,19 @@ llm_system:
         function_calling: true
         streaming: false
         json_mode: true
+
+    deepseek-reasoner-nostream:
+      provider: openai_httpx
+      model: deepseek-reasoner
+      api_key: "***REMOVED***"
+      base_url: https://api.deepseek.com/v1
+      context_window: 100000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true        
 
   # =============================================================================
   # PROFILES
@@ -632,7 +658,7 @@ llm_system:
     chat-nostream:
       model_ref: deepseek-chat-nostream
       description: "Cheap and fast model for medium tasks (no streaming)"
-      max_steps: 500
+      max_steps: 500      
       
     code:
       model_ref: gpt-5.1-codex
@@ -735,6 +761,27 @@ llm_system:
       model_ref: claude-haiku-4-5-batch
       description: "Claude Haiku 4.5 (batch)"
       max_steps: 500
+
+    # Deepseek profiles
+    deepseek-chat:
+      model_ref: deepseek-chat
+      description: "Cheap and fast model for medium tasks"
+      max_steps: 500
+      
+    deepseek-chat-nostream:
+      model_ref: deepseek-chat-nostream
+      description: "Cheap and fast model for medium tasks (no streaming)"
+      max_steps: 500  
+
+    deepseek-reasoner:
+       model_ref: deepseek-reasoner
+       description: "Powerful model optimized for reasoning tasks"
+       max_steps: 500
+      
+    deepseek-reasoner-nostream:
+      model_ref: deepseek-reasoner-nostream
+      description: "Powerful model optimized for reasoning tasks (no streaming)"
+      max_steps: 500  
 
     local:
       model_ref: ollama-gpt-oss-20b
