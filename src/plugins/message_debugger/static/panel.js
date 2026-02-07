@@ -231,19 +231,17 @@ const debugger_ = {
                 msgs.forEach(m => {
                     const role = m.role || 'unknown';
                     const fullContent = m.content || '';
-                    let displayContent = fullContent;
-                    if (displayContent.length > 5000) displayContent = displayContent.substring(0, 5000) + '…[truncated]';
 
                     // Build content HTML — try JSON formatting for tool results
                     let contentHtml = '';
-                    if (displayContent) {
+                    if (fullContent) {
                         if (m.is_tool_result) {
                             try {
-                                const parsed = JSON.parse(displayContent);
+                                const parsed = JSON.parse(fullContent);
                                 contentHtml = `<div class="msg-content">${this.formatJson(parsed)}</div>`;
-                            } catch { contentHtml = `<div class="msg-content">${this.esc(displayContent)}</div>`; }
+                            } catch { contentHtml = `<div class="msg-content">${this.esc(fullContent)}</div>`; }
                         } else {
-                            contentHtml = `<div class="msg-content">${this.esc(displayContent)}</div>`;
+                            contentHtml = `<div class="msg-content">${this.esc(fullContent)}</div>`;
                         }
                     }
 
