@@ -504,63 +504,38 @@ class LogViewerWebEndpoints(PluginWebInterface):
             parsed_lines = []
 
             if since_timestamp is None:
-                # Initial load - read from all rotation files
-                all_lines = []
-                
-                # Read rotation files in order (oldest to newest)
-                for rotation_file in rotation_files:
-                    file_lines = await self._read_last_lines_async(rotation_file, lines * 10)  # Read more to account for distribution
-                    all_lines.extend(file_lines)
-                
-                # Now process the combined lines
-                if level_filter or search_term:
-                    # Filter the combined lines
-                    grouped_entries = self._group_multiline_entries(all_lines)
-                    
-                    for entry in grouped_entries:
-                        # Filter out log viewer requests to avoid recursion
-                        if '/plugins/log_viewer' in entry['main_line']:
-                            continue
+                # Initial load — read filtered lines from rotation files (newest first)
+                # _read_filtered_lines_async reads backwards until it has enough
+                # matching entries, so we always get the last N filtered results.
+                all_filtered_lines: List[str] = []
+                remaining_needed = lines
 
-                        parsed_line = self._parse_log_line(entry['main_line'].rstrip())
-                        
-                        # Check if matches filters
-                        if level_filter:
-                            line_level = parsed_line.get('level', '').lower()
-                            if line_level not in level_filter:
-                                continue
-                        
-                        if search_term:
-                            message = parsed_line.get('message', '').lower()
-                            full_content = entry['full_content'].lower()
-                            if search_term not in message and search_term not in full_content:
-                                continue
-                        
-                        parsed_line['line_number'] = entry['line_number']
-                        parsed_line['full_content'] = entry['full_content']
-                        parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
-                        parsed_lines.append(parsed_line)
-                else:
-                    # No filters - use simple processing
-                    grouped_entries = self._group_multiline_entries(all_lines)
+                # rotation_files is oldest-to-newest, iterate newest-first
+                for rotation_file in reversed(rotation_files):
+                    if remaining_needed <= 0:
+                        break
+                    file_lines = await self._read_filtered_lines_async(
+                        rotation_file, remaining_needed, level_filter, search_term
+                    )
+                    all_filtered_lines = file_lines + all_filtered_lines
+                    remaining_needed = lines - len(all_filtered_lines)
 
-                    for entry in grouped_entries:
-                        # Filter out log viewer requests to avoid recursion
-                        if '/plugins/log_viewer' in entry['main_line']:
-                            continue
+                # Take only the last N entries (in case we overshot across files)
+                all_filtered_lines = all_filtered_lines[-lines:]
 
-                        parsed_line = self._parse_log_line(entry['main_line'].rstrip())
-                        parsed_line['line_number'] = entry['line_number']
-                        parsed_line['full_content'] = entry['full_content']
-                        parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
-                        parsed_lines.append(parsed_line)
-                
+                # Group multiline entries and parse
+                grouped_entries = self._group_multiline_entries(all_filtered_lines)
+
+                for entry in grouped_entries:
+                    parsed_line = self._parse_log_line(entry['main_line'].rstrip())
+                    parsed_line['line_number'] = entry['line_number']
+                    parsed_line['full_content'] = entry['full_content']
+                    parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
+                    parsed_lines.append(parsed_line)
+
                 # Sort by timestamp to ensure chronological order
                 # (important when reading from multiple rotation files)
                 parsed_lines = self._sort_by_timestamp(parsed_lines)
-                
-                # Take only the last N entries
-                parsed_lines = parsed_lines[-lines:]
             else:
                 # Streaming mode - read last N*3 lines efficiently
                 buffer_multiplier = 3
