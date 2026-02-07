@@ -163,6 +163,17 @@ class GeminiClient(LLMClient):
 
         url = f"{self.base_url}/models/{self.model}:streamGenerateContent?key={self.api_key}&alt=sse"
 
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        await self._notify_pre_request({
+            "provider": "gemini",
+            "model": self.model,
+            "url": url.split("?")[0],  # Strip API key
+            "payload": payload,
+            "is_streaming": True,
+            "timestamp_ms": _time.time() * 1000,
+        })
+
         # Accumulators
         accumulated_content = []  # Only non-thought content (for final message)
         accumulated_thoughts = []  # Thought summaries (streamed but not saved)
@@ -179,6 +190,7 @@ class GeminiClient(LLMClient):
         progress_tracker = ThinkingProgressTracker()
 
         last_exception = None
+        _streaming_request_start = _time.time()
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
@@ -227,6 +239,7 @@ class GeminiClient(LLMClient):
                             wait_time = 2 ** attempt
                             await report_status(f"Server error ({response.status_code}), retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                             logger.warning(f"Gemini server error {response.status_code}, retrying in {wait_time}s")
+                            await self._notify_retry("gemini", self.model, url.split("?")[0], True, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
                             await self._cancellable_sleep(wait_time, cancellation_token)
                             continue
                         
@@ -245,6 +258,7 @@ class GeminiClient(LLMClient):
                                     f"[Gemini] Schema 'too many states' error (sporadic). "
                                     f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                                 )
+                                await self._notify_retry("gemini", self.model, url.split("?")[0], True, "Schema 'too many states' error", attempt, self.max_retries + 1)
                                 await self._cancellable_sleep(wait_time, cancellation_token)
                                 continue
                             
@@ -433,6 +447,7 @@ class GeminiClient(LLMClient):
                                     f"[Gemini] MALFORMED_FUNCTION_CALL with empty response. "
                                     f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                                 )
+                                await self._notify_retry("gemini", self.model, url.split("?")[0], True, "MALFORMED_FUNCTION_CALL (empty response)", attempt, self.max_retries + 1)
                                 await self._cancellable_sleep(wait_time, cancellation_token)
                                 # Reset accumulators for retry (keep got_malformed_function_call=True for mode=ANY)
                                 accumulated_content = []
@@ -459,6 +474,7 @@ class GeminiClient(LLMClient):
                                     f"{len(accumulated_content)} content parts - likely stuck in thinking). "
                                     f"Will retry with thinking disabled (attempt {attempt + 1}/{self.max_retries + 1})"
                                 )
+                                await self._notify_retry("gemini", self.model, url.split("?")[0], True, "MAX_TOKENS (stuck in thinking)", attempt, self.max_retries + 1)
                                 await self._cancellable_sleep(wait_time, cancellation_token)
                                 # Reset accumulators for retry
                                 accumulated_content = []
@@ -487,6 +503,15 @@ class GeminiClient(LLMClient):
                         if accumulated_usage:
                             final_result["usage"] = accumulated_usage
 
+                        # Notify post-response hook for streaming
+                        _s_duration = (_time.time() - _streaming_request_start) * 1000
+                        await self._notify_post_response({
+                            "provider": "gemini", "model": self.model,
+                            "url": url.split("?")[0], "is_streaming": True,
+                            "duration_ms": _s_duration, "usage": accumulated_usage,
+                            "timestamp_ms": _time.time() * 1000,
+                        })
+
                         logger.debug("Yielding final result")
                         yield {"type": "final", **final_result}
                         return  # Success
@@ -501,6 +526,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Request timeout, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Gemini request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
+                    await self._notify_retry("gemini", self.model, url.split("?")[0], True, f"Timeout: {e}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:
@@ -530,6 +556,7 @@ class GeminiClient(LLMClient):
                             f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
+                        await self._notify_retry("gemini", self.model, url.split("?")[0], True, f"Rate limit (429): {error_str[:200]}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
@@ -563,6 +590,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Error, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
+                    await self._notify_retry("gemini", self.model, url.split("?")[0], True, f"Error: {error_str[:200]}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators for retry
                     accumulated_content = []
@@ -649,7 +677,19 @@ class GeminiClient(LLMClient):
 
         url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
 
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        await self._notify_pre_request({
+            "provider": "gemini",
+            "model": self.model,
+            "url": url.split("?")[0],  # Strip API key from URL
+            "payload": payload,
+            "is_streaming": False,
+            "timestamp_ms": _time.time() * 1000,
+        })
+
         # Track MALFORMED_FUNCTION_CALL for auto-retry
+        _request_start = _time.time()
         got_malformed_function_call = False
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -708,6 +748,7 @@ class GeminiClient(LLMClient):
                                 f"[Gemini] Schema 'too many states' error (sporadic). "
                                 f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                             )
+                            await self._notify_retry("gemini", self.model, url.split("?")[0], False, "Schema 'too many states' error", attempt, self.max_retries + 1)
                             await self._cancellable_sleep(wait_time, cancellation_token)
                             continue
                         
@@ -740,6 +781,7 @@ class GeminiClient(LLMClient):
                                 f"[Gemini] MALFORMED_FUNCTION_CALL detected. "
                                 f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                             )
+                            await self._notify_retry("gemini", self.model, url.split("?")[0], False, "MALFORMED_FUNCTION_CALL", attempt, self.max_retries + 1)
                             await self._cancellable_sleep(wait_time, cancellation_token)
                             continue
                         else:
@@ -820,6 +862,17 @@ class GeminiClient(LLMClient):
                         # Store in OpenAI-compatible format: prompt_tokens_details.cached_tokens
                         usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
 
+                    # Notify post-response hook
+                    _duration_ms = (_time.time() - _request_start) * 1000
+                    await self._notify_post_response({
+                        "provider": "gemini", "model": self.model,
+                        "url": url.split("?")[0], "is_streaming": False,
+                        "duration_ms": _duration_ms, "usage": usage,
+                        "finish_reason": finish_reason,
+                        "response_data": data,
+                        "timestamp_ms": _time.time() * 1000,
+                    })
+
                     return {"assistant": assistant, "usage": usage}
 
             except asyncio.CancelledError:
@@ -832,6 +885,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Request timeout, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Gemini request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
+                    await self._notify_retry("gemini", self.model, url.split("?")[0], False, f"Timeout: {e}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:
@@ -861,6 +915,7 @@ class GeminiClient(LLMClient):
                             f"Gemini rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
+                        await self._notify_retry("gemini", self.model, url.split("?")[0], False, f"Rate limit (429): {error_str[:200]}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
@@ -894,6 +949,7 @@ class GeminiClient(LLMClient):
                     wait_time = 2 ** attempt
                     await report_status(f"Error, retry {attempt + 1}/{self.max_retries} in {wait_time}s: {self.model}")
                     logger.warning(f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
+                    await self._notify_retry("gemini", self.model, url.split("?")[0], False, f"Error: {error_str[:200]}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:

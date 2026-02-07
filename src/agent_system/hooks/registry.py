@@ -356,6 +356,10 @@ class HookRegistry:
             return await hook.on_session_start(context)
         elif hook_type == HookType.SESSION_END:
             return await hook.on_session_end(context)
+        elif hook_type == HookType.PRE_LLM_REQUEST:
+            return await hook.on_pre_llm_request(context)
+        elif hook_type == HookType.POST_LLM_RESPONSE:
+            return await hook.on_post_llm_response(context)
         else:
             raise ValueError(f"Unknown hook type: {hook_type}")
 
@@ -538,9 +542,21 @@ class HookRegistry:
             output_format=context.output_format,  # Add output_format for format hooks
             metadata=copy.deepcopy(context.metadata),
             hook_config=copy.deepcopy(context.hook_config) if context.hook_config else {},
+            target_hook_name=context.target_hook_name,
             step=context.step,
             llm=context.llm,  # Reference copy
             cancellation_token=context.cancellation_token,  # Reference copy
+            # LLM-client-level fields (for pre_llm_request / post_llm_response hooks)
+            llm_request_payload=copy.deepcopy(context.llm_request_payload) if context.llm_request_payload else None,
+            llm_response_data=copy.deepcopy(context.llm_response_data) if context.llm_response_data else None,
+            llm_provider=context.llm_provider,
+            llm_model=context.llm_model,
+            llm_request_url=context.llm_request_url,
+            llm_duration_ms=context.llm_duration_ms,
+            llm_error=context.llm_error,
+            llm_usage=copy.deepcopy(context.llm_usage) if context.llm_usage else None,
+            llm_finish_reason=context.llm_finish_reason,
+            llm_is_streaming=context.llm_is_streaming,
         )
 
     # Keys managed by the hook system itself — stripped from hook_config

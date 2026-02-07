@@ -29,6 +29,9 @@ class HookType(str, Enum):
     FORMAT_OUTPUT = "format_output"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
+    # LLM-client-level hooks: capture exact API payloads/responses
+    PRE_LLM_REQUEST = "pre_llm_request"
+    POST_LLM_RESPONSE = "post_llm_response"
 
 
 @dataclass
@@ -57,6 +60,16 @@ class HookContext:
         step: Current execution step number
         llm: Reference to the LLM client being used
         cancellation_token: Optional cancellation token for graceful cancellation
+        llm_request_payload: Raw API request payload (for pre_llm_request hooks)
+        llm_response_data: Raw API response data (for post_llm_response hooks)
+        llm_provider: LLM provider name (e.g., 'openai_httpx', 'gemini', 'anthropic')
+        llm_model: Model name used for the request
+        llm_request_url: API endpoint URL
+        llm_duration_ms: Request duration in milliseconds (for post_llm_response)
+        llm_error: Error string if the request failed (for post_llm_response)
+        llm_usage: Token usage data from the response (for post_llm_response)
+        llm_finish_reason: Finish reason from the response (for post_llm_response)
+        llm_is_streaming: Whether the request was streaming
     """
     hook_type: HookType
     request_id: str
@@ -75,6 +88,17 @@ class HookContext:
     step: int = 0
     llm: Optional[Any] = None
     cancellation_token: Optional[Any] = None
+    # LLM-client-level fields (for pre_llm_request / post_llm_response hooks)
+    llm_request_payload: Optional[Dict[str, Any]] = None
+    llm_response_data: Optional[Dict[str, Any]] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_request_url: Optional[str] = None
+    llm_duration_ms: Optional[float] = None
+    llm_error: Optional[str] = None
+    llm_usage: Optional[Dict[str, Any]] = None
+    llm_finish_reason: Optional[str] = None
+    llm_is_streaming: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert context to dictionary for serialization."""
@@ -278,6 +302,52 @@ class PluginHook(ABC):
             
         Returns:
             HookResult with success status and modified context
+        """
+        return HookResult(success=True, modified=False, context=context)
+    
+    async def on_pre_llm_request(self, context: HookContext) -> HookResult:
+        """
+        Called at the LLM client level just before sending API request.
+        
+        Unlike on_pre_llm_call (agent-level), this captures the exact
+        serialized payload that will be sent to the API provider.
+        
+        Use cases:
+        - Log exact API request payloads for debugging
+        - Record request timing
+        - Validate API payloads
+        - Audit LLM API usage
+        
+        Args:
+            context: Hook context with llm_request_payload, llm_provider,
+                     llm_model, llm_request_url, llm_is_streaming
+            
+        Returns:
+            HookResult with success status (read-only, should not modify context)
+        """
+        return HookResult(success=True, modified=False, context=context)
+    
+    async def on_post_llm_response(self, context: HookContext) -> HookResult:
+        """
+        Called at the LLM client level right after receiving API response.
+        
+        Unlike on_post_llm_call (agent-level), this captures the exact
+        raw API response including errors, timing, and usage.
+        
+        Use cases:
+        - Log exact API responses for debugging
+        - Track request duration with ms precision
+        - Log errors and rate limits
+        - Record token usage
+        - Audit LLM API costs
+        
+        Args:
+            context: Hook context with llm_response_data, llm_provider,
+                     llm_model, llm_duration_ms, llm_error, llm_usage,
+                     llm_finish_reason, llm_is_streaming
+            
+        Returns:
+            HookResult with success status (read-only, should not modify context)
         """
         return HookResult(success=True, modified=False, context=context)
     

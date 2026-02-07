@@ -1,168 +1,174 @@
 """Message Debugger Plugin - Web endpoints and UI.
 
-Provides REST API endpoints and web panel for viewing captured message snapshots.
+Provides REST API endpoints and web panel for viewing captured message turns
+and raw LLM API request/response logs from the SQLite database.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Query, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse
 
 from agent_system.plugins.schema_router import create_schema_router
 
+if TYPE_CHECKING:
+    from .database import MessageDebuggerDB
+
 logger = logging.getLogger(__name__)
 
 
 class MessageDebuggerWebFactory:
-    """Web UI factory for message debugger plugin."""
+    """Web UI factory for message debugger plugin.
     
-    def __init__(self, message_history: List[Dict[str, Any]], name: str = "message_debugger", server=None):
-        """Initialize web factory with shared message history.
+    Queries the SQLite database for turns and LLM request/response logs.
+    """
+    
+    def __init__(
+        self,
+        db: "MessageDebuggerDB",
+        name: str = "message_debugger",
+        server=None,
+    ):
+        """Initialize web factory with database reference.
         
         Args:
-            message_history: Shared list of message snapshots
+            db: SQLite database instance
             name: Plugin instance name for dynamic routing
             server: Server instance for schema access
         """
         self.name = name
-        self.message_history = message_history
+        self.db = db
         self.server = server
         self.plugin_dir = Path(__file__).parent
     
-    # Handler methods (called by schema router)
+    # ---- Turns endpoints ----
     
-    async def list_snapshots(
+    async def list_turns(
         self,
         request: Request,
         agent_name: str | None = Query(default=None, description="Filter by agent name"),
         session_id: str | None = Query(default=None, description="Filter by session ID"),
-        limit: int = Query(default=50, ge=1, le=500, description="Maximum snapshots to return")
+        snapshot_type: str | None = Query(default=None, description="Filter by type (pre_llm/post_llm)"),
+        limit: int = Query(default=50, ge=1, le=500, description="Maximum turns to return"),
+        offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     ):
-        """List captured message snapshots with optional filtering."""
-        snapshots = self.message_history
-        
-        # Apply filters
-        if agent_name:
-            snapshots = [s for s in snapshots if s.get('agent_name') == agent_name]
-        if session_id:
-            snapshots = [s for s in snapshots if s.get('session_id') == session_id]
-        
-        # Apply limit (most recent first)
-        snapshots = list(reversed(snapshots[-limit:]))
-        
+        """List captured agent-level message turns."""
+        turns = self.db.get_turns(
+            agent_name=agent_name,
+            session_id=session_id,
+            snapshot_type=snapshot_type,
+            limit=limit,
+            offset=offset,
+        )
+        total = self.db.count_turns(agent_name=agent_name, session_id=session_id)
         return {
-            'total': len(self.message_history),
-            'filtered': len(snapshots),
-            'snapshots': snapshots
+            'total': total,
+            'offset': offset,
+            'limit': limit,
+            'count': len(turns),
+            'turns': turns,
         }
     
-    async def get_snapshot(self, request: Request, index: int):
-        """Get detailed information for a specific snapshot."""
-        if index < 0 or index >= len(self.message_history):
-            raise HTTPException(status_code=404, detail="Snapshot not found")
-        
-        return self.message_history[index]
+    async def get_turn(self, request: Request, turn_id: int):
+        """Get detailed information for a specific turn."""
+        turn = self.db.get_turn(turn_id)
+        if not turn:
+            raise HTTPException(status_code=404, detail=f"Turn {turn_id} not found")
+        return turn
     
-    async def clear_snapshots(self, request: Request):
-        """Clear all captured message snapshots."""
-        count = len(self.message_history)
-        self.message_history.clear()
+    # ---- LLM Requests endpoints ----
+    
+    async def list_llm_requests(
+        self,
+        request: Request,
+        agent_name: str | None = Query(default=None, description="Filter by agent name"),
+        session_id: str | None = Query(default=None, description="Filter by session ID"),
+        direction: str | None = Query(default=None, description="Filter by direction (request/response)"),
+        provider: str | None = Query(default=None, description="Filter by provider"),
+        limit: int = Query(default=50, ge=1, le=500, description="Maximum entries to return"),
+        offset: int = Query(default=0, ge=0, description="Offset for pagination"),
+    ):
+        """List raw LLM API request/response logs."""
+        items = self.db.get_llm_requests(
+            agent_name=agent_name,
+            session_id=session_id,
+            direction=direction,
+            provider=provider,
+            limit=limit,
+            offset=offset,
+        )
+        total = self.db.count_llm_requests(agent_name=agent_name, provider=provider)
         return {
-            'status': 'cleared',
-            'removed_count': count
+            'total': total,
+            'offset': offset,
+            'limit': limit,
+            'count': len(items),
+            'requests': items,
         }
+    
+    async def get_llm_request(self, request: Request, request_id: int):
+        """Get a specific LLM request log by ID."""
+        item = self.db.get_llm_request(request_id)
+        if not item:
+            raise HTTPException(status_code=404, detail=f"LLM request {request_id} not found")
+        return item
+    
+    # ---- Stats & maintenance ----
     
     async def get_stats(self, request: Request):
-        """Get statistics about captured messages."""
-        if not self.message_history:
-            return {
-                'total_snapshots': 0,
-                'unique_agents': [],
-                'unique_sessions': [],
-                'total_messages': 0,
-                'total_tokens': 0
-            }
-        
-        agents = set()
-        sessions = set()
-        total_messages = 0
-        total_tokens = 0
-        
-        for snapshot in self.message_history:
-            if snapshot.get('agent_name'):
-                agents.add(snapshot['agent_name'])
-            if snapshot.get('session_id'):
-                sessions.add(snapshot['session_id'])
-            total_messages += snapshot.get('message_count', 0)
-            total_tokens += snapshot.get('total_estimated_tokens') or 0
-        
-        return {
-            'total_snapshots': len(self.message_history),
-            'unique_agents': sorted(list(agents)),
-            'unique_sessions': sorted(list(sessions)),
-            'total_messages': total_messages,
-            'total_tokens': total_tokens,
-            'average_messages_per_snapshot': total_messages / len(self.message_history) if self.message_history else 0,
-            'average_tokens_per_snapshot': total_tokens / len(self.message_history) if self.message_history else 0
-        }
+        """Get statistics about captured data."""
+        return self.db.get_stats()
+    
+    async def clear_all(self, request: Request):
+        """Clear all captured data."""
+        result = self.db.clear_all()
+        return {'status': 'cleared', **result}
+    
+    # ---- Panel rendering ----
     
     async def render_panel(self, request: Request) -> HTMLResponse:
-        """Render the message debugger panel HTML.
-        
-        Returns:
-            HTML response with panel content
-        """
+        """Render the message debugger panel HTML."""
         template_path = self.plugin_dir / 'templates' / 'panel.html'
         
         if not template_path.exists():
             return HTMLResponse(
-                content=f"<html><body><h1>Error</h1><p>Template not found: {template_path}</p></body></html>",
+                content="<html><body><h1>Error</h1><p>Template not found</p></body></html>",
                 status_code=500,
-                media_type="text/html"
             )
         
         try:
             html_content = template_path.read_text(encoding='utf-8')
-            return HTMLResponse(
-                content=html_content,
-                media_type="text/html"
-            )
+            return HTMLResponse(content=html_content, media_type="text/html")
         except Exception as e:
-            logger.error(f"Failed to load message debugger panel template: {e}")
+            logger.error(f"Failed to load message debugger panel: {e}")
             return HTMLResponse(
-                content=f"<html><body><h1>Error</h1><p>Failed to load panel: {e}</p></body></html>",
+                content=f"<html><body><h1>Error</h1><p>{e}</p></body></html>",
                 status_code=500,
-                media_type="text/html"
             )
     
     async def serve_css(self, request: Request):
         """Serve the panel CSS file."""
-        css_path = self.plugin_dir / "static" / "panel.css"
         return FileResponse(
-            css_path,
-            media_type="text/css"
+            self.plugin_dir / "static" / "panel.css",
+            media_type="text/css",
         )
     
     async def serve_js(self, request: Request):
         """Serve the panel JavaScript file."""
-        js_path = self.plugin_dir / "static" / "panel.js"
         return FileResponse(
-            js_path,
-            media_type="application/javascript"
+            self.plugin_dir / "static" / "panel.js",
+            media_type="application/javascript",
         )
     
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router for web UI."""
-        # Get schema from server if available
         schema = self.server.get_schema_data() if self.server and hasattr(self.server, 'get_schema_data') else {}
-        
-        # Generate router from schema
         return create_schema_router(
             plugin_name=self.name,
             schema=schema,
-            handler_class=self
+            handler_class=self,
         )
 

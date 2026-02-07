@@ -1,51 +1,137 @@
-<div class="message-debugger-panel">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Message Debugger</title>
     <link rel="stylesheet" href="/static/css/scrollbar.css">
     <link rel="stylesheet" href="/plugins/message_debugger/static/panel.css">
-    
-    <div class="debugger-header">
-        <div class="debugger-title">🐛 Message Debugger</div>
-        <div class="debugger-controls">
-            <button class="debugger-btn" onclick="messageDebugger.refresh()" title="Refresh">
-                🔄
-            </button>
-            <button class="debugger-btn danger" onclick="messageDebugger.clearHistory()" title="Clear History">
-                🗑️
-            </button>
-            <button class="debugger-btn" id="auto-refresh-btn" onclick="messageDebugger.toggleAutoRefresh()" title="Auto-Refresh - Inactive">
-                ⏱️
-            </button>
+    <!-- Prism.js for JSON Syntax Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+</head>
+<body>
+<div class="container">
+    <!-- Header -->
+    <div class="header">
+        <h1>🐛 Message Debugger</h1>
+        <div class="header-actions">
+            <button class="icon-only" onclick="debugger_.refresh()" title="Refresh">🔄</button>
+            <button class="icon-only active" id="auto-refresh-btn" onclick="debugger_.toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">⏱️</button>
+            <button class="icon-only danger" onclick="debugger_.clearAll()" title="Clear All Data">🗑️</button>
         </div>
     </div>
-    
-    <div class="debugger-stats" id="stats-container">
-        <!-- Stats will be populated by JavaScript -->
+
+    <!-- Stats -->
+    <div class="stats-grid" id="stats-container"></div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <button class="tab active" data-tab="turns" onclick="debugger_.switchTab('turns')">
+            📋 Turns <span class="tab-count" id="turns-count"></span>
+        </button>
+        <button class="tab" data-tab="llm-requests" onclick="debugger_.switchTab('llm-requests')">
+            🔌 LLM Requests <span class="tab-count" id="llm-requests-count"></span>
+        </button>
     </div>
-    
-    <div class="debugger-filters">
-        <div class="filter-group">
-            <label class="filter-label">Agent Name</label>
-            <select class="filter-input" id="filter-agent" onchange="messageDebugger.applyFilters()">
-                <option value="">All Agents</option>
-            </select>
+
+    <!-- Content -->
+    <div class="content">
+        <!-- Turns Tab -->
+        <div class="tab-content active" id="tab-turns">
+            <div class="filters">
+                <div class="filter-group">
+                    <label>Agent</label>
+                    <select id="turns-filter-agent" onchange="debugger_.loadTurns()">
+                        <option value="">All Agents</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Session</label>
+                    <select id="turns-filter-session" onchange="debugger_.loadTurns()">
+                        <option value="">All Sessions</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Type</label>
+                    <select id="turns-filter-type" onchange="debugger_.loadTurns()">
+                        <option value="">All Types</option>
+                        <option value="pre_llm">Pre-LLM</option>
+                        <option value="post_llm">Post-LLM</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Limit</label>
+                    <input type="number" id="turns-filter-limit" value="50" min="1" max="500" onchange="debugger_.loadTurns()">
+                </div>
+            </div>
+            <div id="turns-list" class="items-list">
+                <div class="loading"><div class="spinner"></div>Loading...</div>
+            </div>
         </div>
-        <div class="filter-group">
-            <label class="filter-label">Session ID</label>
-            <select class="filter-input" id="filter-session" onchange="messageDebugger.applyFilters()">
-                <option value="">All Sessions</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label class="filter-label">Max Results</label>
-            <input type="number" class="filter-input" id="filter-limit" value="50" min="1" max="500" onchange="messageDebugger.applyFilters()">
+
+        <!-- LLM Requests Tab -->
+        <div class="tab-content" id="tab-llm-requests">
+            <div class="filters">
+                <div class="filter-group">
+                    <label>Agent</label>
+                    <select id="req-filter-agent" onchange="debugger_.loadRequests()">
+                        <option value="">All Agents</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Provider</label>
+                    <select id="req-filter-provider" onchange="debugger_.loadRequests()">
+                        <option value="">All Providers</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Direction</label>
+                    <select id="req-filter-direction" onchange="debugger_.loadRequests()">
+                        <option value="">All</option>
+                        <option value="request">Request →</option>
+                        <option value="response">← Response</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Limit</label>
+                    <input type="number" id="req-filter-limit" value="50" min="1" max="500" onchange="debugger_.loadRequests()">
+                </div>
+            </div>
+            <div id="requests-list" class="items-list">
+                <div class="loading"><div class="spinner"></div>Loading...</div>
+            </div>
         </div>
     </div>
-    
-    <div class="snapshots-list" id="snapshots-container">
-        <div class="loading">
-            <div class="spinner"></div>
-            <div>Loading message snapshots...</div>
+
+    <!-- Detail Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="debugger_.closeModal()">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2 id="modal-title">Detail</h2>
+                <button class="modal-close" onclick="debugger_.closeModal()">✕</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
         </div>
     </div>
-    
-    <script src="/plugins/message_debugger/static/panel.js"></script>
+
+    <!-- Confirmation Modal -->
+    <div class="modal-overlay" id="confirm-overlay" onclick="debugger_.closeConfirm(false)">
+        <div class="confirm-modal" onclick="event.stopPropagation()">
+            <div class="confirm-header">
+                <h3>⚠️ Confirm Action</h3>
+            </div>
+            <div class="confirm-body" id="confirm-message"></div>
+            <div class="confirm-actions">
+                <button onclick="debugger_.closeConfirm(false)">Cancel</button>
+                <button class="danger" onclick="debugger_.closeConfirm(true)">Confirm</button>
+            </div>
+        </div>
+    </div>
 </div>
+
+<!-- Prism.js for JSON Syntax Highlighting -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="/plugins/message_debugger/static/panel.js"></script>
+</body>
+</html>

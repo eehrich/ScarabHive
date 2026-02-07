@@ -236,6 +236,78 @@ class ChatMessage(BaseModel):
 class LLMClient:
     """Base class for LLM clients with streaming support."""
 
+    # Optional hook callbacks — set by the hook integration layer.
+    # These are invoked at the LLM-client level to capture exact API payloads.
+    _on_pre_llm_request: Any = None   # async callable(payload_info: dict) -> None
+    _on_post_llm_response: Any = None  # async callable(response_info: dict) -> None
+
+    def set_llm_hooks(
+        self,
+        on_pre_request: Any = None,
+        on_post_response: Any = None,
+    ) -> None:
+        """Set LLM-level hook callbacks.
+        
+        Called by the hook integration layer to wire up request/response logging.
+        
+        Args:
+            on_pre_request: Async callback(info_dict) called before each API request.
+            on_post_response: Async callback(info_dict) called after each API response.
+        """
+        self._on_pre_llm_request = on_pre_request
+        self._on_post_llm_response = on_post_response
+
+    async def _notify_pre_request(self, payload_info: Dict[str, Any]) -> None:
+        """Notify pre-request hook if set. Errors are swallowed to not break LLM calls."""
+        if self._on_pre_llm_request:
+            try:
+                await self._on_pre_llm_request(payload_info)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug(f"pre_llm_request hook error: {e}")
+
+    async def _notify_post_response(self, response_info: Dict[str, Any]) -> None:
+        """Notify post-response hook if set. Errors are swallowed to not break LLM calls."""
+        if self._on_post_llm_response:
+            try:
+                await self._on_post_llm_response(response_info)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug(f"post_llm_response hook error: {e}")
+
+    async def _notify_retry(
+        self,
+        provider: str,
+        model: str,
+        url: str,
+        is_streaming: bool,
+        error_msg: str,
+        attempt: int,
+        max_attempts: int,
+        duration_ms: Optional[float] = None,
+        response_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Notify post-response hook about a failed retry attempt.
+
+        Creates a POST_LLM_RESPONSE notification with error prefixed by retry
+        info, making intermediate failures visible in the message debugger.
+        """
+        import time as _time
+        info: Dict[str, Any] = {
+            "provider": provider,
+            "model": model,
+            "url": url,
+            "is_streaming": is_streaming,
+            "error": f"[RETRY {attempt + 1}/{max_attempts}] {error_msg}",
+            "finish_reason": "retry",
+            "timestamp_ms": _time.time() * 1000,
+        }
+        if duration_ms is not None:
+            info["duration_ms"] = duration_ms
+        if response_data is not None:
+            info["response_data"] = response_data
+        await self._notify_post_response(info)
+
     async def _cancellable_sleep(
         self,
         duration: float,

@@ -581,6 +581,22 @@ class GeminiSDKClient(LLMClient):
             except Exception as e:
                 logger.debug(f"Failed to report LLM status: {e}")
         
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        await self._notify_pre_request({
+            "provider": "gemini_sdk",
+            "model": self.model,
+            "url": "",
+            "payload": {
+                "contents_count": len(contents),
+                "has_tools": sdk_tools is not None,
+                "has_system": system_instruction is not None,
+            },
+            "is_streaming": True,
+            "timestamp_ms": _time.time() * 1000,
+        })
+        _request_start = _time.time()
+        
         last_exception = None
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
@@ -888,6 +904,7 @@ class GeminiSDKClient(LLMClient):
                             f"{len(accumulated_content)} content parts - likely thinking output). "
                             f"Retrying full request in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                         )
+                        await self._notify_retry("gemini_sdk", self.model, "", True, "MALFORMED_FUNCTION_CALL (no tool calls)", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset ALL accumulators for full retry
                         accumulated_content = []
@@ -922,6 +939,7 @@ class GeminiSDKClient(LLMClient):
                             f"having empty arguments ({empty_args_calls}). "
                             f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                         )
+                        await self._notify_retry("gemini_sdk", self.model, "", True, f"MALFORMED_FUNCTION_CALL (empty args: {empty_args_calls})", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset ALL accumulators for full retry
                         accumulated_content = []
@@ -956,6 +974,7 @@ class GeminiSDKClient(LLMClient):
                             f"{len(accumulated_content)} content parts - likely stuck in thinking). "
                             f"Will retry with thinking disabled (attempt {attempt + 1}/{self.max_retries + 1})"
                         )
+                        await self._notify_retry("gemini_sdk", self.model, "", True, "MAX_TOKENS (stuck in thinking)", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators for retry
                         accumulated_content = []
@@ -993,6 +1012,19 @@ class GeminiSDKClient(LLMClient):
                     final_result["usage"] = accumulated_usage
                 
                 logger.debug("[GeminiSDK] Yielding final result")
+                # Notify post-response hook with successful result
+                _duration_ms = (_time.time() - _request_start) * 1000
+                _finish = None
+                if accumulated_tool_calls:
+                    _finish = "tool_calls"
+                elif accumulated_content:
+                    _finish = "stop"
+                await self._notify_post_response({
+                    "provider": "gemini_sdk", "model": self.model, "url": "",
+                    "is_streaming": True, "duration_ms": _duration_ms,
+                    "usage": accumulated_usage, "finish_reason": _finish,
+                    "timestamp_ms": _time.time() * 1000,
+                })
                 yield {"type": "final", **final_result}
                 return  # Success
                 
@@ -1022,6 +1054,7 @@ class GeminiSDKClient(LLMClient):
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
                         await report_status(f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                        await self._notify_retry("gemini_sdk", self.model, "", True, f"Rate limited (429)", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators for retry
                         accumulated_content = []
@@ -1054,6 +1087,7 @@ class GeminiSDKClient(LLMClient):
                         f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                     )
                     await report_status(f"Schema error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("gemini_sdk", self.model, "", True, "Schema 'too many states' error", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators for retry
                     accumulated_content = []
@@ -1073,6 +1107,7 @@ class GeminiSDKClient(LLMClient):
                         f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                     )
                     await report_status(f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("gemini_sdk", self.model, "", True, "Server error (500 INTERNAL)", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators for retry
                     accumulated_content = []
@@ -1107,6 +1142,7 @@ class GeminiSDKClient(LLMClient):
                         f"Retrying WITHOUT mode=ANY in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                     )
                     await report_status(f"Mode=ANY failed, retry without: {self.model}")
+                    await self._notify_retry("gemini_sdk", self.model, "", True, "400 INVALID_ARGUMENT (mode=ANY)", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators AND disable mode=ANY for next retry
                     accumulated_content = []
@@ -1128,6 +1164,7 @@ class GeminiSDKClient(LLMClient):
                         f"(attempt {attempt + 1}/{self.max_retries + 1})"
                     )
                     await report_status(f"Error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("gemini_sdk", self.model, "", True, str(e), attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators for retry
                     accumulated_content = []
@@ -1177,6 +1214,22 @@ class GeminiSDKClient(LLMClient):
         
         system_instruction, contents = self._convert_messages_to_sdk(filtered_messages)
         sdk_tools = self._convert_tools_to_sdk(tools)
+        
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        await self._notify_pre_request({
+            "provider": "gemini_sdk",
+            "model": self.model,
+            "url": "",
+            "payload": {
+                "contents_count": len(contents),
+                "has_tools": sdk_tools is not None,
+                "has_system": system_instruction is not None,
+            },
+            "is_streaming": False,
+            "timestamp_ms": _time.time() * 1000,
+        })
+        _request_start = _time.time()
         
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -1289,6 +1342,16 @@ class GeminiSDKClient(LLMClient):
                 # Extract usage
                 usage = self._extract_usage(getattr(response, 'usage_metadata', None))
                 
+                # Notify post-response hook with successful result
+                _duration_ms = (_time.time() - _request_start) * 1000
+                _finish = "tool_calls" if tool_calls else "stop"
+                await self._notify_post_response({
+                    "provider": "gemini_sdk", "model": self.model, "url": "",
+                    "is_streaming": False, "duration_ms": _duration_ms,
+                    "usage": usage, "finish_reason": _finish,
+                    "timestamp_ms": _time.time() * 1000,
+                })
+                
                 return {"assistant": assistant, "usage": usage}
                 
             except asyncio.CancelledError:
@@ -1317,6 +1380,7 @@ class GeminiSDKClient(LLMClient):
                             f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
+                        await self._notify_retry("gemini_sdk", self.model, "", False, "Rate limited (429)", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
@@ -1340,6 +1404,7 @@ class GeminiSDKClient(LLMClient):
                         f"Retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
                     )
                     await report_status(f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("gemini_sdk", self.model, "", False, "Server error (500 INTERNAL)", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 
@@ -1352,6 +1417,7 @@ class GeminiSDKClient(LLMClient):
                         f"[GeminiSDK] Retrying in {wait_time}s "
                         f"(attempt {attempt + 1}/{self.max_retries + 1})"
                     )
+                    await self._notify_retry("gemini_sdk", self.model, "", False, str(e), attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 else:

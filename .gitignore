@@ -47,6 +47,7 @@ data/memories/
 data/workspace/
 data/writer/
 data/context_engineer/
+data/message_debugger/
 data/batch_jobs/
 data/batch/
 data/comfyui/

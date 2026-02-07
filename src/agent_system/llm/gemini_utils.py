@@ -956,22 +956,19 @@ def convert_openai_tools_to_gemini(tools: List[Dict[str, Any]]) -> List[Dict[str
 
 
 def sanitize_schema_for_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Remove JSON Schema keywords not supported by Gemini API.
+    """Remove JSON Schema keywords not supported by Gemini API and preserve
+    their semantics by appending constraint info to the description field.
     
     This is the canonical schema sanitization function used by all Gemini clients
     (SDK, HTTP, and Batch). It recursively processes schemas to remove unsupported
     constructs while preserving essential type information.
     
-    Gemini's Function Declaration schema doesn't support:
-    - oneOf, anyOf, allOf (JSON Schema composition) - flattened to first option
-    - $ref (references)
-    - additionalProperties (Gemini uses strict schemas)
-    - default (default values)
-    - examples
-    - $schema, $id (meta keywords)
-    - definitions, $defs (schema definitions)
-    - patternProperties, unevaluatedProperties
-    - if, then, else, not (conditional schemas)
+    Gemini's Function Declaration schema only supports:
+    - type, description, enum, properties, required, items, nullable
+    
+    Unsupported validation keywords (minimum, maximum, default, minLength, etc.)
+    are stripped but their values are appended to the description so the LLM
+    still knows about the constraints.
     
     Args:
         schema: JSON schema dict to sanitize
@@ -984,13 +981,54 @@ def sanitize_schema_for_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
     
     # Keywords that Gemini doesn't support at all
     unsupported_keywords = {
+        # Composition keywords
         "oneOf", "anyOf", "allOf", "$ref", 
-        "additionalProperties", "default", "examples",
+        # Meta keywords
         "$schema", "$id", "definitions", "$defs",
-        "patternProperties", "unevaluatedProperties",
+        "format", "title", "examples",
+        # Object constraints
+        "additionalProperties", "patternProperties", "unevaluatedProperties",
+        # Default values
+        "default",
+        # Conditional schemas
         "if", "then", "else", "not",
-        "format", "title",  # Also exclude for cleaner schemas
+        # Numeric constraints (NOT supported by Gemini)
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+        # String constraints (NOT supported by Gemini)
+        "minLength", "maxLength", "pattern", "contentMediaType", "contentEncoding",
+        # Array constraints (NOT supported by Gemini)
+        "minItems", "maxItems", "uniqueItems",
+        # Other unsupported
+        "const", "readOnly", "writeOnly", "deprecated",
     }
+    
+    # Keywords whose values should be appended to description when stripped
+    _CONSTRAINT_LABELS: Dict[str, str] = {
+        "minimum": "min",
+        "maximum": "max",
+        "exclusiveMinimum": "exclusive min",
+        "exclusiveMaximum": "exclusive max",
+        "minLength": "min length",
+        "maxLength": "max length",
+        "minItems": "min items",
+        "maxItems": "max items",
+        "default": "default",
+        "const": "must be",
+        "pattern": "pattern",
+        "multipleOf": "multiple of",
+        "uniqueItems": "unique items",
+    }
+    
+    # Collect constraint annotations to append to description
+    constraints: list[str] = []
+    for kw, label in _CONSTRAINT_LABELS.items():
+        if kw in schema:
+            val = schema[kw]
+            # uniqueItems is boolean
+            if kw == "uniqueItems" and val is True:
+                constraints.append(label)
+            elif kw != "uniqueItems":
+                constraints.append(f"{label}: {val}")
     
     result: Dict[str, Any] = {}
     
@@ -1018,6 +1056,16 @@ def sanitize_schema_for_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
             result[key] = sanitize_schema_for_gemini(value)
         else:
             result[key] = value
+    
+    # Append constraint info to description
+    if constraints:
+        constraint_str = ", ".join(constraints)
+        existing = result.get("description", "")
+        if existing:
+            # Avoid duplicating if constraints already mentioned
+            result["description"] = f"{existing} ({constraint_str})"
+        else:
+            result["description"] = f"({constraint_str})"
     
     return result
 

@@ -19,6 +19,7 @@ from agent_system.llm.clients import LLMClient
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.core.cancellation import CancellationToken
 from agent_system.llm import openai_utils
+from agent_system.llm.gemini_utils import sanitize_schema_for_gemini
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,15 @@ class HTTPXOpenAIClient(LLMClient):
         # OpenRouter requires "usage": {"include": true} for detailed usage (cached_tokens, cost)
         # Other APIs reject this parameter with 400 Bad Request
         self._is_openrouter = "openrouter.ai" in base_url.lower()
+        
+        # Detect Gemini models via OpenRouter — need tool schema sanitization.
+        # Gemini doesn't support certain JSON Schema keywords (additionalProperties,
+        # default, format, title, oneOf, anyOf, etc.) in function declarations.
+        # The native Gemini SDK client handles this via gemini_utils.sanitize_schema_for_gemini(),
+        # but when routed through OpenRouter's OpenAI-compatible API, schemas pass through raw.
+        self._is_gemini_via_openrouter = (
+            self._is_openrouter and "gemini" in model.lower()
+        )
 
         # Validate API type - HTTPX client only supports chat_completions
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
@@ -165,6 +175,77 @@ class HTTPXOpenAIClient(LLMClient):
             model_name=self.model,
             supports_audio=supports_audio
         )
+
+    # Fields accepted by the OpenAI Chat Completions API
+    # reasoning_content is used by DeepSeek/OpenAI o-series for chain-of-thought round-trip
+    _API_MESSAGE_FIELDS = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content"}
+
+    @staticmethod
+    def _sanitize_tool_calls(tool_calls: list) -> list:
+        """Strip non-standard fields from tool_calls.
+        
+        OpenRouter/Gemini may include extra fields like 'index' from the
+        streaming delta format in non-streaming responses. When these
+        contaminated tool_calls are re-sent to Gemini, they cause
+        MALFORMED_FUNCTION_CALL errors.
+        
+        Standard OpenAI tool_call fields: id, type, function
+        """
+        sanitized = []
+        for tc in tool_calls:
+            clean = {
+                "id": tc.get("id", ""),
+                "type": tc.get("type", "function"),
+                "function": tc.get("function", {})
+            }
+            # Preserve extra_content if present (Gemini thought_signature for round-trip)
+            if "extra_content" in tc:
+                clean["extra_content"] = tc["extra_content"]
+            sanitized.append(clean)
+        return sanitized
+
+    @staticmethod
+    def _sanitize_tools_for_gemini(tools: list) -> list:
+        """Sanitize tool schemas for Gemini models via OpenRouter.
+        
+        Gemini's Function Declaration schema doesn't support JSON Schema keywords
+        like additionalProperties, default, format, title, oneOf, anyOf, etc.
+        The native Gemini SDK client handles this via gemini_utils.sanitize_schema_for_gemini(),
+        but when routed through OpenRouter, schemas are passed through raw and cause
+        MALFORMED_FUNCTION_CALL errors — especially with complex nested schemas.
+        """
+        sanitized = []
+        for tool in tools:
+            if tool.get("type") != "function" or "function" not in tool:
+                sanitized.append(tool)
+                continue
+            func = tool["function"]
+            clean_tool = {
+                "type": "function",
+                "function": {
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                }
+            }
+            params = func.get("parameters", {})
+            if params:
+                clean_tool["function"]["parameters"] = sanitize_schema_for_gemini(params)
+            sanitized.append(clean_tool)
+        return sanitized
+
+    @classmethod
+    def _sanitize_message_for_api(cls, d: dict) -> dict:
+        """Keep only fields accepted by the OpenAI Chat Completions API.
+        
+        Strips internal BookKeeping fields like estimated_tokens, timestamp,
+        content_format, etc. that would cause errors with strict providers
+        like Gemini via OpenRouter.
+        """
+        clean = {k: v for k, v in d.items() if k in cls._API_MESSAGE_FIELDS}
+        # Sanitize tool_calls sub-structures too
+        if 'tool_calls' in clean and clean['tool_calls']:
+            clean['tool_calls'] = cls._sanitize_tool_calls(clean['tool_calls'])
+        return clean
 
     def _filter_audio_from_content(self, content: Any) -> Any:
         """Filter and normalize content for OpenAI API.
@@ -309,6 +390,8 @@ class HTTPXOpenAIClient(LLMClient):
                     # Filter out audio/video content - not supported by Chat Completions API
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
+                    # Whitelist only API-accepted fields, sanitize tool_calls
+                    d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     result.append(d)
                     
                     # Inject multimodal content as synthetic user message after tool response
@@ -320,6 +403,7 @@ class HTTPXOpenAIClient(LLMClient):
                     d = dict(msg)
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
+                    d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     result.append(d)
                 else:
                     result.append(dict(msg))
@@ -343,13 +427,31 @@ class HTTPXOpenAIClient(LLMClient):
             payload["max_tokens"] = self.max_tokens
 
         if tools:
-            payload["tools"] = tools
+            if self._is_gemini_via_openrouter:
+                payload["tools"] = self._sanitize_tools_for_gemini(tools)
+                logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (model={self.model})")
+            else:
+                payload["tools"] = tools
             payload["tool_choice"] = "auto"
-            if self.parallel_tool_calls:
+            # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
+            # OpenRouter may pass it through and confuse the Gemini backend.
+            if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
                 payload["parallel_tool_calls"] = True
         url = f"{self.base_url}/chat/completions"
 
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        await self._notify_pre_request({
+            "provider": "openai_httpx",
+            "model": self.model,
+            "url": url,
+            "payload": payload,
+            "is_streaming": False,
+            "timestamp_ms": _time.time() * 1000,
+        })
+
         # Retry logic with exponential backoff
+        _request_start = _time.time()
         last_exception = None
         for attempt in range(self.max_retries + 1):
             # Check cancellation before each attempt
@@ -375,11 +477,19 @@ class HTTPXOpenAIClient(LLMClient):
                             backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
                             logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                             await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                            await self._notify_retry("openai_httpx", self.model, url, False, "Rate limited (429)", attempt, self.max_retries + 1)
                             await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
                         # Retries exhausted - raise for fallback
                         error_text = response.text[:200] if response.text else ""
                         await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
+                        # Notify response hook on error
+                        _duration_ms = (_time.time() - _request_start) * 1000
+                        await self._notify_post_response({
+                            "provider": "openai_httpx", "model": self.model, "url": url,
+                            "is_streaming": False, "duration_ms": _duration_ms,
+                            "error": f"Rate limit: {error_text}", "timestamp_ms": _time.time() * 1000,
+                        })
                         if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                             raise LLMQuotaExhaustedError(
                                 f"Quota exhausted: {error_text}",
@@ -395,6 +505,7 @@ class HTTPXOpenAIClient(LLMClient):
                         backoff_time = self.retry_backoff * (2 ** attempt)
                         logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
                         await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                        await self._notify_retry("openai_httpx", self.model, url, False, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
 
@@ -403,10 +514,47 @@ class HTTPXOpenAIClient(LLMClient):
                         error_text = response.text[:200] if response.text else ""
                         error_msg = f"HTTP {response.status_code}: {error_text}"
                         logger.error(f"HTTPX non-streaming request failed: {error_msg}")
+                        _duration_ms = (_time.time() - _request_start) * 1000
+                        await self._notify_post_response({
+                            "provider": "openai_httpx", "model": self.model, "url": url,
+                            "is_streaming": False, "duration_ms": _duration_ms,
+                            "error": error_msg, "timestamp_ms": _time.time() * 1000,
+                        })
                         raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                     # Parse successful response
                     response_data = response.json()
+
+                    # Detect Gemini MALFORMED_FUNCTION_CALL — a transient model error
+                    # where identical payloads can succeed or fail non-deterministically.
+                    # Retry instead of returning an empty response to the agent.
+                    if self._is_gemini_malformed_response(response_data) and attempt < self.max_retries:
+                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        logger.warning(
+                            f"Gemini MALFORMED_FUNCTION_CALL (transient), "
+                            f"retrying in {backoff_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                        )
+                        await self._report_status(
+                            status_scope,
+                            f"Gemini malformed response, retry {attempt + 1}/{self.max_retries}: {self.model}"
+                        )
+                        await self._notify_retry("openai_httpx", self.model, url, False, "MALFORMED_FUNCTION_CALL", attempt, self.max_retries + 1, response_data=response_data)
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
+                        continue
+
+                    # Notify post-response hook with successful response
+                    _duration_ms = (_time.time() - _request_start) * 1000
+                    _usage = response_data.get("usage")
+                    _finish = None
+                    if response_data.get("choices"):
+                        _finish = response_data["choices"][0].get("finish_reason")
+                    await self._notify_post_response({
+                        "provider": "openai_httpx", "model": self.model, "url": url,
+                        "is_streaming": False, "duration_ms": _duration_ms,
+                        "response_data": response_data,
+                        "usage": _usage, "finish_reason": _finish,
+                        "timestamp_ms": _time.time() * 1000,
+                    })
 
                     # Use centralized response formatting (handles usage, tool_calls, etc.)
                     return self._format_response(response_data)
@@ -421,6 +569,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying in {backoff_time}s")
                     await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("openai_httpx", self.model, url, False, str(e), attempt, self.max_retries + 1)
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                 else:
                     logger.error(f"Request failed after {self.max_retries + 1} attempts")
@@ -450,13 +599,12 @@ class HTTPXOpenAIClient(LLMClient):
             result = []
             for msg in messages:
                 if hasattr(msg, 'model_dump'):
-                    # ChatMessage object - convert to dict, exclude None values for API compatibility
                     d = msg.model_dump(exclude_none=True, mode='json')
-                    # Remove multimodal_content from serialized dict - it's processed separately
-                    d.pop('multimodal_content', None)
                     # Filter out audio/video content - not supported by Chat Completions API
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
+                    # Whitelist only API-accepted fields, sanitize tool_calls
+                    d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     result.append(d)
                     
                     # Inject multimodal content as synthetic user message after tool response
@@ -465,13 +613,12 @@ class HTTPXOpenAIClient(LLMClient):
                         if injection:
                             result.append(injection)
                 elif isinstance(msg, dict):
-                    # Already a dict - also filter audio
                     d = dict(msg)
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
+                    d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     result.append(d)
                 else:
-                    # Fallback - try to convert to dict
                     result.append(dict(msg))
             return result
         
@@ -494,20 +641,38 @@ class HTTPXOpenAIClient(LLMClient):
             payload["max_tokens"] = self.max_tokens
 
         if tools:
-            payload["tools"] = tools
+            if self._is_gemini_via_openrouter:
+                payload["tools"] = self._sanitize_tools_for_gemini(tools)
+                logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (streaming, model={self.model})")
+            else:
+                payload["tools"] = tools
             payload["tool_choice"] = "auto"
-            if self.parallel_tool_calls:
+            # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
+            if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
                 payload["parallel_tool_calls"] = True
 
         url = f"{self.base_url}/chat/completions"
+
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        await self._notify_pre_request({
+            "provider": "openai_httpx",
+            "model": self.model,
+            "url": url,
+            "payload": payload,
+            "is_streaming": True,
+            "timestamp_ms": _time.time() * 1000,
+        })
 
         # Accumulators for building complete response
         accumulated_content: list[str] = []
         accumulated_reasoning: list[str] = []  # For reasoning_content (DeepSeek, OpenAI o-series)
         accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
         accumulated_usage = None  # usage information from final chunk
+        _last_finish_reason: str | None = None  # Track finish_reason from chunks
 
         # Retry logic with exponential backoff
+        _streaming_request_start = _time.time()
         last_exception: Exception | None = None
         for attempt in range(self.max_retries + 1):
             # Check cancellation before each attempt
@@ -553,6 +718,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
                                 logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                                 await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                                await self._notify_retry("openai_httpx", self.model, url, True, "Rate limited (429)", attempt, self.max_retries + 1)
                                 await self._cancellable_sleep(backoff_time, cancellation_token)
                                 continue
                             # Retries exhausted - raise for fallback
@@ -574,6 +740,7 @@ class HTTPXOpenAIClient(LLMClient):
                             backoff_time = self.retry_backoff * (2 ** attempt)
                             logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
                             await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                            await self._notify_retry("openai_httpx", self.model, url, True, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
                             await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
 
@@ -645,6 +812,17 @@ class HTTPXOpenAIClient(LLMClient):
                                     if accumulated_usage:
                                         final_result["usage"] = accumulated_usage
 
+                                    # Notify post-response hook for streaming
+                                    _s_duration = (_time.time() - _streaming_request_start) * 1000
+                                    await self._notify_post_response({
+                                        "provider": "openai_httpx", "model": self.model,
+                                        "url": url, "is_streaming": True,
+                                        "duration_ms": _s_duration,
+                                        "usage": accumulated_usage,
+                                        "finish_reason": _last_finish_reason,
+                                        "timestamp_ms": _time.time() * 1000,
+                                    })
+
                                     yield {"type": "final", **final_result}
                                     return  # Success - exit retry loop
 
@@ -665,6 +843,11 @@ class HTTPXOpenAIClient(LLMClient):
 
                                 choice = choices[0]
                                 delta = choice.get("delta", {})
+
+                                # Track finish_reason from chunks
+                                _fr = choice.get("finish_reason")
+                                if _fr:
+                                    _last_finish_reason = _fr
 
                                 # Handle reasoning_content delta (DeepSeek, OpenAI o-series thinking)
                                 # This comes BEFORE the actual content in thinking models
@@ -740,6 +923,14 @@ class HTTPXOpenAIClient(LLMClient):
                                     final_result = {"assistant": assistant}
                                     if accumulated_usage:
                                         final_result["usage"] = accumulated_usage
+                                    _s_duration = (_time.time() - _streaming_request_start) * 1000
+                                    await self._notify_post_response({
+                                        "provider": "openai_httpx", "model": self.model,
+                                        "url": url, "is_streaming": True,
+                                        "duration_ms": _s_duration, "usage": accumulated_usage,
+                                        "finish_reason": _last_finish_reason,
+                                        "timestamp_ms": _time.time() * 1000,
+                                    })
                                     yield {"type": "final", **final_result}
                                     return
                                 # Try to parse remaining JSON chunks
@@ -772,6 +963,14 @@ class HTTPXOpenAIClient(LLMClient):
                         final_result = {"assistant": assistant}
                         if accumulated_usage:
                             final_result["usage"] = accumulated_usage
+                        _s_duration = (_time.time() - _streaming_request_start) * 1000
+                        await self._notify_post_response({
+                            "provider": "openai_httpx", "model": self.model,
+                            "url": url, "is_streaming": True,
+                            "duration_ms": _s_duration, "usage": accumulated_usage,
+                            "finish_reason": _last_finish_reason,
+                            "timestamp_ms": _time.time() * 1000,
+                        })
                         yield {"type": "final", **final_result}
                         return  # Success - exit retry loop
                 finally:
@@ -800,6 +999,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
                     await self._report_status(status_scope, f"Timeout, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("openai_httpx", self.model, url, True, f"Timeout: {e}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
@@ -814,6 +1014,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
                     await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("openai_httpx", self.model, url, True, f"Server error ({e.response.status_code})", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
@@ -830,6 +1031,7 @@ class HTTPXOpenAIClient(LLMClient):
                     backoff_time = self.retry_backoff * (2 ** attempt)
                     logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")
                     await self._report_status(status_scope, f"Network error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    await self._notify_retry("openai_httpx", self.model, url, True, f"Network error: {e}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:
@@ -868,9 +1070,14 @@ class HTTPXOpenAIClient(LLMClient):
         }
 
         if tools:
-            payload["tools"] = tools
+            if self._is_gemini_via_openrouter:
+                payload["tools"] = self._sanitize_tools_for_gemini(tools)
+                logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (non-streaming-fallback, model={self.model})")
+            else:
+                payload["tools"] = tools
             payload["tool_choice"] = "auto"
-            if self.parallel_tool_calls:
+            # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
+            if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
                 payload["parallel_tool_calls"] = True
 
         url = f"{self.base_url}/chat/completions"
@@ -994,6 +1201,37 @@ class HTTPXOpenAIClient(LLMClient):
 
         return f"HTTP {response.status_code}: {response.text[:200]}"
 
+    def _is_gemini_malformed_response(self, response_data: dict) -> bool:
+        """Check if a Gemini response contains a MALFORMED_FUNCTION_CALL error.
+
+        This is a transient, non-deterministic Gemini model error where the model
+        fails to generate valid function call JSON. Identical payloads can succeed
+        or fail randomly. The response comes as HTTP 200 with finish_reason="error"
+        and native_finish_reason="MALFORMED_FUNCTION_CALL", with no usable content
+        or tool_calls.
+
+        Returns True only when the response is truly unusable (no tool_calls present).
+        If tool_calls ARE present despite the error, returns False so they can be used.
+        """
+        if not self._is_gemini_via_openrouter:
+            return False
+
+        choices = response_data.get("choices", [])
+        if not choices:
+            return False
+
+        choice = choices[0]
+        native_reason = choice.get("native_finish_reason", "")
+        if native_reason != "MALFORMED_FUNCTION_CALL":
+            return False
+
+        # If tool_calls are present despite the error, they're usually usable
+        message = choice.get("message", {})
+        if message.get("tool_calls"):
+            return False
+
+        return True
+
     def _format_response(self, response_data: dict) -> dict:
         """Format OpenAI API response to our standard format."""
         try:
@@ -1006,6 +1244,35 @@ class HTTPXOpenAIClient(LLMClient):
             choice = choices[0]
             message = choice.get("message", {})
 
+            # Log finish_reason for debugging (Gemini MALFORMED_FUNCTION_CALL shows up here)
+            finish_reason = choice.get("finish_reason")
+            tool_calls = message.get("tool_calls")
+
+            if finish_reason and finish_reason not in ("stop", "tool_calls", "end_turn"):
+                # Gemini sometimes returns MALFORMED_FUNCTION_CALL but still includes
+                # valid tool_calls in the response. This is a known Gemini output bug
+                # where the model partially fails to generate one of several function
+                # calls. If we got usable tool_calls, log at debug and continue normally.
+                native_reason = choice.get("native_finish_reason", "")
+                if tool_calls:
+                    tc_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+                    logger.debug(
+                        f"Non-standard finish_reason '{finish_reason}' "
+                        f"(native: {native_reason}) but {len(tool_calls)} tool_calls "
+                        f"present — using them (model={self.model}): {tc_names}"
+                    )
+                else:
+                    logger.warning(
+                        f"Non-standard finish_reason: {finish_reason} "
+                        f"(native: {native_reason}, model={self.model})"
+                    )
+                    import json as _json
+                    try:
+                        choice_str = _json.dumps(choice, ensure_ascii=False, default=str)[:2000]
+                        logger.warning(f"Error response choice data: {choice_str}")
+                    except Exception:
+                        logger.warning(f"Error response choice (raw): {choice}")
+
             # Build assistant response
             assistant = {
                 "role": "assistant",
@@ -1017,10 +1284,10 @@ class HTTPXOpenAIClient(LLMClient):
             if reasoning_content:
                 assistant["reasoning_content"] = reasoning_content
 
-            # Add tool calls if present
-            tool_calls = message.get("tool_calls")
+            # Add tool calls if present — sanitize to standard fields only.
+            # Note: tool_calls was already extracted above for finish_reason handling.
             if tool_calls:
-                assistant["tool_calls"] = tool_calls
+                assistant["tool_calls"] = HTTPXOpenAIClient._sanitize_tool_calls(tool_calls)
 
             # Track usage if available
             usage = response_data.get("usage", {})

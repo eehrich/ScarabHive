@@ -20,6 +20,26 @@ hooks:
       after: ["begin"]
       before: ["end"]
 
+  - name: debugger_capture_pre_request
+    type: pre_llm_request
+    enabled: true
+    timeout: 5.0
+    description: "Captures raw API request payload before sending to LLM provider"
+    category: "message_debugging"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
+  - name: debugger_capture_post_response
+    type: post_llm_response
+    enabled: true
+    timeout: 5.0
+    description: "Captures raw API response data after receiving from LLM provider"
+    category: "message_debugging"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
 # Configuration schema
 config:
   max_history_entries:
@@ -43,6 +63,16 @@ config:
     type: boolean
     default: true
     description: "Capture messages after LLM call (output)"
+  
+  capture_llm_requests:
+    type: boolean
+    default: true
+    description: "Capture raw LLM API requests and responses"
+
+  db_path:
+    type: string
+    default: ""
+    description: "Path to SQLite database file (default: data/message_debugger/debugger.db)"
   
   include_tool_calls:
     type: boolean
@@ -68,38 +98,48 @@ web_ui:
     enabled: true
     text: "Message Debug"
     icon: "🔍"
-    tooltip: "View captured LLM messages (pre & post calls)"
+    tooltip: "View captured LLM messages and API requests"
   
   # Panel configuration
   panel:
     enabled: true
-    title: "Message Debugger - LLM Input/Output Snapshots"
+    title: "Message Debugger"
     panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
     type: "iframe"
-    description: "View captured message snapshots from before and after LLM calls"
+    description: "View captured message turns and raw API request/response logs"
   
   endpoints:
-    - path: "/snapshots"
+    - path: "/turns"
       method: "GET"
-      handler: "list_snapshots"
+      handler: "list_turns"
       response_type: "json"
-      description: "Get list of captured message snapshots with filtering options"
-    - path: "/snapshots/{index}"
+      description: "List captured agent-level message turns"
+    - path: "/turns/{turn_id}"
       method: "GET"
-      handler: "get_snapshot"
+      handler: "get_turn"
       response_type: "json"
-      description: "Get specific snapshot by index"
+      description: "Get specific turn by ID"
+    - path: "/llm-requests"
+      method: "GET"
+      handler: "list_llm_requests"
+      response_type: "json"
+      description: "List raw LLM API request/response logs"
+    - path: "/llm-requests/{request_id}"
+      method: "GET"
+      handler: "get_llm_request"
+      response_type: "json"
+      description: "Get specific LLM request by ID"
     - path: "/stats"
       method: "GET"
       handler: "get_stats"
       response_type: "json"
-      description: "Get debugger statistics (total captures, agent breakdown, etc.)"
-    - path: "/snapshots"
+      description: "Get debugger statistics"
+    - path: "/clear"
       method: "DELETE"
-      handler: "clear_snapshots"
+      handler: "clear_all"
       response_type: "json"
-      description: "Clear all captured snapshots"
+      description: "Clear all captured data"
     - path: "/"
       method: "GET"
       handler: "render_panel"

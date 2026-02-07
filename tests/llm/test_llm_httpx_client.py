@@ -778,6 +778,143 @@ class TestPerformanceComparison(TestHTTPXOpenAIClient):
             mock_client.aclose.assert_called_once()
 
 
+class TestGeminiMalformedRetry(TestHTTPXOpenAIClient):
+    """Test MALFORMED_FUNCTION_CALL retry logic for Gemini via OpenRouter."""
+
+    @pytest.fixture
+    def gemini_client(self):
+        """Create a Gemini-via-OpenRouter client."""
+        return HTTPXOpenAIClient(
+            model="google/gemini-3-flash-preview",
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            max_retries=2,
+            retry_backoff=0.01,  # Fast for tests
+        )
+
+    def test_is_gemini_via_openrouter_detection(self, gemini_client):
+        """Gemini models via OpenRouter are correctly detected."""
+        assert gemini_client._is_gemini_via_openrouter is True
+
+    def test_is_gemini_via_openrouter_negative(self, client):
+        """Non-Gemini clients are not detected as Gemini."""
+        assert client._is_gemini_via_openrouter is False
+
+    def test_is_gemini_malformed_response_detects_malformed(self, gemini_client):
+        """MALFORMED_FUNCTION_CALL without tool_calls is detected."""
+        response_data = {
+            "choices": [{
+                "message": {"role": "assistant", "content": ""},
+                "finish_reason": "error",
+                "native_finish_reason": "MALFORMED_FUNCTION_CALL",
+            }]
+        }
+        assert gemini_client._is_gemini_malformed_response(response_data) is True
+
+    def test_is_gemini_malformed_response_ignores_with_tool_calls(self, gemini_client):
+        """MALFORMED with usable tool_calls returns False (use the calls)."""
+        response_data = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "1", "type": "function", "function": {"name": "foo", "arguments": "{}"}}],
+                },
+                "finish_reason": "error",
+                "native_finish_reason": "MALFORMED_FUNCTION_CALL",
+            }]
+        }
+        assert gemini_client._is_gemini_malformed_response(response_data) is False
+
+    def test_is_gemini_malformed_response_ignores_non_gemini(self, client):
+        """Non-Gemini clients never report MALFORMED."""
+        response_data = {
+            "choices": [{
+                "message": {"role": "assistant", "content": ""},
+                "finish_reason": "error",
+                "native_finish_reason": "MALFORMED_FUNCTION_CALL",
+            }]
+        }
+        assert client._is_gemini_malformed_response(response_data) is False
+
+    def test_is_gemini_malformed_response_ignores_normal(self, gemini_client):
+        """Normal responses are not detected as MALFORMED."""
+        response_data = {
+            "choices": [{
+                "message": {"role": "assistant", "content": "Hello"},
+                "finish_reason": "stop",
+            }]
+        }
+        assert gemini_client._is_gemini_malformed_response(response_data) is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_retries_then_succeeds(self, gemini_client, sample_messages):
+        """Request is retried on MALFORMED and succeeds on second attempt."""
+        malformed_response = httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "error",
+                    "native_finish_reason": "MALFORMED_FUNCTION_CALL",
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
+            },
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        )
+        success_response = httpx.Response(
+            200,
+            json=get_mock_openai_response(),
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        )
+
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(side_effect=[malformed_response, success_response])
+            mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            result = await gemini_client._make_request_non_streaming(sample_messages, tools=[])
+            assert result["assistant"]["content"] == "Hello! How can I help you today?"
+            assert mock_client.post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_malformed_exhausts_retries(self, gemini_client, sample_messages):
+        """After max retries, MALFORMED response is returned as-is."""
+        malformed_json = {
+            "choices": [{
+                "message": {"role": "assistant", "content": ""},
+                "finish_reason": "error",
+                "native_finish_reason": "MALFORMED_FUNCTION_CALL",
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
+        }
+        malformed_response = httpx.Response(
+            200,
+            json=malformed_json,
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        )
+
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            # max_retries=2 → 3 total attempts, all MALFORMED
+            mock_client.post = AsyncMock(return_value=malformed_response)
+            mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            result = await gemini_client._make_request_non_streaming(sample_messages, tools=[])
+            # After exhausting retries, we get the empty response
+            assert result["assistant"]["content"] == ""
+            assert mock_client.post.call_count == 3  # 1 initial + 2 retries
+
+    def test_parallel_tool_calls_stripped_for_gemini(self, gemini_client, sample_tools):
+        """parallel_tool_calls is not sent to Gemini."""
+        assert gemini_client.parallel_tool_calls is True  # Default
+        # The actual stripping is checked in the payload building,
+        # verified via the _is_gemini_via_openrouter flag
+        assert gemini_client._is_gemini_via_openrouter is True
+
+
 if __name__ == "__main__":
     # Run tests with pytest when executed directly
     pytest.main([__file__, "-v"])

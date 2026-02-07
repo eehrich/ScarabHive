@@ -322,3 +322,25 @@ class SchemaBasedPluginHook(PluginHook):
                     context = result.context
 
         return self._merge_results(results, context)
+
+    async def on_pre_llm_request(self, context: HookContext) -> HookResult:
+        results = []
+        for hook in self._hooks:
+            if self._should_dispatch(hook, "PRE_LLM_REQUEST", context):
+                result = await self._dispatch_hook(hook["name"], context)
+                results.append(result)
+                if result.modified and result.context:
+                    context = result.context
+
+        return self._merge_results(results, context)
+
+    async def on_post_llm_response(self, context: HookContext) -> HookResult:
+        results = []
+        for hook in self._hooks:
+            if self._should_dispatch(hook, "POST_LLM_RESPONSE", context):
+                result = await self._dispatch_hook(hook["name"], context)
+                results.append(result)
+                if result.modified and result.context:
+                    context = result.context
+
+        return self._merge_results(results, context)

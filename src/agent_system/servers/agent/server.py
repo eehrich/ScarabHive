@@ -242,6 +242,10 @@ class Agent(MCPServer):
         from .components.hook_integration import HookIntegrationManager
         self._hook_manager = HookIntegrationManager(self)
         
+        # Wire LLM-client-level hooks (pre_llm_request / post_llm_response)
+        if self.llm is not None:
+            self._hook_manager.wire_llm_hooks(self.llm)
+        
         # Initialize tool call loop detector to prevent infinite tool loops
         # Especially important for Gemini which tends to get stuck
         # Read config from agent_config.loop_detection
@@ -848,6 +852,11 @@ class Agent(MCPServer):
         # Fixes race condition where status_scope generates events before forwarder is ready
         status_forwarder = StatusEventForwarder()
         await status_forwarder.start_forwarding(request_id)
+
+        # Wire LLM hooks to llm_override if provided (per-request LLM clients
+        # won't have hooks from __init__ since they are freshly created)
+        if llm_override is not None and self._hook_manager:
+            self._hook_manager.wire_llm_hooks(llm_override)
         
         try:
             # Pass status_scope parameters to _run_events which will open them AFTER

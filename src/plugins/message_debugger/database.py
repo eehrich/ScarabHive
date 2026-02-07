@@ -1,0 +1,411 @@
+"""Message Debugger Plugin - SQLite database storage.
+
+Persistent storage for LLM conversation turns and raw API request/response logs.
+Uses SQLite with WAL mode for concurrent read/write access.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class MessageDebuggerDB:
+    """SQLite-backed storage for message debugger data.
+    
+    Tables:
+    - turns: Agent-level message snapshots (pre_llm / post_llm)
+    - llm_requests: LLM-client-level raw API request/response logs
+    """
+    
+    def __init__(self, db_path: str | Path, wal_mode: bool = True):
+        """Initialize database.
+        
+        Args:
+            db_path: Path to SQLite database file
+            wal_mode: Enable WAL mode for concurrent access (default True)
+        """
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._wal_mode = wal_mode
+        self._local = threading.local()
+        
+        # Initialize schema
+        self._init_schema()
+        logger.info(f"MessageDebuggerDB initialized: {self.db_path}")
+    
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get thread-local database connection."""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            self._local.conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+                timeout=10.0
+            )
+            self._local.conn.row_factory = sqlite3.Row
+            if self._wal_mode:
+                self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA foreign_keys=ON")
+        return self._local.conn
+    
+    def _init_schema(self) -> None:
+        """Create tables if they don't exist."""
+        conn = self._get_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms REAL NOT NULL,
+                snapshot_type TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                step INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                context_window INTEGER,
+                messages_json TEXT,
+                llm_response_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            
+            CREATE TABLE IF NOT EXISTS llm_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms REAL NOT NULL,
+                direction TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                url TEXT DEFAULT '',
+                is_streaming INTEGER DEFAULT 0,
+                payload_json TEXT,
+                response_json TEXT,
+                error TEXT,
+                duration_ms REAL,
+                usage_json TEXT,
+                finish_reason TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_turns_agent ON turns(agent_name);
+            CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
+            CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp_ms);
+            CREATE INDEX IF NOT EXISTS idx_turns_type ON turns(snapshot_type);
+            
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_agent ON llm_requests(agent_name);
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_session ON llm_requests(session_id);
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_timestamp ON llm_requests(timestamp_ms);
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_direction ON llm_requests(direction);
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_provider ON llm_requests(provider);
+        """)
+        conn.commit()
+    
+    # ---- Turn operations ----
+    
+    def insert_turn(
+        self,
+        timestamp_ms: float,
+        snapshot_type: str,
+        agent_name: str = '',
+        request_id: str = '',
+        session_id: str = '',
+        step: int = 0,
+        message_count: int = 0,
+        total_tokens: int = 0,
+        context_window: Optional[int] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        llm_response: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Insert a conversation turn snapshot.
+        
+        Returns:
+            Row ID of inserted turn
+        """
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """INSERT INTO turns 
+               (timestamp_ms, snapshot_type, agent_name, request_id, session_id,
+                step, message_count, total_tokens, context_window,
+                messages_json, llm_response_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                timestamp_ms,
+                snapshot_type,
+                agent_name,
+                request_id,
+                session_id,
+                step,
+                message_count,
+                total_tokens,
+                context_window,
+                json.dumps(messages, default=str) if messages else None,
+                json.dumps(llm_response, default=str) if llm_response else None,
+            )
+        )
+        conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+    
+    def get_turns(
+        self,
+        agent_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        snapshot_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Query turns with optional filters."""
+        conn = self._get_conn()
+        query = "SELECT * FROM turns WHERE 1=1"
+        params: list = []
+        
+        if agent_name:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if snapshot_type:
+            query += " AND snapshot_type = ?"
+            params.append(snapshot_type)
+        
+        query += " ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        rows = conn.execute(query, params).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+    
+    def get_turn(self, turn_id: int) -> Optional[Dict[str, Any]]:
+        """Get a specific turn by ID."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM turns WHERE id = ?", (turn_id,)).fetchone()
+        return self._row_to_dict(row) if row else None
+    
+    def count_turns(
+        self,
+        agent_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> int:
+        """Count turns with optional filters."""
+        conn = self._get_conn()
+        query = "SELECT COUNT(*) FROM turns WHERE 1=1"
+        params: list = []
+        if agent_name:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        return conn.execute(query, params).fetchone()[0]
+    
+    # ---- LLM Request operations ----
+    
+    def insert_llm_request(
+        self,
+        timestamp_ms: float,
+        direction: str,  # 'request' or 'response'
+        agent_name: str = '',
+        request_id: str = '',
+        session_id: str = '',
+        provider: str = '',
+        model: str = '',
+        url: str = '',
+        is_streaming: bool = False,
+        payload: Optional[Dict[str, Any]] = None,
+        response_data: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        duration_ms: Optional[float] = None,
+        usage: Optional[Dict[str, Any]] = None,
+        finish_reason: Optional[str] = None,
+    ) -> int:
+        """Insert an LLM API request or response log entry.
+        
+        Returns:
+            Row ID of inserted entry
+        """
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """INSERT INTO llm_requests
+               (timestamp_ms, direction, agent_name, request_id, session_id,
+                provider, model, url, is_streaming,
+                payload_json, response_json, error, duration_ms,
+                usage_json, finish_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                timestamp_ms,
+                direction,
+                agent_name,
+                request_id,
+                session_id,
+                provider,
+                model,
+                url,
+                1 if is_streaming else 0,
+                json.dumps(payload, default=str) if payload else None,
+                json.dumps(response_data, default=str) if response_data else None,
+                error,
+                duration_ms,
+                json.dumps(usage, default=str) if usage else None,
+                finish_reason,
+            )
+        )
+        conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+    
+    def get_llm_requests(
+        self,
+        agent_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        direction: Optional[str] = None,
+        provider: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Query LLM request logs with optional filters."""
+        conn = self._get_conn()
+        query = "SELECT * FROM llm_requests WHERE 1=1"
+        params: list = []
+        
+        if agent_name:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if direction:
+            query += " AND direction = ?"
+            params.append(direction)
+        if provider:
+            query += " AND provider = ?"
+            params.append(provider)
+        
+        query += " ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        rows = conn.execute(query, params).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+    
+    def get_llm_request(self, req_id: int) -> Optional[Dict[str, Any]]:
+        """Get a specific LLM request by ID."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM llm_requests WHERE id = ?", (req_id,)).fetchone()
+        return self._row_to_dict(row) if row else None
+    
+    def count_llm_requests(
+        self,
+        agent_name: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> int:
+        """Count LLM request logs."""
+        conn = self._get_conn()
+        query = "SELECT COUNT(*) FROM llm_requests WHERE 1=1"
+        params: list = []
+        if agent_name:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        if provider:
+            query += " AND provider = ?"
+            params.append(provider)
+        return conn.execute(query, params).fetchone()[0]
+    
+    # ---- Stats ----
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get overall statistics."""
+        conn = self._get_conn()
+        
+        turn_count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+        request_count = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
+        
+        agents = [r[0] for r in conn.execute(
+            "SELECT DISTINCT agent_name FROM turns WHERE agent_name != '' "
+            "UNION SELECT DISTINCT agent_name FROM llm_requests WHERE agent_name != ''"
+        ).fetchall()]
+        
+        sessions = [r[0] for r in conn.execute(
+            "SELECT DISTINCT session_id FROM turns WHERE session_id != '' "
+            "UNION SELECT DISTINCT session_id FROM llm_requests WHERE session_id != ''"
+        ).fetchall()]
+        
+        providers = [r[0] for r in conn.execute(
+            "SELECT DISTINCT provider FROM llm_requests WHERE provider != ''"
+        ).fetchall()]
+        
+        total_tokens = conn.execute(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM turns"
+        ).fetchone()[0]
+        
+        total_duration = conn.execute(
+            "SELECT COALESCE(SUM(duration_ms), 0) FROM llm_requests WHERE direction='response'"
+        ).fetchone()[0]
+        
+        error_count = conn.execute(
+            "SELECT COUNT(*) FROM llm_requests WHERE error IS NOT NULL AND error != ''"
+        ).fetchone()[0]
+        
+        return {
+            "total_turns": turn_count,
+            "total_llm_requests": request_count,
+            "unique_agents": sorted(agents),
+            "unique_sessions": sorted(sessions),
+            "unique_providers": sorted(providers),
+            "total_tokens": total_tokens,
+            "total_duration_ms": total_duration,
+            "error_count": error_count,
+        }
+    
+    # ---- Maintenance ----
+    
+    def clear_all(self) -> Dict[str, int]:
+        """Clear all data. Returns counts of deleted rows."""
+        conn = self._get_conn()
+        turns = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+        requests = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
+        conn.execute("DELETE FROM turns")
+        conn.execute("DELETE FROM llm_requests")
+        conn.commit()
+        return {"turns_deleted": turns, "requests_deleted": requests}
+    
+    def clear_older_than(self, hours: float = 24) -> Dict[str, int]:
+        """Clear entries older than specified hours."""
+        conn = self._get_conn()
+        cutoff_ms = (time.time() - hours * 3600) * 1000
+        turns = conn.execute(
+            "DELETE FROM turns WHERE timestamp_ms < ?", (cutoff_ms,)
+        ).rowcount
+        requests = conn.execute(
+            "DELETE FROM llm_requests WHERE timestamp_ms < ?", (cutoff_ms,)
+        ).rowcount
+        conn.commit()
+        return {"turns_deleted": turns, "requests_deleted": requests}
+    
+    def vacuum(self) -> None:
+        """Reclaim disk space after deletions."""
+        conn = self._get_conn()
+        conn.execute("VACUUM")
+    
+    def close(self) -> None:
+        """Close the database connection."""
+        if hasattr(self._local, 'conn') and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None
+    
+    # ---- Helpers ----
+    
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        """Convert a sqlite3.Row to a dict, parsing JSON columns."""
+        d = dict(row)
+        for key in ('messages_json', 'llm_response_json', 'payload_json', 'response_json', 'usage_json'):
+            if key in d and d[key]:
+                try:
+                    d[key] = json.loads(d[key])
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Keep as string
+        return d

@@ -1758,12 +1758,14 @@ class TestSchemaSanitization:
         assert result["properties"]["count"]["type"] == "integer"
     
     def test_sanitize_preserves_valid_keywords(self):
-        """Test that valid JSON Schema keywords are preserved."""
+        """Test that valid Gemini-supported JSON Schema keywords are preserved
+        and unsupported keywords like minimum are stripped."""
         schema = {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "A name"},
                 "age": {"type": "integer", "minimum": 0},
+                "tags": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["name"]
         }
@@ -1774,7 +1776,11 @@ class TestSchemaSanitization:
         assert result["required"] == ["name"]
         assert result["properties"]["name"]["type"] == "string"
         assert result["properties"]["name"]["description"] == "A name"
-        assert result["properties"]["age"]["minimum"] == 0
+        # minimum is NOT supported by Gemini — must be stripped
+        assert "minimum" not in result["properties"]["age"]
+        assert result["properties"]["age"]["type"] == "integer"
+        # array items should be preserved
+        assert result["properties"]["tags"]["items"]["type"] == "string"
 
 
 class TestSDKToolConversion:

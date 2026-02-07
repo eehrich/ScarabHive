@@ -7,6 +7,7 @@ Provides centralized hook execution at agent lifecycle points.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ....hooks import get_hook_registry, HookContext, HookType
@@ -71,6 +72,87 @@ class HookIntegrationManager:
         
         # No override - use global enabled state from metadata
         return default_enabled
+    
+    def wire_llm_hooks(self, llm_client: Any) -> None:
+        """Wire LLM-client-level hooks to the given LLM client.
+        
+        Sets up callback functions on the LLM client that fire
+        PRE_LLM_REQUEST and POST_LLM_RESPONSE hooks through the registry.
+        This captures the exact API payloads sent/received at the transport level.
+        
+        Args:
+            llm_client: An LLMClient instance to wire hooks into
+        """
+        if not self.is_enabled():
+            return
+        if llm_client is None:
+            return
+        if not hasattr(llm_client, 'set_llm_hooks'):
+            logger.debug(f"LLM client {type(llm_client).__name__} does not support hooks")
+            return
+        
+        agent_ref = self.agent
+        registry = self.registry
+        hook_filter = self.is_hook_enabled
+        
+        async def _on_pre_request(info: Dict[str, Any]) -> None:
+            """Callback invoked by LLM client before API request."""
+            try:
+                # Get current request_id from context var
+                from ....mcp.status import current_request_id
+                req_id = current_request_id.get('') or ''
+                context = HookContext(
+                    hook_type=HookType.PRE_LLM_REQUEST,
+                    request_id=req_id,
+                    session_id='',
+                    agent=agent_ref,
+                    agent_name=agent_ref.name if agent_ref else '',
+                    llm_request_payload=info.get("payload"),
+                    llm_provider=info.get("provider"),
+                    llm_model=info.get("model"),
+                    llm_request_url=info.get("url"),
+                    llm_is_streaming=info.get("is_streaming", False),
+                    metadata={"timestamp_ms": info.get("timestamp_ms", time.time() * 1000)},
+                )
+                await registry.execute_hooks(
+                    HookType.PRE_LLM_REQUEST, context, hook_filter=hook_filter
+                )
+            except Exception as e:
+                logger.debug(f"pre_llm_request hook error: {e}")
+        
+        async def _on_post_response(info: Dict[str, Any]) -> None:
+            """Callback invoked by LLM client after API response."""
+            try:
+                from ....mcp.status import current_request_id
+                req_id = current_request_id.get('') or ''
+                context = HookContext(
+                    hook_type=HookType.POST_LLM_RESPONSE,
+                    request_id=req_id,
+                    session_id='',
+                    agent=agent_ref,
+                    agent_name=agent_ref.name if agent_ref else '',
+                    llm_response_data=info.get("response_data"),
+                    llm_provider=info.get("provider"),
+                    llm_model=info.get("model"),
+                    llm_request_url=info.get("url"),
+                    llm_duration_ms=info.get("duration_ms"),
+                    llm_error=info.get("error"),
+                    llm_usage=info.get("usage"),
+                    llm_finish_reason=info.get("finish_reason"),
+                    llm_is_streaming=info.get("is_streaming", False),
+                    metadata={"timestamp_ms": info.get("timestamp_ms", time.time() * 1000)},
+                )
+                await registry.execute_hooks(
+                    HookType.POST_LLM_RESPONSE, context, hook_filter=hook_filter
+                )
+            except Exception as e:
+                logger.debug(f"post_llm_response hook error: {e}")
+        
+        llm_client.set_llm_hooks(
+            on_pre_request=_on_pre_request,
+            on_post_response=_on_post_response,
+        )
+        logger.debug(f"Wired LLM hooks to {type(llm_client).__name__}")
     
     async def execute_pre_llm_hooks(
         self,

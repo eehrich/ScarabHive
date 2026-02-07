@@ -2,22 +2,32 @@
 
 Hybrid plugin: Schema-based hooks + Web UI for viewing captured message snapshots.
 Hook implementations are in hooks.py, web endpoints in web_endpoints.py.
+Data stored in SQLite via database.py.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, TYPE_CHECKING
 
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
+from .database import MessageDebuggerDB
 from .hooks import MessageDebuggerPlugin
 from .web_endpoints import MessageDebuggerWebFactory
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
 
+logger = logging.getLogger(__name__)
+
 
 class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
-    """Hybrid plugin that provides both hooks and web capabilities."""
+    """Hybrid plugin that provides both hooks and web capabilities.
+    
+    Uses SQLite for persistent storage of:
+    - Agent-level message turns (pre/post LLM call)
+    - Raw LLM API requests and responses
+    """
     
     def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
         """Initialize with standard hybrid plugin signature."""
@@ -26,15 +36,39 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         
         plugin_dir = Path(__file__).parent
         
-        # Shared message history for both hooks and web UI (limited to prevent memory leak)
+        # Determine DB path from config
+        config = {}
+        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
+            config = mcp_config.config
+        
+        db_path = config.get('db_path', None)
+        if not db_path:
+            # Default: data/message_debugger/debugger.db
+            data_dir = Path('data') / 'message_debugger'
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = str(data_dir / 'debugger.db')
+        else:
+            # Ensure parent directory exists
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create SQLite database
+        self._db = MessageDebuggerDB(db_path)
+        logger.info(f"MessageDebugger DB initialized at: {db_path}")
+        
+        # Legacy list kept for backward compat (not actively used)
         self._message_history: List[Dict[str, Any]] = []
-        self._max_history_size = 500  # Keep last 500 messages
         
-        # Create hooks plugin with history tracking and config
-        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, message_history=self._message_history, mcp_config=mcp_config)
+        # Create hooks plugin with DB and config
+        self.hooks_plugin = MessageDebuggerPlugin(
+            plugin_dir, db=self._db,
+            message_history=self._message_history,
+            mcp_config=mcp_config,
+        )
         
-        # Create web UI factory with plugin name for dynamic routing
-        self.web_factory = MessageDebuggerWebFactory(self._message_history, name=name, server=self)
+        # Create web UI factory with DB for queries
+        self.web_factory = MessageDebuggerWebFactory(
+            db=self._db, name=name, server=self,
+        )
     
     # Hook interface - delegate to hooks plugin
     def get_hooks(self):

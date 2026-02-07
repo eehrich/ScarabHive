@@ -5,6 +5,7 @@ import json
 import asyncio
 import random
 import logging
+import time as _time
 import httpx
 
 from ..utils.id import short_id
@@ -103,6 +104,7 @@ class OpenAIAsyncClient(LLMClient):
         
         # OpenRouter requires "usage": {"include": true} for detailed usage (cached_tokens, cost)
         # Other APIs reject this parameter with 400 Bad Request
+        self._base_url = base_url or ""
         self._is_openrouter = base_url and "openrouter.ai" in base_url.lower() if base_url else False
 
     def _create_multimodal_injection(self, tool_msg: ChatMessage) -> Optional[dict]:
@@ -214,6 +216,7 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during rate limit backoff")
+                        await self._notify_retry("openai", self.model, self._base_url, False, "Rate limit (429)", attempt - 1, max_attempts)
                         await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     # Handle server errors (5xx) - retry with exponential backoff
@@ -222,6 +225,7 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during server error backoff")
+                        await self._notify_retry("openai", self.model, self._base_url, False, f"Server error ({status})", attempt - 1, max_attempts)
                         await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     if status == 400:
@@ -395,6 +399,13 @@ class OpenAIAsyncClient(LLMClient):
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff
             resp = None
+            _request_start = _time.time()
+
+            await self._notify_pre_request({
+                "provider": "openai", "model": self.model,
+                "url": self._base_url, "is_streaming": False,
+                "timestamp_ms": _request_start * 1000,
+            })
 
             def _parse_reset(val: Optional[str]) -> Optional[float]:
                 if not val:
@@ -460,6 +471,7 @@ class OpenAIAsyncClient(LLMClient):
                             logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise Exception("Request cancelled by user during rate limit backoff")
+                            await self._notify_retry("openai", self.model, self._base_url, False, "Rate limit (429)", attempt - 1, max_attempts)
                             await self._cancellable_sleep(wait, cancellation_token)
                             continue
                         # Retries exhausted - raise for fallback
@@ -481,6 +493,7 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user during server error backoff")
+                        await self._notify_retry("openai", self.model, self._base_url, False, f"Server error ({status})", attempt - 1, max_attempts)
                         await self._cancellable_sleep(wait, cancellation_token)
                         continue
                     if status == 400:
@@ -545,6 +558,20 @@ class OpenAIAsyncClient(LLMClient):
                     logger.debug("OpenAI response usage is None")
             else:
                 logger.debug("OpenAI response has no usage attribute")
+
+            # Notify post-response hook
+            _duration_ms = (_time.time() - _request_start) * 1000
+            _finish_reason = None
+            if choice:
+                _finish_reason = getattr(choice, "finish_reason", None)
+            await self._notify_post_response({
+                "provider": "openai", "model": self.model,
+                "url": self._base_url, "is_streaming": False,
+                "duration_ms": _duration_ms,
+                "usage": result.get("usage"),
+                "finish_reason": _finish_reason,
+                "timestamp_ms": _time.time() * 1000,
+            })
 
             return result
         except Exception as e:
@@ -755,6 +782,13 @@ class OpenAIAsyncClient(LLMClient):
         max_retries = 3
         retry_backoff = 1.0
 
+        _request_start = _time.time()
+        await self._notify_pre_request({
+            "provider": "openai", "model": self.model,
+            "url": self._base_url, "is_streaming": True,
+            "timestamp_ms": _request_start * 1000,
+        })
+
         for attempt in range(max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise Exception("Request cancelled by user")
@@ -894,6 +928,16 @@ class OpenAIAsyncClient(LLMClient):
                 if accumulated_usage:
                     final_result["usage"] = accumulated_usage
 
+                # Notify post-response hook
+                _duration_ms = (_time.time() - _request_start) * 1000
+                await self._notify_post_response({
+                    "provider": "openai", "model": self.model,
+                    "url": self._base_url, "is_streaming": True,
+                    "duration_ms": _duration_ms,
+                    "usage": accumulated_usage,
+                    "timestamp_ms": _time.time() * 1000,
+                })
+
                 yield {"type": "final", **final_result}
                 return  # Success - exit retry loop
 
@@ -902,6 +946,7 @@ class OpenAIAsyncClient(LLMClient):
                     backoff_time = retry_backoff * (2 ** attempt)
                     await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                     logger.warning(f"OpenAI stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
+                    await self._notify_retry("openai", self.model, self._base_url, True, f"Stream interrupted: {e}", attempt, max_retries + 1)
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                     # Reset accumulated state for retry
                     accumulated_content = []

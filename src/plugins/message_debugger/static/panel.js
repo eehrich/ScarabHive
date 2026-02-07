@@ -1,413 +1,543 @@
-const messageDebugger = {
+/* Message Debugger Panel - JavaScript */
+const debugger_ = {
     autoRefreshInterval: null,
-    autoRefreshEnabled: false,  // Track desired state (default: inactive)
-    expandedSnapshots: new Set(),
-    expandedMessages: new Set(),  // Track expanded messages (messageId = snapshotId_msgIndex)
-    snapshotFilters: {},  // Track filter state per snapshot: { snapshotId: { role: '', search: '' } }
-    
+    autoRefreshEnabled: false,
+    activeTab: 'turns',
+
+    // ---- Init ----
+    init() {
+        this.loadStats();
+        this.loadTurns();
+    },
+
+    // ---- Tab switching ----
+    switchTab(tab) {
+        this.activeTab = tab;
+        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+        document.querySelectorAll('.tab-content').forEach(tc => tc.classList.toggle('active', tc.id === 'tab-' + tab));
+        if (tab === 'turns') this.loadTurns();
+        else this.loadRequests();
+    },
+
+    // ---- Stats ----
     async loadStats() {
         try {
-            const response = await fetch('/plugins/message_debugger/stats');
-            const stats = await response.json();
-            
-            const container = document.getElementById('stats-container');
-            container.innerHTML = `
-                <div class="stat-card">
-                    <div class="stat-label">Total Snapshots</div>
-                    <div class="stat-value">${stats.total_snapshots}</div>
-                </div>
-                <div class="stat-card green">
-                    <div class="stat-label">Total Messages</div>
-                    <div class="stat-value">${stats.total_messages}</div>
-                </div>
-                <div class="stat-card orange">
-                    <div class="stat-label">Total Tokens</div>
-                    <div class="stat-value">${stats.total_tokens.toLocaleString()}</div>
-                </div>
-                <div class="stat-card blue">
-                    <div class="stat-label">Unique Sessions</div>
-                    <div class="stat-value">${stats.unique_sessions.length}</div>
-                </div>
+            const res = await fetch('/plugins/message_debugger/stats');
+            const s = await res.json();
+            document.getElementById('stats-container').innerHTML = `
+                <div class="stat-card"><h3>Turns</h3><div class="value">${s.total_turns}</div></div>
+                <div class="stat-card blue"><h3>LLM Requests</h3><div class="value">${s.total_llm_requests}</div></div>
+                <div class="stat-card orange"><h3>Total Tokens</h3><div class="value">${(s.total_tokens||0).toLocaleString()}</div></div>
+                <div class="stat-card purple"><h3>Total Duration</h3><div class="value">${this.fmtDuration(s.total_duration_ms)}</div></div>
+                <div class="stat-card"><h3>Sessions</h3><div class="value">${(s.unique_sessions||[]).length}</div></div>
+                <div class="stat-card red"><h3>Errors</h3><div class="value">${s.error_count||0}</div></div>
             `;
-            
-            // Update filter dropdowns
-            this.updateFilters(stats);
-        } catch (error) {
-            console.error('Failed to load stats:', error);
-        }
+            document.getElementById('turns-count').textContent = s.total_turns;
+            document.getElementById('llm-requests-count').textContent = s.total_llm_requests;
+            this.updateFilterDropdowns(s);
+        } catch (e) { console.error('Stats error:', e); }
     },
-    
-    updateFilters(stats) {
-        const agentSelect = document.getElementById('filter-agent');
-        const sessionSelect = document.getElementById('filter-session');
-        
-        // Update agent filter
-        const currentAgent = agentSelect.value;
-        agentSelect.innerHTML = '<option value="">All Agents</option>';
-        stats.unique_agents.forEach(agent => {
-            const option = document.createElement('option');
-            option.value = agent;
-            option.textContent = agent;
-            if (agent === currentAgent) option.selected = true;
-            agentSelect.appendChild(option);
-        });
-        
-        // Update session filter
-        const currentSession = sessionSelect.value;
-        sessionSelect.innerHTML = '<option value="">All Sessions</option>';
-        stats.unique_sessions.forEach(session => {
-            const option = document.createElement('option');
-            option.value = session;
-            option.textContent = session.substring(0, 12) + '...';
-            if (session === currentSession) option.selected = true;
-            sessionSelect.appendChild(option);
-        });
+
+    updateFilterDropdowns(s) {
+        const agents = s.unique_agents || [];
+        const sessions = s.unique_sessions || [];
+        const providers = s.unique_providers || [];
+
+        this._updateSelect('turns-filter-agent', agents, a => a);
+        this._updateSelect('turns-filter-session', sessions, s => s); // Show full session name
+        this._updateSelect('req-filter-agent', agents, a => a);
+        this._updateSelect('req-filter-provider', providers, p => p);
     },
-    
-    async loadSnapshots() {
-        const container = document.getElementById('snapshots-container');
-        const agentFilter = document.getElementById('filter-agent').value;
-        const sessionFilter = document.getElementById('filter-session').value;
-        const limit = document.getElementById('filter-limit').value;
-        
+
+    _updateSelect(id, items, labelFn) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const val = el.value;
+        const first = el.options[0]?.textContent || 'All';
+        el.innerHTML = `<option value="">${first}</option>` + items.map(i =>
+            `<option value="${this.esc(i)}" ${i===val?'selected':''}>${this.esc(labelFn(i))}</option>`
+        ).join('');
+    },
+
+    // ---- Turns ----
+    async loadTurns() {
+        const container = document.getElementById('turns-list');
+        const agent = document.getElementById('turns-filter-agent')?.value || '';
+        const session = document.getElementById('turns-filter-session')?.value || '';
+        const type = document.getElementById('turns-filter-type')?.value || '';
+        const limit = document.getElementById('turns-filter-limit')?.value || 50;
+
+        let url = `/plugins/message_debugger/turns?limit=${limit}`;
+        if (agent) url += `&agent_name=${encodeURIComponent(agent)}`;
+        if (session) url += `&session_id=${encodeURIComponent(session)}`;
+        if (type) url += `&snapshot_type=${encodeURIComponent(type)}`;
+
         try {
-            let url = `/plugins/message_debugger/snapshots?limit=${limit}`;
-            if (agentFilter) url += `&agent_name=${encodeURIComponent(agentFilter)}`;
-            if (sessionFilter) url += `&session_id=${encodeURIComponent(sessionFilter)}`;
-            
-            const response = await fetch(url);
-            const data = await response.json();
-            
-            if (data.snapshots.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-icon">📭</div>
-                        <div class="empty-text">No message snapshots captured yet</div>
-                        <div class="empty-hint">Run some agent requests to see messages appear here</div>
-                    </div>
-                `;
+            const res = await fetch(url);
+            const data = await res.json();
+            if (!data.turns || data.turns.length === 0) {
+                container.innerHTML = this.emptyHTML('📭', 'No turns captured yet', 'Run agent requests to see message snapshots here');
                 return;
             }
-            
-            container.innerHTML = data.snapshots.map((snapshot, index) => this.renderSnapshot(snapshot, index)).join('');
-            
-            // Restore expanded state
-            this.expandedSnapshots.forEach(snapshotId => {
-                const card = document.querySelector(`[data-snapshot-id="${snapshotId}"]`);
-                if (card) {
-                    card.classList.add('expanded');
-                }
-            });
-            
-            // Restore filter states
-            Object.keys(this.snapshotFilters).forEach(snapshotId => {
-                const filterState = this.snapshotFilters[snapshotId];
-                const roleFilter = document.querySelector(`.snapshot-role-filter[data-snapshot-id="${snapshotId}"]`);
-                const searchInput = document.querySelector(`.snapshot-search[data-snapshot-id="${snapshotId}"]`);
-                
-                if (roleFilter && filterState.role) {
-                    roleFilter.value = filterState.role;
-                }
-                if (searchInput && filterState.search) {
-                    searchInput.value = filterState.search;
-                }
-                
-                // Re-apply the filters
-                if (filterState.role || filterState.search) {
-                    this.filterMessages(snapshotId);
-                }
-            });
-        } catch (error) {
-            console.error('Failed to load snapshots:', error);
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-icon">⚠️</div>
-                    <div class="empty-text">Failed to load snapshots</div>
-                    <div class="empty-hint">${error.message}</div>
-                </div>
-            `;
+            container.innerHTML = data.turns.map(t => this.renderTurnCard(t)).join('');
+        } catch (e) {
+            container.innerHTML = this.emptyHTML('⚠️', 'Failed to load turns', e.message);
         }
     },
-    
-    renderSnapshot(snapshot, index) {
-        const timestamp = new Date(snapshot.timestamp).toLocaleString();
-        const messages = snapshot.messages || [];
-        const snapshotId = `${snapshot.timestamp}_${snapshot.agent_name}_${snapshot.session_id}`;
-        
-        // Get unique roles for filter dropdown
-        const roles = [...new Set(messages.map(m => m.role).filter(Boolean))].sort();
-        const roleOptions = roles.map(r => `<option value="${r}">${r}</option>`).join('');
-        
-        // Get current filter state
-        const filterState = this.snapshotFilters[snapshotId] || { role: '', search: '' };
-        
+
+    renderTurnCard(t) {
+        const ts = this.fmtTimestamp(t.timestamp_ms);
+        const typeClass = t.snapshot_type === 'pre_llm' ? 'pre-llm' : 'post-llm';
+        const typeLabel = t.snapshot_type === 'pre_llm' ? '→ Pre-LLM' : '← Post-LLM';
+
+        // Extract cached % from LLM response usage if available
+        let cachedHtml = '';
+        const usage = t.llm_response_json?.usage;
+        if (usage) {
+            const cached = usage.prompt_tokens_details?.cached_tokens
+                        || usage.cache_read_input_tokens
+                        || 0;
+            const prompt = usage.prompt_tokens || usage.input_tokens || 0;
+            if (cached > 0 && prompt > 0) {
+                const pct = Math.round((cached / prompt) * 100);
+                cachedHtml = `<span class="card-metric cached">${pct}% cached</span>`;
+            }
+        }
+
+        // Short session/request IDs for traceability
+        const sessShort = t.session_id ? t.session_id.substring(0, 8) : '';
+        const reqShort = t.request_id ? t.request_id.substring(0, 8) : '';
+
         return `
-            <div class="snapshot-card" data-snapshot-id="${snapshotId}" onclick="messageDebugger.toggleSnapshot(this, event)">
-                <div class="snapshot-header">
-                    <div class="snapshot-title">Snapshot #${index + 1}</div>
-                    <div class="snapshot-timestamp">${timestamp}</div>
+        <div class="turn-card" onclick="debugger_.showTurnDetail(${t.id})">
+            <div class="card-row">
+                <div class="card-left">
+                    <span class="badge ${typeClass}">${typeLabel}</span>
+                    <span class="badge agent">${this.esc(t.agent_name || '?')}</span>
+                    <span class="card-meta">Step ${t.step || 0}</span>
+                    ${sessShort ? `<span class="card-id" title="Session: ${this.esc(t.session_id)}">S:${this.esc(sessShort)}</span>` : ''}
+                    ${reqShort ? `<span class="card-id" title="Request: ${this.esc(t.request_id)}">R:${this.esc(reqShort)}</span>` : ''}
                 </div>
-                <div class="snapshot-meta">
-                    <div class="meta-item">
-                        <span class="meta-badge agent">${snapshot.agent_name || 'unknown'}</span>
-                    </div>
-                    ${snapshot.session_id ? `
-                        <div class="meta-item">
-                            <span class="meta-badge session">${snapshot.session_id.substring(0, 12)}...</span>
-                        </div>
-                    ` : ''}
-                    <div class="meta-item">
-                        <span class="meta-label">Messages:</span> ${snapshot.message_count}
-                    </div>
-                    ${snapshot.total_estimated_tokens ? `
-                        <div class="meta-item">
-                            <span class="meta-label">Tokens:</span> ${snapshot.total_estimated_tokens.toLocaleString()}
-                        </div>
-                    ` : ''}
-                    ${snapshot.context_window ? `
-                        <div class="meta-item">
-                            <span class="meta-label">Context Window:</span> ${snapshot.context_window.toLocaleString()}
-                        </div>
-                    ` : ''}
-                </div>
-                <div class="snapshot-details">
-                    <div class="snapshot-filters" onclick="event.stopPropagation()">
-                        <select class="snapshot-role-filter" data-snapshot-id="${snapshotId}" onchange="messageDebugger.filterMessages('${snapshotId}')">
-                            <option value="">All Roles</option>
-                            ${roleOptions}
-                        </select>
-                        <input type="text" class="snapshot-search" data-snapshot-id="${snapshotId}" 
-                            placeholder="Search messages..." 
-                            oninput="messageDebugger.filterMessages('${snapshotId}')"
-                            value="${this.escapeHtml(filterState.search)}">
-                        <span class="snapshot-filter-count" data-snapshot-id="${snapshotId}"></span>
-                    </div>
-                    <div class="messages-container" data-snapshot-id="${snapshotId}">
-                        ${messages.map((msg, msgIndex) => this.renderMessage(msg, snapshotId, msgIndex)).join('')}
-                    </div>
+                <div class="card-right">
+                    <span class="card-metric msgs">${t.message_count} msgs</span>
+                    ${t.total_tokens ? `<span class="card-metric tokens">${t.total_tokens.toLocaleString()} tok</span>` : ''}
+                    ${cachedHtml}
+                    <span class="card-timestamp">${ts}</span>
                 </div>
             </div>
-        `;
+        </div>`;
     },
-    
-    renderMessage(msg, snapshotId, msgIndex) {
-        const roleClass = msg.role || 'unknown';
-        const content = msg.content || '';
-        const tokens = msg.estimated_tokens ? `${msg.estimated_tokens} tokens` : '';
-        const messageId = `${snapshotId}_msg${msgIndex}`;
-        const isExpanded = this.expandedMessages.has(messageId);
-        const toolCallCount = msg.tool_calls ? msg.tool_calls.length : 0;
-        
-        // Determine preview text - 80 chars, stripped of leading whitespace
-        let inlinePreview = '';
-        if (content && content.trim()) {
-            inlinePreview = content.replace(/^[\s\n\r]+/, '').substring(0, 80).replace(/\n/g, ' ');
-            if (content.length > 80) inlinePreview += '…';
-        } else if (toolCallCount > 0) {
-            // No content but has tool calls
-            inlinePreview = `[${toolCallCount} tool call${toolCallCount > 1 ? 's' : ''}]`;
-        } else {
-            inlinePreview = '[empty]';
+
+    // ---- LLM Requests ----
+    async loadRequests() {
+        const container = document.getElementById('requests-list');
+        const agent = document.getElementById('req-filter-agent')?.value || '';
+        const provider = document.getElementById('req-filter-provider')?.value || '';
+        const direction = document.getElementById('req-filter-direction')?.value || '';
+        const limit = document.getElementById('req-filter-limit')?.value || 50;
+
+        let url = `/plugins/message_debugger/llm-requests?limit=${limit}`;
+        if (agent) url += `&agent_name=${encodeURIComponent(agent)}`;
+        if (provider) url += `&provider=${encodeURIComponent(provider)}`;
+        if (direction) url += `&direction=${encodeURIComponent(direction)}`;
+
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            if (!data.requests || data.requests.length === 0) {
+                container.innerHTML = this.emptyHTML('📭', 'No LLM requests captured yet', 'Make agent requests to see raw API logs here');
+                return;
+            }
+            container.innerHTML = data.requests.map(r => this.renderRequestCard(r)).join('');
+        } catch (e) {
+            container.innerHTML = this.emptyHTML('⚠️', 'Failed to load requests', e.message);
         }
-        
-        // Full content for expanded view
-        const displayContent = content.substring(0, 40000);
-        
-        let toolCallsHtml = '';
-        if (msg.tool_calls && msg.tool_calls.length > 0) {
-            toolCallsHtml = `
-                <div class="message-tool-calls">
-                    <div style="font-weight: 600; margin-bottom: 8px;">Tool Calls (${msg.tool_calls.length}):</div>
-                    ${msg.tool_calls.map(tc => `
-                        <div class="tool-call">
-                            <div class="tool-call-name">${tc.function.name}</div>
-                            <div class="tool-call-args">${tc.function.arguments}</div>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
+    },
+
+    renderRequestCard(r) {
+        const ts = this.fmtTimestamp(r.timestamp_ms);
+        const isReq = r.direction === 'request';
+        const isRetry = r.finish_reason === 'retry';
+        const dirLabel = isReq ? '→ Request' : (isRetry ? '⟳ Retry' : '← Response');
+        const dirClass = isReq ? 'request' : (isRetry ? 'response retry' : (r.error ? 'response error' : 'response'));
+        const streaming = r.is_streaming ? '<span class="badge streaming">stream</span>' : '';
+
+        // Extract retry label from error (e.g. "[RETRY 1/4] MALFORMED_FUNCTION_CALL" → "1/4")
+        let retryInfo = '';
+        if (isRetry && r.error) {
+            const m = r.error.match(/\[RETRY (\d+\/\d+)\]/);
+            if (m) retryInfo = `<span class="card-metric retry-count">${m[1]}</span>`;
         }
-        
-        let toolResultBadge = '';
-        if (msg.is_tool_result) {
-            toolResultBadge = '<span class="meta-badge" style="margin-left: 8px;">Tool Result</span>';
+        // Short error reason (strip [RETRY x/y] prefix)
+        let errorReason = '';
+        if (r.error && !isReq) {
+            const clean = r.error.replace(/^\[RETRY \d+\/\d+\]\s*/, '');
+            if (clean.length > 50) errorReason = `<span class="card-metric error" title="${this.esc(clean)}">${this.esc(clean.substring(0, 50))}…</span>`;
+            else errorReason = `<span class="card-metric error">${this.esc(clean)}</span>`;
         }
-        
+
         return `
-            <div class="message-item ${roleClass} ${isExpanded ? 'expanded' : ''}" data-message-id="${messageId}" onclick="messageDebugger.toggleMessage('${messageId}', event)">
-                <div class="message-header">
-                    <div class="message-role-line">
-                        <span class="message-expand-icon">${isExpanded ? '▼' : '▶'}</span>
-                        <span class="message-role">${msg.role}${toolResultBadge}</span>
-                        <span class="message-preview">${this.escapeHtml(inlinePreview)}</span>
-                    </div>
-                    <div class="message-header-right">
-                        ${tokens ? `<div class="message-tokens">${tokens}</div>` : ''}
-                    </div>
+        <div class="request-card ${isRetry ? 'retry-card' : ''}" onclick="debugger_.showRequestDetail(${r.id})">
+            <div class="card-row">
+                <div class="card-left">
+                    <span class="badge ${dirClass}">${dirLabel}</span>
+                    <span class="badge provider">${this.esc(r.provider || '?')}</span>
+                    <span class="badge model">${this.esc(r.model || '?')}</span>
+                    ${streaming}
+                    <span class="badge agent">${this.esc(r.agent_name || '?')}</span>
                 </div>
-                <div class="message-details">
-                    ${content ? `<div class="message-content">${this.escapeHtml(displayContent)}${content.length > 40000 ? '...' : ''}</div>` : ''}
-                    ${toolCallsHtml}
+                <div class="card-right">
+                    ${retryInfo}
+                    ${r.duration_ms ? `<span class="card-metric duration">${Math.round(r.duration_ms)}ms</span>` : ''}
+                    ${errorReason}
+                    ${!isRetry && r.finish_reason ? `<span class="card-metric">${r.finish_reason}</span>` : ''}
+                    <span class="card-timestamp">${ts}</span>
                 </div>
             </div>
-        `;
+        </div>`;
     },
-    
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    },
-    
-    toggleSnapshot(element, event) {
-        // Don't toggle snapshot if clicking on message expand button
-        if (event && event.target.closest('.message-expand-btn')) {
-            return;
-        }
-        
-        const snapshotId = element.getAttribute('data-snapshot-id');
-        element.classList.toggle('expanded');
-        
-        if (element.classList.contains('expanded')) {
-            this.expandedSnapshots.add(snapshotId);
-        } else {
-            this.expandedSnapshots.delete(snapshotId);
-        }
-    },
-    
-    toggleMessage(messageId, event) {
-        event.stopPropagation();  // Don't bubble to snapshot toggle
-        
-        if (this.expandedMessages.has(messageId)) {
-            this.expandedMessages.delete(messageId);
-        } else {
-            this.expandedMessages.add(messageId);
-        }
-        
-        // Re-render just this message's content without full reload
-        const messageEl = document.querySelector(`[data-message-id="${messageId}"]`);
-        if (messageEl) {
-            const snapshotEl = messageEl.closest('.snapshot-card');
-            if (snapshotEl) {
-                // Force re-render of this snapshot to update message state
-                const snapshotId = snapshotEl.getAttribute('data-snapshot-id');
-                // For simplicity, just refresh - expanded states are preserved
-                this.loadSnapshots();
+
+    // ---- Detail Modals ----
+    async showTurnDetail(id) {
+        try {
+            const res = await fetch(`/plugins/message_debugger/turns/${id}`);
+            const t = await res.json();
+            document.getElementById('modal-title').textContent = `Turn #${t.id} — ${t.snapshot_type} (${t.agent_name})`;
+            let html = `
+            <div class="detail-section">
+                <h3>Metadata</h3>
+                <div class="detail-grid">
+                    <div class="detail-item"><div class="detail-label">Type</div><div class="detail-value">${t.snapshot_type}</div></div>
+                    <div class="detail-item"><div class="detail-label">Agent</div><div class="detail-value">${this.esc(t.agent_name)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Request ID</div><div class="detail-value">${this.esc(t.request_id)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Session ID</div><div class="detail-value">${this.esc(t.session_id)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Step</div><div class="detail-value">${t.step}</div></div>
+                    <div class="detail-item"><div class="detail-label">Messages</div><div class="detail-value">${t.message_count}</div></div>
+                    <div class="detail-item"><div class="detail-label">Tokens</div><div class="detail-value">${(t.total_tokens||0).toLocaleString()}</div></div>
+                    <div class="detail-item"><div class="detail-label">Context Window</div><div class="detail-value">${t.context_window || 'N/A'}</div></div>
+                    <div class="detail-item"><div class="detail-label">Timestamp</div><div class="detail-value">${this.fmtTimestamp(t.timestamp_ms)}</div></div>
+                </div>
+            </div>`;
+
+            // Messages
+            const msgs = t.messages_json || [];
+            if (msgs.length > 0) {
+                html += `<div class="detail-section"><h3>Messages (${msgs.length})</h3>`;
+                msgs.forEach(m => {
+                    const role = m.role || 'unknown';
+                    let content = m.content || '';
+                    if (content.length > 5000) content = content.substring(0, 5000) + '…[truncated]';
+
+                    // Build content HTML — try JSON formatting for tool results
+                    let contentHtml = '';
+                    if (content) {
+                        if (m.is_tool_result) {
+                            try {
+                                const parsed = JSON.parse(content);
+                                contentHtml = `<div class="msg-content">${this.formatJson(parsed)}</div>`;
+                            } catch { contentHtml = `<div class="msg-content">${this.esc(content)}</div>`; }
+                        } else {
+                            contentHtml = `<div class="msg-content">${this.esc(content)}</div>`;
+                        }
+                    }
+
+                    const msgData = JSON.stringify({role, content, tool_calls: m.tool_calls});
+                    html += `<div class="msg-item ${role}" data-msg-content='${this.esc(msgData)}'>
+                        <div class="msg-role">
+                            <span>${role}</span>
+                            <span class="copy-icon msg-copy" title="Copy message">📋</span>
+                        </div>
+                        ${contentHtml}
+                        <div class="msg-meta">
+                            ${m.estimated_tokens ? `<span>${m.estimated_tokens} tokens</span>` : ''}
+                            ${m.content_length ? `<span>${m.content_length} chars</span>` : ''}
+                            ${m.is_tool_result ? '<span>Tool Result</span>' : ''}
+                        </div>`;
+                    if (m.tool_calls && m.tool_calls.length > 0) {
+                        m.tool_calls.forEach(tc => {
+                            const args = tc.function?.arguments || '';
+                            let argsHtml;
+                            try {
+                                const parsed = typeof args === 'string' ? JSON.parse(args) : args;
+                                argsHtml = this.formatJson(parsed);
+                            } catch {
+                                argsHtml = `<div class="tool-call-args">${this.esc(args)}</div>`;
+                            }
+                            html += `<div class="tool-call-block">
+                                <div class="tool-call-name">🔧 ${tc.function?.name || '?'}</div>
+                                ${argsHtml}
+                            </div>`;
+                        });
+                    }
+                    html += `</div>`;
+                });
+                html += `</div>`;
             }
-        }
-    },
-    
-    filterMessages(snapshotId) {
-        const roleFilter = document.querySelector(`.snapshot-role-filter[data-snapshot-id="${snapshotId}"]`);
-        const searchInput = document.querySelector(`.snapshot-search[data-snapshot-id="${snapshotId}"]`);
-        const container = document.querySelector(`.messages-container[data-snapshot-id="${snapshotId}"]`);
-        const countSpan = document.querySelector(`.snapshot-filter-count[data-snapshot-id="${snapshotId}"]`);
-        
-        if (!container) return;
-        
-        const roleValue = roleFilter ? roleFilter.value.toLowerCase() : '';
-        const searchValue = searchInput ? searchInput.value.toLowerCase() : '';
-        
-        // Store filter state
-        this.snapshotFilters[snapshotId] = { role: roleValue, search: searchValue };
-        
-        const messages = container.querySelectorAll('.message-item');
-        let visibleCount = 0;
-        let totalCount = messages.length;
-        
-        messages.forEach(msg => {
-            const role = msg.classList.contains('user') ? 'user' :
-                        msg.classList.contains('assistant') ? 'assistant' :
-                        msg.classList.contains('system') ? 'system' :
-                        msg.classList.contains('tool') ? 'tool' : '';
-            
-            // Get content from the message-content div or preview
-            const contentEl = msg.querySelector('.message-content');
-            const previewEl = msg.querySelector('.message-preview');
-            const toolCallsEl = msg.querySelector('.message-tool-calls');
-            
-            let textContent = '';
-            if (contentEl) textContent += contentEl.textContent.toLowerCase();
-            if (previewEl) textContent += ' ' + previewEl.textContent.toLowerCase();
-            if (toolCallsEl) textContent += ' ' + toolCallsEl.textContent.toLowerCase();
-            
-            const matchesRole = !roleValue || role === roleValue;
-            const matchesSearch = !searchValue || textContent.includes(searchValue);
-            
-            if (matchesRole && matchesSearch) {
-                msg.style.display = '';
-                visibleCount++;
-            } else {
-                msg.style.display = 'none';
+
+            // LLM Response
+            if (t.llm_response_json) {
+                html += `<div class="detail-section"><h3>LLM Response</h3>
+                    ${this.formatJson(t.llm_response_json)}
+                </div>`;
             }
-        });
-        
-        // Update count display
-        if (countSpan) {
-            if (roleValue || searchValue) {
-                countSpan.textContent = `${visibleCount}/${totalCount}`;
-            } else {
-                countSpan.textContent = '';
-            }
-        }
+
+            document.getElementById('modal-body').innerHTML = html;
+            document.getElementById('modal-overlay').classList.add('visible');
+            if (typeof Prism !== 'undefined') Prism.highlightAllUnder(document.getElementById('modal-body'));
+            this.addCopyIcons();
+        } catch (e) { alert('Failed to load turn: ' + e.message); }
     },
-    
+
+    async showRequestDetail(id) {
+        try {
+            const res = await fetch(`/plugins/message_debugger/llm-requests/${id}`);
+            const r = await res.json();
+            document.getElementById('modal-title').textContent = `LLM ${r.direction} #${r.id} — ${r.provider}/${r.model}`;
+            let html = `
+            <div class="detail-section">
+                <h3>Metadata</h3>
+                <div class="detail-grid">
+                    <div class="detail-item"><div class="detail-label">Direction</div><div class="detail-value">${r.direction}</div></div>
+                    <div class="detail-item"><div class="detail-label">Provider</div><div class="detail-value">${this.esc(r.provider)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Model</div><div class="detail-value">${this.esc(r.model)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Agent</div><div class="detail-value">${this.esc(r.agent_name)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Request ID</div><div class="detail-value">${this.esc(r.request_id)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Session ID</div><div class="detail-value">${this.esc(r.session_id)}</div></div>
+                    <div class="detail-item"><div class="detail-label">URL</div><div class="detail-value">${this.esc(r.url)}</div></div>
+                    <div class="detail-item"><div class="detail-label">Streaming</div><div class="detail-value">${r.is_streaming ? 'Yes' : 'No'}</div></div>
+                    <div class="detail-item"><div class="detail-label">Duration</div><div class="detail-value">${r.duration_ms ? Math.round(r.duration_ms) + 'ms' : 'N/A'}</div></div>
+                    <div class="detail-item"><div class="detail-label">Finish Reason</div><div class="detail-value">${r.finish_reason || 'N/A'}</div></div>
+                    <div class="detail-item"><div class="detail-label">Timestamp</div><div class="detail-value">${this.fmtTimestamp(r.timestamp_ms)}</div></div>
+                </div>
+            </div>`;
+
+            if (r.error) {
+                html += `<div class="detail-section"><h3>Error</h3>
+                    <pre style="color:#f14c4c">${this.esc(r.error)}</pre>
+                </div>`;
+            }
+
+            if (r.usage_json) {
+                html += `<div class="detail-section"><h3>Usage</h3>
+                    ${this.formatJson(r.usage_json)}
+                </div>`;
+            }
+
+            if (r.payload_json) {
+                html += `<div class="detail-section"><h3>Request Payload</h3>
+                    ${this.formatJson(r.payload_json)}
+                </div>`;
+            }
+
+            if (r.response_json) {
+                html += `<div class="detail-section"><h3>Response Data</h3>
+                    ${this.formatJson(r.response_json)}
+                </div>`;
+            }
+
+            document.getElementById('modal-body').innerHTML = html;
+            document.getElementById('modal-overlay').classList.add('visible');
+            if (typeof Prism !== 'undefined') Prism.highlightAllUnder(document.getElementById('modal-body'));
+            this.addCopyIcons();
+        } catch (e) { alert('Failed to load request: ' + e.message); }
+    },
+
+    closeModal() {
+        document.getElementById('modal-overlay').classList.remove('visible');
+    },
+
+    // ---- Actions ----
     async refresh() {
         await this.loadStats();
-        await this.loadSnapshots();
+        if (this.activeTab === 'turns') await this.loadTurns();
+        else await this.loadRequests();
     },
-    
-    async applyFilters() {
-        await this.loadSnapshots();
-    },
-    
+
     toggleAutoRefresh() {
-        const btn = document.getElementById('auto-refresh-btn');
-        
-        // Toggle the desired state
         this.autoRefreshEnabled = !this.autoRefreshEnabled;
-        
+        const btn = document.getElementById('auto-refresh-btn');
         if (this.autoRefreshEnabled) {
-            // Start auto-refresh
-            if (!this.autoRefreshInterval) {
-                this.autoRefreshInterval = setInterval(() => this.refresh(), 5000);
-            }
+            this.autoRefreshInterval = setInterval(() => this.refresh(), 5000);
             btn.classList.add('active');
             btn.title = 'Auto-Refresh (5s) - Active';
         } else {
-            // Stop auto-refresh
-            if (this.autoRefreshInterval) {
-                clearInterval(this.autoRefreshInterval);
-                this.autoRefreshInterval = null;
-            }
+            if (this.autoRefreshInterval) clearInterval(this.autoRefreshInterval);
+            this.autoRefreshInterval = null;
             btn.classList.remove('active');
-            btn.title = 'Auto-Refresh - Inactive';
+            btn.title = 'Auto-Refresh (5s) - Inactive';
         }
     },
-    
-    startAutoRefresh() {
-        // Initialize auto-refresh if enabled (called on page load)
-        if (this.autoRefreshEnabled && !this.autoRefreshInterval) {
-            this.autoRefreshInterval = setInterval(() => this.refresh(), 5000);
-        }
-    },
-    
-    async clearHistory() {
-        if (!confirm('Are you sure you want to clear all message snapshots?')) {
-            return;
-        }
-        
+
+    async clearAll() {
+        const confirmed = await this.confirm('Clear ALL captured turns and LLM request logs?\n\nThis action cannot be undone.');
+        if (!confirmed) return;
         try {
-            await fetch('/plugins/message_debugger/snapshots', { method: 'DELETE' });
-            this.expandedSnapshots.clear();
+            const res = await fetch('/plugins/message_debugger/clear', { method: 'DELETE' });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ detail: res.statusText }));
+                alert('Clear failed: ' + (err.detail || res.statusText));
+                return;
+            }
             await this.refresh();
-        } catch (error) {
-            console.error('Failed to clear history:', error);
-            alert('Failed to clear history: ' + error.message);
+        } catch (e) { alert('Clear failed: ' + e.message); }
+    },
+
+    confirm(message) {
+        return new Promise(resolve => {
+            this.confirmResolve = resolve;
+            document.getElementById('confirm-message').textContent = message;
+            document.getElementById('confirm-overlay').classList.add('visible');
+        });
+    },
+
+    closeConfirm(result) {
+        document.getElementById('confirm-overlay').classList.remove('visible');
+        if (this.confirmResolve) {
+            this.confirmResolve(result);
+            this.confirmResolve = null;
         }
+    },
+
+    // ---- Helpers ----
+    fmtTimestamp(ms) {
+        if (!ms) return '';
+        const d = new Date(ms);
+        const dateStr = d.toLocaleString('de-DE', { 
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit'
+        });
+        const msec = String(Math.floor(ms) % 1000).padStart(3, '0');
+        return `${dateStr}.${msec}`;
+    },
+
+    formatJson(obj) {
+        if (!obj) return '';
+        const json = JSON.stringify(obj, null, 2);
+        return `<pre data-copy-json='${this.esc(json)}'><code class="language-json">${this.esc(json)}</code></pre>`;
+    },
+
+    copyToClipboard(text, iconElement) {
+        navigator.clipboard.writeText(text).then(() => {
+            const originalText = iconElement.textContent;
+            iconElement.textContent = '✓';
+            setTimeout(() => {
+                iconElement.textContent = originalText;
+            }, 1000);
+        }).catch(err => {
+            console.error('Copy failed:', err);
+            iconElement.textContent = '✗';
+            setTimeout(() => {
+                iconElement.textContent = '📋';
+            }, 1000);
+        });
+    },
+
+    addCopyIcons() {
+        // Add copy icons to content fields ONLY (skip metadata in detail-grid)
+        document.querySelectorAll('.detail-value').forEach(valueDiv => {
+            // Skip if already has icon or is in metadata grid
+            if (valueDiv.querySelector('.copy-icon')) return;
+            if (valueDiv.closest('.detail-grid')) return; // Skip metadata fields
+            
+            const text = valueDiv.textContent.trim();
+            if (!text || text === 'N/A') return;
+            
+            // Wrap existing text in a span
+            const textSpan = document.createElement('span');
+            textSpan.textContent = text;
+            textSpan.style.flex = '1';
+            textSpan.style.minWidth = '0';
+            
+            // Create icon
+            const icon = document.createElement('span');
+            icon.className = 'copy-icon';
+            icon.textContent = '📋';
+            icon.title = 'Copy to clipboard';
+            icon.onclick = (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(text, icon);
+            };
+            
+            // Clear and rebuild
+            valueDiv.innerHTML = '';
+            valueDiv.appendChild(textSpan);
+            valueDiv.appendChild(icon);
+        });
+
+        // Add copy handlers to per-message copy icons
+        document.querySelectorAll('.msg-copy').forEach(icon => {
+            icon.onclick = (e) => {
+                e.stopPropagation();
+                const msgItem = icon.closest('.msg-item');
+                const msgData = msgItem.getAttribute('data-msg-content');
+                if (msgData) {
+                    try {
+                        const parsed = JSON.parse(msgData);
+                        const text = JSON.stringify(parsed, null, 2);
+                        this.copyToClipboard(text, icon);
+                    } catch {
+                        this.copyToClipboard(msgData, icon);
+                    }
+                }
+            };
+        });
+
+        // Add copy icons to JSON blocks (in section headers)
+        document.querySelectorAll('.detail-section').forEach(section => {
+            const pre = section.querySelector('pre[data-copy-json]');
+            if (!pre) return;
+            
+            const h3 = section.querySelector('h3');
+            if (!h3 || h3.querySelector('.section-copy-icon')) return;
+            
+            const json = pre.getAttribute('data-copy-json');
+            const icon = document.createElement('span');
+            icon.className = 'copy-icon section-copy-icon';
+            icon.textContent = '📋';
+            icon.title = 'Copy JSON to clipboard';
+            icon.onclick = (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(json, icon);
+            };
+            h3.appendChild(icon);
+        });
+    },
+
+    fmtDuration(ms) {
+        if (!ms || ms === 0) return '0s';
+        if (ms < 1000) return Math.round(ms) + 'ms';
+        if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+        return (ms / 60000).toFixed(1) + 'm';
+    },
+
+    esc(text) {
+        if (!text) return '';
+        const d = document.createElement('div');
+        d.textContent = String(text);
+        return d.innerHTML;
+    },
+
+    emptyHTML(icon, text, hint) {
+        return `<div class="empty-state">
+            <div class="empty-icon">${icon}</div>
+            <div class="empty-text">${text}</div>
+            <div class="empty-hint">${hint || ''}</div>
+        </div>`;
     }
 };
 
-// Initialize on load
-messageDebugger.refresh();
-messageDebugger.startAutoRefresh();  // Start auto-refresh to match button state
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        // Close confirmation modal first if open, otherwise close detail modal
+        const confirmOverlay = document.getElementById('confirm-overlay');
+        if (confirmOverlay && confirmOverlay.classList.contains('visible')) {
+            debugger_.closeConfirm(false);
+        } else {
+            debugger_.closeModal();
+        }
+    }
+});
+
+// Initialize
+debugger_.init();

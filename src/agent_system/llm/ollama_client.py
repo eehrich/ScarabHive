@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, Any
 import asyncio
+import time as _time
 from ..utils.id import short_id
 
 from .models import ChatMessage, LLMClient
@@ -262,6 +263,13 @@ class OllamaNativeAsyncClient(LLMClient):
         max_retries = 3
         retry_backoff = 1.0
 
+        _request_start = _time.time()
+        await self._notify_pre_request({
+            "provider": "ollama", "model": self.model,
+            "url": url, "is_streaming": True,
+            "timestamp_ms": _request_start * 1000,
+        })
+
         for attempt in range(max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise Exception("Request cancelled by user")
@@ -279,6 +287,7 @@ class OllamaNativeAsyncClient(LLMClient):
                             backoff_time = retry_backoff * (2 ** attempt)
                             await report_status(f"Server error ({response.status_code}), retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                             logger.warning(f"Ollama server error {response.status_code}, retrying in {backoff_time}s")
+                            await self._notify_retry("ollama", self.model, url, True, f"Server error ({response.status_code})", attempt, max_retries + 1)
                             await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
                         
@@ -379,6 +388,16 @@ class OllamaNativeAsyncClient(LLMClient):
                 if accumulated_usage:
                     final_result["usage"] = accumulated_usage
 
+                # Notify post-response hook
+                _duration_ms = (_time.time() - _request_start) * 1000
+                await self._notify_post_response({
+                    "provider": "ollama", "model": self.model,
+                    "url": url, "is_streaming": True,
+                    "duration_ms": _duration_ms,
+                    "usage": accumulated_usage,
+                    "timestamp_ms": _time.time() * 1000,
+                })
+
                 yield {"type": "final", **final_result}
                 return  # Success - exit retry loop
 
@@ -387,6 +406,7 @@ class OllamaNativeAsyncClient(LLMClient):
                     backoff_time = retry_backoff * (2 ** attempt)
                     await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
                     logger.warning(f"Ollama stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
+                    await self._notify_retry("ollama", self.model, url, True, f"Stream interrupted: {e}", attempt, max_retries + 1)
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
                 else:

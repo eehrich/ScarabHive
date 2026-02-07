@@ -228,6 +228,18 @@ class BatchLLMClient(LLMClient):
         """
         self._last_status_message = None  # Reset for new request
         
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        _batch_start = _time.time()
+        await self._notify_pre_request({
+            "provider": f"batch_{self.batch_provider}",
+            "model": self.model_name,
+            "url": "batch_queue",
+            "payload": {"message_count": len(messages), "tool_count": len(tools)},
+            "is_streaming": False,
+            "timestamp_ms": _time.time() * 1000,
+        })
+        
         result = await self._submit_batch_request(
             messages=messages,
             tools=tools,
@@ -236,6 +248,14 @@ class BatchLLMClient(LLMClient):
         )
         
         if result is None:
+            # Notify post-response hook on failure
+            _duration_ms = (_time.time() - _batch_start) * 1000
+            await self._notify_post_response({
+                "provider": f"batch_{self.batch_provider}", "model": self.model_name,
+                "url": "batch_queue", "is_streaming": False,
+                "duration_ms": _duration_ms, "error": "Batch request failed",
+                "timestamp_ms": _time.time() * 1000,
+            })
             # Fallback to sync if batch failed
             if self.batch_provider_config.fallback_to_sync:
                 await self._report_status(status_scope, f"Fallback to sync: {self.model_name}")
@@ -243,6 +263,15 @@ class BatchLLMClient(LLMClient):
                     messages, tools, cancellation_token
                 )
             raise RuntimeError("Batch request failed and fallback is disabled")
+        
+        # Notify post-response hook on success
+        _duration_ms = (_time.time() - _batch_start) * 1000
+        await self._notify_post_response({
+            "provider": f"batch_{self.batch_provider}", "model": self.model_name,
+            "url": "batch_queue", "is_streaming": False,
+            "duration_ms": _duration_ms,
+            "timestamp_ms": _time.time() * 1000,
+        })
         
         # Convert from OpenAI batch format to native format
         # Note: Status "Batch completed" already reported by queue_manager

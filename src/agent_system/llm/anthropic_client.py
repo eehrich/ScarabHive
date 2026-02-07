@@ -401,6 +401,18 @@ class AnthropicAsyncClient(LLMClient):
         current_tool_name: Optional[str] = None
         current_tool_input: str = ""
         
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        await self._notify_pre_request({
+            "provider": "anthropic",
+            "model": self.model,
+            "url": str(getattr(self._client, '_base_url', 'https://api.anthropic.com')),
+            "payload": request_kwargs,
+            "is_streaming": True,
+            "timestamp_ms": _time.time() * 1000,
+        })
+        
+        _request_start = _time.time()
         last_exception = None
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
@@ -521,6 +533,16 @@ class AnthropicAsyncClient(LLMClient):
                     f"{len(accumulated_tool_calls)} tool calls"
                 )
                 
+                # Notify post-response hook
+                _duration_ms = (_time.time() - _request_start) * 1000
+                await self._notify_post_response({
+                    "provider": "anthropic", "model": self.model,
+                    "url": str(getattr(self._client, '_base_url', 'https://api.anthropic.com')),
+                    "is_streaming": True, "duration_ms": _duration_ms,
+                    "usage": accumulated_usage,
+                    "timestamp_ms": _time.time() * 1000,
+                })
+                
                 yield {"type": "final", **final_result}
                 return  # Success
                 
@@ -549,6 +571,7 @@ class AnthropicAsyncClient(LLMClient):
                             f"[Anthropic] Rate limit hit. Waiting {wait_time:.1f}s before retry "
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
+                        await self._notify_retry("anthropic", self.model, "", True, f"Rate limit (429): {error_str[:200]}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators
                         accumulated_content = []
@@ -577,6 +600,7 @@ class AnthropicAsyncClient(LLMClient):
                         f"[Anthropic] Service overloaded. Waiting {wait_time:.1f}s "
                         f"(attempt {attempt + 1}/{self.max_retries + 1})"
                     )
+                    await self._notify_retry("anthropic", self.model, "", True, f"Service overloaded: {error_str[:200]}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     # Reset accumulators
                     accumulated_content = []
