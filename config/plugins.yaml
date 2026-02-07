@@ -412,10 +412,10 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction
-        layer1_threshold: 70000   # Start reversible compaction (tool refs, variables)
-        layer2_threshold: 90000   # Start semi-reversible compaction (archival with summaries)
-        layer3_threshold: 110000  # Start irreversible compaction (drop old messages)
-        target_tokens: 50000      # Target token count after compaction
+        layer1_threshold: 50000   # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 70000   # Start semi-reversible compaction (archival with summaries)
+        layer3_threshold: 90000   # Start irreversible compaction (drop old messages)
+        target_tokens: 35000      # Target token count after compaction
 
         store_media_before_compaction: true  # Aktiviert MediaStore
         media_store_ttl_seconds: 604800      # 7 Tage
@@ -430,14 +430,14 @@ plugins:
         
         # Tool result storage settings
         tool_result_min_size: 500      # Min tokens to store tool result externally
-        tool_result_keep_last: 7       # Keep last N tool results inline (unless too large)
+        tool_result_keep_last: 5       # Keep last N tool results inline (unless too large)
         tool_result_max_inline_size: 10000  # ALWAYS archive results > this size (even if last N) *2 will also affect last tool call
         
         # Variable substitution settings
         variable_min_size: 500         # Min tokens to create $VAR_N variable
         
         # Archival memory settings
-        archive_after_turns: 15        # Archive messages older than N turns
+        archive_after_turns: 20        # Archive messages older than N turns
         keep_system_messages: true     # Never archive/drop system messages
         semantic_search: true          # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
         

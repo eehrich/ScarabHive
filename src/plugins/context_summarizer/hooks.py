@@ -255,6 +255,59 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     }
                 )
 
+            # Pre-check: estimate if summarization can even achieve min_reduction
+            # Best case = old messages shrink to zero → max_possible_reduction = old_tokens / total_tokens
+            # If that's already below min_reduction, no LLM call can help → skip early
+            old_tokens = self._estimate_tokens(old_msgs)
+            max_possible_reduction = old_tokens / max(total_tokens, 1)
+            if max_possible_reduction < self.min_reduction:
+                logger.info(
+                    f"[ContextSummarizer] Session {context.session_id}: Skipping - even removing all "
+                    f"{len(old_msgs)} old messages ({old_tokens} tokens) would only reduce by "
+                    f"{max_possible_reduction:.1%}, below minimum {self.min_reduction:.0%}. "
+                    f"Total: {total_tokens} tokens, recent: {len(recent_msgs)} msgs, system: {len(system_msgs)} msgs"
+                )
+
+                if self.summarization_history is not None:
+                    event = {
+                        'timestamp': datetime.now().isoformat(),
+                        'session_id': context.session_id,
+                        'request_id': context.request_id,
+                        'strategy': 'summarize',
+                        'original_message_count': len(messages),
+                        'summarized_message_count': len(messages),
+                        'messages_summarized': 0,
+                        'summary_count': 0,
+                        'original_tokens': total_tokens,
+                        'new_tokens': total_tokens,
+                        'tokens_saved': 0,
+                        'reduction_ratio': 0,
+                        'status': 'skipped',
+                        'reason': 'insufficient_potential_reduction',
+                        'before_messages': [],
+                        'after_messages': [],
+                        'summary_stats': {
+                            'summary_count': 0,
+                            'old_tokens': old_tokens,
+                            'max_possible_reduction': max_possible_reduction,
+                        }
+                    }
+                    self.summarization_history.append(event)
+
+                return HookResult(
+                    success=True,
+                    modified=False,
+                    context=context,
+                    metadata={
+                        'reason': 'insufficient_potential_reduction',
+                        'old_tokens': old_tokens,
+                        'total_tokens': total_tokens,
+                        'max_possible_reduction': max_possible_reduction,
+                        'min_reduction': self.min_reduction,
+                        'old_message_count': len(old_msgs),
+                    }
+                )
+
             # Use StatusScope to ensure START/END pairing even on errors
             result = None
             async with StatusScope(
