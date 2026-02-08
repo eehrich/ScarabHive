@@ -439,8 +439,14 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             # Special handling for tool responses - try smart JSON truncation
             if msg.role == 'tool' and content_tokens > max_tokens:
                 try:
-                    # Try to parse as JSON
-                    data = json.loads(content)
+                    # Try to parse as JSON (with repair for malformed LLM output)
+                    try:
+                        data = json.loads(content)
+                    except json.JSONDecodeError:
+                        from agent_system.utils.json_utils import repair_json
+                        data = repair_json(content)
+                        if data is None:
+                            raise ValueError("JSON repair failed")
                     
                     # Smart truncate: reduce long strings within JSON, keep structure valid
                     truncated_data = self._smart_truncate_json_strings(

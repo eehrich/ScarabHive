@@ -114,6 +114,7 @@ class OllamaNativeAsyncClient(LLMClient):
 
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         import json
+        from ..utils.json_utils import repair_json as _repair_json
         out: list[dict[str, Any]] = []
         for m in messages:
             # Use model_dump() with mode='json' to properly serialize nested Pydantic models and datetime objects
@@ -130,8 +131,12 @@ class OllamaNativeAsyncClient(LLMClient):
                                 # Parse JSON string to dict
                                 tc["function"]["arguments"] = json.loads(args)
                             except (json.JSONDecodeError, TypeError):
-                                # If parsing fails, leave as-is or use empty dict
-                                tc["function"]["arguments"] = {}
+                                # Attempt repair — local LLMs are most prone to malformed JSON
+                                repaired = _repair_json(args)
+                                if repaired is not None and isinstance(repaired, dict):
+                                    tc["function"]["arguments"] = repaired
+                                else:
+                                    tc["function"]["arguments"] = {}
 
             # Normalize for Ollama format (extract images to separate field)
             d = ollama_utils.normalize_message(d)

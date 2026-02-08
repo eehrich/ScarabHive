@@ -28,6 +28,8 @@ import logging
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from ..utils.json_utils import repair_json
+
 from google import genai
 from google.genai import types
 
@@ -925,10 +927,17 @@ class GeminiSDKClient(LLMClient):
                 elif got_malformed_function_call:
                     # Check if tool calls have empty arguments - this indicates a parsing failure
                     # and we should retry instead of using the malformed output
+                    def _parse_args_safe(args_str: str) -> dict:
+                        try:
+                            return json.loads(args_str)
+                        except (json.JSONDecodeError, TypeError):
+                            repaired = repair_json(args_str)
+                            return repaired if isinstance(repaired, dict) else {}
+
                     empty_args_calls = [
                         tc["function"]["name"]
                         for tc in accumulated_tool_calls.values() 
-                        if json.loads(tc["function"]["arguments"]) == {}
+                        if _parse_args_safe(tc["function"]["arguments"]) == {}
                     ]
                     
                     if empty_args_calls and attempt < self.max_retries:

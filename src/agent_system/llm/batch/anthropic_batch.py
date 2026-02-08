@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from ...utils.json_utils import repair_json
+
 from .base import BatchProviderClient
 from .models import BatchJob, BatchStatus
 from .job_tracker import get_job_tracker
@@ -213,7 +215,8 @@ class AnthropicBatchClient(BatchProviderClient):
                     try:
                         args = json.loads(args_str) if isinstance(args_str, str) else args_str
                     except json.JSONDecodeError:
-                        args = {}
+                        repaired = repair_json(args_str)
+                        args = repaired if repaired is not None and isinstance(repaired, dict) else {}
                     
                     content_blocks.append({
                         "type": "tool_use",

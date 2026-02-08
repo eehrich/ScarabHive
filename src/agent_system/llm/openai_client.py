@@ -9,6 +9,7 @@ import time as _time
 import httpx
 
 from ..utils.id import short_id
+from ..utils.json_utils import repair_json
 from .models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from ..config.models import ModelCapabilitiesConfig
 from .retry_utils import execute_with_cancellation
@@ -263,9 +264,13 @@ class OpenAIAsyncClient(LLMClient):
                     if isinstance(arguments, str):
                         try:
                             params = json.loads(arguments)
-                        except Exception as e:
-                            logger.debug(f"Failed to parse tool call arguments as JSON, trying quote replacement: {e}")
-                            params = json.loads(arguments.replace("'", '"')) if arguments else {}
+                        except Exception:
+                            repaired = repair_json(arguments)
+                            if repaired is not None and isinstance(repaired, dict):
+                                logger.info("Repaired malformed tool args from OpenAI for %s", name)
+                                params = repaired
+                            else:
+                                logger.warning("Failed to parse/repair tool call arguments for %s", name)
                     elif isinstance(arguments, dict):
                         params = arguments
                     if name:

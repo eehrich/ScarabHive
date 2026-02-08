@@ -20,6 +20,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ...utils.json_utils import repair_json
+
 try:
     from google import genai
     from google.genai import types
@@ -460,7 +462,8 @@ class GeminiBatchClient(BatchProviderClient):
                         try:
                             func_args = json.loads(func_args)
                         except json.JSONDecodeError:
-                            func_args = {}
+                            repaired = repair_json(func_args)
+                            func_args = repaired if repaired is not None and isinstance(repaired, dict) else {}
                     
                     # Get thought_signature - required for Gemini 3 Pro
                     # The signature is stored in extra_content.google.thought_signature

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+
+from ...utils.json_utils import repair_json
 import logging
 from collections import deque
 from dataclasses import dataclass, field
@@ -50,7 +52,8 @@ class ToolCallRecord:
             else:
                 arguments = args_str or {}
         except json.JSONDecodeError:
-            arguments = {"_raw": args_str}
+            repaired = repair_json(args_str)
+            arguments = repaired if repaired is not None and isinstance(repaired, dict) else {"_raw": args_str}
         
         # Create stable hash of arguments
         # Sort keys for consistent hashing

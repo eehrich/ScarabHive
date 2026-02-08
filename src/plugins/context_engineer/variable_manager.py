@@ -420,6 +420,10 @@ class VariableManager:
         elif content_type == "json":
             try:
                 data = json.loads(content)
+            except Exception:
+                from agent_system.utils.json_utils import repair_json
+                data = repair_json(content)
+            try:
                 if isinstance(data, dict):
                     keys = list(data.keys())[:5]
                     if len(data) > 5:

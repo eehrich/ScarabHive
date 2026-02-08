@@ -20,6 +20,7 @@ from ....core.cancellation import get_cancellation_manager, cancellable_operatio
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....mcp.integration import get_mcp_integration
+from ....utils.json_utils import repair_json
 
 logger = logging.getLogger(__name__)
 
@@ -195,14 +196,53 @@ class ToolExecutionManager:
 
             # Parse arguments
             params: Dict[str, Any] = {}
+            json_parse_failed = False
             if isinstance(raw_args, str) and raw_args:
                 try:
                     params = json.loads(raw_args)
                 except json.JSONDecodeError:
-                    logger.warning("Failed to parse tool arguments: %s", raw_args)
-                    params = {}
+                    # Attempt repair using json-repair library
+                    repaired = repair_json(raw_args)
+                    if repaired is not None:
+                        params = repaired
+                        logger.info(
+                            "Repaired malformed tool arguments for %s (raw length: %d)",
+                            tool_name, len(raw_args),
+                        )
+                    else:
+                        json_parse_failed = True
+                        logger.warning(
+                            "Failed to parse/repair tool arguments for %s: %s",
+                            tool_name, raw_args[:500],
+                        )
             elif isinstance(raw_args, dict):
                 params = raw_args
+
+            # If JSON parsing failed, return an error to the LLM so it can retry
+            if json_parse_failed:
+                tool_call_id = tc.get("id") or f"parse-error-{int(time.time()*1000)}"
+                error_content = json.dumps({
+                    "error": (
+                        f"Invalid JSON in tool arguments for '{tool_name}'. "
+                        "The JSON could not be parsed even after repair attempts. "
+                        "Common issues: missing brackets/braces, unquoted keys, "
+                        "truncated output. Please regenerate the tool call with valid JSON."
+                    ),
+                    "type": "JSONParseError",
+                })
+                events_to_yield.append({
+                    "type": "tool_error",
+                    "tool": tool_name,
+                    "error": f"Invalid JSON arguments for {tool_name}",
+                })
+                tool_messages.append(ChatMessage(
+                    role="tool",
+                    tool_call_id=tool_call_id,
+                    name=openai_tool_name or "unknown",
+                    content=error_content,
+                    timestamp=datetime.now(timezone.utc),
+                ))
+                continue
 
             if not tool_name or tool_name not in available_tools:
                 logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)

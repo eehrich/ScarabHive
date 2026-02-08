@@ -26,6 +26,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm import anthropic_utils
+from agent_system.utils.json_utils import repair_json
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,8 @@ class AnthropicAsyncClient(LLMClient):
                     try:
                         args = json.loads(args_str) if isinstance(args_str, str) else args_str
                     except json.JSONDecodeError:
-                        args = {}
+                        repaired = repair_json(args_str)
+                        args = repaired if repaired is not None and isinstance(repaired, dict) else {}
                     
                     content_blocks.append({
                         "type": "tool_use",
@@ -476,7 +478,8 @@ class AnthropicAsyncClient(LLMClient):
                                 try:
                                     args = json.loads(current_tool_input) if current_tool_input else {}
                                 except json.JSONDecodeError:
-                                    args = {}
+                                    repaired = repair_json(current_tool_input)
+                                    args = repaired if repaired is not None and isinstance(repaired, dict) else {}
                                 
                                 tool_call = {
                                     "id": current_tool_call_id,

@@ -1,7 +1,73 @@
 import json
-from typing import Any
+import logging
+from typing import Any, Optional
 
-__all__ = ["safe_serialize"]
+import json_repair as _json_repair_lib
+
+__all__ = ["safe_serialize", "repair_json"]
+
+logger = logging.getLogger(__name__)
+
+
+def repair_json(
+    raw: str,
+    *,
+    ensure_ascii: bool = False,
+    return_objects: bool = True,
+) -> Optional[Any]:
+    """Repair malformed JSON strings, typically from LLM output.
+
+    Uses the ``json-repair`` library which handles:
+    - Missing or extra commas
+    - Missing quotes around keys or values
+    - Single quotes instead of double quotes
+    - Missing closing brackets / braces (truncated JSON)
+    - Unescaped characters inside strings
+    - Trailing commas before ``}`` or ``]``
+    - Comments (``//`` and ``/* */``)
+    - JavaScript-style unquoted keys
+    - Boolean/null case variations (``True`` → ``true``)
+    - Incomplete key-value pairs
+    - And many more edge cases
+
+    Args:
+        raw: The potentially malformed JSON string.
+        ensure_ascii: If False (default), preserve non-Latin characters
+            (German, Chinese, etc.) in the output.
+        return_objects: If True (default), return parsed Python objects directly.
+            If False, return the repaired JSON string.
+
+    Returns:
+        The parsed Python object (dict/list/str/etc.) when ``return_objects=True``,
+        or the repaired JSON string when ``return_objects=False``.
+        Returns ``None`` only if the input is empty/whitespace or repair yields
+        an empty result.
+    """
+    if not raw or not raw.strip():
+        return None
+
+    try:
+        result = _json_repair_lib.repair_json(
+            raw,
+            return_objects=return_objects,
+            ensure_ascii=ensure_ascii,
+        )
+    except Exception:
+        logger.debug("json-repair failed for input (length %d)", len(raw), exc_info=True)
+        return None
+
+    # json-repair returns "" for completely broken input
+    if result == "" or result is None:
+        return None
+
+    # If return_objects=False, result is a string — validate it parses
+    if not return_objects:
+        try:
+            json.loads(result)  # type: ignore[arg-type]
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    return result
 
 def safe_serialize(obj: Any) -> str:
     """Serialize arbitrary Python objects to JSON safely.

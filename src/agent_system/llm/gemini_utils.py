@@ -11,6 +11,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ..utils.json_utils import repair_json
+
 logger = logging.getLogger(__name__)
 
 # Gemini API has a 100MB request size limit
@@ -523,7 +525,8 @@ def convert_openai_messages_to_gemini(
                     try:
                         func_args = json.loads(func_args)
                     except json.JSONDecodeError:
-                        func_args = {}
+                        repaired = repair_json(func_args)
+                        func_args = repaired if repaired is not None and isinstance(repaired, dict) else {}
                 
                 part = {
                     "functionCall": {
