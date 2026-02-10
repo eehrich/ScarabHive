@@ -599,13 +599,13 @@ async def test_hook_removes_old_injection(server, mock_status):
         "_session_id": "test_session"
     })
 
-    # Initial messages with old injection
+    # Initial messages with old injection (tagged with injected_by)
     context = HookContext(
         hook_type="pre_llm_call",
         request_id="test_req_123",
         messages=[
             ChatMessage(role="system", content="You are an assistant"),
-            ChatMessage(role="system", content="## Active Cognitive Stack\nOld injection"),
+            ChatMessage(role="system", content="## Active Cognitive Stack\nOld injection", injected_by="cognitive_stack"),
             ChatMessage(role="user", content="Help me")
         ],
         session_id="test_session",

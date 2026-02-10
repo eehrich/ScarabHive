@@ -847,13 +847,9 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
 
             from agent_system.llm.models import ChatMessage
 
-            # Check if already injected and REMOVE old injection to replace it
-            # Search backwards to avoid index shifting issues
+            # Remove old injection (identified by injected_by attribute)
             for i in range(len(context.messages) - 1, -1, -1):
-                msg = context.messages[i]
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and ("## Sequential Thinking Tool Available" in msg_content or "## Active Sequential Thinking Session" in msg_content):
-                    # Remove old injection
+                if getattr(context.messages[i], 'injected_by', None) == "sequential_thinking":
                     context.messages.pop(i)
                     logger.debug(f"Removed old Sequential Thinking injection at position {i}")
 
@@ -883,7 +879,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             insert_pos = self._find_system_message_position(context.messages)
             context.messages.insert(insert_pos, ChatMessage(
                 role="system",
-                content=session_prompt
+                content=session_prompt,
+                injected_by="sequential_thinking",
             ))
 
             return HookResult(success=True, modified=True, context=context)

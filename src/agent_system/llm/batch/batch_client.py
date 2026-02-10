@@ -342,6 +342,7 @@ class BatchLLMClient(LLMClient):
             if hasattr(msg, 'model_dump'):
                 # Use mode='json' to convert datetime to ISO strings
                 msg_dict = msg.model_dump(mode='json')
+                msg_dict.pop('injected_by', None)  # Internal hook metadata
                 messages_data.append(msg_dict)
             elif hasattr(msg, 'dict'):
                 messages_data.append(msg.dict())

@@ -583,12 +583,9 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
             from agent_system.llm.models import ChatMessage
 
-            # Check if already injected and REMOVE old injection(s)
-            # Loop backwards to safely remove multiple occurrences
+            # Remove old injection(s) (identified by injected_by attribute)
             for i in range(len(context.messages) - 1, -1, -1):
-                msg = context.messages[i]
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and ("Cognitive Stack" in msg_content and msg_content.startswith("##")):
+                if getattr(context.messages[i], 'injected_by', None) == "cognitive_stack":
                     context.messages.pop(i)
                     logger.debug(f"Removed old cognitive stack injection at index {i}")
 
@@ -614,7 +611,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             insert_pos = self._find_system_message_position(context.messages)
             context.messages.insert(insert_pos, ChatMessage(
                 role="system",
-                content=stack_prompt
+                content=stack_prompt,
+                injected_by="cognitive_stack",
             ))
 
             return HookResult(success=True, modified=True, context=context)

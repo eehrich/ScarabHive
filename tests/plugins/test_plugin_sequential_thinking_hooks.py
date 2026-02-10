@@ -242,10 +242,11 @@ async def test_hook_removes_old_injection(server, mock_status):
     result = await server.call("sequential_thinking", params)
     # thinking_session_id = result["session_id"]  # Not needed for this test
     
-    # Create context with old injection already present
+    # Create context with old injection already present (tagged with injected_by)
     old_injection = ChatMessage(
         role="system",
-        content="## Sequential Thinking Tool Available\n\nOld injection content..."
+        content="## Sequential Thinking Tool Available\n\nOld injection content...",
+        injected_by="sequential_thinking"
     )
     
     context = HookContext(

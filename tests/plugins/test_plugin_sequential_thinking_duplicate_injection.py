@@ -151,14 +151,14 @@ async def test_hook_prevents_multiple_injections_across_calls(server):
 @pytest.mark.asyncio
 async def test_hook_handles_both_reminder_markers(server):
     """Test that hook correctly removes old injections with either marker format."""
-    # Create context with old-style marker
+    # Create context with old injection (tagged with injected_by)
     context = HookContext(
         hook_type="inject_active_sessions",
         request_id="test_req_004",
         session_id="test_session_markers",
         messages=[
             ChatMessage(role="system", content="You are a helpful assistant."),
-            ChatMessage(role="system", content="## Sequential Thinking Tool Available\n\nOld injection"),
+            ChatMessage(role="system", content="## Sequential Thinking Tool Available\n\nOld injection", injected_by="sequential_thinking"),
             ChatMessage(role="user", content="Hello")
         ]
     )
@@ -186,10 +186,11 @@ async def test_hook_handles_both_reminder_markers(server):
         "_session_id": "test_session_markers"
     })
     
-    # Manually inject old active session marker
+    # Manually inject old active session marker (tagged with injected_by)
     context.messages.insert(1, ChatMessage(
         role="system",
-        content="## Active Sequential Thinking Session\n\nOld session info"
+        content="## Active Sequential Thinking Session\n\nOld session info",
+        injected_by="sequential_thinking"
     ))
     
     result2 = await server.on_pre_llm_call(context)

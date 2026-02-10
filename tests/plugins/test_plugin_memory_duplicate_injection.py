@@ -234,14 +234,14 @@ async def test_hook_no_duplication_with_manual_injection(server):
         "_session_id": "test_session_manual"
     })
 
-    # Manually inject old-style memory list
+    # Manually inject old-style memory list (tagged with injected_by)
     context = HookContext(
         hook_type="pre_llm_call",
         request_id="test_req_005",
         session_id="test_session_manual",
         messages=[
             ChatMessage(role="system", content="You are a helpful assistant."),
-            ChatMessage(role="system", content="## AVAILABLE MEMORIES\n\n- Old memory list"),
+            ChatMessage(role="system", content="## AVAILABLE MEMORIES\n\n- Old memory list", injected_by="memory"),
             ChatMessage(role="user", content="Question")
         ]
     )

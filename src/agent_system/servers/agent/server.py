@@ -1494,14 +1494,16 @@ class Agent(MCPServer):
                     # Hook used compaction mechanism - reconstruct message list
                     logger.debug(f"Pre-LLM hook set compacted_messages with {len(compacted_messages)} messages")
                     
-                    # Build: [system] + compacted + [current_step_messages]
+                    # Build: [all_leading_system_messages] + compacted
                     reconstructed = []
-                    # Check first message for system role (handle both dict and ChatMessage)
-                    if messages:
-                        first_msg = messages[0]
-                        first_role = first_msg.get("role") if isinstance(first_msg, dict) else getattr(first_msg, "role", None)
-                        if first_role == "system":
-                            reconstructed.append(first_msg)
+                    # Keep ALL leading system messages (agent prompt, tools, session hooks)
+                    # NOT just the first one - fixes bug where tools_msg was lost!
+                    for msg in messages:
+                        msg_role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+                        if msg_role == "system":
+                            reconstructed.append(msg)
+                        else:
+                            break  # Stop at first non-system message
                     
                     reconstructed.extend(compacted_messages)
                     

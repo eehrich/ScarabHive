@@ -1904,14 +1904,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             tasks_list = result.get("tasks", []) if result else []
 
-            # Check if already injected and REMOVE old injection to replace it
-            # This allows updating from "no tasks" to "with tasks" seamlessly
-            for i, msg in enumerate(context.messages):
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and "## TODO Tool Available" in msg_content:
-                    # Remove old TODO injection
+            # Remove old injection (identified by injected_by attribute)
+            for i in range(len(context.messages) - 1, -1, -1):
+                if getattr(context.messages[i], 'injected_by', None) == "todo":
                     context.messages.pop(i)
-                    break
 
             if tasks_list and len(tasks_list) > 0:
                 # Format existing tasks with reminder
@@ -1924,7 +1920,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             insert_pos = self._find_system_message_position(context.messages)
             context.messages.insert(insert_pos, ChatMessage(
                 role="system",
-                content=task_prompt
+                content=task_prompt,
+                injected_by="todo",
             ))
 
             return HookResult(success=True, modified=True, context=context)

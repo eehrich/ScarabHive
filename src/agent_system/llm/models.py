@@ -160,6 +160,10 @@ class ChatMessage(BaseModel):
     multimodal_content: Optional[List[MultimodalToolContent]] = None
     # Reasoning/thinking content from models like DeepSeek, OpenAI o-series
     reasoning_content: Optional[str] = None
+    # Hook injection tracking: identifies which plugin injected this message.
+    # Used by injection hooks to find and replace their previous injections
+    # instead of fragile content-based matching.
+    injected_by: Optional[str] = None
 
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""

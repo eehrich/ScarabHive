@@ -1012,20 +1012,18 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
             injection = "\n".join(lines)
 
-            # Check if already injected and REMOVE old injection
+            # Remove old injection (identified by injected_by attribute)
             from agent_system.llm.models import ChatMessage
-            for i, msg in enumerate(context.messages):
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and injection_marker in msg_content:
-                    # Remove old injection
+            for i in range(len(context.messages) - 1, -1, -1):
+                if getattr(context.messages[i], 'injected_by', None) == "memory":
                     context.messages.pop(i)
-                    break
 
             # Insert after first system message
             insert_pos = self._find_system_message_position(context.messages)
             context.messages.insert(insert_pos, ChatMessage(
                 role="system",
-                content=injection
+                content=injection,
+                injected_by="memory",
             ))
 
             logger.info(f"Injected {len(relevant_memories)} memories into system prompt")

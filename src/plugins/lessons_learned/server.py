@@ -936,21 +936,19 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             if not injection:
                 return HookResult(success=True, modified=False)
 
-            # Remove old injection if present
-            injection_marker = "LESSONS LEARNED"
             from agent_system.llm.models import ChatMessage
             if context.messages:
-                for i, msg in enumerate(context.messages):
-                    msg_content = msg.content if hasattr(msg, 'content') else ""
-                    if msg_content and injection_marker in msg_content:
+                # Remove old injection (identified by injected_by attribute)
+                for i in range(len(context.messages) - 1, -1, -1):
+                    if getattr(context.messages[i], 'injected_by', None) == "lessons_learned":
                         context.messages.pop(i)
-                        break
 
                 # Insert after system messages
                 insert_pos = self._find_system_message_position(context.messages)
                 context.messages.insert(insert_pos, ChatMessage(
                     role="system",
                     content=injection,
+                    injected_by="lessons_learned",
                 ))
 
             # Record applications
