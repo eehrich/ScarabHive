@@ -460,10 +460,22 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
     async def update_lesson(self, lesson_id: str, **updates: Any) -> Dict[str, Any]:
         """Update a lesson's fields."""
         allowed = {"title", "content", "category", "priority", "status", "confidence",
-                    "tags", "context_filter", "expires_at"}
+                    "tags", "context_filter", "expires_at", "agent_name"}
         to_update = {k: v for k, v in updates.items() if k in allowed and v is not None}
         if not to_update:
             return {"error": "No valid fields to update."}
+
+        # Get old lesson data before update (needed for agent_name migration)
+        conn = self._get_connection()
+        try:
+            old_lesson = conn.execute(
+                "SELECT agent_name FROM lessons WHERE lesson_id = ?", (lesson_id,)
+            ).fetchone()
+            if not old_lesson:
+                return {"error": f"Lesson '{lesson_id}' not found."}
+            old_agent_name = old_lesson["agent_name"]
+        finally:
+            conn.close()
 
         if "tags" in to_update and isinstance(to_update["tags"], list):
             to_update["tags"] = json.dumps(to_update["tags"])
@@ -481,19 +493,38 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         finally:
             conn.close()
 
-        # Re-index in VectorStore if content changed
-        if "title" in updates or "content" in updates:
+        # Re-index in VectorStore if content/title/agent changed
+        agent_name_changed = "agent_name" in updates and updates["agent_name"] != old_agent_name
+        if "title" in updates or "content" in updates or agent_name_changed:
             lesson = await self.get_lesson(lesson_id)
             if lesson:
+                new_agent_name = lesson["agent_name"]
+                vector_text = f"{lesson['title']}. {lesson['content']}"
+                metadata = {
+                    "lesson_id": lesson_id,
+                    "agent_name": new_agent_name,
+                    "category": lesson["category"]
+                }
+
                 try:
-                    vector_text = f"{lesson['title']}. {lesson['content']}"
+                    # If agent changed, delete from old collection
+                    if agent_name_changed:
+                        try:
+                            await asyncio.to_thread(
+                                self.vector_store.delete,
+                                collection=self._collection_name(old_agent_name),
+                                ids=[lesson_id],
+                            )
+                        except Exception as e:
+                            logger.debug(f"VectorStore delete from old collection failed: {e}")
+
+                    # Add/update in (new) collection
                     await asyncio.to_thread(
                         self.vector_store.add,
-                        collection=self._collection_name(lesson["agent_name"]),
+                        collection=self._collection_name(new_agent_name),
                         ids=[lesson_id],
                         documents=[vector_text],
-                        metadatas=[{"lesson_id": lesson_id, "agent_name": lesson["agent_name"],
-                                    "category": lesson["category"]}],
+                        metadatas=[metadata],
                     )
                 except Exception as e:
                     logger.warning(f"VectorStore re-index failed: {e}")
@@ -974,7 +1005,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 server=self,
                 max_lessons=max_lessons,
                 auto_approve=auto_approve,
-                llm_profile=config.get("extraction_llm_profile", "chat"),
+                llm_profile=config.get("extraction_llm_profile", "turbo"),
                 agent=context.agent,
             )
 

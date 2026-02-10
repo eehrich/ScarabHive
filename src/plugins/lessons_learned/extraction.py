@@ -133,7 +133,7 @@ async def extract_lessons_from_conversation(
     server: "LessonsLearnedServer",
     max_lessons: int = 5,
     auto_approve: bool = False,
-    llm_profile: str = "chat",
+    llm_profile: str = "turbo",
     agent: Any = None,
 ) -> ExtractionResult:
     """

@@ -123,7 +123,7 @@ config:
 
   llm_profile:
     type: string
-    default: "fast"
+    default: "turbo"
     description: "LLM profile to use for lesson extraction"
 
 tools:

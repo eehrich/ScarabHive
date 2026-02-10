@@ -136,7 +136,7 @@ plugins:
       max_lessons_per_agent: 200
       dedup_similarity_threshold: 0.82
       exact_duplicate_threshold: 0.95
-      llm_profile: "fast"
+      llm_profile: "chat-nostream"
 
     http_server:
       type: http_server

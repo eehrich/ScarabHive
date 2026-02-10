@@ -203,7 +203,8 @@
             <input type="hidden" id="edit-id">
             <div class="form-group">
                 <label>Agent Name *</label>
-                <select id="form-agent"></select>
+                <input type="text" id="form-agent" list="agent-list" placeholder="Type or select agent name">
+                <datalist id="agent-list"></datalist>
             </div>
             <div class="form-group">
                 <label>Title *</label>
@@ -284,7 +285,7 @@
                 document.getElementById('stat-agents').textContent = d.agent_count || 0;
 
                 // Populate agent filter
-                if (d.agents && d.agents.length > 0) {
+                if (d.agents) {
                     allAgents = d.agents;
                     populateAgentSelects();
                 }
@@ -295,7 +296,7 @@
 
         function populateAgentSelects() {
             const filterSel = document.getElementById('filter-agent');
-            const formSel = document.getElementById('form-agent');
+            const agentDatalist = document.getElementById('agent-list');
             const prevFilter = filterSel.value;
 
             // Filter select (keep "All")
@@ -305,14 +306,13 @@
             });
             filterSel.value = prevFilter;
 
-            // Form select
-            formSel.innerHTML = '';
-            if (allAgents.length === 0) {
-                formSel.add(new Option('(type agent name)', ''));
-                formSel.parentElement.innerHTML = '<label>Agent Name *</label><input type="text" id="form-agent" placeholder="agent_name">';
-            } else {
-                allAgents.forEach(a => formSel.add(new Option(a, a)));
-            }
+            // Form datalist (input field allows typing new agent names)
+            agentDatalist.innerHTML = '';
+            allAgents.forEach(a => {
+                const opt = document.createElement('option');
+                opt.value = a;
+                agentDatalist.appendChild(opt);
+            });
         }
 
         // === Categories ===
