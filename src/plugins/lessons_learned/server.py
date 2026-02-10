@@ -412,6 +412,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             sort_map = {
                 "priority": "priority DESC, confidence DESC",
                 "confidence": "confidence DESC",
+                "evidence": "evidence_count DESC",
                 "created": "created_at DESC",
                 "updated": "updated_at DESC",
                 "applied": "last_applied_at DESC NULLS LAST",
