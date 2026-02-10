@@ -105,7 +105,7 @@ class LessonsWebFactory:
                 category=body.get("category", "general"),
                 priority=body.get("priority", 5),
                 tags=body.get("tags"),
-                source_type="manual",
+                source_type=body.get("source_type", "manual"),
                 status=body.get("status", "active"),
                 confidence=body.get("confidence", 0.8),
             )

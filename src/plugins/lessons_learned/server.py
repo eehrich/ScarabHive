@@ -12,7 +12,6 @@ import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
-from math import exp
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -42,7 +41,6 @@ CONFIDENCE_BASE = {
     "auto": 0.4,
 }
 
-CONFIDENCE_DECAY_HALF_LIFE_DAYS = 30
 AUTO_DEACTIVATE_THRESHOLD = 0.2
 AUTO_REACTIVATE_THRESHOLD = 0.4
 
@@ -460,7 +458,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
     async def update_lesson(self, lesson_id: str, **updates: Any) -> Dict[str, Any]:
         """Update a lesson's fields."""
         allowed = {"title", "content", "category", "priority", "status", "confidence",
-                    "tags", "context_filter", "expires_at", "agent_name"}
+                    "tags", "context_filter", "expires_at", "agent_name", "source_type"}
         to_update = {k: v for k, v in updates.items() if k in allowed and v is not None}
         if not to_update:
             return {"error": "No valid fields to update."}
@@ -614,7 +612,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             conn.close()
 
     def _calculate_confidence(self, conn: sqlite3.Connection, lesson_id: str, lesson: dict) -> float:
-        """Calculate confidence score based on evidence, recency, effectiveness."""
+        """Calculate confidence score based on evidence and effectiveness."""
         source_type = lesson.get("source_type", "auto")
         base = CONFIDENCE_BASE.get(source_type, 0.5)
 
@@ -626,28 +624,20 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             "SELECT COUNT(*) FROM lesson_evidence WHERE lesson_id = ? AND evidence_type = 'contradict'",
             (lesson_id,),
         ).fetchone()[0]
-        evidence_factor = confirms / (confirms + contradicts + 1)
-
-        # Recency decay
-        last_confirmed = lesson.get("last_confirmed_at")
-        if last_confirmed:
-            try:
-                dt = datetime.fromisoformat(last_confirmed)
-                now = datetime.now(UTC)
-                # Ensure both are aware or both naive for subtraction
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
-                days_since = (now - dt).days
-                recency_factor = exp(-days_since / CONFIDENCE_DECAY_HALF_LIFE_DAYS)
-            except (ValueError, TypeError):
-                recency_factor = 0.5
+        
+        # Evidence factor: if no evidence yet, use 1.0 (trust base confidence)
+        # With evidence: weight by ratio of confirms to total evidence
+        total_evidence = confirms + contradicts
+        if total_evidence == 0:
+            evidence_factor = 1.0
         else:
-            recency_factor = 0.5
+            # Scale from 0.5 (all contradict) to 1.5 (all confirm)
+            evidence_factor = 0.5 + (confirms / total_evidence)
 
         eff = lesson.get("effectiveness")
         effectiveness_factor = (0.5 + 0.5 * eff) if eff is not None else 1.0
 
-        return min(1.0, base * evidence_factor * recency_factor * effectiveness_factor)
+        return min(1.0, base * evidence_factor * effectiveness_factor)
 
     async def record_application(
         self,
@@ -858,7 +848,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         if not lesson_id:
             return {"error": "'lesson_id' is required."}
         updates = {k: v for k, v in params.items()
-                   if k in ("title", "content", "category", "priority", "status", "tags", "confidence")}
+                   if k in ("title", "content", "category", "priority", "status", "tags", "confidence", "source_type")}
         return await self.update_lesson(lesson_id, **updates)
 
     async def _op_confirm(self, params: Dict[str, Any], agent_name: str, session_id: str) -> Dict[str, Any]:
