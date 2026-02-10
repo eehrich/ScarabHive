@@ -128,6 +128,16 @@ plugins:
       search_n_results: 5
       use_semantic_injection: true
 
+    lessons_learned:
+      type: lessons_learned
+      enabled: true
+      description: "Persistent lessons learned across sessions with semantic search and cross-agent teaching"
+      database_path: "data/lessons_learned/lessons.db"
+      max_lessons_per_agent: 200
+      dedup_similarity_threshold: 0.82
+      exact_duplicate_threshold: 0.95
+      llm_profile: "fast"
+
     http_server:
       type: http_server
       enabled: false
