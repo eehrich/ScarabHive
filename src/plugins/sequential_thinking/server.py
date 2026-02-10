@@ -541,7 +541,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                         f"({session.actual_thoughts}), adjusted to {session.actual_thoughts}"
                     )
                     total_thoughts = session.actual_thoughts
-                    logger.warning(
+                    logger.info(
                         f"Auto-clamped total_thoughts from {params['total_thoughts']} "
                         f"to {total_thoughts} for session {session.session_id}"
                     )
