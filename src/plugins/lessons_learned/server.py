@@ -684,7 +684,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 placeholders = ",".join("?" * len(exclude_categories))
                 sql += f" AND category NOT IN ({placeholders})"
                 params.extend(exclude_categories)
-            sql += " ORDER BY priority DESC, confidence DESC LIMIT ?"
+            sql += " ORDER BY evidence_count DESC, confidence DESC, priority DESC LIMIT ?"
             params.append(max_lessons)
             rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
