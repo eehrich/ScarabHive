@@ -849,7 +849,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                             "action": "would_merge",
                             "primary": group.get("primary_id"),
                             "merged_title": group.get("title"),
-                            "archived": [mid for mid in merge_ids if mid != group.get("primary_id")],
+                            "deleted": [mid for mid in merge_ids if mid != group.get("primary_id")],
                             "reason": group.get("reason", ""),
                         })
                         total_merged += len(group_lessons) - 1
@@ -860,7 +860,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                             merge_decision=group,
                         )
                         merge_details.append(result)
-                        total_merged += result.get("archived_count", 0)
+                        total_merged += result.get("deleted_count", 0)
 
                 if keep_separate:
                     merge_details.append({
@@ -1092,16 +1092,17 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 (total_evidence, total_applications, best_confidence, now, primary_id),
             )
 
-            # Archive duplicates and add merge evidence
-            archived_ids = []
+            # Delete duplicates and add merge evidence
+            deleted_ids = []
             for l in lessons:
                 if l["lesson_id"] == primary_id:
                     continue
-                conn.execute(
-                    "UPDATE lessons SET status = 'archived', updated_at = ? WHERE lesson_id = ?",
-                    (now, l["lesson_id"]),
-                )
-                # Add evidence record noting the merge
+                # Delete evidence/applications for the duplicate
+                conn.execute("DELETE FROM lesson_evidence WHERE lesson_id = ?", (l["lesson_id"],))
+                conn.execute("DELETE FROM lesson_applications WHERE lesson_id = ?", (l["lesson_id"],))
+                # Delete the duplicate lesson
+                conn.execute("DELETE FROM lessons WHERE lesson_id = ?", (l["lesson_id"],))
+                # Add evidence record noting the merge on primary
                 conn.execute(
                     """INSERT INTO lesson_evidence
                        (lesson_id, session_id, agent_name, evidence_type, description)
@@ -1109,11 +1110,22 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                     (primary_id, "consolidation", agent, "confirm",
                      f"Merged from {l['lesson_id']}: {l['title']}"),
                 )
-                archived_ids.append(l["lesson_id"])
+                deleted_ids.append(l["lesson_id"])
 
             conn.commit()
         finally:
             conn.close()
+
+        # Remove deleted lessons from VectorStore
+        if deleted_ids:
+            try:
+                await asyncio.to_thread(
+                    self.vector_store.delete,
+                    collection=self._collection_name(agent),
+                    ids=deleted_ids,
+                )
+            except Exception as e:
+                logger.debug(f"VectorStore delete after merge failed: {e}")
 
         # Re-index primary in VectorStore
         try:
@@ -1132,8 +1144,8 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             "action": "merged",
             "primary_id": primary_id,
             "merged_title": new_title,
-            "archived": archived_ids,
-            "archived_count": len(archived_ids),
+            "deleted": deleted_ids,
+            "deleted_count": len(deleted_ids),
             "total_evidence": total_evidence,
         }
 
