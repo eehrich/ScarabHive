@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, List, TYPE_CHECKING
 
 from agent_system.llm.models import ChatMessage
+from agent_system.utils.json_utils import repair_json as _repair_json
 
 from .models import ExtractionResult, LessonCandidate
 
@@ -36,6 +37,7 @@ Focus on:
 - Domain-specific knowledge shared by the user
 - Tool usage patterns that worked well or poorly
 - Workflow improvements discovered during the session
+- save tokens by being concise, but keep the core meaning and insight of the lesson
 
 Do NOT extract:
 - One-off factual queries (e.g., "What is the capital of France?")
@@ -121,7 +123,27 @@ def _parse_extraction_response(response: str) -> List[LessonCandidate]:
                 tags=item.get("tags", []),
             ))
         return candidates
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
+    except json.JSONDecodeError:
+        # Try repair_json as fallback
+        logger.debug("Standard JSON parse failed in extraction, trying repair_json...")
+        repaired = _repair_json(text)
+        if isinstance(repaired, dict):
+            lessons_data = repaired.get("lessons", [])
+            candidates = []
+            for item in lessons_data:
+                if not item.get("title") or not item.get("content"):
+                    continue
+                candidates.append(LessonCandidate(
+                    title=str(item["title"])[:200],
+                    content=str(item["content"])[:2000],
+                    category=str(item.get("category", "general")),
+                    priority=int(item.get("priority", 5)),
+                    tags=item.get("tags", []),
+                ))
+            return candidates
+        logger.warning(f"Failed to parse extraction response even with repair")
+        return []
+    except (KeyError, TypeError) as e:
         logger.warning(f"Failed to parse extraction response: {e}")
         return []
 

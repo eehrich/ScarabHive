@@ -467,6 +467,34 @@ class TestExecute:
         assert "error" in result
 
     @pytest.mark.asyncio
+    async def test_execute_delete(self, server: LessonsLearnedServer):
+        """Execute 'delete' operation removes a lesson."""
+        stored = await server.store_lesson(agent_name="a", title="To Delete", content="Content")
+        lesson_id = stored["lesson_id"]
+
+        result = await server.execute({
+            "operation": "delete",
+            "lesson_id": lesson_id,
+            "_agent_name": "a",
+            "_session_id": "s1",
+        })
+        assert result.get("status") == "deleted"
+
+        # Verify it's gone
+        get_result = await server.get_lesson(lesson_id)
+        assert get_result is None or "error" in get_result
+
+    @pytest.mark.asyncio
+    async def test_execute_delete_missing_id(self, server: LessonsLearnedServer):
+        """Execute 'delete' without lesson_id returns error."""
+        result = await server.execute({
+            "operation": "delete",
+            "_agent_name": "a",
+            "_session_id": "s1",
+        })
+        assert "error" in result
+
+    @pytest.mark.asyncio
     async def test_execute_with_status_reporter(self, server: LessonsLearnedServer):
         """Execute should call status reporter."""
         status = MagicMock()
@@ -792,6 +820,84 @@ class TestExtractionParsing:
 
 
 # =============================================================================
+# Test: Cluster Token Limit
+# =============================================================================
+
+class TestClusterTokenLimit:
+
+    @pytest.mark.asyncio
+    async def test_large_cluster_splits(self, server: LessonsLearnedServer):
+        """Clusters exceeding MAX_CLUSTER_CHARS are split into sub-clusters."""
+        # Create lessons large enough to exceed the limit
+        large_content = "A" * 20_000  # 20k chars per lesson
+        lessons = []
+        for i in range(5):
+            lessons.append({
+                "lesson_id": f"les_{i}",
+                "title": f"Lesson {i}",
+                "content": large_content,
+                "status": "active",
+                "priority": 5,
+                "confidence": 0.8,
+                "evidence_count": 1,
+                "application_count": 0,
+                "category": "general",
+                "source_type": "reflection",
+            })
+
+        # The method should detect it's too large and call _evaluate_large_cluster
+        # which splits into sub-clusters. We mock _llm_evaluate_cluster_single
+        # to verify it gets called with smaller chunks.
+        call_sizes = []
+        original = server._llm_evaluate_cluster_single
+
+        async def mock_evaluate(lessons_chunk):
+            call_sizes.append(len(lessons_chunk))
+            return {"groups": [], "keep_separate": [l["lesson_id"] for l in lessons_chunk], "reason": "test"}
+
+        server._llm_evaluate_cluster_single = mock_evaluate
+        try:
+            result = await server._llm_evaluate_cluster(lessons)
+            # Should have been split - each sub-cluster should be smaller
+            assert len(call_sizes) > 1, f"Expected split but got {len(call_sizes)} call(s)"
+            for size in call_sizes:
+                assert size <= 4, f"Sub-cluster too large: {size} lessons"
+        finally:
+            server._llm_evaluate_cluster_single = original
+
+    @pytest.mark.asyncio
+    async def test_small_cluster_no_split(self, server: LessonsLearnedServer):
+        """Small clusters are evaluated in a single call."""
+        lessons = [
+            {
+                "lesson_id": "les_1", "title": "Short", "content": "Small content",
+                "status": "active", "priority": 5, "confidence": 0.8,
+                "evidence_count": 1, "application_count": 0,
+                "category": "general", "source_type": "reflection",
+            },
+            {
+                "lesson_id": "les_2", "title": "Short 2", "content": "Also small",
+                "status": "active", "priority": 5, "confidence": 0.8,
+                "evidence_count": 1, "application_count": 0,
+                "category": "general", "source_type": "reflection",
+            },
+        ]
+        call_sizes = []
+
+        async def mock_evaluate(lessons_chunk):
+            call_sizes.append(len(lessons_chunk))
+            return {"groups": [], "keep_separate": [l["lesson_id"] for l in lessons_chunk], "reason": "test"}
+
+        server._llm_evaluate_cluster_single = mock_evaluate
+        try:
+            await server._llm_evaluate_cluster(lessons)
+            assert len(call_sizes) == 1
+            assert call_sizes[0] == 2
+        finally:
+            del server._llm_evaluate_cluster_single
+
+
+# =============================================================================
 # Test: Conversation Formatting
 # =============================================================================
 
@@ -822,3 +928,116 @@ class TestConversationFormatting:
         result = _format_conversation(messages, max_chars=2000)
         assert len(result) < 3000
         assert "truncated" in result.lower()
+
+
+# =============================================================================
+# Test: Cleanup Lessons
+# =============================================================================
+
+class TestCleanupLessons:
+
+    @pytest.mark.asyncio
+    async def test_cleanup_dry_run(self, server: LessonsLearnedServer):
+        """Dry run should list matching lessons without deleting."""
+        await server.store_lesson(agent_name="a", title="Keep", content="C", confidence=0.9)
+        await server.store_lesson(agent_name="a", title="Low Conf", content="C", confidence=0.2)
+
+        result = await server.cleanup_lessons(max_confidence=0.3, dry_run=True)
+        assert result["dry_run"] is True
+        assert result["matched_count"] == 1
+        assert result["lessons"][0]["title"] == "Low Conf"
+
+        # Verify nothing was deleted
+        all_lessons = await server.list_lessons()
+        assert all_lessons["total"] == 2
+
+    @pytest.mark.asyncio
+    async def test_cleanup_execute(self, server: LessonsLearnedServer):
+        """Actual cleanup should delete matching lessons."""
+        await server.store_lesson(agent_name="a", title="Keep", content="C", confidence=0.9)
+        await server.store_lesson(agent_name="a", title="Low Conf", content="C", confidence=0.2)
+
+        result = await server.cleanup_lessons(max_confidence=0.3, dry_run=False)
+        assert result["dry_run"] is False
+        assert result["deleted_count"] == 1
+
+        all_lessons = await server.list_lessons()
+        assert all_lessons["total"] == 1
+        assert all_lessons["lessons"][0]["title"] == "Keep"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_by_evidence(self, server: LessonsLearnedServer):
+        """Filter by max evidence count. Default evidence_count=1 (schema default)."""
+        r1 = await server.store_lesson(agent_name="a", title="Low Evidence", content="C")
+        r2 = await server.store_lesson(agent_name="a", title="High Evidence", content="C")
+        # Add 2 evidences to r2 so its evidence_count becomes 2
+        await server.add_evidence(r2["lesson_id"], "sess1", "a", "confirm", "first")
+        await server.add_evidence(r2["lesson_id"], "sess2", "a", "confirm", "second")
+
+        # evidence_count <= 1 should match only r1 (default=1), not r2 (now 2)
+        result = await server.cleanup_lessons(max_evidence_count=1, dry_run=True)
+        assert result["matched_count"] == 1
+        assert result["lessons"][0]["lesson_id"] == r1["lesson_id"]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_by_status(self, server: LessonsLearnedServer):
+        """Filter by status."""
+        await server.store_lesson(agent_name="a", title="Active", content="C", status="active")
+        await server.store_lesson(agent_name="a", title="Draft", content="C", status="draft")
+
+        result = await server.cleanup_lessons(status="draft", dry_run=True)
+        assert result["matched_count"] == 1
+        assert result["lessons"][0]["title"] == "Draft"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_by_agent(self, server: LessonsLearnedServer):
+        """Filter by agent name."""
+        await server.store_lesson(agent_name="agent_a", title="A1", content="C")
+        await server.store_lesson(agent_name="agent_b", title="B1", content="C")
+
+        result = await server.cleanup_lessons(agent_name="agent_b", dry_run=False)
+        assert result["deleted_count"] == 1
+        assert result["lessons"][0]["title"] == "B1"
+
+        all_lessons = await server.list_lessons()
+        assert all_lessons["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_cleanup_combined_filters(self, server: LessonsLearnedServer):
+        """Multiple filters should be AND-combined."""
+        await server.store_lesson(agent_name="a", title="Low Draft", content="C", confidence=0.2, status="draft")
+        await server.store_lesson(agent_name="a", title="Low Active", content="C", confidence=0.2, status="active")
+        await server.store_lesson(agent_name="a", title="High Draft", content="C", confidence=0.9, status="draft")
+
+        result = await server.cleanup_lessons(max_confidence=0.3, status="draft", dry_run=True)
+        assert result["matched_count"] == 1
+        assert result["lessons"][0]["title"] == "Low Draft"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_no_matches(self, server: LessonsLearnedServer):
+        """No matching lessons should return empty result."""
+        await server.store_lesson(agent_name="a", title="Good", content="C", confidence=0.9)
+
+        result = await server.cleanup_lessons(max_confidence=0.1, dry_run=False)
+        assert result["deleted_count"] == 0
+        assert result["lessons"] == []
+
+    @pytest.mark.asyncio
+    async def test_cleanup_older_than(self, server: LessonsLearnedServer):
+        """Filter by age (older_than_days). Insert with old created_at."""
+        # Store a lesson then manually backdate it
+        r = await server.store_lesson(agent_name="a", title="Old", content="C")
+        conn = server._get_connection()
+        try:
+            from datetime import UTC, datetime, timedelta
+            old_date = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+            conn.execute("UPDATE lessons SET created_at = ? WHERE lesson_id = ?", (old_date, r["lesson_id"]))
+            conn.commit()
+        finally:
+            conn.close()
+
+        await server.store_lesson(agent_name="a", title="New", content="C")
+
+        result = await server.cleanup_lessons(older_than_days=30, dry_run=True)
+        assert result["matched_count"] == 1
+        assert result["lessons"][0]["title"] == "Old"

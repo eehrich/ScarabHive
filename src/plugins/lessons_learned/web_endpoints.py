@@ -235,3 +235,20 @@ class LessonsWebFactory:
                     task.cancel()
 
         return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    async def cleanup(self, request: Request) -> JSONResponse:
+        """Bulk-delete lessons matching filter criteria."""
+        try:
+            body = await request.json()
+            result = await self.server.cleanup_lessons(
+                older_than_days=body.get("older_than_days"),
+                max_evidence_count=body.get("max_evidence_count"),
+                max_confidence=body.get("max_confidence"),
+                status=body.get("status"),
+                agent_name=body.get("agent_name"),
+                dry_run=body.get("dry_run", True),
+            )
+            return JSONResponse(result)
+        except Exception as e:
+            logger.error(f"Cleanup failed: {e}", exc_info=True)
+            return JSONResponse({"error": str(e)}, status_code=500)

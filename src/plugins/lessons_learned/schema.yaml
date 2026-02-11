@@ -82,6 +82,12 @@ web_ui:
       response_type: "json"
       description: "Consolidate similar lessons using LLM evaluation"
 
+    - path: "/cleanup"
+      method: "POST"
+      handler: "cleanup"
+      response_type: "json"
+      description: "Bulk-delete lessons matching filter criteria"
+
 hooks:
   - name: inject_lessons
     type: pre_llm_call
@@ -150,7 +156,7 @@ tools:
         properties:
           operation:
             type: string
-            enum: ["store", "search", "list", "update", "confirm", "teach"]
+            enum: ["store", "search", "list", "update", "confirm", "teach", "delete"]
             description: |
               Operations:
               - store: Save a new lesson (title + content required). Automatically deduplicates.
@@ -159,6 +165,7 @@ tools:
               - update: Edit an existing lesson (lesson_id required).
               - confirm: Add evidence that a lesson is correct/incorrect (lesson_id + evidence_type).
               - teach: Share a lesson with another agent (target_agent + title + content).
+              - delete: Permanently delete a trivial, nonsensical, or outdated lesson (lesson_id required).
 
           # For store / teach operations
           title:

@@ -11,12 +11,13 @@ import asyncio
 import json
 import logging
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult, PluginHook
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.utils.json_utils import repair_json
 from agent_system.utils.vector_store import VectorStore
 
 from .models import (
@@ -555,6 +556,101 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
 
         return {"status": "deleted", "lesson_id": lesson_id}
 
+    async def cleanup_lessons(
+        self,
+        older_than_days: Optional[int] = None,
+        max_evidence_count: Optional[int] = None,
+        max_confidence: Optional[float] = None,
+        status: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Bulk-delete lessons matching filter criteria.
+
+        Args:
+            older_than_days: Delete lessons created more than N days ago.
+            max_evidence_count: Delete lessons with evidence_count <= N.
+            max_confidence: Delete lessons with confidence <= threshold.
+            status: Only target lessons with this status.
+            agent_name: Only target lessons for this agent.
+            dry_run: If True, return matching lessons without deleting.
+
+        Returns:
+            Dict with matched count, deleted count, and lesson details.
+        """
+        conn = self._get_connection()
+        try:
+            sql = "SELECT lesson_id, agent_name, title, status, confidence, evidence_count, created_at FROM lessons WHERE 1=1"
+            params: list[Any] = []
+
+            if older_than_days is not None:
+                cutoff = (datetime.now(UTC) - timedelta(days=older_than_days)).isoformat()
+                sql += " AND created_at < ?"
+                params.append(cutoff)
+
+            if max_evidence_count is not None:
+                sql += " AND evidence_count <= ?"
+                params.append(max_evidence_count)
+
+            if max_confidence is not None:
+                sql += " AND confidence <= ?"
+                params.append(max_confidence)
+
+            if status:
+                sql += " AND status = ?"
+                params.append(status)
+
+            if agent_name:
+                sql += " AND agent_name = ?"
+                params.append(agent_name)
+
+            rows = conn.execute(sql, params).fetchall()
+            matched = [dict(r) for r in rows]
+
+            if dry_run:
+                return {
+                    "dry_run": True,
+                    "matched_count": len(matched),
+                    "lessons": matched,
+                }
+
+            if not matched:
+                return {"dry_run": False, "deleted_count": 0, "lessons": []}
+
+            # Group by agent for vectorstore cleanup
+            by_agent: Dict[str, list[str]] = {}
+            ids_to_delete = []
+            for lesson in matched:
+                ids_to_delete.append(lesson["lesson_id"])
+                agent = lesson["agent_name"]
+                by_agent.setdefault(agent, []).append(lesson["lesson_id"])
+
+            # Delete from DB
+            placeholders = ",".join("?" * len(ids_to_delete))
+            conn.execute(f"DELETE FROM lesson_evidence WHERE lesson_id IN ({placeholders})", ids_to_delete)
+            conn.execute(f"DELETE FROM lesson_applications WHERE lesson_id IN ({placeholders})", ids_to_delete)
+            conn.execute(f"DELETE FROM lessons WHERE lesson_id IN ({placeholders})", ids_to_delete)
+            conn.commit()
+
+            # Delete from VectorStore per agent collection
+            for agent, lesson_ids in by_agent.items():
+                try:
+                    await asyncio.to_thread(
+                        self.vector_store.delete,
+                        collection=self._collection_name(agent),
+                        ids=lesson_ids,
+                    )
+                except Exception as e:
+                    logger.debug(f"VectorStore cleanup for agent '{agent}' failed (non-critical): {e}")
+
+            return {
+                "dry_run": False,
+                "deleted_count": len(matched),
+                "lessons": matched,
+            }
+        finally:
+            conn.close()
+
     async def add_evidence(
         self,
         lesson_id: str,
@@ -953,10 +1049,77 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         # Only return clusters with 2+ lessons
         return [members for members in groups.values() if len(members) >= 2]
 
+    # Token limit for a single LLM consolidation call (~4 chars per token)
+    MAX_CLUSTER_CHARS = 60_000  # ~15k tokens, safe for most models
+
     async def _llm_evaluate_cluster(
         self, lessons: List[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
-        """Use LLM to evaluate a cluster of similar lessons and decide on merging."""
+        """Use LLM to evaluate a cluster of similar lessons and decide on merging.
+        
+        If the cluster is too large for one LLM call, it is split into
+        sub-clusters that each fit the token budget.
+        """
+        # Check total size and split if needed
+        total_chars = sum(
+            len(l.get('title', '')) + len(l.get('content', '')) + 120  # 120 for metadata
+            for l in lessons
+        )
+        if total_chars > self.MAX_CLUSTER_CHARS and len(lessons) > 2:
+            logger.info(
+                f"Cluster too large ({total_chars} chars, {len(lessons)} lessons), "
+                f"splitting into sub-clusters"
+            )
+            return await self._evaluate_large_cluster(lessons)
+
+        return await self._llm_evaluate_cluster_single(lessons)
+
+    async def _evaluate_large_cluster(
+        self, lessons: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Split a large cluster into sub-clusters and evaluate each."""
+        # Split into chunks that fit the token budget
+        sub_clusters: List[List[Dict[str, Any]]] = []
+        current_chunk: List[Dict[str, Any]] = []
+        current_chars = 0
+
+        for lesson in lessons:
+            lesson_chars = len(lesson.get('title', '')) + len(lesson.get('content', '')) + 120
+            if current_chars + lesson_chars > self.MAX_CLUSTER_CHARS and current_chunk:
+                sub_clusters.append(current_chunk)
+                current_chunk = []
+                current_chars = 0
+            current_chunk.append(lesson)
+            current_chars += lesson_chars
+
+        if current_chunk:
+            sub_clusters.append(current_chunk)
+
+        # Evaluate each sub-cluster
+        combined_groups: List[Dict[str, Any]] = []
+        combined_keep_separate: List[str] = []
+
+        for sub in sub_clusters:
+            if len(sub) < 2:
+                combined_keep_separate.extend(l['lesson_id'] for l in sub)
+                continue
+            result = await self._llm_evaluate_cluster_single(sub)
+            if result:
+                combined_groups.extend(result.get('groups', []))
+                combined_keep_separate.extend(result.get('keep_separate', []))
+            else:
+                combined_keep_separate.extend(l['lesson_id'] for l in sub)
+
+        return {
+            'groups': combined_groups,
+            'keep_separate': combined_keep_separate,
+            'reason': f'Large cluster split into {len(sub_clusters)} sub-clusters',
+        }
+
+    async def _llm_evaluate_cluster_single(
+        self, lessons: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Use LLM to evaluate a single cluster of similar lessons."""
         try:
             from agent_system.llm.factory import create_llm_from_profile
             from agent_system.llm.models import ChatMessage as CM
@@ -993,6 +1156,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 "- If lessons are similar but cover DIFFERENT aspects, put them in separate groups or leave them alone\n"
                 "- You can create multiple merge groups from one set of lessons\n\n"
                 "- remove IDs or concreate details from the prompt, and focus on the core insight\n"
+                "- save tokens by being concise, but keep the core meaning and insight of the lesson.\n"
                 "Output valid JSON with a list of merge groups:\n"
                 "```json\n"
                 '{\n'
@@ -1027,7 +1191,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
 
             response = await llm.chat(messages=messages)
 
-            # Parse response
+            # Parse response with repair_json for robustness
             text = response.strip()
             if text.startswith("```"):
                 lines = text.split("\n")
@@ -1036,7 +1200,16 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                     text = text[:-3]
                 text = text.strip()
 
-            return json.loads(text)
+            # Try standard JSON first, fall back to repair
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                logger.debug("Standard JSON parse failed, trying repair_json...")
+                repaired = repair_json(text)
+                if isinstance(repaired, dict):
+                    return repaired
+                logger.warning("repair_json did not produce a valid dict")
+                return None
 
         except Exception as e:
             logger.error(f"LLM cluster evaluation failed: {e}", exc_info=True)
@@ -1209,6 +1382,10 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 if status_reporter:
                     await status_reporter.progress("Teaching lesson to target agent...")
                 result = await self._op_teach(params, agent_name, session_id)
+            elif operation == "delete":
+                if status_reporter:
+                    await status_reporter.progress("Deleting lesson...")
+                result = await self._op_delete(params)
             else:
                 result = {"error": f"Unknown operation: {operation}"}
 
@@ -1316,6 +1493,12 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             source_session=session_id,
             status="draft",
         )
+
+    async def _op_delete(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        lesson_id = params.get("lesson_id", "")
+        if not lesson_id:
+            return {"error": "'lesson_id' is required for delete."}
+        return await self.delete_lesson(lesson_id)
 
     # ==========================================================================
     # Hook Implementations

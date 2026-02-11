@@ -163,6 +163,7 @@
         <button onclick="loadLessons()">🔄 Refresh</button>
         <button class="success" onclick="openCreateModal()">+ New Lesson</button>
         <button style="background:#6a4c93" onclick="openConsolidateModal()">🔗 Consolidate</button>
+        <button class="danger" onclick="openCleanupModal()">🧹 Cleanup</button>
     </div>
 
     <!-- Semantic Search -->
@@ -302,6 +303,46 @@
             <div class="form-actions" style="margin-top: 20px;">
                 <button class="secondary" onclick="closeDeleteModal()">Cancel</button>
                 <button class="danger" onclick="confirmDelete()">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cleanup Modal -->
+    <div class="modal-overlay" id="cleanup-modal-overlay" onclick="if(event.target===this)closeCleanupModal()">
+        <div class="modal" style="max-width: 520px;">
+            <h2>🧹 Cleanup Lessons</h2>
+            <p style="margin: 8px 0; color: #888; font-size: 12px;">Bulk-delete lessons matching filter criteria. Use Preview to check before deleting.</p>
+            <div class="form-group" style="margin-top: 12px;">
+                <label>Agent (leave empty for all agents)</label>
+                <input type="text" id="cleanup-agent" list="agent-list" placeholder="All agents">
+            </div>
+            <div class="form-group">
+                <label>Status</label>
+                <select id="cleanup-status">
+                    <option value="">Any status</option>
+                    <option value="draft">Draft</option>
+                    <option value="inactive">Inactive</option>
+                    <option value="archived">Archived</option>
+                    <option value="active">Active</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Older than (days)</label>
+                <input type="number" id="cleanup-older-days" min="1" placeholder="e.g. 30">
+            </div>
+            <div class="form-group">
+                <label>Evidence count ≤</label>
+                <input type="number" id="cleanup-max-evidence" min="0" placeholder="e.g. 1">
+            </div>
+            <div class="form-group">
+                <label>Confidence ≤</label>
+                <input type="number" id="cleanup-max-confidence" min="0" max="1" step="0.05" placeholder="e.g. 0.3">
+            </div>
+            <div id="cleanup-result" style="display:none; margin-top: 12px; max-height: 300px; overflow-y: auto;"></div>
+            <div class="form-actions" style="margin-top: 16px;">
+                <button class="secondary" onclick="closeCleanupModal()">Close</button>
+                <button id="cleanup-preview-btn" onclick="runCleanup(true)">🔍 Preview</button>
+                <button id="cleanup-delete-btn" class="danger" onclick="runCleanup(false)" disabled>🗑️ Delete</button>
             </div>
         </div>
     </div>
@@ -776,6 +817,116 @@
                 html += `</div>`;
             } else {
                 html += `<div style="color:#888;font-size:12px">No similar lesson clusters found.</div>`;
+            }
+            html += `</div>`;
+            return html;
+        }
+
+        // === Cleanup ===
+        function openCleanupModal() {
+            const agent = document.getElementById('filter-agent').value;
+            document.getElementById('cleanup-agent').value = agent || '';
+            document.getElementById('cleanup-status').value = '';
+            document.getElementById('cleanup-older-days').value = '';
+            document.getElementById('cleanup-max-evidence').value = '';
+            document.getElementById('cleanup-max-confidence').value = '';
+            document.getElementById('cleanup-result').style.display = 'none';
+            document.getElementById('cleanup-result').innerHTML = '';
+            document.getElementById('cleanup-preview-btn').disabled = false;
+            document.getElementById('cleanup-delete-btn').disabled = true;
+            document.getElementById('cleanup-modal-overlay').classList.add('visible');
+        }
+
+        function closeCleanupModal() {
+            document.getElementById('cleanup-modal-overlay').classList.remove('visible');
+        }
+
+        function buildCleanupBody() {
+            const body = {};
+            const agent = document.getElementById('cleanup-agent').value.trim();
+            const status = document.getElementById('cleanup-status').value;
+            const olderDays = document.getElementById('cleanup-older-days').value;
+            const maxEvidence = document.getElementById('cleanup-max-evidence').value;
+            const maxConfidence = document.getElementById('cleanup-max-confidence').value;
+
+            if (agent) body.agent_name = agent;
+            if (status) body.status = status;
+            if (olderDays) body.older_than_days = parseInt(olderDays);
+            if (maxEvidence !== '') body.max_evidence_count = parseInt(maxEvidence);
+            if (maxConfidence !== '') body.max_confidence = parseFloat(maxConfidence);
+            return body;
+        }
+
+        async function runCleanup(dryRun) {
+            const resultDiv = document.getElementById('cleanup-result');
+            const previewBtn = document.getElementById('cleanup-preview-btn');
+            const deleteBtn = document.getElementById('cleanup-delete-btn');
+
+            const body = buildCleanupBody();
+            // Need at least one filter
+            if (!body.agent_name && !body.status && !body.older_than_days && body.max_evidence_count === undefined && body.max_confidence === undefined) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = '<div class="error-msg">Set at least one filter criterion.</div>';
+                return;
+            }
+
+            body.dry_run = dryRun;
+            previewBtn.disabled = true;
+            deleteBtn.disabled = true;
+            previewBtn.textContent = '⏳ Loading...';
+
+            try {
+                const r = await fetch(`${BASE}/cleanup`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+                const d = await r.json();
+                if (d.error) {
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = `<div class="error-msg">${esc(d.error)}</div>`;
+                    return;
+                }
+
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = renderCleanupResult(d);
+
+                if (dryRun && d.matched_count > 0) {
+                    deleteBtn.disabled = false;
+                }
+
+                if (!dryRun && d.deleted_count > 0) {
+                    showFeedback(`Deleted ${d.deleted_count} lessons`);
+                    loadLessons();
+                    loadStats();
+                }
+            } catch (e) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `<div class="error-msg">Cleanup failed: ${esc(e.message)}</div>`;
+            } finally {
+                previewBtn.disabled = false;
+                previewBtn.textContent = '🔍 Preview';
+            }
+        }
+
+        function renderCleanupResult(d) {
+            const mode = d.dry_run ? '🔍 PREVIEW' : '✅ DELETED';
+            const count = d.dry_run ? d.matched_count : d.deleted_count;
+            let html = `<div style="background:#252526;border:1px solid #3e3e42;border-radius:4px;padding:12px">`;
+            html += `<div style="margin-bottom:8px"><strong style="color:#dcdcaa">${mode}</strong> — <strong style="color:${count > 0 ? '#f44747' : '#4ec9b0'}">${count}</strong> lesson${count !== 1 ? 's' : ''}</div>`;
+
+            if (d.lessons && d.lessons.length > 0) {
+                html += `<div style="font-size:11px;border-top:1px solid #3e3e42;padding-top:8px;max-height:200px;overflow-y:auto">`;
+                for (const l of d.lessons) {
+                    const conf = (l.confidence || 0).toFixed(2);
+                    html += `<div style="margin-bottom:4px;padding:3px 4px;background:#1e1e1e;border-radius:3px;display:flex;justify-content:space-between;align-items:center">`;
+                    html += `<span><span style="color:#9cdcfe;font-family:monospace">${esc(l.lesson_id)}</span> ${esc(l.title || '')}</span>`;
+                    html += `<span style="color:#888;white-space:nowrap;margin-left:8px">ev:${l.evidence_count || 0} c:${conf} ${esc(l.status || '')}</span>`;
+                    html += `</div>`;
+                }
+                html += `</div>`;
+            } else {
+                html += `<div style="color:#888;font-size:12px">No lessons match the filters.</div>`;
             }
             html += `</div>`;
             return html;
