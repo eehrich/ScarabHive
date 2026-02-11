@@ -76,6 +76,12 @@ web_ui:
       response_type: "json"
       description: "List all lesson categories"
 
+    - path: "/consolidate"
+      method: "POST"
+      handler: "consolidate"
+      response_type: "json"
+      description: "Consolidate similar lessons using LLM evaluation"
+
 hooks:
   - name: inject_lessons
     type: pre_llm_call
@@ -125,6 +131,11 @@ config:
     type: string
     default: "turbo"
     description: "LLM profile to use for lesson extraction"
+
+  consolidation_llm_profile:
+    type: string
+    default: "turbo"
+    description: "LLM profile to use for consolidation (merge decisions). Recommended: think or normal."
 
 tools:
   - type: function

@@ -411,7 +411,7 @@ class VectorStore:
         if metadatas:
             kwargs["metadatas"] = metadatas
         
-        coll.add(**kwargs)
+        coll.upsert(**kwargs)
     
     def _chromadb_query(
         self,

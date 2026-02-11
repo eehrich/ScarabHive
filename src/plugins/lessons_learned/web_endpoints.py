@@ -1,11 +1,14 @@
 """Web UI endpoints for Lessons Learned management plugin."""
 
+import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.responses import StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from agent_system.plugins.schema_router import create_schema_router
@@ -192,3 +195,43 @@ class LessonsWebFactory:
         except Exception as e:
             logger.error(f"Error fetching categories: {e}", exc_info=True)
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    async def consolidate(self, request: Request) -> StreamingResponse:
+        """Consolidate similar lessons using LLM evaluation, streaming progress."""
+        body = await request.json()
+        agent_name = body.get("agent_name")
+        dry_run = body.get("dry_run", False)
+        similarity_threshold = body.get("similarity_threshold")
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def progress_callback(msg: dict) -> None:
+            await queue.put(msg)
+
+        async def run_consolidation() -> None:
+            try:
+                result = await self.server.consolidate_lessons(
+                    agent_name=agent_name,
+                    similarity_threshold=similarity_threshold,
+                    dry_run=dry_run,
+                    progress_callback=progress_callback,
+                )
+                await queue.put({"type": "result", "data": result})
+            except Exception as e:
+                logger.error(f"Consolidation failed: {e}", exc_info=True)
+                await queue.put({"type": "error", "message": str(e)})
+
+        task = asyncio.create_task(run_consolidation())
+
+        async def generate():
+            try:
+                while True:
+                    msg = await queue.get()
+                    yield json.dumps(msg) + "\n"
+                    if msg.get("type") in ("result", "error"):
+                        break
+            finally:
+                if not task.done():
+                    task.cancel()
+
+        return StreamingResponse(generate(), media_type="application/x-ndjson")

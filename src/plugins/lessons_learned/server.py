@@ -169,6 +169,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         self.max_lessons_per_agent = int(getattr(mcp_config, "max_lessons_per_agent", 200))
         self.dedup_similarity_threshold = float(getattr(mcp_config, "dedup_similarity_threshold", 0.82))
         self.exact_duplicate_threshold = float(getattr(mcp_config, "exact_duplicate_threshold", 0.95))
+        self.consolidation_llm_profile = str(getattr(mcp_config, "consolidation_llm_profile", "turbo"))
 
         # Lesson ID counters (agent_name -> int)
         self._lesson_counters: Dict[str, int] = {}
@@ -723,6 +724,418 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    # ==========================================================================
+    # Consolidation (LLM-powered merge of similar lessons)
+    # ==========================================================================
+
+    async def consolidate_lessons(
+        self,
+        agent_name: Optional[str] = None,
+        similarity_threshold: Optional[float] = None,
+        dry_run: bool = False,
+        progress_callback: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Find and merge similar lessons using LLM evaluation.
+
+        1. Fetch all non-archived lessons (per agent or globally)
+        2. Find clusters of similar lessons via VectorStore
+        3. LLM evaluates each cluster: best title/content, merge recommendation
+        4. Merge: keep primary, archive duplicates, bump evidence
+
+        Returns summary of actions taken.
+        """
+        threshold = similarity_threshold or self.dedup_similarity_threshold
+
+        # Determine agents to process
+        if agent_name:
+            agents_to_process = [agent_name]
+        else:
+            conn = self._get_connection()
+            try:
+                rows = conn.execute("SELECT DISTINCT agent_name FROM lessons WHERE status != 'archived'").fetchall()
+                agents_to_process = [r[0] for r in rows]
+            finally:
+                conn.close()
+
+        total_clusters = 0
+        total_merged = 0
+        total_skipped = 0
+        merge_details: List[Dict[str, Any]] = []
+
+        async def _progress(phase: str, message: str, percent: int) -> None:
+            if progress_callback:
+                await progress_callback({"type": "progress", "phase": phase, "message": message, "percent": min(100, max(0, percent))})
+
+        await _progress("init", f"Starting consolidation for {len(agents_to_process)} agent(s)...", 5)
+
+        agent_idx = 0
+        for agent in agents_to_process:
+            agent_idx += 1
+            agent_base_pct = 5 + int(90 * (agent_idx - 1) / max(1, len(agents_to_process)))
+            agent_range_pct = int(90 / max(1, len(agents_to_process)))
+
+            await _progress("scan", f"Scanning agent '{agent}' for similar lessons...", agent_base_pct)
+            clusters = await self._find_similar_clusters(agent, threshold)
+            if not clusters:
+                continue
+
+            total_clusters += len(clusters)
+            await _progress("scan", f"Agent '{agent}': found {len(clusters)} cluster(s)", agent_base_pct + 5)
+
+            cluster_idx = 0
+            for cluster in clusters:
+                cluster_idx += 1
+                cluster_pct = agent_base_pct + int(agent_range_pct * cluster_idx / max(1, len(clusters)))
+
+                if len(cluster) < 2:
+                    continue
+
+                await _progress("evaluate", f"Agent '{agent}': evaluating cluster {cluster_idx}/{len(clusters)} ({len(cluster)} lessons)...", cluster_pct)
+
+                # Fetch full lesson data for cluster
+                conn = self._get_connection()
+                try:
+                    placeholders = ",".join("?" * len(cluster))
+                    rows = conn.execute(
+                        f"SELECT * FROM lessons WHERE lesson_id IN ({placeholders})",
+                        cluster,
+                    ).fetchall()
+                    lessons = [dict(r) for r in rows]
+                finally:
+                    conn.close()
+
+                if len(lessons) < 2:
+                    continue
+
+                # Ask LLM to evaluate the cluster
+                evaluation = await self._llm_evaluate_cluster(lessons)
+
+                if not evaluation:
+                    total_skipped += 1
+                    merge_details.append({
+                        "action": "skipped",
+                        "reason": "LLM evaluation failed",
+                        "lessons": [l["lesson_id"] for l in lessons],
+                    })
+                    continue
+
+                groups = evaluation.get("groups", [])
+                keep_separate = evaluation.get("keep_separate", [])
+
+                if not groups:
+                    total_skipped += 1
+                    merge_details.append({
+                        "action": "skipped",
+                        "reason": evaluation.get("reason", "LLM decided not to merge"),
+                        "lessons": [l["lesson_id"] for l in lessons],
+                    })
+                    continue
+
+                lessons_by_id = {l["lesson_id"]: l for l in lessons}
+
+                for group in groups:
+                    merge_ids = group.get("merge_ids", [])
+                    if len(merge_ids) < 2:
+                        continue
+
+                    group_lessons = [lessons_by_id[mid] for mid in merge_ids if mid in lessons_by_id]
+                    if len(group_lessons) < 2:
+                        continue
+
+                    if dry_run:
+                        merge_details.append({
+                            "action": "would_merge",
+                            "primary": group.get("primary_id"),
+                            "merged_title": group.get("title"),
+                            "archived": [mid for mid in merge_ids if mid != group.get("primary_id")],
+                            "reason": group.get("reason", ""),
+                        })
+                        total_merged += len(group_lessons) - 1
+                    else:
+                        result = await self._execute_merge(
+                            agent=agent,
+                            lessons=group_lessons,
+                            merge_decision=group,
+                        )
+                        merge_details.append(result)
+                        total_merged += result.get("archived_count", 0)
+
+                if keep_separate:
+                    merge_details.append({
+                        "action": "kept_separate",
+                        "lessons": keep_separate,
+                        "reason": evaluation.get("reason", ""),
+                    })
+
+        await _progress("done", f"Consolidation complete: {total_merged} lessons merged, {total_skipped} clusters skipped", 100)
+
+        return {
+            "status": "completed",
+            "agents_processed": len(agents_to_process),
+            "clusters_found": total_clusters,
+            "lessons_merged": total_merged,
+            "clusters_skipped": total_skipped,
+            "dry_run": dry_run,
+            "details": merge_details,
+        }
+
+    async def _find_similar_clusters(
+        self, agent_name: str, threshold: float
+    ) -> List[List[str]]:
+        """Find clusters of similar lessons for an agent using VectorStore."""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT lesson_id, title, content FROM lessons "
+                "WHERE agent_name = ? AND status != 'archived'",
+                (agent_name,),
+            ).fetchall()
+            lessons = [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+        if len(lessons) < 2:
+            return []
+
+        # Build adjacency: for each lesson, find similar ones
+        adjacency: Dict[str, set] = {l["lesson_id"]: set() for l in lessons}
+
+        for lesson in lessons:
+            try:
+                query_text = f"{lesson['title']}. {lesson['content']}"
+                results = await asyncio.to_thread(
+                    self.vector_store.query,
+                    collection=self._collection_name(agent_name),
+                    query_text=query_text,
+                    n_results=min(10, len(lessons)),
+                    include=["metadatas", "distances"],
+                )
+                if results["ids"] and results["ids"][0]:
+                    for i, rid in enumerate(results["ids"][0]):
+                        if rid == lesson["lesson_id"]:
+                            continue
+                        if rid not in adjacency:
+                            continue  # archived or unknown lesson in VectorStore
+                        distance = results["distances"][0][i]
+                        similarity = max(0.0, min(1.0, 1.0 - (distance / 2.0)))
+                        if similarity >= threshold:
+                            adjacency[lesson["lesson_id"]].add(rid)
+                            adjacency[rid].add(lesson["lesson_id"])
+            except Exception as e:
+                logger.debug(f"Similarity query failed for {lesson['lesson_id']}: {e}")
+
+        # Union-Find to build clusters
+        parent: Dict[str, str] = {lid: lid for lid in adjacency}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for lid, neighbors in adjacency.items():
+            for nid in neighbors:
+                union(lid, nid)
+
+        # Group by root
+        groups: Dict[str, List[str]] = {}
+        for lid in adjacency:
+            root = find(lid)
+            groups.setdefault(root, []).append(lid)
+
+        # Only return clusters with 2+ lessons
+        return [members for members in groups.values() if len(members) >= 2]
+
+    async def _llm_evaluate_cluster(
+        self, lessons: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Use LLM to evaluate a cluster of similar lessons and decide on merging."""
+        try:
+            from agent_system.llm.factory import create_llm_from_profile
+            from agent_system.llm.models import ChatMessage as CM
+
+            system_config = getattr(self, "_system_config", None)
+            if not system_config:
+                logger.warning("No system_config for LLM consolidation")
+                return None
+
+            llm = create_llm_from_profile(config=system_config, llm_profile=self.consolidation_llm_profile)
+
+            # Build prompt with lesson details
+            lessons_text = ""
+            for l in lessons:
+                lessons_text += (
+                    f"\n---\n"
+                    f"ID: {l['lesson_id']}\n"
+                    f"Title: {l['title']}\n"
+                    f"Content: {l['content']}\n"
+                    f"Status: {l['status']} | Priority: {l['priority']} | "
+                    f"Confidence: {l['confidence']:.2f} | Evidence: {l['evidence_count']} | "
+                    f"Applications: {l['application_count']}\n"
+                    f"Category: {l['category']} | Source: {l['source_type']}\n"
+                )
+
+            system_prompt = (
+                "You are a lesson consolidation assistant. You evaluate groups of similar lessons "
+                "and decide which ones should be merged.\n\n"
+                "Rules:\n"
+                "- Only merge if lessons truly cover the same insight or topic\n"
+                "- Keep the best version: clearest title, most comprehensive content\n"
+                "- Preserve important nuances from all lessons in the merged content\n"
+                "- Pick the lesson with the highest evidence/confidence as the primary\n"
+                "- If lessons are similar but cover DIFFERENT aspects, put them in separate groups or leave them alone\n"
+                "- You can create multiple merge groups from one set of lessons\n\n"
+                "- remove IDs or concreate details from the prompt, and focus on the core insight\n"
+                "Output valid JSON with a list of merge groups:\n"
+                "```json\n"
+                '{\n'
+                '  "groups": [\n'
+                '    {\n'
+                '      "merge_ids": ["id1", "id2"],\n'
+                '      "primary_id": "id1",\n'
+                '      "title": "Best merged title (max 200 chars)",\n'
+                '      "content": "Best merged content (max 2000 chars)",\n'
+                '      "category": "best category",\n'
+                '      "priority": 5,\n'
+                '      "reason": "Why these belong together"\n'
+                '    }\n'
+                '  ],\n'
+                '  "keep_separate": ["id3"],\n'
+                '  "reason": "Overall explanation"\n'
+                '}\n'
+                "```\n"
+                "Rules for groups:\n"
+                "- Each group must have at least 2 lesson IDs in merge_ids\n"
+                "- A lesson ID must appear in exactly one group or in keep_separate\n"
+                "- If nothing should be merged, return {\"groups\": [], \"keep_separate\": [...all ids...], \"reason\": \"...\"}\n"
+                "Return ONLY the JSON."
+            )
+
+            user_prompt = f"Evaluate these {len(lessons)} similar lessons and decide if they should be merged:\n{lessons_text}"
+
+            messages = [
+                CM(role="system", content=system_prompt, timestamp=datetime.now(UTC)),
+                CM(role="user", content=user_prompt, timestamp=datetime.now(UTC)),
+            ]
+
+            response = await llm.chat(messages=messages)
+
+            # Parse response
+            text = response.strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                text = "\n".join(lines[1:])
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+
+            return json.loads(text)
+
+        except Exception as e:
+            logger.error(f"LLM cluster evaluation failed: {e}", exc_info=True)
+            return None
+
+    async def _execute_merge(
+        self,
+        agent: str,
+        lessons: List[Dict[str, Any]],
+        merge_decision: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Execute a merge: update primary lesson, archive duplicates, add evidence."""
+        primary_id = merge_decision.get("primary_id", "")
+        new_title = merge_decision.get("title", "")
+        new_content = merge_decision.get("content", "")
+        new_category = merge_decision.get("category")
+        new_priority = merge_decision.get("priority")
+
+        # Validate primary_id exists in cluster
+        lesson_ids = [l["lesson_id"] for l in lessons]
+        if primary_id not in lesson_ids:
+            # Fallback: pick lesson with highest evidence_count
+            primary_id = max(lessons, key=lambda l: (l["evidence_count"], l["confidence"]))["lesson_id"]
+
+        # Calculate merged evidence count
+        total_evidence = sum(l["evidence_count"] for l in lessons)
+        total_applications = sum(l["application_count"] for l in lessons)
+
+        # Best confidence from the group (keeps strongest signal)
+        best_confidence = max(l["confidence"] for l in lessons)
+
+        # Update primary lesson
+        update_fields: Dict[str, Any] = {}
+        if new_title:
+            update_fields["title"] = new_title[:200]
+        if new_content:
+            update_fields["content"] = new_content[:2000]
+        if new_category:
+            update_fields["category"] = new_category
+        if new_priority:
+            update_fields["priority"] = min(10, max(1, int(new_priority)))
+
+        if update_fields:
+            await self.update_lesson(primary_id, **update_fields)
+
+        # Update evidence count and confidence on primary
+        conn = self._get_connection()
+        try:
+            now = datetime.now(UTC).isoformat()
+            conn.execute(
+                "UPDATE lessons SET evidence_count = ?, application_count = ?, "
+                "confidence = ?, updated_at = ? WHERE lesson_id = ?",
+                (total_evidence, total_applications, best_confidence, now, primary_id),
+            )
+
+            # Archive duplicates and add merge evidence
+            archived_ids = []
+            for l in lessons:
+                if l["lesson_id"] == primary_id:
+                    continue
+                conn.execute(
+                    "UPDATE lessons SET status = 'archived', updated_at = ? WHERE lesson_id = ?",
+                    (now, l["lesson_id"]),
+                )
+                # Add evidence record noting the merge
+                conn.execute(
+                    """INSERT INTO lesson_evidence
+                       (lesson_id, session_id, agent_name, evidence_type, description)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (primary_id, "consolidation", agent, "confirm",
+                     f"Merged from {l['lesson_id']}: {l['title']}"),
+                )
+                archived_ids.append(l["lesson_id"])
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Re-index primary in VectorStore
+        try:
+            vector_text = f"{new_title or lessons[0]['title']}. {new_content or lessons[0]['content']}"
+            await asyncio.to_thread(
+                self.vector_store.add,
+                collection=self._collection_name(agent),
+                ids=[primary_id],
+                documents=[vector_text],
+                metadatas=[{"lesson_id": primary_id, "agent_name": agent}],
+            )
+        except Exception as e:
+            logger.debug(f"VectorStore re-index after merge failed: {e}")
+
+        return {
+            "action": "merged",
+            "primary_id": primary_id,
+            "merged_title": new_title,
+            "archived": archived_ids,
+            "archived_count": len(archived_ids),
+            "total_evidence": total_evidence,
+        }
 
     async def check_duplicate(
         self, agent_name: str, title: str, content: str

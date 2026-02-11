@@ -137,6 +137,7 @@ plugins:
       dedup_similarity_threshold: 0.82
       exact_duplicate_threshold: 0.95
       llm_profile: "chat-nostream"
+      consolidation_llm_profile: "chat-nostream"  # LLM for consolidation (merge decisions) - use think/normal for better quality
 
     http_server:
       type: http_server

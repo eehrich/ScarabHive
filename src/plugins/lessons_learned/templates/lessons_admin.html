@@ -163,6 +163,7 @@
         </select>
         <button onclick="loadLessons()">🔄 Refresh</button>
         <button class="success" onclick="openCreateModal()">+ New Lesson</button>
+        <button style="background:#6a4c93" onclick="openConsolidateModal()">🔗 Consolidate</button>
     </div>
 
     <!-- Semantic Search -->
@@ -252,6 +253,42 @@
             <div class="form-actions">
                 <button class="secondary" onclick="closeModal()">Cancel</button>
                 <button onclick="saveLesson()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Consolidate Modal -->
+    <div class="modal-overlay" id="consolidate-modal-overlay" onclick="if(event.target===this)closeConsolidateModal()">
+        <div class="modal" style="max-width: 520px;">
+            <h2>🔗 Consolidate Lessons</h2>
+            <p style="margin: 8px 0; color: #888; font-size: 12px;">Find and merge similar lessons using LLM evaluation. Similar lessons are grouped, evaluated, and the best version is kept while duplicates are archived.</p>
+            <div class="form-group" style="margin-top: 12px;">
+                <label>Agent (leave empty for all agents)</label>
+                <input type="text" id="consolidate-agent" list="agent-list" placeholder="All agents">
+            </div>
+            <div class="form-group">
+                <label>Similarity Threshold (default: plugin config)</label>
+                <input type="number" id="consolidate-threshold" min="0.5" max="1.0" step="0.05" placeholder="0.82">
+            </div>
+            <div class="form-group">
+                <label style="display:flex;align-items:center;gap:6px">
+                    <input type="checkbox" id="consolidate-dry-run" checked style="width:auto">
+                    Dry Run (preview only, no changes)
+                </label>
+            </div>
+            <div id="consolidate-result" style="display:none; margin-top: 12px; max-height: 350px; overflow-y: auto;"></div>
+            <div id="consolidate-progress" style="display:none; margin-top: 10px;">
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:3px">
+                    <span id="consolidate-phase">Initializing...</span>
+                    <span id="consolidate-pct">0%</span>
+                </div>
+                <div style="background:#3c3c3c;border-radius:3px;height:8px;overflow:hidden">
+                    <div id="consolidate-bar" style="background:#6a4c93;height:100%;width:0%;transition:width 0.3s ease"></div>
+                </div>
+            </div>
+            <div class="form-actions" style="margin-top: 16px;">
+                <button class="secondary" onclick="closeConsolidateModal()">Close</button>
+                <button id="consolidate-btn" style="background:#6a4c93" onclick="runConsolidate()">🔗 Run</button>
             </div>
         </div>
     </div>
@@ -607,6 +644,142 @@
 
         function closeModal() {
             document.getElementById('modal-overlay').classList.remove('visible');
+        }
+
+        // === Consolidate ===
+        function openConsolidateModal() {
+            const agent = document.getElementById('filter-agent').value;
+            document.getElementById('consolidate-agent').value = agent || '';
+            document.getElementById('consolidate-threshold').value = '';
+            document.getElementById('consolidate-dry-run').checked = true;
+            document.getElementById('consolidate-result').style.display = 'none';
+            document.getElementById('consolidate-result').innerHTML = '';
+            document.getElementById('consolidate-btn').disabled = false;
+            document.getElementById('consolidate-btn').textContent = '🔗 Run';
+            document.getElementById('consolidate-progress').style.display = 'none';
+            document.getElementById('consolidate-modal-overlay').classList.add('visible');
+        }
+
+        function closeConsolidateModal() {
+            document.getElementById('consolidate-modal-overlay').classList.remove('visible');
+        }
+
+        async function runConsolidate() {
+            const btn = document.getElementById('consolidate-btn');
+            const resultDiv = document.getElementById('consolidate-result');
+            const progressDiv = document.getElementById('consolidate-progress');
+            btn.disabled = true;
+            btn.textContent = '⏳ Running...';
+            resultDiv.style.display = 'none';
+            resultDiv.innerHTML = '';
+            progressDiv.style.display = 'block';
+            document.getElementById('consolidate-bar').style.width = '0%';
+            document.getElementById('consolidate-pct').textContent = '0%';
+            document.getElementById('consolidate-phase').textContent = 'Initializing...';
+
+            const body = {};
+            const agent = document.getElementById('consolidate-agent').value.trim();
+            const threshold = document.getElementById('consolidate-threshold').value;
+            const dryRun = document.getElementById('consolidate-dry-run').checked;
+
+            if (agent) body.agent_name = agent;
+            if (threshold) body.similarity_threshold = parseFloat(threshold);
+            body.dry_run = dryRun;
+
+            try {
+                const response = await fetch(`${BASE}/consolidate`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let finalResult = null;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            const msg = JSON.parse(line);
+                            if (msg.type === 'progress') {
+                                document.getElementById('consolidate-bar').style.width = msg.percent + '%';
+                                document.getElementById('consolidate-pct').textContent = msg.percent + '%';
+                                document.getElementById('consolidate-phase').textContent = msg.message || '';
+                            } else if (msg.type === 'result') {
+                                finalResult = msg.data;
+                            } else if (msg.type === 'error') {
+                                resultDiv.style.display = 'block';
+                                resultDiv.innerHTML = `<div class="error-msg">${esc(msg.message)}</div>`;
+                            }
+                        } catch (pe) { /* ignore parse errors */ }
+                    }
+                }
+
+                progressDiv.style.display = 'none';
+                resultDiv.style.display = 'block';
+
+                if (finalResult) {
+                    resultDiv.innerHTML = renderConsolidateResult(finalResult);
+                    if (!dryRun && finalResult.lessons_merged > 0) {
+                        loadLessons();
+                        loadStats();
+                    }
+                } else if (!resultDiv.innerHTML) {
+                    resultDiv.innerHTML = '<div class="error-msg">No result received</div>';
+                }
+            } catch (e) {
+                progressDiv.style.display = 'none';
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `<div class="error-msg">Failed: ${esc(e.message)}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔗 Run';
+            }
+        }
+
+        function renderConsolidateResult(d) {
+            const mode = d.dry_run ? '🔍 DRY RUN' : '✅ EXECUTED';
+            let html = `<div style="background:#252526;border:1px solid #3e3e42;border-radius:4px;padding:12px">`;
+            html += `<div style="margin-bottom:8px"><strong style="color:#dcdcaa">${mode}</strong></div>`;
+            html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;font-size:12px">`;
+            html += `<div>Agents processed: <strong>${d.agents_processed}</strong></div>`;
+            html += `<div>Clusters found: <strong>${d.clusters_found}</strong></div>`;
+            html += `<div>Lessons merged: <strong style="color:#4ec9b0">${d.lessons_merged}</strong></div>`;
+            html += `<div>Clusters skipped: <strong>${d.clusters_skipped}</strong></div>`;
+            html += `</div>`;
+
+            if (d.details && d.details.length > 0) {
+                html += `<div style="font-size:11px;border-top:1px solid #3e3e42;padding-top:8px">`;
+                for (const det of d.details) {
+                    if (det.action === 'merged' || det.action === 'would_merge') {
+                        const icon = det.action === 'merged' ? '✅' : '🔍';
+                        html += `<div style="margin-bottom:6px;padding:4px;background:#1e3a1e;border-radius:3px">`;
+                        html += `${icon} <strong>${esc(det.merged_title || '')}</strong><br>`;
+                        html += `Keep: <span style="color:#9cdcfe">${det.primary_id || det.primary}</span>`;
+                        html += ` | Archive: ${(det.archived || []).map(id => `<span style="color:#888">${id}</span>`).join(', ')}`;
+                        if (det.total_evidence) html += ` | Evidence: ${det.total_evidence}`;
+                        html += `</div>`;
+                    } else if (det.action === 'skipped') {
+                        html += `<div style="margin-bottom:4px;color:#888">⏭️ Skipped [${(det.lessons || []).join(', ')}]: ${esc(det.reason || '')}</div>`;
+                    } else if (det.action === 'kept_separate') {
+                        html += `<div style="margin-bottom:4px;color:#9cdcfe">📌 Kept separate [${(det.lessons || []).join(', ')}]</div>`;
+                    }
+                }
+                html += `</div>`;
+            } else {
+                html += `<div style="color:#888;font-size:12px">No similar lesson clusters found.</div>`;
+            }
+            html += `</div>`;
+            return html;
         }
 
         // Filter change listeners
