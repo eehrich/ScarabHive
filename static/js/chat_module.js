@@ -1597,6 +1597,13 @@
         stopBtn.disabled = false;
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
         currentEventSource = null;
+        // Clear stale request ID unless actively reconnecting
+        // Without this, currentRequestId stays set after a completed request,
+        // which can interfere with subsequent submissions
+        if (!sseReconnectTimer) {
+          currentRequestId = null;
+          storeActiveRequest(null);
+        }
         sseReconnectAttempts = 0;
       }
     });
