@@ -32,17 +32,22 @@ reusable lessons that should be remembered for future sessions.
 Focus on:
 - Corrections the user made (the agent did X wrong, should have done Y)
 - Explicit preferences stated by the user
-- Patterns that led to successful outcomes
-- Mistakes or anti-patterns to avoid
-- Domain-specific knowledge shared by the user
-- Tool usage patterns that worked well or poorly
-- Workflow improvements discovered during the session
-- save tokens by being concise, but keep the core meaning and insight of the lesson
+- Domain-specific knowledge or insights shared by the user that generalize across projects
+- Content quality patterns (what makes good/bad output in this domain)
+- Error patterns that should be avoided in the future
+- Style preferences or standards that emerged
+- Be concise, but keep the core meaning and insight of the lesson
 
 Do NOT extract:
 - One-off factual queries (e.g., "What is the capital of France?")
-- Lessons that are too specific to a single task and won't generalize
+- Lessons that are too specific to a single task/project and won't generalize to other projects
+- Project-specific content (e.g., specific magic systems, character names, plot details of one book)
 - Trivially obvious best practices
+- Tool usage instructions (e.g., "Use tool X for task Y", "Pass parameter Z to tool")
+- Operational workflow steps (e.g., "Check for existing items before creating new ones")
+- Communication patterns (e.g., "Provide clear next steps", "Return the ID after creation")
+- Anything that describes HOW to use the system rather than domain knowledge
+- Success confirmations or status reports disguised as lessons
 
 Output valid JSON:
 ```json
@@ -51,7 +56,7 @@ Output valid JSON:
     {
       "title": "Short descriptive title (max 200 chars)",
       "content": "Detailed lesson content. What to do/avoid and why. (max 500 chars)",
-      "category": "One of: style, workflow, error_pattern, domain_knowledge, tool_usage, communication, performance, quality",
+      "category": "One of: style, error_pattern, domain_knowledge, quality",
       "priority": 5,
       "tags": ["tag1", "tag2"]
     }
