@@ -5,10 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-system-mcp"
 version = "0.5.3"
-description = "Flexible AI Agent System using MCP with pluggable servers and FastAPI UI"
+description = "ScarabHive - Flexible AI Agent Framework using MCP with pluggable servers and FastAPI UI"
 authors = [{ name = "Enrico Ehrich" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "pydantic>=2.11,<3.0",  # chromadb 0.6.3 is compatible with pydantic 2.11+
     "pyyaml>=6.0",
@@ -60,7 +69,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "http://127.0.0.1:8000"
+Homepage = "https://github.com/eehrich/ScarabHive"
+Repository = "https://github.com/eehrich/ScarabHive"
+Documentation = "https://github.com/eehrich/ScarabHive/tree/main/docs"
 
 [project.scripts]
 backlog = "scripts.backlog:main"

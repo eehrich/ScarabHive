@@ -1,10 +1,10 @@
 # ================================
-# Scarab AgentSystem Configuration
+# ScarabHive Configuration
 # ================================
 
-name: "AgentSystem"
+name: "ScarabHive"
 version: "0.5.3"
-description: "Scarab Flexible AI Agent System with plugin support"
+description: "ScarabHive - Flexible AI Agent Framework with plugin support"
 
 # all included configs
 includes:

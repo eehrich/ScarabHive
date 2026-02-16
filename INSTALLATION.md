@@ -1,6 +1,6 @@
 # Installation and Configuration Guide
 
-Complete setup guide for AgentSystem - from installation to production deployment.
+Complete setup guide for ScarabHive - from installation to production deployment.
 
 ## Table of Contents
 
@@ -8,7 +8,6 @@ Complete setup guide for AgentSystem - from installation to production deploymen
 - [Installation](#installation)
   - [Quick Install](#quick-install)
   - [Development Install](#development-install)
-  - [Docker Install](#docker-install)
 - [Configuration](#configuration)
   - [Configuration Structure](#configuration-structure)
   - [LLM Provider Setup](#llm-provider-setup)
@@ -32,8 +31,6 @@ Complete setup guide for AgentSystem - from installation to production deploymen
 ### Optional Dependencies
 
 - **Git**: For development and version control
-- **Docker**: For containerized deployment
-- **PostgreSQL**: For production session storage (SQLite used by default)
 
 ---
 
@@ -44,9 +41,9 @@ Complete setup guide for AgentSystem - from installation to production deploymen
 For basic usage with default configuration:
 
 ```bash
-# Clone the repository (if not already done)
-git clone https://github.com/your-org/AgentSystem.git
-cd AgentSystem
+# Clone the repository
+git clone https://github.com/eehrich/ScarabHive.git
+cd ScarabHive
 
 # Create virtual environment
 python -m venv .venv
@@ -75,39 +72,16 @@ For development with additional tools (linting, type checking, testing utilities
 # After basic installation above
 pip install -e '.[dev]'
 
-# Install pre-commit hooks (optional)
-pre-commit install
-
 # Run linting and type checking
 ruff check src --fix
 mypy src --show-traceback
-```
-
-### Docker Install
-
-For production deployments:
-
-```bash
-# Build image
-docker build -t agent-system:latest .
-
-# Run container
-docker run -d \
-  -p 8000:8000 \
-  -v $(pwd)/config:/app/config \
-  -v $(pwd)/data:/app/data \
-  -e OPENAI_API_KEY="your-key-here" \
-  agent-system:latest
-
-# Check logs
-docker logs -f <container-id>
 ```
 
 ---
 
 ## Configuration
 
-AgentSystem uses a hierarchical YAML configuration system in the `config/` directory.
+ScarabHive uses a hierarchical YAML configuration system in the `config/` directory.
 
 ### Configuration Structure
 
@@ -251,7 +225,7 @@ plugins:
       config:
         max_content_length: 100000
         timeout: 30
-        user_agent: "AgentSystem/1.0"
+        user_agent: "ScarabHive/1.0"
     
     ssh_control:
       type: ssh_control
@@ -277,13 +251,15 @@ plugins:
       agent_config:
         llm_profile: claude-sonnet
         max_steps: 25
-        system_template: "config/prompts/research_prompt.yaml"  # or inline system_prompt
+        system_prompt: |
+          You are a web research specialist. Use search and scraping tools
+          to find comprehensive information on any topic.
         
         tools:
           allowed:
             - "web_scraper/*"
             - "duckduckgo_search/*"
-            - "basic_operations/*"
+            - "sequential_thinking/*"
           blocked:
             - "terminal/*"  # No terminal access
       
@@ -291,21 +267,32 @@ plugins:
         visibility: "both"  # or "ui", "tool"
 ```
 
-**Example: `config/agents/financial_analyst.yaml`**
+**Example: `config/agents/web_research_agent.yaml`**
 ```yaml
 plugins:
   servers:
-    financial_analyst:
+    web_research_agent:
       type: basic_agent
       enabled: true
+      description: "Web research specialist with search and scraping capabilities"
       
       agent_config:
-        llm_profile: gpt-4-turbo
+        llm_profile: claude-sonnet
+        max_steps: 25
+        
         tools:
           allowed:
-            - "yahoo_finance/*"
-            - "ibkr/*"
+            - "web_scraper/*"
+            - "duckduckgo_search/*"
+            - "sequential_thinking/*"
+          blocked:
+            - "terminal/*"  # No terminal access
+      
+      metadata:
+        visibility: "both"  # or "ui", "tool"
 ```
+
+See the existing agents in `config/agents/` for more examples.
 
 ---
 
@@ -356,8 +343,8 @@ Use predefined VS Code tasks (`.vscode/tasks.json`):
 1. Open Command Palette (Ctrl+Shift+P)
 2. Select "Tasks: Run Task"
 3. Choose:
-   - `AgentSystem: Run API` - Start API server
-   - `AgentSystem: Run API with Debug Output` - Debug mode
+   - `ScarabHive: Run API` - Start API server
+   - `ScarabHive: Run API with Debug Output` - Debug mode
    - `Python: Run all tests (venv)` - Run test suite
    - `Python: Ruff (check & fix)` - Lint code
    - `Python: Mypy (type check)` - Type checking
@@ -478,7 +465,7 @@ See agent examples in `config/agents/` for reference.
 
 ### MCP Server Mode
 
-Expose AgentSystem as an MCP server for external clients.
+Expose ScarabHive as an MCP server for external clients.
 
 Edit `config/mcp_server_mode.yaml`:
 
@@ -596,8 +583,6 @@ agent-cli plugins status
 plugins:
   plugin_dirs:
     - src/plugins
-    - src/plugins_writer
-    - src/plugins_trading
 ```
 
 #### 4. Port Already in Use
@@ -673,7 +658,7 @@ pytest --cov=agent_system --cov-report=html
 
 After successful installation:
 
-1. **Explore Plugins**: Browse `src/plugins/`, `src/plugins_writer/`, and `src/plugins_trading/` for plugin READMEs
+1. **Explore Plugins**: Browse `src/plugins/` for plugin READMEs and examples
 2. **Create Custom Agent**: Add your agent definition as `config/agents/your_agent.yaml`
 3. **Read Architecture Docs**: Understand the system design in `docs/`
 4. **Try Examples**: Explore example workflows in plugin documentation

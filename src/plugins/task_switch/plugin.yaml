@@ -1,7 +1,7 @@
 name: task_switch
 version: 0.1.0
 description: Task state management - allows LLM to switch between task modes via template_vars
-author: AgentSystem
+author: Enrico Ehrich
 entrypoint: plugin:PLUGIN_FACTORY
 type:
   - mcp-server

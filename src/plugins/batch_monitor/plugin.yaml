@@ -1,7 +1,7 @@
 name: batch_monitor
 version: "1.0.0"
 description: "Monitor and query batch queue status"
-author: "AgentSystem"
+author: Enrico Ehrich
 type:
 - web
 entrypoint: plugin:PLUGIN_FACTORY

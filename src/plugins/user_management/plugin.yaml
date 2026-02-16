@@ -1,5 +1,6 @@
 name: user_management
 version: 1.0.0
+author: Enrico Ehrich
 type:
 - web
 entrypoint: plugin:PLUGIN_FACTORY
