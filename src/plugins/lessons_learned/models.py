@@ -52,7 +52,7 @@ class Lesson(BaseModel):
     source_session: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     context_filter: dict[str, Any] = Field(default_factory=dict)
-    evidence_count: int = 1
+    evidence_count: int = 0
     application_count: int = 0
     effectiveness: Optional[float] = None
     last_applied_at: Optional[datetime] = None

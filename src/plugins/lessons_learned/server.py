@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS lessons (
     source_session  TEXT,
     tags            TEXT DEFAULT '[]',
     context_filter  TEXT DEFAULT '{}',
-    evidence_count  INTEGER NOT NULL DEFAULT 1,
+    evidence_count  INTEGER NOT NULL DEFAULT 0,
     application_count INTEGER NOT NULL DEFAULT 0,
     effectiveness   REAL,
     last_applied_at TEXT,
