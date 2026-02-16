@@ -45,6 +45,11 @@ CONFIDENCE_BASE = {
 AUTO_DEACTIVATE_THRESHOLD = 0.2
 AUTO_REACTIVATE_THRESHOLD = 0.4
 
+# Validation constants
+VALID_EVIDENCE_TYPES = {"confirm", "contradict", "neutral"}
+VALID_LESSON_STATUSES = {"draft", "active", "inactive", "archived"}
+VALID_SOURCE_TYPES = {"auto", "cross_agent", "manual", "reflection"}
+
 # ==============================================================================
 # SQL Schema
 # ==============================================================================
@@ -252,9 +257,24 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         confidence: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Store a new lesson in SQLite + VectorStore."""
+        # Validate inputs
+        if status not in VALID_LESSON_STATUSES:
+            return {
+                "error": f"Invalid status '{status}'. Must be one of: {', '.join(sorted(VALID_LESSON_STATUSES))}"
+            }
+        if source_type not in VALID_SOURCE_TYPES:
+            return {
+                "error": f"Invalid source_type '{source_type}'. Must be one of: {', '.join(sorted(VALID_SOURCE_TYPES))}"
+            }
+        if not (1 <= priority <= 10):
+            return {"error": f"Invalid priority {priority}. Must be between 1 and 10."}
+        
         lesson_id = self._generate_lesson_id(agent_name)
         if confidence is None:
             confidence = CONFIDENCE_BASE.get(source_type, 0.5)
+        if not (0.0 <= confidence <= 1.0):
+            return {"error": f"Invalid confidence {confidence}. Must be between 0.0 and 1.0."}
+        
         tags_json = json.dumps(tags or [])
         now = datetime.now(UTC).isoformat()
 
@@ -268,17 +288,29 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             if count >= self.max_lessons_per_agent:
                 return {"error": f"Lesson limit ({self.max_lessons_per_agent}) reached for agent '{agent_name}'. Archive or delete older lessons."}
 
-            conn.execute(
-                """INSERT INTO lessons
-                   (lesson_id, agent_name, category, title, content, priority, confidence,
-                    status, source_type, source_agent, source_session, tags,
-                    last_confirmed_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (lesson_id, agent_name, category, title, content, priority, confidence,
-                 status, source_type, source_agent, source_session, tags_json,
-                 now, now, now),
-            )
-            conn.commit()
+            try:
+                conn.execute(
+                    """INSERT INTO lessons
+                       (lesson_id, agent_name, category, title, content, priority, confidence,
+                        status, source_type, source_agent, source_session, tags,
+                        last_confirmed_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (lesson_id, agent_name, category, title, content, priority, confidence,
+                     status, source_type, source_agent, source_session, tags_json,
+                     now, now, now),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as e:
+                error_msg = str(e)
+                if "priority" in error_msg:
+                    return {"error": f"Database constraint error: priority must be between 1 and 10 (got {priority})"}
+                elif "confidence" in error_msg:
+                    return {"error": f"Database constraint error: confidence must be between 0.0 and 1.0 (got {confidence})"}
+                elif "status" in error_msg:
+                    return {"error": f"Database constraint error: Invalid status '{status}'. Must be one of: {', '.join(sorted(VALID_LESSON_STATUSES))}"}
+                elif "source_type" in error_msg:
+                    return {"error": f"Database constraint error: Invalid source_type '{source_type}'. Must be one of: {', '.join(sorted(VALID_SOURCE_TYPES))}"}
+                return {"error": f"Database integrity error: {error_msg}"}
         finally:
             conn.close()
 
@@ -660,6 +692,12 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         description: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add evidence for/against a lesson and recalculate confidence."""
+        # Validate evidence_type
+        if evidence_type not in VALID_EVIDENCE_TYPES:
+            return {
+                "error": f"Invalid evidence_type '{evidence_type}'. Must be one of: {', '.join(sorted(VALID_EVIDENCE_TYPES))}"
+            }
+        
         conn = self._get_connection()
         try:
             row = conn.execute("SELECT * FROM lessons WHERE lesson_id = ?", (lesson_id,)).fetchone()
@@ -667,11 +705,17 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 return {"error": f"Lesson '{lesson_id}' not found."}
 
             now = datetime.now(UTC).isoformat()
-            conn.execute(
-                """INSERT INTO lesson_evidence (lesson_id, session_id, agent_name, evidence_type, description)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (lesson_id, session_id, agent_name, evidence_type, description),
-            )
+            try:
+                conn.execute(
+                    """INSERT INTO lesson_evidence (lesson_id, session_id, agent_name, evidence_type, description)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (lesson_id, session_id, agent_name, evidence_type, description),
+                )
+            except sqlite3.IntegrityError as e:
+                error_msg = str(e)
+                if "evidence_type" in error_msg:
+                    return {"error": f"Database constraint error: Invalid evidence_type. Must be one of: {', '.join(sorted(VALID_EVIDENCE_TYPES))}"}
+                return {"error": f"Database integrity error: {error_msg}"}
             # Update counts and recalculate confidence
             evidence_count = conn.execute(
                 "SELECT COUNT(*) FROM lesson_evidence WHERE lesson_id = ?", (lesson_id,)
@@ -1368,35 +1412,83 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 if status_reporter:
                     await status_reporter.progress("Storing lesson...")
                 result = await self._op_store(params, agent_name, session_id)
+                if status_reporter:
+                    if "error" in result:
+                        await status_reporter.error(f"Failed to store lesson: {result['error']}")
+                    else:
+                        await status_reporter.end(f"Lesson stored: {result.get('lesson_id', 'unknown')}")
             elif operation == "search":
                 if status_reporter:
                     await status_reporter.progress("Searching lessons...")
                 result = await self._op_search(params, agent_name)
+                if status_reporter:
+                    if "error" in result:
+                        await status_reporter.error(f"Search failed: {result['error']}")
+                    else:
+                        await status_reporter.end(f"Found {result.get('result_count', 0)} lessons")
             elif operation == "list":
+                if status_reporter:
+                    await status_reporter.progress("Listing lessons...")
                 result = await self._op_list(params, agent_name)
+                if status_reporter:
+                    if "error" in result:
+                        await status_reporter.error(f"List failed: {result['error']}")
+                    else:
+                        await status_reporter.end(f"Retrieved {len(result.get('lessons', []))} lessons")
             elif operation == "update":
+                if status_reporter:
+                    await status_reporter.progress("Updating lesson...")
                 result = await self._op_update(params)
+                if status_reporter:
+                    if "error" in result:
+                        await status_reporter.error(f"Update failed: {result['error']}")
+                    else:
+                        await status_reporter.end(f"Lesson updated: {result.get('lesson_id', 'unknown')}")
             elif operation == "confirm":
+                if status_reporter:
+                    await status_reporter.progress("Adding evidence to lesson...")
                 result = await self._op_confirm(params, agent_name, session_id)
+                if status_reporter:
+                    if "error" in result:
+                        await status_reporter.error(f"Failed to add evidence: {result['error']}")
+                    else:
+                        await status_reporter.end(f"Evidence added: {result.get('evidence_type', 'unknown')} (confidence: {result.get('new_confidence', 'N/A')})")
             elif operation == "teach":
                 if status_reporter:
                     await status_reporter.progress("Teaching lesson to target agent...")
                 result = await self._op_teach(params, agent_name, session_id)
+                if status_reporter:
+                    if "error" in result:
+                        await status_reporter.error(f"Failed to teach lesson: {result['error']}")
+                    else:
+                        await status_reporter.end(f"Lesson taught to {params.get('target_agent', 'unknown')}")
             elif operation == "delete":
                 if status_reporter:
                     await status_reporter.progress("Deleting lesson...")
                 result = await self._op_delete(params)
+                if status_reporter:
+                    if "error" in result:
+                        await status_reporter.error(f"Delete failed: {result['error']}")
+                    else:
+                        await status_reporter.end(f"Lesson deleted: {params.get('lesson_id', 'unknown')}")
             else:
-                result = {"error": f"Unknown operation: {operation}"}
+                result = {"error": f"Unknown operation: {operation}. Valid operations: store, search, list, update, confirm, teach, delete"}
+                if status_reporter:
+                    await status_reporter.error(result["error"])
 
-            if status_reporter:
-                await status_reporter.end(result.get("status", "done"))
             return result
-        except Exception as e:
-            logger.error(f"Lesson operation '{operation}' failed: {e}", exc_info=True)
+        except sqlite3.IntegrityError as e:
+            error_msg = f"Database integrity error in '{operation}': {str(e)}"
+            logger.error(error_msg, exc_info=True)
             if status_reporter:
-                await status_reporter.error(str(e))
-            return {"error": str(e)}
+                await status_reporter.error(error_msg)
+            return {"error": error_msg}
+        except Exception as e:
+            error_msg = f"Lesson operation '{operation}' failed: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            if status_reporter:
+                await status_reporter.error(error_msg)
+            return {"error": error_msg}
 
     async def _op_store(self, params: Dict[str, Any], agent_name: str, session_id: str) -> Dict[str, Any]:
         title = params.get("title", "")
