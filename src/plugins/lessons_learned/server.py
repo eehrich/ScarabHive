@@ -1496,13 +1496,21 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         if not title or not content:
             return {"error": "Both 'title' and 'content' are required."}
 
-        # Check for duplicates
+        # Check for duplicates (both exact and high-similarity)
         dedup = await self.check_duplicate(agent_name, title, content)
-        if dedup.is_duplicate and dedup.action == "confirm":
-            return await self.add_evidence(
-                dedup.existing_lesson_id or "", session_id, agent_name,
-                "confirm", f"Duplicate lesson submitted: {title}"
+        if dedup.is_duplicate and dedup.action in ("confirm", "merge"):
+            evidence_desc = (
+                f"Duplicate lesson submitted: {title}"
+                if dedup.action == "confirm"
+                else f"Similar lesson submitted (similarity={dedup.similarity:.2f}): {title}"
             )
+            result = await self.add_evidence(
+                dedup.existing_lesson_id or "", session_id, agent_name,
+                "confirm", evidence_desc
+            )
+            result["dedup_action"] = dedup.action
+            result["similar_to"] = dedup.existing_lesson_id
+            return result
 
         return await self.store_lesson(
             agent_name=agent_name,
@@ -1565,13 +1573,21 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         if not target or not title or not content:
             return {"error": "'target_agent', 'title', and 'content' are required."}
 
-        # Check for duplicates in target agent
+        # Check for duplicates in target agent (both exact and high-similarity)
         dedup = await self.check_duplicate(target, title, content)
-        if dedup.is_duplicate and dedup.action == "confirm":
-            return await self.add_evidence(
-                dedup.existing_lesson_id or "", session_id, source_agent,
-                "confirm", f"Cross-agent confirmation from {source_agent}: {title}",
+        if dedup.is_duplicate and dedup.action in ("confirm", "merge"):
+            evidence_desc = (
+                f"Cross-agent confirmation from {source_agent}: {title}"
+                if dedup.action == "confirm"
+                else f"Similar cross-agent lesson from {source_agent} (similarity={dedup.similarity:.2f}): {title}"
             )
+            result = await self.add_evidence(
+                dedup.existing_lesson_id or "", session_id, source_agent,
+                "confirm", evidence_desc,
+            )
+            result["dedup_action"] = dedup.action
+            result["similar_to"] = dedup.existing_lesson_id
+            return result
 
         return await self.store_lesson(
             agent_name=target,
