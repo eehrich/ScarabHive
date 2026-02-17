@@ -754,7 +754,22 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             conn.close()
 
     def _calculate_confidence(self, conn: sqlite3.Connection, lesson_id: str, lesson: dict) -> float:
-        """Calculate confidence score based on evidence and effectiveness."""
+        """Calculate confidence score based on evidence and effectiveness.
+
+        Uses asymptotic curve on net evidence (confirms - contradicts) so that
+        each additional confirm gradually increases confidence (diminishing
+        returns) instead of the old ratio-based formula which stayed flat
+        once the first confirm was recorded.
+
+        Evidence factor range: 0.5 (all contradicts) → 1.0 (no evidence) → 1.5 (many confirms)
+
+        Examples for reflection (base=0.5):
+            0 evidence → 0.500
+            1 confirm  → 0.583
+            3 confirms → 0.650
+            5 confirms → 0.679
+           10 confirms → 0.708
+        """
         source_type = lesson.get("source_type", "auto")
         base = CONFIDENCE_BASE.get(source_type, 0.5)
 
@@ -766,15 +781,19 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             "SELECT COUNT(*) FROM lesson_evidence WHERE lesson_id = ? AND evidence_type = 'contradict'",
             (lesson_id,),
         ).fetchone()[0]
-        
-        # Evidence factor: if no evidence yet, use 1.0 (trust base confidence)
-        # With evidence: weight by ratio of confirms to total evidence
+
+        # Evidence factor: asymptotic curve on net evidence (confirms - contradicts)
+        # Each additional confirm/contradict has diminishing effect (1/(1+n*k) decay)
         total_evidence = confirms + contradicts
         if total_evidence == 0:
             evidence_factor = 1.0
         else:
-            # Scale from 0.5 (all contradict) to 1.5 (all confirm)
-            evidence_factor = 0.5 + (confirms / total_evidence)
+            net = confirms - contradicts
+            # Asymptotic approach: 0→0 at net=0, approaches ±0.5 at large |net|
+            if net >= 0:
+                evidence_factor = 1.0 + 0.5 * (1.0 - 1.0 / (1.0 + net * 0.5))
+            else:
+                evidence_factor = 1.0 - 0.5 * (1.0 - 1.0 / (1.0 + abs(net) * 0.5))
 
         eff = lesson.get("effectiveness")
         effectiveness_factor = (0.5 + 0.5 * eff) if eff is not None else 1.0
