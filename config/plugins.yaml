@@ -133,7 +133,7 @@ plugins:
       enabled: true
       description: "Persistent lessons learned across sessions with semantic search and cross-agent teaching"
       database_path: "data/lessons_learned/lessons.db"
-      max_lessons_per_agent: 200
+      max_lessons_per_agent: 500
       dedup_similarity_threshold: 0.82
       exact_duplicate_threshold: 0.95
       llm_profile: "chat-nostream"
