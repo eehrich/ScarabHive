@@ -496,6 +496,16 @@ plugins:
       type: message_debugger
       enabled: true
 
+    simple_prompt_inject:
+      type: simple_prompt_inject
+      enabled: true
+      config:
+        prompt_text: |
+          If you start to repeat yourself, try a different approach.
+
+        injection_position: "before_last_user"  # or "end"
+        role: "system"
+
     agent_continuation:
       type: agent_continuation
       enabled: true

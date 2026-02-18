@@ -1,0 +1,33 @@
+# Hook definitions for simple_prompt_inject plugin
+# Injects configurable text into conversations before LLM calls
+hooks:
+  - name: inject_prompt
+    type: PRE_LLM_CALL
+    enabled: true
+    timeout: 1.0
+    description: "Injects a configurable prompt into the message list before LLM calls"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
+# Configuration schema
+config:
+  prompt_text:
+    type: string
+    default: ""
+    description: "The text to inject into the conversation. Empty string means no injection."
+
+  injection_position:
+    type: string
+    enum: ["before_last_user", "end"]
+    default: "before_last_user"
+    description: >
+      Where to inject the prompt:
+      - before_last_user: Insert as system message right before the last user message
+      - end: Append as last message
+
+  role:
+    type: string
+    enum: ["system", "user"]
+    default: "system"
+    description: "The role of the injected message"
