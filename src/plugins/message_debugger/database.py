@@ -104,6 +104,12 @@ class MessageDebuggerDB:
             CREATE INDEX IF NOT EXISTS idx_llm_requests_timestamp ON llm_requests(timestamp_ms);
             CREATE INDEX IF NOT EXISTS idx_llm_requests_direction ON llm_requests(direction);
             CREATE INDEX IF NOT EXISTS idx_llm_requests_provider ON llm_requests(provider);
+            
+            -- Covering indexes for stats queries (avoid full table scans)
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_direction_duration
+                ON llm_requests(direction, duration_ms);
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_error
+                ON llm_requests(error) WHERE error IS NOT NULL AND error != '';
         """)
         conn.commit()
     
@@ -152,6 +158,18 @@ class MessageDebuggerDB:
         conn.commit()
         return cursor.lastrowid  # type: ignore[return-value]
     
+    # Columns to select in list queries (excludes large JSON blobs)
+    _TURNS_LIST_COLS = (
+        "id, timestamp_ms, snapshot_type, agent_name, request_id, "
+        "session_id, step, message_count, total_tokens, context_window, "
+        "llm_response_json, created_at"
+    )
+    _LLM_REQUESTS_LIST_COLS = (
+        "id, timestamp_ms, direction, agent_name, request_id, "
+        "session_id, provider, model, url, is_streaming, "
+        "error, duration_ms, usage_json, finish_reason, created_at"
+    )
+
     def get_turns(
         self,
         agent_name: Optional[str] = None,
@@ -160,9 +178,13 @@ class MessageDebuggerDB:
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Query turns with optional filters."""
+        """Query turns with optional filters.
+        
+        Returns lightweight rows (no messages_json) for list views.
+        Use get_turn(id) to fetch full details including messages.
+        """
         conn = self._get_conn()
-        query = "SELECT * FROM turns WHERE 1=1"
+        query = f"SELECT {self._TURNS_LIST_COLS} FROM turns WHERE 1=1"
         params: list = []
         
         if agent_name:
@@ -267,9 +289,13 @@ class MessageDebuggerDB:
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Query LLM request logs with optional filters."""
+        """Query LLM request logs with optional filters.
+        
+        Returns lightweight rows (no payload_json/response_json) for list views.
+        Use get_llm_request(id) to fetch full details.
+        """
         conn = self._get_conn()
-        query = "SELECT * FROM llm_requests WHERE 1=1"
+        query = f"SELECT {self._LLM_REQUESTS_LIST_COLS} FROM llm_requests WHERE 1=1"
         params: list = []
         
         if agent_name:
@@ -317,47 +343,57 @@ class MessageDebuggerDB:
     # ---- Stats ----
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get overall statistics."""
+        """Get overall statistics.
+        
+        Optimised to avoid expensive full-table aggregations on large
+        databases.  Uses indexed COUNT queries and limits the session
+        list to avoid scanning hundreds of thousands of rows.
+        """
         conn = self._get_conn()
         
         turn_count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
         request_count = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
         
-        agents = [r[0] for r in conn.execute(
-            "SELECT DISTINCT agent_name FROM turns WHERE agent_name != '' "
-            "UNION SELECT DISTINCT agent_name FROM llm_requests WHERE agent_name != ''"
-        ).fetchall()]
-        
-        sessions = [r[0] for r in conn.execute(
-            "SELECT DISTINCT session_id FROM turns WHERE session_id != '' "
-            "UNION SELECT DISTINCT session_id FROM llm_requests WHERE session_id != ''"
-        ).fetchall()]
+        # Use separate indexed queries instead of UNION (faster on large DBs)
+        agents_set: set[str] = set()
+        for row in conn.execute(
+            "SELECT DISTINCT agent_name FROM turns WHERE agent_name != ''"
+        ).fetchall():
+            agents_set.add(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT agent_name FROM llm_requests WHERE agent_name != ''"
+        ).fetchall():
+            agents_set.add(row[0])
         
         providers = [r[0] for r in conn.execute(
             "SELECT DISTINCT provider FROM llm_requests WHERE provider != ''"
         ).fetchall()]
         
-        total_tokens = conn.execute(
-            "SELECT COALESCE(SUM(total_tokens), 0) FROM turns"
-        ).fetchone()[0]
-        
-        total_duration = conn.execute(
-            "SELECT COALESCE(SUM(duration_ms), 0) FROM llm_requests WHERE direction='response'"
-        ).fetchone()[0]
-        
+        # Error count uses partial index (fast)
         error_count = conn.execute(
             "SELECT COUNT(*) FROM llm_requests WHERE error IS NOT NULL AND error != ''"
         ).fetchone()[0]
         
+        # Session count instead of full list (much cheaper)
+        session_count_turns = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM turns WHERE session_id != ''"
+        ).fetchone()[0]
+        session_count_reqs = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM llm_requests WHERE session_id != ''"
+        ).fetchone()[0]
+        session_count = max(session_count_turns, session_count_reqs)
+        
+        # DB file size
+        db_size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
+        
         return {
             "total_turns": turn_count,
             "total_llm_requests": request_count,
-            "unique_agents": sorted(agents),
-            "unique_sessions": sorted(sessions),
+            "unique_agents": sorted(agents_set),
+            "unique_session_count": session_count,
             "unique_providers": sorted(providers),
-            "total_tokens": total_tokens,
-            "total_duration_ms": total_duration,
             "error_count": error_count,
+            "db_size_mb": round(db_size_bytes / (1024 * 1024), 1),
         }
     
     # ---- Maintenance ----
@@ -385,6 +421,40 @@ class MessageDebuggerDB:
         conn.commit()
         return {"turns_deleted": turns, "requests_deleted": requests}
     
+    def prune_to_max(self, max_turns: int = 5000, max_requests: int = 5000) -> Dict[str, int]:
+        """Prune tables to keep only the most recent N entries.
+        
+        Args:
+            max_turns: Maximum turns to keep
+            max_requests: Maximum LLM requests to keep
+            
+        Returns:
+            Counts of deleted rows
+        """
+        conn = self._get_conn()
+        turns_deleted = 0
+        requests_deleted = 0
+        
+        turn_count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+        if turn_count > max_turns:
+            # Delete oldest rows, keeping max_turns most recent
+            turns_deleted = conn.execute(
+                "DELETE FROM turns WHERE id NOT IN "
+                "(SELECT id FROM turns ORDER BY timestamp_ms DESC LIMIT ?)",
+                (max_turns,)
+            ).rowcount
+        
+        req_count = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
+        if req_count > max_requests:
+            requests_deleted = conn.execute(
+                "DELETE FROM llm_requests WHERE id NOT IN "
+                "(SELECT id FROM llm_requests ORDER BY timestamp_ms DESC LIMIT ?)",
+                (max_requests,)
+            ).rowcount
+        
+        conn.commit()
+        return {"turns_deleted": turns_deleted, "requests_deleted": requests_deleted}
+
     def vacuum(self) -> None:
         """Reclaim disk space after deletions."""
         conn = self._get_conn()

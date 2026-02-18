@@ -17,6 +17,7 @@
         <div class="header-actions">
             <button class="icon-only" onclick="debugger_.refresh()" title="Refresh">🔄</button>
             <button class="icon-only" id="auto-refresh-btn" onclick="debugger_.toggleAutoRefresh()" title="Auto-Refresh (5s) - Inactive">⏱️</button>
+            <button class="icon-only" onclick="debugger_.pruneOld()" title="Prune old entries">✂️</button>
             <button class="icon-only danger" onclick="debugger_.clearAll()" title="Clear All Data">🗑️</button>
         </div>
     </div>
@@ -47,9 +48,7 @@
                 </div>
                 <div class="filter-group">
                     <label>Session</label>
-                    <select id="turns-filter-session" onchange="debugger_.loadTurns()">
-                        <option value="">All Sessions</option>
-                    </select>
+                    <input type="text" id="turns-filter-session" placeholder="Session ID..." onchange="debugger_.loadTurns()">
                 </div>
                 <div class="filter-group">
                     <label>Type</label>

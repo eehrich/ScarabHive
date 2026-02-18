@@ -29,9 +29,9 @@ const debugger_ = {
             document.getElementById('stats-container').innerHTML = `
                 <div class="stat-card"><h3>Turns</h3><div class="value">${s.total_turns}</div></div>
                 <div class="stat-card blue"><h3>LLM Requests</h3><div class="value">${s.total_llm_requests}</div></div>
-                <div class="stat-card orange"><h3>Total Tokens</h3><div class="value">${(s.total_tokens||0).toLocaleString()}</div></div>
-                <div class="stat-card purple"><h3>Total Duration</h3><div class="value">${this.fmtDuration(s.total_duration_ms)}</div></div>
-                <div class="stat-card"><h3>Sessions</h3><div class="value">${(s.unique_sessions||[]).length}</div></div>
+                <div class="stat-card orange"><h3>DB Size</h3><div class="value">${s.db_size_mb || 0} MB</div></div>
+                <div class="stat-card purple"><h3>Sessions</h3><div class="value">${s.unique_session_count || 0}</div></div>
+                <div class="stat-card"><h3>Agents</h3><div class="value">${(s.unique_agents||[]).length}</div></div>
                 <div class="stat-card red"><h3>Errors</h3><div class="value">${s.error_count||0}</div></div>
             `;
             document.getElementById('turns-count').textContent = s.total_turns;
@@ -42,11 +42,9 @@ const debugger_ = {
 
     updateFilterDropdowns(s) {
         const agents = s.unique_agents || [];
-        const sessions = s.unique_sessions || [];
         const providers = s.unique_providers || [];
 
         this._updateSelect('turns-filter-agent', agents, a => a);
-        this._updateSelect('turns-filter-session', sessions, s => s); // Show full session name
         this._updateSelect('req-filter-agent', agents, a => a);
         this._updateSelect('req-filter-provider', providers, p => p);
     },
@@ -390,6 +388,19 @@ const debugger_ = {
             }
             await this.refresh();
         } catch (e) { alert('Clear failed: ' + e.message); }
+    },
+
+    async pruneOld() {
+        const maxTurns = prompt('Keep how many recent turns?', '5000');
+        if (!maxTurns) return;
+        const maxReqs = prompt('Keep how many recent LLM requests?', '5000');
+        if (!maxReqs) return;
+        try {
+            const res = await fetch(`/plugins/message_debugger/prune?max_turns=${maxTurns}&max_requests=${maxReqs}&vacuum=true`, { method: 'POST' });
+            const data = await res.json();
+            alert(`Pruned: ${data.turns_deleted} turns, ${data.requests_deleted} requests deleted.${data.vacuumed ? ' DB vacuumed.' : ''}`);
+            await this.refresh();
+        } catch (e) { alert('Prune failed: ' + e.message); }
     },
 
     confirm(message) {

@@ -127,6 +127,20 @@ class MessageDebuggerWebFactory:
         result = self.db.clear_all()
         return {'status': 'cleared', **result}
     
+    async def prune(
+        self,
+        request: Request,
+        max_turns: int = Query(default=5000, ge=100, le=100000, description="Keep only the N most recent turns"),
+        max_requests: int = Query(default=5000, ge=100, le=100000, description="Keep only the N most recent LLM requests"),
+        vacuum: bool = Query(default=True, description="Reclaim disk space after pruning"),
+    ):
+        """Prune old entries and optionally VACUUM to reclaim disk space."""
+        result = self.db.prune_to_max(max_turns=max_turns, max_requests=max_requests)
+        if vacuum and (result["turns_deleted"] > 0 or result["requests_deleted"] > 0):
+            self.db.vacuum()
+            result["vacuumed"] = True
+        return {'status': 'pruned', **result}
+    
     # ---- Panel rendering ----
     
     async def render_panel(self, request: Request) -> HTMLResponse:

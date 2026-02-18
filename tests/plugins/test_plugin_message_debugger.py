@@ -216,9 +216,9 @@ class TestMessageDebuggerDB:
         assert "a" in stats["unique_agents"]
         assert "b" in stats["unique_agents"]
         assert "openai" in stats["unique_providers"]
-        assert stats["total_tokens"] == 300
-        assert stats["total_duration_ms"] == 300
+        assert stats["unique_session_count"] >= 2
         assert stats["error_count"] == 1
+        assert "db_size_mb" in stats
 
     def test_clear_all(self, db):
         """Test clearing all data."""
@@ -361,7 +361,8 @@ class TestMessageDebuggerHooks:
 
         assert result.success is True
         turns = db.get_turns()
-        messages = turns[0]["messages_json"]
+        turn_detail = db.get_turn(turns[0]["id"])
+        messages = turn_detail["messages_json"]
 
         tool_call_msg = next(m for m in messages if m.get("tool_calls"))
         assert tool_call_msg["tool_call_count"] == 1
@@ -385,7 +386,8 @@ class TestMessageDebuggerHooks:
 
         turns = db.get_turns()
         assert turns[0]["total_tokens"] > 0
-        for msg in turns[0]["messages_json"]:
+        turn_detail = db.get_turn(turns[0]["id"])
+        for msg in turn_detail["messages_json"]:
             assert msg["estimated_tokens"] is not None
             assert msg["estimated_tokens"] > 0
 
@@ -600,7 +602,7 @@ class TestMessageDebuggerWebEndpoints:
         result = response.json()
         assert result["total_turns"] == 1
         assert result["total_llm_requests"] == 1
-        assert result["total_tokens"] == 100
+        assert result["unique_session_count"] >= 0
 
     @pytest.mark.asyncio
     async def test_clear_all_endpoint(self, web_factory, db):
