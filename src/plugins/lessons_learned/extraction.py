@@ -146,7 +146,7 @@ def _parse_extraction_response(response: str) -> List[LessonCandidate]:
                     tags=item.get("tags", []),
                 ))
             return candidates
-        logger.warning(f"Failed to parse extraction response even with repair")
+        logger.warning("Failed to parse extraction response even with repair")
         return []
     except (KeyError, TypeError) as e:
         logger.warning(f"Failed to parse extraction response: {e}")
