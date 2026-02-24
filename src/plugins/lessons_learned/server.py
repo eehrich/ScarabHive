@@ -976,7 +976,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                     merge_details.append({
                         "action": "skipped",
                         "reason": "LLM evaluation failed",
-                        "lessons": [l["lesson_id"] for l in lessons],
+                        "lessons": [lesson["lesson_id"] for lesson in lessons],
                     })
                     continue
 
@@ -988,11 +988,11 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                     merge_details.append({
                         "action": "skipped",
                         "reason": evaluation.get("reason", "LLM decided not to merge"),
-                        "lessons": [l["lesson_id"] for l in lessons],
+                        "lessons": [lesson["lesson_id"] for lesson in lessons],
                     })
                     continue
 
-                lessons_by_id = {l["lesson_id"]: l for l in lessons}
+                lessons_by_id = {lesson["lesson_id"]: lesson for lesson in lessons}
 
                 for group in groups:
                     merge_ids = group.get("merge_ids", [])
@@ -1059,7 +1059,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             return []
 
         # Build adjacency: for each lesson, find similar ones
-        adjacency: Dict[str, set] = {l["lesson_id"]: set() for l in lessons}
+        adjacency: Dict[str, set] = {lesson["lesson_id"]: set() for lesson in lessons}
 
         for lesson in lessons:
             try:
@@ -1125,8 +1125,8 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         """
         # Check total size and split if needed
         total_chars = sum(
-            len(l.get('title', '')) + len(l.get('content', '')) + 120  # 120 for metadata
-            for l in lessons
+            len(lesson.get('title', '')) + len(lesson.get('content', '')) + 120  # 120 for metadata
+            for lesson in lessons
         )
         if total_chars > self.MAX_CLUSTER_CHARS and len(lessons) > 2:
             logger.info(
@@ -1164,14 +1164,14 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
 
         for sub in sub_clusters:
             if len(sub) < 2:
-                combined_keep_separate.extend(l['lesson_id'] for l in sub)
+                combined_keep_separate.extend(lesson['lesson_id'] for lesson in sub)
                 continue
             result = await self._llm_evaluate_cluster_single(sub)
             if result:
                 combined_groups.extend(result.get('groups', []))
                 combined_keep_separate.extend(result.get('keep_separate', []))
             else:
-                combined_keep_separate.extend(l['lesson_id'] for l in sub)
+                combined_keep_separate.extend(lesson['lesson_id'] for lesson in sub)
 
         return {
             'groups': combined_groups,
@@ -1196,16 +1196,16 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
 
             # Build prompt with lesson details
             lessons_text = ""
-            for l in lessons:
+            for lesson in lessons:
                 lessons_text += (
                     f"\n---\n"
-                    f"ID: {l['lesson_id']}\n"
-                    f"Title: {l['title']}\n"
-                    f"Content: {l['content']}\n"
-                    f"Status: {l['status']} | Priority: {l['priority']} | "
-                    f"Confidence: {l['confidence']:.2f} | Evidence: {l['evidence_count']} | "
-                    f"Applications: {l['application_count']}\n"
-                    f"Category: {l['category']} | Source: {l['source_type']}\n"
+                    f"ID: {lesson['lesson_id']}\n"
+                    f"Title: {lesson['title']}\n"
+                    f"Content: {lesson['content']}\n"
+                    f"Status: {lesson['status']} | Priority: {lesson['priority']} | "
+                    f"Confidence: {lesson['confidence']:.2f} | Evidence: {lesson['evidence_count']} | "
+                    f"Applications: {lesson['application_count']}\n"
+                    f"Category: {lesson['category']} | Source: {lesson['source_type']}\n"
                 )
 
             system_prompt = (
@@ -1292,17 +1292,17 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         new_priority = merge_decision.get("priority")
 
         # Validate primary_id exists in cluster
-        lesson_ids = [l["lesson_id"] for l in lessons]
+        lesson_ids = [lesson["lesson_id"] for lesson in lessons]
         if primary_id not in lesson_ids:
             # Fallback: pick lesson with highest evidence_count
-            primary_id = max(lessons, key=lambda l: (l["evidence_count"], l["confidence"]))["lesson_id"]
+            primary_id = max(lessons, key=lambda lst: (lst["evidence_count"], lst["confidence"]))["lesson_id"]
 
         # Calculate merged evidence count
-        total_evidence = sum(l["evidence_count"] for l in lessons)
-        total_applications = sum(l["application_count"] for l in lessons)
+        total_evidence = sum(lesson["evidence_count"] for lesson in lessons)
+        total_applications = sum(lesson["application_count"] for lesson in lessons)
 
         # Best confidence from the group (keeps strongest signal)
-        best_confidence = max(l["confidence"] for l in lessons)
+        best_confidence = max(lesson["confidence"] for lesson in lessons)
 
         # Update primary lesson
         update_fields: Dict[str, Any] = {}
@@ -1330,23 +1330,23 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
 
             # Delete duplicates and add merge evidence
             deleted_ids = []
-            for l in lessons:
-                if l["lesson_id"] == primary_id:
+            for lesson in lessons:
+                if lesson["lesson_id"] == primary_id:
                     continue
                 # Delete evidence/applications for the duplicate
-                conn.execute("DELETE FROM lesson_evidence WHERE lesson_id = ?", (l["lesson_id"],))
-                conn.execute("DELETE FROM lesson_applications WHERE lesson_id = ?", (l["lesson_id"],))
+                conn.execute("DELETE FROM lesson_evidence WHERE lesson_id = ?", (lesson["lesson_id"],))
+                conn.execute("DELETE FROM lesson_applications WHERE lesson_id = ?", (lesson["lesson_id"],))
                 # Delete the duplicate lesson
-                conn.execute("DELETE FROM lessons WHERE lesson_id = ?", (l["lesson_id"],))
+                conn.execute("DELETE FROM lessons WHERE lesson_id = ?", (lesson["lesson_id"],))
                 # Add evidence record noting the merge on primary
                 conn.execute(
                     """INSERT INTO lesson_evidence
                        (lesson_id, session_id, agent_name, evidence_type, description)
                        VALUES (?, ?, ?, ?, ?)""",
                     (primary_id, "consolidation", agent, "confirm",
-                     f"Merged from {l['lesson_id']}: {l['title']}"),
+                     f"Merged from {lesson['lesson_id']}: {lesson['title']}"),
                 )
-                deleted_ids.append(l["lesson_id"])
+                deleted_ids.append(lesson["lesson_id"])
 
             conn.commit()
         finally:
