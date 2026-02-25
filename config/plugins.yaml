@@ -262,6 +262,86 @@ plugins:
               node_id: "3"
               field: inputs.seed
 
+        - id: sdxl_base_refiner
+          name: "SDXL Base + Refiner (High Quality)"
+          description: "Two-pass SDXL workflow: base model generates structure, refiner model polishes details. Produces significantly fewer artifacts and deformations. Requires both sd_xl_base_1.0.safetensors and sd_xl_refiner_1.0.safetensors checkpoints."
+          category: image_generation
+          workflow_file: sdxl_base_refiner.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the image to generate (injected into both base and refiner CLIP encoders)"
+              node_id: "20"
+              field: inputs.text
+            - name: prompt_refiner
+              type: string
+              required: false
+              description: "Prompt for refiner model (if different from base). Defaults to same as prompt."
+              node_id: "22"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text, signature, jpeg artifacts"
+              description: "Things to avoid (injected into both base and refiner negative prompts)"
+              node_id: "21"
+              field: inputs.text
+            - name: negative_prompt_refiner
+              type: string
+              required: false
+              description: "Negative prompt for refiner (if different). Defaults to same as negative_prompt."
+              node_id: "23"
+              field: inputs.text
+            - name: width
+              type: integer
+              default: 1024
+              description: "Image width (1024 recommended for SDXL, must be divisible by 8)"
+              node_id: "30"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1024
+              description: "Image height (1024 recommended for SDXL, must be divisible by 8)"
+              node_id: "30"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 30
+              description: "Total sampling steps for both passes (25-35 recommended). Base uses ~80%, refiner ~20%."
+              node_id: "40"
+              field: inputs.steps
+            - name: steps_refiner
+              type: integer
+              default: 30
+              description: "Total steps value for refiner KSampler (must match base steps)"
+              node_id: "41"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.5
+              description: "Classifier-free guidance scale (6-9 recommended)"
+              node_id: "40"
+              field: inputs.cfg
+            - name: cfg_scale_refiner
+              type: float
+              default: 7.5
+              description: "CFG scale for refiner (can be slightly lower for softer refinement)"
+              node_id: "41"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed for base sampler (0 for random)"
+              node_id: "40"
+              field: inputs.noise_seed
+            - name: seed_refiner
+              type: integer
+              default: 0
+              description: "Random seed for refiner sampler (0 for random)"
+              node_id: "41"
+              field: inputs.noise_seed
+
     twitter_search:
       type: twitter_search
       enabled: false
