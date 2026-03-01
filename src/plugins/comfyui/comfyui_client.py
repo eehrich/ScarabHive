@@ -336,7 +336,50 @@ class ComfyUIClient:
         except Exception as e:
             logger.exception("Error uploading image")
             return {"error": str(e)}
-    
+
+    async def upload_audio(
+        self,
+        audio_data: bytes,
+        filename: str,
+        subfolder: str = "",
+        overwrite: bool = True,
+    ) -> dict[str, Any]:
+        """Upload an audio file to ComfyUI input folder.
+
+        ComfyUI's ``/upload/image`` endpoint accepts any file type despite
+        its name — it just copies the payload into the ``input/`` directory.
+
+        Args:
+            audio_data: Raw audio bytes (FLAC, WAV, etc.)
+            filename: Target filename on server (e.g. ``book_1_narrator.flac``)
+            subfolder: Optional subfolder inside ``input/``
+            overwrite: Whether to overwrite an existing file (default True)
+
+        Returns:
+            Dict with upload result or ``{"error": ...}``
+        """
+        try:
+            data = aiohttp.FormData()
+            data.add_field(
+                "image",  # ComfyUI expects field name "image" for all uploads
+                audio_data,
+                filename=filename,
+                content_type="application/octet-stream",
+            )
+            if subfolder:
+                data.add_field("subfolder", subfolder)
+            data.add_field("overwrite", str(overwrite).lower())
+
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.base_url}/upload/image",
+                    data=data,
+                ) as resp:
+                    return await resp.json()
+        except Exception as e:
+            logger.exception("Error uploading audio to ComfyUI")
+            return {"error": str(e)}
+
     async def wait_for_completion(
         self,
         prompt_id: str,
