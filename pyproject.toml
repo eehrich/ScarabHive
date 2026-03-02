@@ -34,6 +34,7 @@ dependencies = [
     "tweepy>=4.14.0",
     "openai>=1.37.0",
     "faster-whisper>=1.1.0",  # Local Whisper backend for writer_audio pipeline
+    "voicefixer>=0.1.2",  # Voice enhancement for calibration clips
     "anthropic>=0.40.0",  # Anthropic Claude SDK
     "ollama>=0.3.0",
     "google-genai>=1.50.0",  # Gemini SDK - need recent version for batch API
