@@ -26,15 +26,20 @@ def _convert_audio_to_input_audio(item: Dict[str, Any]) -> Dict[str, Any]:
     OpenRouter/Gemini expects:
         {"type": "input_audio", "input_audio": {"data": "base64...", "format": "mp3"}}
     
-    Our AudioContent has:
-        {"type": "audio", "audio_url": "data:audio/mp3;base64,XXXXX", ...}
+    Our AudioContent has either:
+        a) {"type": "audio", "audio_url": "data:audio/mp3;base64,XXXXX", ...}
+        b) {"type": "audio", "source": {"type": "base64", "data": "...", "media_type": "audio/flac"}, ...}
     
     Args:
-        item: Audio content item with audio_url
+        item: Audio content item with audio_url or source
         
     Returns:
         Converted input_audio format item
     """
+    # If already in input_audio format, return as-is
+    if item.get("type") == "input_audio":
+        return item
+
     audio_url = item.get("audio_url", "")
     
     # Handle data URL format: data:audio/mp3;base64,XXXXX
@@ -61,11 +66,24 @@ def _convert_audio_to_input_audio(item: Dict[str, Any]) -> Dict[str, Any]:
             }
         except (ValueError, IndexError) as e:
             logger.warning(f"Failed to parse audio_url: {e}")
-            # Fall through to return original item
-    
-    # If already in input_audio format, return as-is
-    if item.get("type") == "input_audio":
-        return item
+            # Fall through to try source path
+
+    # Handle source-based format: {"source": {"type": "base64", "data": "...", "media_type": "audio/flac"}}
+    source = item.get("source")
+    if isinstance(source, dict) and source.get("type") == "base64" and source.get("data"):
+        media_type = source.get("media_type", item.get("media_type", "audio/wav"))
+        audio_format = media_type.split("/")[-1] if "/" in media_type else "wav"
+        format_map = {"mpeg": "mp3", "x-wav": "wav", "wave": "wav"}
+        audio_format = format_map.get(audio_format, audio_format)
+        
+        logger.debug(f"Converted audio (source) to input_audio format: {audio_format}")
+        return {
+            "type": "input_audio",
+            "input_audio": {
+                "data": source["data"],
+                "format": audio_format
+            }
+        }
     
     # Fallback: return original (may not work)
     logger.warning("Could not convert audio content, returning as-is")
