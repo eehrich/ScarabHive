@@ -32,7 +32,8 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
-      max_tokens: 8192
+      thinking_level: high
+      max_tokens: 16384
       capabilities:
         tools: true
         function_calling: true
@@ -54,6 +55,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 300
+      thinking_level: high
       max_tokens: 16384
       capabilities:
         tools: true
