@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -267,6 +269,194 @@ class ComfyUIClient:
             logger.exception("Error cancelling job %s", prompt_id)
             return {"status": "error", "error": str(e)}
     
+    async def free_memory(self) -> dict[str, Any]:
+        """Unload ComfyUI-managed models and free VRAM/RAM.
+
+        Note: This only frees models tracked by ComfyUI's model manager.
+        Custom nodes that load models directly (e.g. VibeVoice) are NOT
+        affected.  Use :meth:`restart_service` for a full VRAM cleanup.
+        """
+        try:
+            payload = {"unload_models": True, "free_memory": True}
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.base_url}/free",
+                    json=payload,
+                ) as resp:
+                    if resp.status == 200:
+                        logger.info("ComfyUI: VRAM freed (models unloaded)")
+                        return {"status": "ok"}
+                    text = await resp.text()
+                    logger.warning("ComfyUI /free returned %d: %s", resp.status, text)
+                    return {"status": "error", "error": f"HTTP {resp.status}"}
+        except Exception as e:
+            logger.warning("ComfyUI /free failed: %s", e)
+            return {"status": "error", "error": str(e)}
+
+    async def restart_service(
+        self,
+        service_name: str = "comfyui",
+        ssh_host: str | None = None,
+        ssh_user: str = "operator",
+        ready_timeout: float = 60.0,
+        poll_interval: float = 2.0,
+        vram_threshold_gb: float = 2.0,
+    ) -> dict[str, Any]:
+        """Restart the ComfyUI systemd service via SSH and wait until ready.
+
+        This is the only reliable way to free VRAM held by custom nodes
+        that bypass ComfyUI's model management (e.g. VibeVoice).
+
+        Includes coordination for concurrent callers:
+        - Checks VRAM first; skips restart if already below threshold.
+        - Uses a file lock so only one process restarts at a time.
+        - After acquiring the lock, re-checks VRAM (another process may
+          have already restarted while we were waiting).
+
+        Args:
+            service_name: Name of the systemd service.
+            ssh_host: SSH host (defaults to ``self.host``).
+            ssh_user: SSH user on the remote machine.
+            ready_timeout: Seconds to wait for ComfyUI to become reachable.
+            poll_interval: Seconds between readiness checks.
+            vram_threshold_gb: Skip restart if torch VRAM usage is below
+                this value (in GB).
+
+        Returns:
+            ``{"status": "ok"}`` or ``{"status": "error", "error": ...}``
+        """
+        import subprocess as _sp
+
+        threshold_bytes = int(vram_threshold_gb * 1_000_000_000)
+
+        # --- quick check: is a restart even necessary? ---
+        if await self._vram_is_clean(threshold_bytes):
+            logger.info("ComfyUI VRAM already clean — skipping restart")
+            return {"status": "ok", "skipped": True}
+
+        # --- file lock to serialise concurrent restarts ---
+        lock_path = Path(tempfile.gettempdir()) / "comfyui_restart.lock"
+        lock_fd: int | None = None
+        try:
+            lock_fd = await self._acquire_restart_lock(
+                lock_path, wait_timeout=ready_timeout + 30,
+            )
+        except TimeoutError:
+            logger.warning("Could not acquire restart lock — proceeding anyway")
+
+        try:
+            # --- double-check after acquiring the lock ---
+            if await self._vram_is_clean(threshold_bytes):
+                logger.info(
+                    "ComfyUI VRAM already clean after lock — "
+                    "another process restarted it"
+                )
+                return {"status": "ok", "skipped": True}
+
+            # --- perform the restart ---
+            host = ssh_host or self.host
+            ssh_target = f"{ssh_user}@{host}"
+            restart_cmd = [
+                "ssh", ssh_target,
+                f"sudo systemctl restart {service_name}",
+            ]
+
+            logger.info("Restarting ComfyUI service on %s …", ssh_target)
+            try:
+                proc = _sp.run(
+                    restart_cmd, capture_output=True, text=True, timeout=30,
+                )
+                if proc.returncode != 0:
+                    err = (proc.stderr or proc.stdout or "").strip()
+                    logger.error(
+                        "SSH restart failed (rc=%d): %s", proc.returncode, err,
+                    )
+                    return {"status": "error", "error": err}
+            except Exception as e:
+                logger.error("SSH restart exception: %s", e)
+                return {"status": "error", "error": str(e)}
+
+            # --- wait for ComfyUI to come back online ---
+            logger.info("Waiting for ComfyUI to become ready …")
+            elapsed = 0.0
+            while elapsed < ready_timeout:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                try:
+                    stats = await self.get_system_stats()
+                    if "error" not in stats:
+                        logger.info(
+                            "ComfyUI back online after %.1fs", elapsed,
+                        )
+                        return {"status": "ok"}
+                except Exception:
+                    pass  # not ready yet
+
+            logger.warning(
+                "ComfyUI did not become ready within %.0fs", ready_timeout,
+            )
+            return {"status": "error", "error": "timeout waiting for ComfyUI"}
+        finally:
+            self._release_restart_lock(lock_fd, lock_path)
+
+    # -- restart helpers --------------------------------------------------
+
+    async def _vram_is_clean(self, threshold_bytes: int) -> bool:
+        """Return True if torch VRAM usage is below *threshold_bytes*."""
+        try:
+            stats = await self.get_system_stats()
+            devices = stats.get("devices", [])
+            if devices:
+                d = devices[0]
+                used = d.get("torch_vram_total", 0) - d.get("torch_vram_free", 0)
+                logger.debug("VRAM used: %.0fMB (threshold: %.0fMB)",
+                             used / 1e6, threshold_bytes / 1e6)
+                return used < threshold_bytes
+        except Exception:
+            pass
+        return False  # can't tell → assume dirty
+
+    @staticmethod
+    async def _acquire_restart_lock(
+        lock_path: Path,
+        wait_timeout: float = 90.0,
+        poll: float = 2.0,
+    ) -> int:
+        """Atomically create a lock file.  Wait if another process holds it."""
+        deadline = asyncio.get_event_loop().time() + wait_timeout
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                # Write PID so stale locks can be diagnosed.
+                os.write(fd, str(os.getpid()).encode())
+                return fd
+            except FileExistsError:
+                # Check for stale lock (older than 2 minutes).
+                try:
+                    age = asyncio.get_event_loop().time() - lock_path.stat().st_mtime
+                    if age > 120:
+                        logger.warning(
+                            "Removing stale ComfyUI restart lock (%.0fs old)", age,
+                        )
+                        lock_path.unlink(missing_ok=True)
+                        continue
+                except Exception:
+                    pass
+                if asyncio.get_event_loop().time() >= deadline:
+                    raise TimeoutError("restart lock wait timed out")
+                logger.debug("Waiting for ComfyUI restart lock …")
+                await asyncio.sleep(poll)
+
+    @staticmethod
+    def _release_restart_lock(fd: int | None, lock_path: Path) -> None:
+        """Release the restart lock file."""
+        try:
+            if fd is not None:
+                os.close(fd)
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     async def get_system_stats(self) -> dict[str, Any]:
         """Get ComfyUI system statistics.
         
