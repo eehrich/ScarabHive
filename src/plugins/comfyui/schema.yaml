@@ -24,6 +24,7 @@ tools:
               - server_status
               - queue
               - cancel
+              - upload_image
             description: >
               The operation to perform:
               - list: List available workflows (filterable by category)
@@ -35,6 +36,7 @@ tools:
               - server_status: Check ComfyUI server connectivity
               - queue: View pending and running jobs
               - cancel: Cancel a job by prompt_id
+              - upload_image: Upload a local image file to ComfyUI's input folder for use as reference in img2img/IPAdapter workflows. Returns filename to use as workflow parameter.
           
           workflow_id:
             type: string
@@ -99,6 +101,8 @@ tools:
             description: >
               For operation='load': Path to a specific file to load (absolute or relative to output directory).
               Use this to load a file you already know the path to.
+              For operation='upload_image': Path to the local image file to upload to ComfyUI's input
+              folder. Returns a filename usable as reference_image in img2img/IPAdapter workflows.
           
           filename:
             type: string

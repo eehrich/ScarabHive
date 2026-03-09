@@ -381,6 +381,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # ===== LOAD =====
         elif operation == "load":
             return await self._op_load(params, status)
+
+        # ===== UPLOAD_IMAGE =====
+        elif operation == "upload_image":
+            return await self._op_upload_image(params, status)
         
         if status:
             await status.error(f"Unknown operation: {operation}")
@@ -1220,7 +1224,67 @@ class ComfyUIServer(SchemaBasedMCPServer):
             obj = obj[part]
         
         obj[parts[-1]] = value
-    
+
+    async def _op_upload_image(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
+        """Upload a local image file to ComfyUI's input folder.
+
+        The returned filename can be used as the ``reference_image`` (or
+        ``image``) parameter in workflows that accept an input image
+        (e.g. ``sdxl_img2img``, ``sdxl_ipadapter``).
+
+        Args:
+            params: Must contain ``file_path`` — path to the local image file.
+
+        Returns:
+            Dict with ``filename`` (ComfyUI-internal name) on success, or
+            ``error`` on failure.
+        """
+        file_path_str = params.get("file_path")
+        if not file_path_str:
+            if status:
+                await status.error("file_path is required for upload_image")
+            return {"error": "file_path is required"}
+
+        file_path = Path(file_path_str)
+        if not file_path.exists():
+            # Try relative to working directory
+            file_path = Path.cwd() / file_path_str
+        if not file_path.exists():
+            if status:
+                await status.error(f"File not found: {file_path_str}")
+            return {"error": f"File not found: {file_path_str}"}
+
+        try:
+            image_data = file_path.read_bytes()
+        except OSError as e:
+            if status:
+                await status.error(f"Cannot read file: {e}")
+            return {"error": f"Cannot read file: {e}"}
+
+        if status:
+            await status.progress(f"Uploading {file_path.name} to ComfyUI…")
+
+        result = await self.client.upload_image(
+            image_data=image_data,
+            filename=file_path.name,
+            overwrite=True,
+        )
+
+        if "error" in result:
+            if status:
+                await status.error(f"Upload failed: {result['error']}")
+            return result
+
+        filename = result.get("name", file_path.name)
+        if status:
+            await status.end(f"Uploaded as '{filename}'")
+        return {
+            "status": "uploaded",
+            "filename": filename,
+            "subfolder": result.get("subfolder", ""),
+            "message": f"Use filename='{filename}' as reference_image parameter in workflows",
+        }
+
     # =========================================================================
     # Web UI Router
     # =========================================================================

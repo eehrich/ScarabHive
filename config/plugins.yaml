@@ -342,6 +342,199 @@ plugins:
               node_id: "41"
               field: inputs.noise_seed
 
+        - id: sdxl_img2img
+          name: "SDXL img2img (Style Continuation)"
+          description: >
+            SDXL image-to-image: encodes a reference image as the starting latent and denoises from
+            a given step, preserving composition and colour palette proportional to denoise strength.
+            Ideal for series covers where structural/colour continuity with a predecessor is desired.
+            Requires sd_xl_base_1.0.safetensors + sd_xl_refiner_1.0.safetensors.
+            Before using: upload the reference image with operation='upload_image' and pass the
+            returned filename as reference_image.
+          category: image_generation
+          workflow_file: sdxl_img2img.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the new image"
+              node_id: "20"
+              field: inputs.text
+            - name: prompt_refiner
+              type: string
+              required: false
+              description: "Prompt for refiner model (defaults to prompt)"
+              node_id: "22"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text, signature"
+              description: "Things to avoid"
+              node_id: "21"
+              field: inputs.text
+            - name: negative_prompt_refiner
+              type: string
+              required: false
+              description: "Negative prompt for refiner (defaults to negative_prompt)"
+              node_id: "23"
+              field: inputs.text
+            - name: reference_image
+              type: string
+              required: true
+              description: "Filename of the reference image in ComfyUI's input folder (from operation='upload_image')"
+              node_id: "05"
+              field: inputs.image
+            - name: steps
+              type: integer
+              default: 30
+              description: "Total sampling steps (25-35 recommended)"
+              node_id: "40"
+              field: inputs.steps
+            - name: steps_refiner
+              type: integer
+              default: 30
+              description: "Must match steps"
+              node_id: "41"
+              field: inputs.steps
+            - name: start_at_step
+              type: integer
+              default: 7
+              description: >
+                Step to start denoising from (controls denoise strength).
+                Formula: int(steps * (1 - denoise)). Examples for steps=30:
+                denoise=0.75 → 7, denoise=0.60 → 12, denoise=0.85 → 4.
+                Lower = more faithful to reference; higher = more creative freedom.
+              node_id: "40"
+              field: inputs.start_at_step
+            - name: cfg_scale
+              type: float
+              default: 7.5
+              description: "Classifier-free guidance scale (6-9 recommended)"
+              node_id: "40"
+              field: inputs.cfg
+            - name: cfg_scale_refiner
+              type: float
+              default: 7.5
+              description: "CFG scale for refiner"
+              node_id: "41"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "40"
+              field: inputs.noise_seed
+            - name: seed_refiner
+              type: integer
+              default: 0
+              description: "Random seed for refiner (use same as seed)"
+              node_id: "41"
+              field: inputs.noise_seed
+
+        - id: sdxl_ipadapter
+          name: "SDXL + IP-Adapter (Style Transfer)"
+          description: >
+            SDXL with IP-Adapter: extracts style/mood/colour embedding from a reference image and
+            injects it as an additional conditioning signal. Generates a fully new composition
+            while preserving the visual aesthetic of the reference — ideal for series covers that
+            must feel like they belong together without being structural copies.
+            Requires: sd_xl_base_1.0.safetensors, sd_xl_refiner_1.0.safetensors,
+            ComfyUI-IPAdapter-Plus custom node, ip-adapter_sdxl.safetensors (ipadapter/ folder),
+            CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors (clip_vision/ folder).
+            Before using: upload the reference image with operation='upload_image' and pass the
+            returned filename as reference_image.
+          category: image_generation
+          workflow_file: sdxl_ipadapter.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the new image"
+              node_id: "20"
+              field: inputs.text
+            - name: prompt_refiner
+              type: string
+              required: false
+              description: "Prompt for refiner model (defaults to prompt)"
+              node_id: "22"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text, signature"
+              description: "Things to avoid"
+              node_id: "21"
+              field: inputs.text
+            - name: negative_prompt_refiner
+              type: string
+              required: false
+              description: "Negative prompt for refiner (defaults to negative_prompt)"
+              node_id: "23"
+              field: inputs.text
+            - name: reference_image
+              type: string
+              required: true
+              description: "Filename of the reference image in ComfyUI's input folder (from operation='upload_image')"
+              node_id: "05"
+              field: inputs.image
+            - name: weight
+              type: float
+              default: 0.7
+              description: >
+                IP-Adapter style weight (0.0–1.0). 0.5 = subtle style hint,
+                0.7 = clear style match (recommended), 0.9 = very close to reference.
+              node_id: "14"
+              field: inputs.weight
+            - name: width
+              type: integer
+              default: 1024
+              description: "Image width (1024 recommended for SDXL)"
+              node_id: "30"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1024
+              description: "Image height (1024 recommended for SDXL)"
+              node_id: "30"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 30
+              description: "Total sampling steps for both passes"
+              node_id: "40"
+              field: inputs.steps
+            - name: steps_refiner
+              type: integer
+              default: 30
+              description: "Must match steps"
+              node_id: "41"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.5
+              description: "Classifier-free guidance scale"
+              node_id: "40"
+              field: inputs.cfg
+            - name: cfg_scale_refiner
+              type: float
+              default: 7.5
+              description: "CFG scale for refiner"
+              node_id: "41"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "40"
+              field: inputs.noise_seed
+            - name: seed_refiner
+              type: integer
+              default: 0
+              description: "Random seed for refiner (use same as seed)"
+              node_id: "41"
+              field: inputs.noise_seed
+
     twitter_search:
       type: twitter_search
       enabled: false
