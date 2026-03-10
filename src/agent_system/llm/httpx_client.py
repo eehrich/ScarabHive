@@ -531,11 +531,11 @@ class HTTPXOpenAIClient(LLMClient):
                         if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                             raise LLMQuotaExhaustedError(
                                 f"Quota exhausted: {error_text}",
-                                provider="httpx", model=self._model, retry_after=retry_after
+                                provider="httpx", model=self.model, retry_after=retry_after
                             )
                         raise LLMRateLimitError(
                             f"Rate limit exceeded: {error_text}",
-                            provider="httpx", model=self._model, retry_after=retry_after
+                            provider="httpx", model=self.model, retry_after=retry_after
                         )
 
                     # Handle server errors (5xx) - retry with exponential backoff
@@ -767,11 +767,11 @@ class HTTPXOpenAIClient(LLMClient):
                             if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                                 raise LLMQuotaExhaustedError(
                                     f"Quota exhausted: {error_text}",
-                                    provider="httpx", model=self._model, retry_after=retry_after
+                                    provider="httpx", model=self.model, retry_after=retry_after
                                 )
                             raise LLMRateLimitError(
                                 f"Rate limit exceeded: {error_text}",
-                                provider="httpx", model=self._model, retry_after=retry_after
+                                provider="httpx", model=self.model, retry_after=retry_after
                             )
 
                         # Handle server errors (5xx) - retry with exponential backoff
@@ -1157,11 +1157,11 @@ class HTTPXOpenAIClient(LLMClient):
                         if "quota" in error_text.lower() or "exhausted" in error_text.lower():
                             raise LLMQuotaExhaustedError(
                                 f"Quota exhausted: {error_text}",
-                                provider="httpx", model=self._model, retry_after=retry_after
+                                provider="httpx", model=self.model, retry_after=retry_after
                             )
                         raise LLMRateLimitError(
                             f"Rate limit exceeded: {error_text}",
-                            provider="httpx", model=self._model, retry_after=retry_after
+                            provider="httpx", model=self.model, retry_after=retry_after
                         )
 
                     response.raise_for_status()
