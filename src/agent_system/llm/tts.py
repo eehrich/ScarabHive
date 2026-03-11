@@ -132,6 +132,8 @@ class TTSClient:
         *,
         voice: Optional[TTSVoice] = None,
         language: Optional[str] = None,
+        system_instruction: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> TTSResult:
         """Generate speech from text with a single speaker.
         
@@ -140,6 +142,9 @@ class TTSClient:
                   Can include style/direction instructions.
             voice: Voice to use. Provider default if None.
             language: Optional language hint (auto-detected by most models).
+            system_instruction: Optional system prompt to control speech style,
+                language, pacing, etc. Supported by Gemini TTS.
+            seed: Optional seed for reproducible output.
             
         Returns:
             TTSResult with raw PCM audio data.
@@ -233,6 +238,8 @@ class GeminiTTSClient(TTSClient):
         *,
         voice: Optional[TTSVoice] = None,
         language: Optional[str] = None,
+        system_instruction: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> TTSResult:
         """Single-speaker TTS via Gemini."""
         from google.genai import types
@@ -250,7 +257,13 @@ class GeminiTTSClient(TTSClient):
         config = types.GenerateContentConfig(
             response_modalities=["AUDIO"],
             speech_config=speech_config,
+            seed=seed,
         )
+
+        # Gemini TTS models don't support system_instruction in config
+        # (causes 500 INTERNAL). Prepend it to the text as a prompt prefix.
+        if system_instruction:
+            text = f"{system_instruction}\n\n{text}"
 
         audio_data = await self._generate(text, config)
 
