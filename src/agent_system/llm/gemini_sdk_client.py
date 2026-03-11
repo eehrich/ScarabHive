@@ -25,6 +25,7 @@ import asyncio
 import base64
 import json
 import logging
+import random
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -73,6 +74,7 @@ class GeminiSDKClient(LLMClient):
         ssl_verify: bool | str = True,  # Ignored by SDK, kept for compatibility
         httpx_timeouts: dict | None = None,  # Ignored by SDK, kept for compatibility
         max_retries: int = 3,
+        rate_limit_max_retries: int = 6,
         parallel_tool_calls: bool = True,  # Ignored, kept for compatibility
         include_thoughts: bool | None = None,
         thinking_budget: int | None = None,
@@ -102,6 +104,7 @@ class GeminiSDKClient(LLMClient):
         self.context_window = context_window
         self.request_timeout = request_timeout
         self.max_retries = max_retries
+        self.rate_limit_max_retries = rate_limit_max_retries
         self.extra_params = extra_params
         
         # Store include_thoughts in extra_params for consistency
@@ -600,7 +603,8 @@ class GeminiSDKClient(LLMClient):
         _request_start = _time.time()
         
         last_exception = None
-        for attempt in range(self.max_retries + 1):
+        _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        for attempt in range(_effective_max + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
             
@@ -1051,19 +1055,21 @@ class GeminiSDKClient(LLMClient):
                 if is_rate_limit:
                     # Parse retry delay from error message, default to 60s for rate limits
                     parsed_delay = parse_retry_delay(error_str)
-                    wait_time = parsed_delay if parsed_delay else 60.0
+                    base_wait = parsed_delay if parsed_delay else 60.0
                     # Add small buffer to parsed delay
                     if parsed_delay:
-                        wait_time = parsed_delay + 2.0
+                        base_wait = parsed_delay + 2.0
+                    jitter = base_wait * random.uniform(0.0, 0.5)
+                    wait_time = base_wait + jitter
                     
                     # Check if we have retries left
-                    if attempt < self.max_retries:
+                    if attempt < self.rate_limit_max_retries:
                         logger.warning(
                             f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
-                            f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                            f"(attempt {attempt + 1}/{self.rate_limit_max_retries})"
                         )
-                        await report_status(f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                        await self._notify_retry("gemini_sdk", self.model, "", True, "Rate limited (429)", attempt, self.max_retries + 1)
+                        await report_status(f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {wait_time:.0f}s)")
+                        await self._notify_retry("gemini_sdk", self.model, "", True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators for retry
                         accumulated_content = []
@@ -1241,7 +1247,8 @@ class GeminiSDKClient(LLMClient):
         _request_start = _time.time()
         
         last_exception = None
-        for attempt in range(self.max_retries + 1):
+        _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        for attempt in range(_effective_max + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
             
@@ -1377,24 +1384,26 @@ class GeminiSDKClient(LLMClient):
                 if is_rate_limit:
                     # Parse retry delay from error message, default to 60s for rate limits
                     parsed_delay = parse_retry_delay(error_str)
-                    wait_time = parsed_delay if parsed_delay else 60.0
+                    base_wait = parsed_delay if parsed_delay else 60.0
                     # Add small buffer to parsed delay
                     if parsed_delay:
-                        wait_time = parsed_delay + 2.0
+                        base_wait = parsed_delay + 2.0
+                    jitter = base_wait * random.uniform(0.0, 0.5)
+                    wait_time = base_wait + jitter
                     
                     # Check if we have retries left
-                    if attempt < self.max_retries:
-                        await report_status(f"Rate limit, waiting {wait_time:.0f}s, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    if attempt < self.rate_limit_max_retries:
+                        await report_status(f"Rate limit, waiting {wait_time:.0f}s, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model}")
                         logger.warning(
                             f"[GeminiSDK] Rate limit hit (429). Waiting {wait_time:.1f}s before retry "
-                            f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                            f"(attempt {attempt + 1}/{self.rate_limit_max_retries})"
                         )
-                        await self._notify_retry("gemini_sdk", self.model, "", False, "Rate limited (429)", attempt, self.max_retries + 1)
+                        await self._notify_retry("gemini_sdk", self.model, "", False, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
                     # Retries exhausted - raise for fallback
-                    await report_status(f"Rate limit exceeded after {self.max_retries + 1} attempts: {self.model}")
+                    await report_status(f"Rate limit exceeded after {self.rate_limit_max_retries + 1} attempts: {self.model}")
                     if "quota" in error_str.lower() or "exhausted" in error_str.lower():
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {error_str}",

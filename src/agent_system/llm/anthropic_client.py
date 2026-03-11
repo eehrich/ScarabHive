@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -63,6 +64,7 @@ class AnthropicAsyncClient(LLMClient):
         context_window: int = 200000,
         request_timeout: int = 180,
         max_retries: int = 3,
+        rate_limit_max_retries: int = 6,
         max_tokens: int = 8192,
         include_thinking: bool = False,
         thinking_budget: Optional[int] = None,
@@ -96,6 +98,7 @@ class AnthropicAsyncClient(LLMClient):
         self.context_window = context_window
         self.request_timeout = request_timeout
         self.max_retries = max_retries
+        self.rate_limit_max_retries = rate_limit_max_retries
         self.max_tokens = max_tokens
         self.include_thinking = include_thinking
         self.thinking_budget = thinking_budget
@@ -416,7 +419,8 @@ class AnthropicAsyncClient(LLMClient):
         
         _request_start = _time.time()
         last_exception = None
-        for attempt in range(self.max_retries + 1):
+        _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        for attempt in range(_effective_max + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
             
@@ -566,15 +570,17 @@ class AnthropicAsyncClient(LLMClient):
                 
                 if is_rate_limit:
                     parsed_delay = parse_retry_delay(error_str)
-                    wait_time = parsed_delay if parsed_delay else 60.0
+                    base_wait = parsed_delay if parsed_delay else 60.0
+                    jitter = base_wait * random.uniform(0.0, 0.5)
+                    wait_time = base_wait + jitter
                     
-                    if attempt < self.max_retries:
-                        await report_status(f"Rate limit, waiting {wait_time:.0f}s, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                    if attempt < self.rate_limit_max_retries:
+                        await report_status(f"Rate limit, waiting {wait_time:.0f}s, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model}")
                         logger.warning(
                             f"[Anthropic] Rate limit hit. Waiting {wait_time:.1f}s before retry "
-                            f"(attempt {attempt + 1}/{self.max_retries + 1})"
+                            f"(attempt {attempt + 1}/{self.rate_limit_max_retries})"
                         )
-                        await self._notify_retry("anthropic", self.model, "", True, f"Rate limit (429): {error_str[:200]}", attempt, self.max_retries + 1)
+                        await self._notify_retry("anthropic", self.model, "", True, f"Rate limit (429): {error_str[:200]}", attempt, self.rate_limit_max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Reset accumulators
                         accumulated_content = []
@@ -584,7 +590,7 @@ class AnthropicAsyncClient(LLMClient):
                         continue
                     
                     # Exhausted retries
-                    await report_status(f"Rate limit exceeded after {self.max_retries + 1} attempts: {self.model}")
+                    await report_status(f"Rate limit exceeded after {self.rate_limit_max_retries + 1} attempts: {self.model}")
                     if "quota" in error_str.lower() or "exhausted" in error_str.lower():
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {error_str}",

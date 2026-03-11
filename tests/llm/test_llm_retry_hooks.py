@@ -129,6 +129,8 @@ class TestHTTPXRetryHooks:
             timeout_config=timeout_config,
             max_retries=2,
             retry_backoff=0.01,  # Fast for tests
+            rate_limit_backoff=0.01,  # Fast for tests
+            rate_limit_max_retries=2,
         )
         return client
 
@@ -381,6 +383,7 @@ class TestGeminiClientRetryHooks:
             api_key="test-key",
         )
         client.max_retries = 1
+        client.rate_limit_max_retries = 1
         client.set_llm_hooks(on_post_response=post_hook)
 
         import httpx

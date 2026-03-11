@@ -377,7 +377,7 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
-    gpt-5.2:
+    gpt-5:
       provider: openai_httpx
       model: gpt-5.2
       api_key: ***REMOVED***
@@ -397,7 +397,7 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
-    gpt-5.2-codex:
+    gpt-5-codex:
       provider: openai_httpx
       model: gpt-5.2-codex
       api_key: ***REMOVED***
@@ -417,7 +417,7 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
-    gpt-5.2-codex-mini:
+    gpt-5-codex-mini:
       provider: openai_httpx
       model: gpt-5.2-codex-mini
       api_key: ***REMOVED***
@@ -474,7 +474,7 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
-    gpt-5.2-batch:
+    gpt-5-batch:
       provider: batch
       batch_provider: openai            
       model: gpt-5.2
@@ -624,24 +624,24 @@ llm_system:
       max_steps: 500
 
     normal:
-      #model_ref: gemini-3-0-flash-nostream
+      #model_ref: gemini-3-flash-nostream
       model_ref: gpt-5-mini
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
       
     normal-stream:
-      model_ref: gemini-3-0-flash
+      model_ref: gemini-3-flash
       description: "Fast model for medium reasoning tasks (streaming)"
       max_steps: 500
       
     think:
-      #model_ref: gemini-3-0-pro-nostream
-      model_ref: gpt-5.2
+      #model_ref: gemini-3-pro-nostream
+      model_ref: gpt-5
       description: "Advanced model for complex reasoning (batch)"
       max_steps: 500
       
     think-stream:
-      model_ref: gemini-3-0-pro
+      model_ref: gemini-3-pro
       description: "Advanced model for complex reasoning (streaming)"
       max_steps: 500
       
@@ -661,12 +661,12 @@ llm_system:
       max_steps: 500      
       
     code:
-      model_ref: gpt-5.2-codex
+      model_ref: gpt-5-codex
       description: "Special LLM for complex coding tasks"
       max_steps: 500
       
     code-mini:
-      model_ref: gpt-5.2-codex-mini
+      model_ref: gpt-5-codex-mini
       description: "Special LLM for medium coding tasks"
       max_steps: 500
       
@@ -677,7 +677,7 @@ llm_system:
 
     # Named profiles for specific models
     gemini-flash:
-      model_ref: gemini-3-0-flash-nostream
+      model_ref: gemini-3-flash-nostream
       description: "Google Gemini Flash"
       max_steps: 500
 
@@ -707,7 +707,7 @@ llm_system:
       max_steps: 500
 
     gpt-full:
-      model_ref: gpt-5.2
+      model_ref: gpt-5
       description: "OpenAI full model for complex tasks"
       max_steps: 500
       
@@ -722,7 +722,7 @@ llm_system:
       max_steps: 500
     
     gpt-full-batch:
-      model_ref: gpt-5.2-batch
+      model_ref: gpt-5-batch
       description: "OpenAI full model (batch)"
       max_steps: 500
       
