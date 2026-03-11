@@ -560,7 +560,7 @@ plugins:
 
     llm_router:
       type: llm_router
-      enabled: true
+      enabled: false
 
     log_viewer:
       type: log_viewer
@@ -767,7 +767,7 @@ plugins:
 
     message_debugger:
       type: message_debugger
-      enabled: true
+      enabled: false
 
     simple_prompt_inject:
       type: simple_prompt_inject
