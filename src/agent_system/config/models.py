@@ -133,6 +133,30 @@ class LLMProfile(BaseModel):
     max_steps: Optional[int] = None
 
 
+# ===========================
+# TTS Configuration Models
+# ===========================
+
+class TTSModelConfig(BaseModel):
+    """Individual TTS model configuration.
+    
+    Defines a TTS backend (e.g. Gemini TTS) with its connection and
+    generation parameters.
+    """
+    provider: Literal["gemini_tts"] = "gemini_tts"
+    model: str  # e.g. "gemini-2.5-flash-preview-tts"
+    api_key: Optional[str] = None  # Falls back to GEMINI_API_KEY / GOOGLE_API_KEY
+    request_timeout: int = 300  # TTS can be slow for long texts
+    max_retries: int = 3
+
+
+class TTSProfile(BaseModel):
+    """Named TTS profile that references a TTS model."""
+    model_ref: str  # Reference to key in tts_models dict
+    description: Optional[str] = None
+    default_voice: Optional[str] = None  # Default voice name (e.g. "Kore")
+
+
 class LLMSystemConfig(BaseModel):
     """Complete LLM system configuration"""
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
@@ -140,6 +164,10 @@ class LLMSystemConfig(BaseModel):
     models: Dict[str, LLMModelConfig] = {}
     profiles: Dict[str, LLMProfile] = {}
     default_profile: Optional[str] = "normal"  # Default LLM profile to use
+    # TTS (Text-to-Speech) configuration
+    tts_models: Dict[str, TTSModelConfig] = {}
+    tts_profiles: Dict[str, TTSProfile] = {}
+    default_tts_profile: Optional[str] = None
 
 
 # ===========================

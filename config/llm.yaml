@@ -789,3 +789,37 @@ llm_system:
       max_steps: 500
 
   default_profile: chat
+
+  # =============================================================================
+  # TTS (TEXT-TO-SPEECH) MODEL DEFINITIONS
+  # =============================================================================
+  tts_models:
+    gemini-tts-flash:
+      provider: gemini_tts
+      model: gemini-2.5-flash-preview-tts
+      api_key: "***REMOVED***"
+      request_timeout: 300
+      max_retries: 3
+
+    gemini-tts-pro:
+      provider: gemini_tts
+      model: gemini-2.5-pro-preview-tts
+      api_key: "***REMOVED***"
+      request_timeout: 300
+      max_retries: 3
+
+  # =============================================================================
+  # TTS PROFILES
+  # =============================================================================
+  tts_profiles:
+    gemini-tts:
+      model_ref: gemini-tts-flash
+      description: "Gemini 2.5 Flash TTS - fast, cost-effective"
+      default_voice: Kore
+
+    gemini-tts-pro:
+      model_ref: gemini-tts-pro
+      description: "Gemini 2.5 Pro TTS - higher quality"
+      default_voice: Kore
+
+  default_tts_profile: gemini-tts
