@@ -50,7 +50,7 @@ llm_system:
 
     openrouter-gemini-3-pro:
       provider: openai_httpx
-      model: google/gemini-3-pro-preview
+      model: google/gemini-3.1-pro-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance

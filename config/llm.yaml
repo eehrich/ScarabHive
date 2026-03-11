@@ -52,7 +52,7 @@ llm_system:
     # ---------------------------------------------------------------------------
     # GEMINI MODELS (Sync/Streaming)
     # ---------------------------------------------------------------------------
-    gemini-3-0-flash:
+    gemini-3-flash:
       provider: gemini_sdk
       model: gemini-3-flash-preview
       api_key: "***REMOVED***"
@@ -72,7 +72,7 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    gemini-3-0-flash-nostream:
+    gemini-3-flash-nostream:
       provider: gemini_sdk
       model: gemini-3-flash-preview
       api_key: "***REMOVED***"
@@ -92,9 +92,9 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    gemini-3-0-pro:
+    gemini-3-pro:
       provider: gemini_sdk
-      model: gemini-3-pro-preview
+      model: gemini-3.1-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
@@ -112,9 +112,9 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    gemini-3-0-pro-nostream:
+    gemini-3-pro-nostream:
       provider: gemini_sdk
-      model: gemini-3-pro-preview
+      model: gemini-3.1-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
@@ -135,7 +135,7 @@ llm_system:
     # ---------------------------------------------------------------------------
     # GEMINI BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
-    gemini-3-0-flash-batch:
+    gemini-3-flash-batch:
       provider: batch                   
       batch_provider: gemini            # Which batch API to use
       model: gemini-3-flash-preview
@@ -152,10 +152,10 @@ llm_system:
         streaming: false
         json_mode: true
 
-    gemini-3-0-pro-batch:
+    gemini-3-pro-batch:
       provider: batch
       batch_provider: gemini
-      model: gemini-3-pro-preview
+      model: gemini-3.1-pro-preview
       api_key: "***REMOVED***"
       context_window: 200000  # 1M token context, but limited here for performance
       include_thoughts: false      
@@ -377,9 +377,29 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
-    gpt-5.1:
+    gpt-5.2:
       provider: openai_httpx
-      model: gpt-5.1
+      model: gpt-5.2
+      api_key: ***REMOVED***
+      context_window: 272000 # >272K it is getting expensive
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: false
+        video_input: false
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
+        max_image_size: 20971520
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+
+    gpt-5.2-codex:
+      provider: openai_httpx
+      model: gpt-5.2-codex
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -397,29 +417,9 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
-    gpt-5.1-codex:
+    gpt-5.2-codex-mini:
       provider: openai_httpx
-      model: gpt-5.1-codex
-      api_key: ***REMOVED***
-      context_window: 272000
-      request_timeout: 240
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: false
-        video_input: false
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions, assistants]
-        default_api_type: chat_completions
-        max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
-        image_detail_control: true
-
-    gpt-5.1-codex-mini:
-      provider: openai_httpx
-      model: gpt-5.1-codex-mini
+      model: gpt-5.2-codex-mini
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -474,10 +474,10 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
 
-    gpt-5.1-batch:
+    gpt-5.2-batch:
       provider: batch
       batch_provider: openai            
-      model: gpt-5.1
+      model: gpt-5.2
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -636,7 +636,7 @@ llm_system:
       
     think:
       #model_ref: gemini-3-0-pro-nostream
-      model_ref: gpt-5.1
+      model_ref: gpt-5.2
       description: "Advanced model for complex reasoning (batch)"
       max_steps: 500
       
@@ -661,12 +661,12 @@ llm_system:
       max_steps: 500      
       
     code:
-      model_ref: gpt-5.1-codex
+      model_ref: gpt-5.2-codex
       description: "Special LLM for complex coding tasks"
       max_steps: 500
       
     code-mini:
-      model_ref: gpt-5.1-codex-mini
+      model_ref: gpt-5.2-codex-mini
       description: "Special LLM for medium coding tasks"
       max_steps: 500
       
@@ -682,32 +682,32 @@ llm_system:
       max_steps: 500
 
     gemini-flash-stream:
-      model_ref: gemini-3-0-flash
+      model_ref: gemini-3-flash
       description: "Google Gemini Flash"
       max_steps: 500      
       
     gemini-flash-batch:
-      model_ref: gemini-3-0-flash-batch
+      model_ref: gemini-3-flash-batch
       description: "Google Gemini Flash (batch)"
       max_steps: 500
       
     gemini-pro:
-      model_ref: gemini-3-0-pro-nostream
+      model_ref: gemini-3-pro-nostream
       description: "Google Gemini Pro"
       max_steps: 500
 
     gemini-pro-stream:
-      model_ref: gemini-3-0-pro
+      model_ref: gemini-3-pro
       description: "Google Gemini Pro"
       max_steps: 500
 
     gemini-pro-batch:
-      model_ref: gemini-3-0-pro-batch
+      model_ref: gemini-3-pro-batch
       description: "Google Gemini Pro (batch)"
       max_steps: 500
 
     gpt-full:
-      model_ref: gpt-5.1
+      model_ref: gpt-5.2
       description: "OpenAI full model for complex tasks"
       max_steps: 500
       
@@ -722,7 +722,7 @@ llm_system:
       max_steps: 500
     
     gpt-full-batch:
-      model_ref: gpt-5.1-batch
+      model_ref: gpt-5.2-batch
       description: "OpenAI full model (batch)"
       max_steps: 500
       

@@ -8,6 +8,7 @@ OpenAI client which has known hanging/timeout issues.
 import asyncio
 import json
 import logging
+import random
 import socket
 from typing import Any, Optional
 from dataclasses import dataclass
@@ -53,6 +54,8 @@ class HTTPXOpenAIClient(LLMClient):
         timeout_config: Optional[HTTPXTimeoutConfig] = None,
         max_retries: int = 3,
         retry_backoff: float = 1.0,
+        rate_limit_backoff: float = 60.0,
+        rate_limit_max_retries: int = 6,
         verify: Optional[bool] = None,
         context_window: Optional[int] = None,
         capabilities: Optional[dict] = None,
@@ -69,6 +72,8 @@ class HTTPXOpenAIClient(LLMClient):
         self.timeout_config = timeout_config or HTTPXTimeoutConfig()
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
+        self.rate_limit_backoff = rate_limit_backoff
+        self.rate_limit_max_retries = rate_limit_max_retries
         self.verify = verify
         self.parallel_tool_calls = parallel_tool_calls
         self.max_tokens = max_tokens  # Limit output tokens (None = provider default)
@@ -491,7 +496,8 @@ class HTTPXOpenAIClient(LLMClient):
         # Retry logic with exponential backoff
         _request_start = _time.time()
         last_exception = None
-        for attempt in range(self.max_retries + 1):
+        _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        for attempt in range(_effective_max + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled by user")
@@ -508,14 +514,16 @@ class HTTPXOpenAIClient(LLMClient):
                     # Make regular POST request (not streaming)
                     response = await client.post(url=url, headers=self._headers, json=payload)
 
-                    # Handle rate limiting (429) - raise for fallback after retries exhausted
+                    # Handle rate limiting (429) - longer backoff + jitter to avoid thundering herd
                     if response.status_code == 429:
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                        if attempt < self.max_retries:
-                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                            await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                            await self._notify_retry("openai_httpx", self.model, url, False, "Rate limited (429)", attempt, self.max_retries + 1)
+                        if attempt < self.rate_limit_max_retries:
+                            base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
+                            jitter = base * random.uniform(0.0, 0.5)
+                            backoff_time = base + jitter
+                            logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
+                            await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
+                            await self._notify_retry("openai_httpx", self.model, url, False, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
                             await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
                         # Retries exhausted - raise for fallback
@@ -713,7 +721,8 @@ class HTTPXOpenAIClient(LLMClient):
         # Retry logic with exponential backoff
         _streaming_request_start = _time.time()
         last_exception: Exception | None = None
-        for attempt in range(self.max_retries + 1):
+        _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        for attempt in range(_effective_max + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled by user")
@@ -753,11 +762,13 @@ class HTTPXOpenAIClient(LLMClient):
                         # Check status code (don't use raise_for_status() - it tries to read the body)
                         if response.status_code == 429:
                             retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                            if attempt < self.max_retries:
-                                backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-                                logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                                await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                                await self._notify_retry("openai_httpx", self.model, url, True, "Rate limited (429)", attempt, self.max_retries + 1)
+                            if attempt < self.rate_limit_max_retries:
+                                base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
+                                jitter = base * random.uniform(0.0, 0.5)
+                                backoff_time = base + jitter
+                                logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
+                                await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
+                                await self._notify_retry("openai_httpx", self.model, url, True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
                                 await self._cancellable_sleep(backoff_time, cancellation_token)
                                 continue
                             # Retries exhausted - raise for fallback
