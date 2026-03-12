@@ -59,6 +59,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
         # Threshold for detecting lost jobs (unknown status) - fail early if job stays unknown
         self.unknown_threshold = getattr(mcp_config, 'unknown_threshold_seconds', 60)
+        self._lb_strategy = getattr(mcp_config, 'strategy', 'least_loaded') or 'least_loaded'
 
         # Build server list for load balancing.
         # If 'servers' list is configured, use it; otherwise fall back to single host/port.
@@ -143,18 +144,35 @@ class ComfyUIServer(SchemaBasedMCPServer):
         )
 
     async def _pick_client(self, output_dir: Path) -> "ComfyUIClient":
-        """Return a client pointing at the least-loaded ComfyUI server.
+        """Return a client pointing at a ComfyUI server.
 
-        Probes all configured servers concurrently via ``/queue`` and selects
-        the one with the fewest pending + running jobs.  Offline servers are
-        cached for 60s to avoid repeated probe timeouts.
+        Uses the ``strategy`` config (``least_loaded`` or ``random``).
+        Offline servers are cached for 60s to avoid repeated probe timeouts.
         """
         if len(self._servers) == 1:
             return self.client
 
         import time
         now = time.monotonic()
+        strategy = self._lb_strategy
 
+        if strategy == "random":
+            import random as _rng
+            healthy = [
+                s for s in self._servers
+                if f"{s['host']}:{s.get('port', 8188)}" not in self._health_cache
+                or (now - self._health_cache[f"{s['host']}:{s.get('port', 8188)}"]) >= self._HEALTH_CACHE_TTL
+            ]
+            if not healthy:
+                healthy = list(self._servers)
+            best_srv = _rng.choice(healthy)
+            logger.debug(
+                "ComfyUI load balancer (random): selected %s:%s",
+                best_srv["host"], best_srv.get("port", 8188),
+            )
+            return self._build_client(best_srv["host"], best_srv["port"], output_dir)
+
+        # --- least_loaded strategy ---
         async def _probe(srv: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             key = f"{srv['host']}:{srv.get('port', 8188)}"
             last_fail = self._health_cache.get(key)

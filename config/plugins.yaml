@@ -160,8 +160,9 @@ plugins:
         - host: "192.0.2.5"
           port: 8188
         - host: "192.0.2.6"
-          port: 8188
-      timeout_seconds: 300
+          port: 8188      
+          strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"      timeout_seconds: 300
+
       unknown_threshold_seconds: 60  # Fail early if job stays unknown for this many seconds (lost/dropped)
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
