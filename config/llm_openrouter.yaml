@@ -48,6 +48,27 @@ llm_system:
       # - Higher rate limits than direct Google API at Tier 1
       # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
 
+    openrouter-gemini-3-flash-unlimited:
+      provider: openai_httpx
+      model: google/gemini-3-flash-preview
+      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 400
+      thinking_level: high
+      max_tokens: 0  # No limit - let provider decide (for large structured outputs)
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+      # Notes:
+      # - Same as openrouter-gemini-3-flash but WITHOUT output token limit
+      # - Use for testing/budget-conscious large structured output tasks
+      # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
+
     openrouter-gemini-3-pro:
       provider: openai_httpx
       model: google/gemini-3.1-pro-preview
@@ -71,6 +92,27 @@ llm_system:
       # - Higher rate limits than direct Google API at Tier 1
       # - Pricing: ~$2 input / ~$12 output per 1M tokens
 
+    openrouter-gemini-3-pro-unlimited:
+      provider: openai_httpx
+      model: google/gemini-3.1-pro-preview
+      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 600
+      thinking_level: high
+      max_tokens: 0  # No limit - let provider decide (for large structured outputs)
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+      # Notes:
+      # - Same as openrouter-gemini-3-pro but WITHOUT output token limit
+      # - Use for tasks with unpredictably large outputs (e.g. full story design JSON)
+      # - Pricing: ~$2 input / ~$12 output per 1M tokens
+
 
 
   # =============================================================================
@@ -82,8 +124,18 @@ llm_system:
       description: "OpenRouter Gemini 3 Flash - Fast with audio/video support"
       max_steps: 500
 
+    or-gemini-flash-unlimited:
+      model_ref: openrouter-gemini-3-flash-unlimited
+      description: "OpenRouter Gemini 3 Flash - No output token limit (budget-friendly testing)"
+      max_steps: 500
+
     or-gemini-pro:
       model_ref: openrouter-gemini-3-pro
       description: "OpenRouter Gemini 3 Pro - Best quality with audio/video support"
+      max_steps: 500
+
+    or-gemini-pro-unlimited:
+      model_ref: openrouter-gemini-3-pro-unlimited
+      description: "OpenRouter Gemini 3 Pro - No output token limit (for large structured outputs)"
       max_steps: 500
     
