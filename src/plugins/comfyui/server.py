@@ -127,6 +127,12 @@ class ComfyUIServer(SchemaBasedMCPServer):
     # Load-balancing helpers
     # =========================================================================
 
+    # Health cache: maps "host:port" → time.monotonic() of last offline probe.
+    # Servers are skipped for _HEALTH_CACHE_TTL seconds to avoid repeated
+    # connection timeouts when a server is down.
+    _health_cache: dict[str, float] = {}
+    _HEALTH_CACHE_TTL = 60.0
+
     def _build_client(self, host: str, port: int, output_dir: Path) -> "ComfyUIClient":
         """Build a ComfyUIClient for the given server."""
         return ComfyUIClient(
@@ -140,21 +146,31 @@ class ComfyUIServer(SchemaBasedMCPServer):
         """Return a client pointing at the least-loaded ComfyUI server.
 
         Probes all configured servers concurrently via ``/queue`` and selects
-        the one with the fewest pending + running jobs.  Falls back gracefully
-        when servers are offline.
+        the one with the fewest pending + running jobs.  Offline servers are
+        cached for 60s to avoid repeated probe timeouts.
         """
         if len(self._servers) == 1:
             return self.client
 
+        import time
+        now = time.monotonic()
+
         async def _probe(srv: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+            key = f"{srv['host']}:{srv.get('port', 8188)}"
+            last_fail = self._health_cache.get(key)
+            if last_fail is not None and (now - last_fail) < self._HEALTH_CACHE_TTL:
+                return (999999, srv)
             try:
                 probe = self._build_client(srv["host"], srv["port"], output_dir)
                 info = await probe.ping()
                 if info.get("status") != "online":
+                    self._health_cache[key] = now
                     return (999999, srv)
+                self._health_cache.pop(key, None)
                 depth = info.get("queue_pending", 0) + info.get("queue_running", 0)
                 return (depth, srv)
             except Exception:
+                self._health_cache[key] = now
                 return (999999, srv)
 
         results = await asyncio.gather(*[_probe(s) for s in self._servers])
