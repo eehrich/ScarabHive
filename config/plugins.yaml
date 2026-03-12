@@ -154,8 +154,13 @@ plugins:
       type: comfyui
       enabled: true  # ComfyUI server must be running on localhost:8188
       description: "Execute ComfyUI workflows for image, audio, and video generation"
-      host: "192.0.2.5"
+      host: "192.0.2.5"  # primary / fallback server
       port: 8188
+      servers:  # load-balanced pool; if set, overrides host/port for new jobs
+        - host: "192.0.2.5"
+          port: 8188
+        - host: "192.0.2.6"
+          port: 8188
       timeout_seconds: 300
       unknown_threshold_seconds: 60  # Fail early if job stays unknown for this many seconds (lost/dropped)
       output_dir: "data/comfyui/outputs"

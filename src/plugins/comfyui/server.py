@@ -59,6 +59,22 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
         # Threshold for detecting lost jobs (unknown status) - fail early if job stays unknown
         self.unknown_threshold = getattr(mcp_config, 'unknown_threshold_seconds', 60)
+
+        # Build server list for load balancing.
+        # If 'servers' list is configured, use it; otherwise fall back to single host/port.
+        raw_servers = getattr(mcp_config, 'servers', None)
+        if raw_servers and isinstance(raw_servers, list) and len(raw_servers) > 0:
+            self._servers: list[dict[str, Any]] = [
+                {"host": s["host"], "port": int(s.get("port", 8188))}
+                for s in raw_servers
+                if isinstance(s, dict) and "host" in s
+            ]
+            logger.info(
+                "ComfyUI load balancing enabled: %d server(s) configured",
+                len(self._servers),
+            )
+        else:
+            self._servers = [{"host": self.host, "port": self.port}]
         
         # Output directory - supports {session_id} template for session isolation
         self._output_dir_template = getattr(mcp_config, 'output_dir', "data/comfyui/outputs")
@@ -78,10 +94,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
             if wf_id:
                 self.workflows[wf_id] = wf_config
         
-        # Initialize client
+        # Initialize client (primary server — used for monitoring, fallback, upload_image)
         self.client = ComfyUIClient(
-            host=self.host,
-            port=self.port,
+            host=self._servers[0]["host"],
+            port=self._servers[0]["port"],
             output_dir=self.output_dir,
             timeout=float(self.timeout)
         )
@@ -106,6 +122,84 @@ class ComfyUIServer(SchemaBasedMCPServer):
             "ComfyUI plugin initialized: %s:%s with %d workflows",
             self.host, self.port, len(self.workflows)
         )
+
+    # =========================================================================
+    # Load-balancing helpers
+    # =========================================================================
+
+    def _build_client(self, host: str, port: int, output_dir: Path) -> "ComfyUIClient":
+        """Build a ComfyUIClient for the given server."""
+        return ComfyUIClient(
+            host=host,
+            port=port,
+            output_dir=output_dir,
+            timeout=float(self.timeout),
+        )
+
+    async def _pick_client(self, output_dir: Path) -> "ComfyUIClient":
+        """Return a client pointing at the least-loaded ComfyUI server.
+
+        Probes all configured servers concurrently via ``/queue`` and selects
+        the one with the fewest pending + running jobs.  Falls back gracefully
+        when servers are offline.
+        """
+        if len(self._servers) == 1:
+            return self.client
+
+        async def _probe(srv: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+            try:
+                probe = self._build_client(srv["host"], srv["port"], output_dir)
+                info = await probe.ping()
+                if info.get("status") != "online":
+                    return (999999, srv)
+                depth = info.get("queue_pending", 0) + info.get("queue_running", 0)
+                return (depth, srv)
+            except Exception:
+                return (999999, srv)
+
+        results = await asyncio.gather(*[_probe(s) for s in self._servers])
+        best_depth, best_srv = min(results, key=lambda x: x[0])
+
+        if best_depth == 999999:
+            logger.warning(
+                "ComfyUI load balancer: all servers appear offline — "
+                "falling back to primary %s:%s",
+                self._servers[0]["host"], self._servers[0]["port"],
+            )
+            best_srv = self._servers[0]
+
+        logger.debug(
+            "ComfyUI load balancer: selected %s:%s (queue depth %s)",
+            best_srv["host"], best_srv.get("port", 8188),
+            best_depth if best_depth < 999999 else "offline",
+        )
+        return self._build_client(best_srv["host"], best_srv["port"], output_dir)
+
+    async def _client_for_job(
+        self, prompt_id: str, output_dir: Path
+    ) -> "ComfyUIClient":
+        """Return a client for the server that originally handled *prompt_id*.
+
+        Looks up the ``server_url`` stored in the job tracker at submit-time.
+        Falls back to the primary client if no record is found.
+        """
+        server_url = self.job_tracker.get_server_url(prompt_id)
+        if server_url:
+            try:
+                # server_url is stored as "http://host:port"
+                from urllib.parse import urlparse
+                parsed = urlparse(server_url)
+                return self._build_client(
+                    parsed.hostname or self.host,
+                    parsed.port or self.port,
+                    output_dir,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to parse server_url %r for job %s: %s",
+                    server_url, prompt_id, exc,
+                )
+        return self.client  # fallback: primary server
     
     def _resolve_output_dir(self, session_id: str | None = None) -> Path:
         """Resolve output directory, substituting {session_id} if present in template.
@@ -371,8 +465,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 if status:
                     await status.error("Prompt ID is required for cancel operation")
                 return {"error": "prompt_id is required"}
-            
-            result = await self.client.cancel(prompt_id)
+
+            job_client = await self._client_for_job(prompt_id, self.output_dir)
+            result = await job_client.cancel(prompt_id)
             self.job_tracker.update_status(prompt_id, "cancelled")
             if status:
                 await status.end("Job cancelled")
@@ -478,28 +573,32 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         if status:
             await status.progress(f"Executing workflow: {wf_config.get('name', workflow_id)}")
-        
-        # Queue workflow
-        queue_result = await self.client.queue_prompt(workflow_json)
-        
+
+        # Queue workflow on the least-loaded server
+        session_id = params.get("_session_id")
+        exec_output_dir = self._resolve_output_dir(session_id)
+        exec_client = await self._pick_client(exec_output_dir)
+        queue_result = await exec_client.queue_prompt(workflow_json)
+
         if "error" in queue_result:
             if status:
                 await status.error(f"Failed to queue workflow: {queue_result['error']}")
             return {"error": queue_result["error"]}
-        
+
         prompt_id = queue_result.get("prompt_id")
         if not prompt_id:
             if status:
                 await status.error("No prompt_id returned from ComfyUI")
             return {"error": "No prompt_id returned from ComfyUI"}
-        
-        # Register job in tracker
+
+        # Register job in tracker (store which server handled it)
         self.job_tracker.register_job(
             prompt_id=prompt_id,
             workflow_id=workflow_id,
             workflow_name=wf_config.get("name", workflow_id),
             parameters=user_params,
-            output_prefix=params.get("output_prefix", "comfy")
+            output_prefix=params.get("output_prefix", "comfy"),
+            server_url=exec_client.base_url,
         )
         
         if status:
@@ -522,8 +621,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
             # for this operation, so no status parameter needed here
             return {"error": "prompt_id is required"}
         
-        # Get live status from ComfyUI
-        live_status = await self.client.get_status(prompt_id)
+        # Get live status from ComfyUI (use the server that handled this job)
+        job_client = await self._client_for_job(prompt_id, self.output_dir)
+        live_status = await job_client.get_status(prompt_id)
         
         # Update tracker if status changed
         if live_status["status"] == "running":
@@ -572,8 +672,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if status:
             await status.progress(f"Fetching results for {prompt_id}")
         
-        # Get history from ComfyUI
-        history = await self.client.get_history(prompt_id)
+        # Get history from ComfyUI (use the server that handled this job)
+        job_client = await self._client_for_job(prompt_id, effective_output_dir)
+        history = await job_client.get_history(prompt_id)
         
         if prompt_id not in history:
             if status:
@@ -623,7 +724,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         if download:
                             # Download file locally
                             try:
-                                file_data = await self.client.get_file(
+                                file_data = await job_client.get_file(
                                     file_info["filename"],
                                     file_info.get("subfolder", ""),
                                     file_info.get("type", "output")
@@ -1100,8 +1201,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     "elapsed_seconds": elapsed
                 }
             
-            # Get job status
-            job_status = await self.client.get_status(prompt_id)
+            # Get job status (use the server that handled this job)
+            job_status = await (await self._client_for_job(prompt_id, self.output_dir)).get_status(prompt_id)
             current_status = job_status.get("status", "unknown")
             
             # Track unknown status duration
@@ -1372,17 +1473,19 @@ class ComfyUIServer(SchemaBasedMCPServer):
             job = self.job_tracker.get_job(prompt_id)
             if not job:
                 raise HTTPException(status_code=404, detail="Job not found")
-            
-            # Also get live status
-            live_status = await self.client.get_status(prompt_id)
+
+            # Get live status from the server that handled this job
+            job_client = await self._client_for_job(prompt_id, self.output_dir)
+            live_status = await job_client.get_status(prompt_id)
             job["live_status"] = live_status.get("status", "unknown")
-            
+
             return JSONResponse({"status": "success", "job": job})
-        
+
         @router.post("/jobs/{prompt_id}/cancel")
         async def cancel_job(prompt_id: str) -> JSONResponse:
             """Cancel a job."""
-            result = await self.client.cancel(prompt_id)
+            job_client = await self._client_for_job(prompt_id, self.output_dir)
+            result = await job_client.cancel(prompt_id)
             # Only update tracker if cancel was successful
             if result.get("status") in ("cancelled", "already_finished"):
                 self.job_tracker.update_status(prompt_id, "cancelled")

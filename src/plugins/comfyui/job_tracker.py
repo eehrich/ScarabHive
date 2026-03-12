@@ -49,9 +49,15 @@ class ComfyUIJobTracker:
                     output_prefix TEXT,
                     outputs TEXT,
                     error_message TEXT,
+                    server_url TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Migrate existing DBs that don't have server_url yet
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN server_url TEXT")
+            except Exception:
+                pass  # Column already exists
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)"
             )
@@ -69,7 +75,8 @@ class ComfyUIJobTracker:
         workflow_id: str,
         workflow_name: str,
         parameters: dict[str, Any],
-        output_prefix: str = ""
+        output_prefix: str = "",
+        server_url: str | None = None,
     ) -> None:
         """Register a new job.
         
@@ -79,14 +86,15 @@ class ComfyUIJobTracker:
             workflow_name: Human-readable workflow name
             parameters: Parameters passed to the workflow
             output_prefix: Prefix for output files
+            server_url: URL of the ComfyUI server that handled this job
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO jobs 
                 (prompt_id, workflow_id, workflow_name, status, 
-                 submitted_at, parameters, output_prefix)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 submitted_at, parameters, output_prefix, server_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     prompt_id,
@@ -95,11 +103,12 @@ class ComfyUIJobTracker:
                     "queued",
                     datetime.now(timezone.utc).isoformat(),
                     json.dumps(parameters),
-                    output_prefix
+                    output_prefix,
+                    server_url,
                 )
             )
             conn.commit()
-        logger.debug("Registered job %s for workflow %s", prompt_id, workflow_id)
+        logger.debug("Registered job %s for workflow %s on %s", prompt_id, workflow_id, server_url)
     
     def update_status(
         self,
@@ -186,6 +195,23 @@ class ComfyUIJobTracker:
             if row:
                 return self._row_to_dict(row)
         return None
+
+    def get_server_url(self, prompt_id: str) -> str | None:
+        """Get the server URL that handled a specific job.
+
+        Args:
+            prompt_id: Job identifier
+
+        Returns:
+            Server URL string (e.g. ``http://192.0.2.5:8188``) or None.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT server_url FROM jobs WHERE prompt_id = ?",
+                (prompt_id,),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
     
     def get_active_jobs(self) -> list[dict[str, Any]]:
         """Get all queued/running jobs.
