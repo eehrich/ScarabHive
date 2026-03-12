@@ -210,7 +210,7 @@ The `cover_artist` agent uses this fallback chain for series follow-up books
 
 ## Testing Against localhost
 
-The ComfyUI plugin is configured with `host: 192.0.2.125` in `config/plugins.yaml`.
+The ComfyUI plugin is configured with `host: 192.0.2.5` in `config/plugins.yaml`.
 For local testing without affecting the production ComfyUI instance, override via env or
 test config:
 
