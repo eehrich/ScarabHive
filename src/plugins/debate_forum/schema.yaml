@@ -114,6 +114,20 @@ tools:
 
   - type: function
     function:
+      name: "{{ name }}_reopen_channel"
+      description: >
+        Reopen a concluded or archived debate channel back to active status.
+        Allows posting new messages and continuing the debate.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel to reopen"
+        required: [channel_id]
+
+  - type: function
+    function:
       name: "{{ name }}_list_channels"
       description: >
         List debate channels, optionally filtered by status.

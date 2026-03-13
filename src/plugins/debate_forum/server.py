@@ -170,6 +170,36 @@ class DebateForumServer(SchemaBasedMCPServer):
             "summary": summary,
         }
 
+    # ── Tool: reopen_channel ────────────────────────────────
+
+    async def reopen_channel(self, params: dict[str, Any]) -> dict[str, Any]:
+        channel_id = params.get("channel_id")
+        if not channel_id:
+            return {"error": "channel_id is required"}
+
+        channel = self.db.get_channel(channel_id)
+        if not channel:
+            return {"error": f"Channel {channel_id} not found"}
+        if channel["status"] == "active":
+            return {"error": f"Channel {channel_id} is already active"}
+
+        status = params.get("_status")
+        if status:
+            await status.progress(f"Reopening channel #{channel_id}")
+
+        ok = self.db.reopen_channel(channel_id)
+        if not ok:
+            return {"error": f"Failed to reopen channel {channel_id}"}
+
+        if status:
+            await status.end(f"Channel #{channel_id} reopened")
+
+        return {
+            "status": "reopened",
+            "channel_id": channel_id,
+            "name": channel["name"],
+        }
+
     # ── Tool: list_channels ───────────────────────────────────
 
     async def list_channels(self, params: dict[str, Any]) -> dict[str, Any]:

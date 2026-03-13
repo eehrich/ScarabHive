@@ -143,6 +143,17 @@ class DebateForumDB:
         conn.commit()
         return cur.rowcount > 0
 
+    def reopen_channel(self, channel_id: int) -> bool:
+        """Reopen a concluded or archived channel back to active status."""
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE channels SET status = 'active', updated_at = datetime('now') "
+            "WHERE id = ? AND status IN ('concluded', 'archived')",
+            (channel_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
     def archive_channel(self, channel_id: int) -> bool:
         conn = self._get_conn()
         cur = conn.execute(

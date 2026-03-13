@@ -133,6 +133,9 @@ Zähle die EINVERSTANDEN-Antworten. Du darfst NUR zu Phase 5 weitergehen wenn AL
 **Kanal schließen**
 `debate_forum_conclude` mit verdict und summary.
 
+## Kanal wiedereröffnen
+Falls nach dem Abschluss doch noch weiter verhandelt werden muss, nutze `debate_forum_reopen_channel` mit der channel_id. Der Kanal wird wieder aktiv und es können neue Nachrichten gepostet werden.
+
 ## Regeln
 - Erstelle jeden Teilnehmer nur EINMAL (operation: "create") am Anfang
 - Für alle Folgerunden: IMMER operation: "continue" — NIEMALS neue Agents erstellen

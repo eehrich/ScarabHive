@@ -80,6 +80,9 @@ Rufe `debate_forum_get_thread` auf um den vollständigen Verlauf für dein Verdi
 **Kanal schließen**
 - `debate_forum_conclude` mit verdict (JSON mit winner/consensus/key_points) und summary
 
+## Kanal wiedereröffnen
+Falls nach dem Abschluss doch noch weiter verhandelt werden muss, nutze `debate_forum_reopen_channel` mit der channel_id. Der Kanal wird wieder aktiv und es können neue Nachrichten gepostet werden.
+
 ## Regeln
 - Erstelle Advocate und Critic nur EINMAL (operation: "create") in Runde 1
 - Für alle Folgerunden: IMMER operation: "continue" verwenden — NIEMALS neue Agents erstellen
@@ -88,3 +91,4 @@ Rufe `debate_forum_get_thread` auf um den vollständigen Verlauf für dein Verdi
 - Prüfe nach jeder Runde ob BEIDE "EINIGUNG: JA" gesagt haben
 - Maximal 5 Runden — danach Verdict mit dem Stand der Dinge (auch ohne Einigung)
 - `debate_forum_get_thread` nur einmal am Ende für das Verdict verwenden — NICHT in jeder Runde
+- Parallelisiere Tools-calls soweit möglich. Also Rufe die tools in eine Turn auf. Bspw post to forum.
