@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from .database import DebateForumDB
 from .server import DebateForumServer
+from .hooks import DebateForumHooks
 from .web_endpoints import DebateForumWebFactory
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ class DebateForumHybridPlugin:
             db=self._db, name=name, server=self.server
         )
 
+        # Create hooks plugin (schema-based)
+        plugin_dir = Path(__file__).parent
+        self.hooks_plugin = DebateForumHooks(plugin_dir, self._db)
+
         logger.info("DebateForumHybridPlugin initialized: db=%s", db_path)
 
     # ── MCP Interface (delegate to server) ────────────────────
@@ -79,6 +84,16 @@ class DebateForumHybridPlugin:
 
     def get_web_router(self) -> APIRouter | None:
         return self.web_factory.get_web_router()
+
+    # ── Hook Interface (delegate to hooks_plugin) ─────────────
+
+    def get_hooks(self):
+        """Get hooks from the hooks plugin."""
+        return self.hooks_plugin.get_hooks()
+
+    async def execute_hook(self, hook_type, context):
+        """Execute hook via the hooks plugin."""
+        return await self.hooks_plugin.execute_hook(hook_type, context)
 
 
 def PLUGIN_FACTORY(

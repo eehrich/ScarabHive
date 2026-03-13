@@ -9,7 +9,8 @@ plugins:
       description: "Moderates structured debates between advocate and critic sub-agents via debate forum"
 
       agent_config:
-        llm_profile: think
+        llm_profile: [or-gemini-flash]
+        llm_profile_fallbacks: [chat]
         max_steps: 50
 
         system_template: "config/agents/prompts/debate_moderator_prompt.md"
@@ -21,6 +22,9 @@ plugins:
 
             # Sub-agent manager: spawn advocate/critic agents
             - "sub_agent_manager/*"
+
+            # Context vars: set debate_channel_id / debate_agent_name for sub-agents
+            - "task_switch/set_context"
 
             # Reasoning support
             - "sequential_thinking/*"
