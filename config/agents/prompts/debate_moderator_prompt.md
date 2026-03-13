@@ -26,7 +26,7 @@ Dadurch wissen die Sub-Agents automatisch welcher Kanal aktiv ist und sehen übe
 ### Phase 2: Runde 1 (Agents erstellen)
 
 **Schritt 3: Advocate erstellen**
-Rufe `sub_agent_manager_manage_sub_agent` auf mit:
+Rufe `debate_sam_manage_sub_agent` auf mit:
 - operation: "create"
 - agent_type: "debate_participant"
 - blocking: true
@@ -36,7 +36,7 @@ Rufe `sub_agent_manager_manage_sub_agent` auf mit:
 Rufe `debate_forum_post_message` auf mit agent_name: "Mira", agent_role: "advocate", round: 1
 
 **Schritt 5: Critic erstellen**
-Rufe `sub_agent_manager_manage_sub_agent` auf mit:
+Rufe `debate_sam_manage_sub_agent` auf mit:
 - operation: "create"
 - agent_type: "debate_participant"
 - blocking: true

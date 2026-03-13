@@ -21,7 +21,7 @@ plugins:
             - "debate_forum/*"
 
             # Sub-agent manager: spawn advocate/critic agents
-            - "sub_agent_manager/*"
+            - "debate_sam/*"
 
             # Context vars: set debate_channel_id / debate_agent_name for sub-agents
             - "task_switch/set_context"
@@ -34,7 +34,7 @@ plugins:
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
-            sub_agent_manager.inject_sub_agent_context:
+            debate_sam.inject_sub_agent_context:
               enabled: true
             sequential_thinking.inject_active_sessions:
               enabled: true

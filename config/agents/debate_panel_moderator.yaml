@@ -3,6 +3,44 @@
 
 plugins:
   servers:
+
+    # Spezieller Sub-Agent-Manager für das Debate-System
+    debate_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "Sub-Agent-Manager für Debate-Agents"
+
+      max_nesting_depth: 3
+      max_sub_agents_per_type: 10
+      max_sub_agents_per_session: 10
+      
+      # Timeout-Konfiguration
+      default_wait_timeout: 1000
+
+      # NUR Debate-Agents erlaubt
+      allowed_agents:
+        - debate_participant
+
+        #- debate_panel_moderator
+        - debate_panel_participant        
+
+      blocked_agents: []
+
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 50
+          format: "markdown"
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["debate", "sub-agent-manager", "orchestration"]
+        category: "debate"
+
+
+
     debate_panel_moderator:
       type: basic_agent
       enabled: true
@@ -21,7 +59,7 @@ plugins:
             - "debate_forum/*"
 
             # Sub-agent manager: spawn participant agents
-            - "sub_agent_manager/*"
+            - "debate_sam/*"
 
             # Context vars: set debate_channel_id for sub-agents
             - "task_switch/set_context"
@@ -36,7 +74,7 @@ plugins:
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
-            sub_agent_manager.inject_sub_agent_context:
+            debate_sam.inject_sub_agent_context:
               enabled: true
             sequential_thinking.inject_active_sessions:
               enabled: true

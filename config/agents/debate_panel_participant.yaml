@@ -30,7 +30,7 @@ plugins:
             # active for all writer agents, derived agents needs to add own tools it with +
             - "context_engineer/*"
             - "tavily_search/*"
-            - "sequential_thinking/*"
+            #- "sequential_thinking/*"
 
         hooks:
           enabled: true

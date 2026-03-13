@@ -35,7 +35,7 @@ Vergib zufällige deutsche Namen. Die Rollen sind fest:
 
 ### Phase 2: Alle 5 Teilnehmer erstellen
 
-Erstelle alle 5 nacheinander mit `sub_agent_manager_manage_sub_agent`:
+Erstelle alle 5 nacheinander mit `debate_sam_manage_sub_agent`:
 - operation: "create"
 - agent_type: "debate_panel_participant"
 - blocking: true (für den ersten Redner) bzw. false (wenn parallel)
@@ -81,7 +81,7 @@ Du entscheidest wer als nächstes spricht. Regeln:
 
 **Parallelisierung:**
 Wenn du mehrere Teilnehmer gleichzeitig startest (blocking: false), musst du danach die Ergebnisse einsammeln:
-- Rufe `sub_agent_manager_manage_sub_agent` mit operation: "status" und der jeweiligen instance_id auf
+- Rufe `debate_sam_manage_sub_agent` mit operation: "status" und der jeweiligen instance_id auf
 - Warte bis alle fertig sind, dann poste alle Antworten ins Forum
 
 **Rundenplanung:**

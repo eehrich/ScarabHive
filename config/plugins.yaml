@@ -655,7 +655,6 @@ plugins:
         - sysadmin_agent
         - comfyui_agent
         - chat_agent
-        - debate_participant
       hook_config:
         enabled: true
         inject_sub_agent_context:
