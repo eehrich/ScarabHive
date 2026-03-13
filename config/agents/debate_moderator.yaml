@@ -1,0 +1,43 @@
+# Debate Moderator Agent
+# Orchestrates structured debates using sub-agents and the debate_forum plugin
+
+plugins:
+  servers:
+    debate_moderator:
+      type: basic_agent
+      enabled: true
+      description: "Moderates structured debates between advocate and critic sub-agents via debate forum"
+
+      agent_config:
+        llm_profile: think
+        max_steps: 50
+
+        system_template: "config/agents/prompts/debate_moderator_prompt.md"
+
+        tools:
+          allowed:
+            # Debate forum: create channels, post messages, read threads, conclude
+            - "debate_forum/*"
+
+            # Sub-agent manager: spawn advocate/critic agents
+            - "sub_agent_manager/*"
+
+            # Reasoning support
+            - "sequential_thinking/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+            sub_agent_manager.inject_sub_agent_context:
+              enabled: true
+            sequential_thinking.inject_active_sessions:
+              enabled: true
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["debate", "moderation", "orchestration"]
+        category: "collaboration"
+        visibility: "both"

@@ -17,7 +17,7 @@ plugins:
               enabled: true
       
       metadata:
-        visibility: "ui"
+        visibility: "both"
         tags:
           - chat
           - simple

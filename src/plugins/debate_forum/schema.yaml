@@ -1,0 +1,170 @@
+# Tool definitions for debate_forum plugin
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_create_channel"
+      description: >
+        Create a new debate channel. Returns the channel_id.
+        Each debate gets its own channel where agents post messages.
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Short channel name (e.g. 'synopsis-debatte-book-3')"
+          topic:
+            type: string
+            description: "What is being debated (e.g. 'Welche der 3 Synopsen ist am besten?')"
+          context:
+            type: string
+            description: "Background context as text or JSON (genre, premise, candidates, etc.)"
+          metadata:
+            type: object
+            description: "Optional metadata (book_id, stage, pipeline, etc.)"
+        required: [name, topic]
+
+  - type: function
+    function:
+      name: "{{ name }}_post_message"
+      description: >
+        Post a message to a debate channel. The message is attributed to a named agent
+        with a role (advocate, critic, moderator, etc.) and a round number.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel to post to"
+          agent_name:
+            type: string
+            description: "Display name of the agent (e.g. 'Mira', 'Sven', 'Kai')"
+          agent_role:
+            type: string
+            description: "Role in the debate (advocate, critic, moderator, challenger, observer)"
+          round:
+            type: integer
+            description: "Discussion round number (1, 2, 3, ...)"
+          content:
+            type: string
+            description: "The message content"
+          metadata:
+            type: object
+            description: "Optional metadata (llm_profile, token_count, etc.)"
+        required: [channel_id, agent_name, agent_role, round, content]
+
+  - type: function
+    function:
+      name: "{{ name }}_get_thread"
+      description: >
+        Get the full discussion thread for a channel, formatted as text.
+        Use this to build context for the next agent in the debate.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel"
+          format:
+            type: string
+            description: "Output format: 'text' (default, for LLM context) or 'json' (raw data)"
+            enum: ["text", "json"]
+          max_messages:
+            type: integer
+            description: "Limit number of messages returned (0=all, default=0)"
+        required: [channel_id]
+
+  - type: function
+    function:
+      name: "{{ name }}_conclude"
+      description: >
+        Conclude a debate with a verdict. Sets channel status to 'concluded'.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel"
+          verdict:
+            type: object
+            description: "Verdict data (winner, score, feedback, action_items, etc.)"
+          summary:
+            type: string
+            description: "Human-readable summary of the verdict"
+        required: [channel_id, verdict]
+
+  - type: function
+    function:
+      name: "{{ name }}_list_channels"
+      description: >
+        List debate channels, optionally filtered by status.
+      parameters:
+        type: object
+        properties:
+          status:
+            type: string
+            description: "Filter by status: 'active', 'concluded', 'archived', or empty for all"
+            enum: ["", "active", "concluded", "archived"]
+          limit:
+            type: integer
+            description: "Maximum channels to return (default 50)"
+          search:
+            type: string
+            description: "Search in channel name/topic"
+
+# Web UI configuration
+web_ui:
+  button:
+    enabled: true
+    text: "Debate Forum"
+    icon: "💬"
+    tooltip: "View LLM debate channels and discussion threads"
+  
+  panel:
+    enabled: true
+    title: "Debate Forum"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
+    type: "iframe"
+    description: "Discord-style debate forum showing agent discussions"
+  
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+      description: "Render the debate forum panel"
+    - path: "/static/panel.css"
+      method: "GET"
+      handler: "serve_css"
+      response_type: "response"
+      description: "Serve panel CSS"
+    - path: "/static/panel.js"
+      method: "GET"
+      handler: "serve_js"
+      response_type: "response"
+      description: "Serve panel JavaScript"
+    - path: "/api/channels"
+      method: "GET"
+      handler: "api_list_channels"
+      response_type: "json"
+      description: "List channels"
+    - path: "/api/channels/{channel_id}"
+      method: "GET"
+      handler: "api_get_channel"
+      response_type: "json"
+      description: "Get channel details"
+    - path: "/api/channels/{channel_id}/messages"
+      method: "GET"
+      handler: "api_get_messages"
+      response_type: "json"
+      description: "Get messages for a channel"
+    - path: "/api/stats"
+      method: "GET"
+      handler: "api_get_stats"
+      response_type: "json"
+      description: "Get forum statistics"
+    - path: "/api/channels/{channel_id}/archive"
+      method: "POST"
+      handler: "api_archive_channel"
+      response_type: "json"
+      description: "Archive a channel"

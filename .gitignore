@@ -51,6 +51,7 @@ data/message_debugger/
 data/batch_jobs/
 data/batch/
 data/comfyui/
+data/debate_forum/
 data/audio_ops/
 data/lessons_learned/
 data/context_usage_tracker.json

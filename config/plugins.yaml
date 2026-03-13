@@ -647,12 +647,14 @@ plugins:
       type: sub_agent_manager
       enabled: true
       max_nesting_depth: 5
+      max_sub_agents_per_type: 6
       allowed_agents:
         - financial_analyst_agent
         - code_reviewer_agent
         - meta_web_research_agent
         - sysadmin_agent
         - comfyui_agent
+        - chat_agent
       hook_config:
         enabled: true
         inject_sub_agent_context:
@@ -774,6 +776,12 @@ plugins:
     message_debugger:
       type: message_debugger
       enabled: false
+
+    debate_forum:
+      type: debate_forum
+      enabled: true
+      config:
+        db_path: "data/debate_forum/forum.db"
 
     simple_prompt_inject:
       type: simple_prompt_inject

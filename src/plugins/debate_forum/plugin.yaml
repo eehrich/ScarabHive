@@ -1,0 +1,11 @@
+name: debate_forum
+description: Structured LLM debate forum with channels and Discord-style web UI
+version: 1.0.0
+type:
+- mcp
+- web
+author: AgentSystem
+entrypoint: plugin:PLUGIN_FACTORY
+category: collaboration
+requires:
+  agent_system: '>=0.4.0'
