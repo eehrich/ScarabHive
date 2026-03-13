@@ -208,16 +208,58 @@
     function renderVerdict(channel) {
         if (channel.status === "concluded" && (channel.verdict_summary || channel.verdict_json)) {
             $verdictBox.style.display = "block";
-            let text = channel.verdict_summary || "";
-            if (!text && channel.verdict_json) {
-                text = typeof channel.verdict_json === "string"
-                    ? channel.verdict_json
-                    : JSON.stringify(channel.verdict_json, null, 2);
+
+            // Extract summary: prefer verdict_summary, fall back to verdict_json.summary
+            const vj = channel.verdict_json || {};
+            const summary = channel.verdict_summary
+                || (typeof vj === "object" ? vj.summary : null)
+                || "";
+
+            // Build HTML
+            let html = "";
+            if (summary) {
+                html += `<p class="verdict-summary">${escapeHtml(summary)}</p>`;
             }
-            $verdictContent.textContent = text;
+
+            // Show key verdict fields (if verdict_json is an object with useful keys)
+            if (typeof vj === "object" && Object.keys(vj).length > 0) {
+                const interestingKeys = Object.keys(vj).filter(
+                    k => k !== "summary" && k !== "remaining_differences"
+                );
+                if (interestingKeys.length > 0) {
+                    html += `<details class="verdict-details"><summary>Details</summary><ul>`;
+                    for (const key of interestingKeys) {
+                        const val = vj[key];
+                        const label = key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+                        if (Array.isArray(val)) {
+                            html += `<li><strong>${escapeHtml(label)}:</strong><ul>`;
+                            for (const item of val) {
+                                html += `<li>${escapeHtml(String(item))}</li>`;
+                            }
+                            html += `</ul></li>`;
+                        } else {
+                            html += `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(String(val))}</li>`;
+                        }
+                    }
+                    html += `</ul></details>`;
+                }
+            }
+
+            // Fallback: no summary at all, show raw JSON
+            if (!html) {
+                html = `<pre>${escapeHtml(JSON.stringify(vj, null, 2))}</pre>`;
+            }
+
+            $verdictContent.innerHTML = html;
         } else {
             $verdictBox.style.display = "none";
         }
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement("div");
+        div.textContent = str;
+        return div.innerHTML;
     }
 
     // ── Archive action ────────────────────────────────────────

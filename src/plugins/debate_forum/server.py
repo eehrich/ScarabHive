@@ -142,6 +142,10 @@ class DebateForumServer(SchemaBasedMCPServer):
         verdict = params.get("verdict", {})
         summary = params.get("summary", "")
 
+        # Extract summary from verdict object if not provided separately
+        if not summary and isinstance(verdict, dict) and verdict.get("summary"):
+            summary = verdict["summary"]
+
         if not channel_id or not verdict:
             return {"error": "channel_id and verdict are required"}
 
