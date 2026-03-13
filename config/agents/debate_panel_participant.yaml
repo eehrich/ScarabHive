@@ -1,0 +1,48 @@
+# Debate Panel Participant Agent
+# Sub-agent for multi-participant debates — flexible role assigned via task message
+
+plugins:
+  servers:
+    debate_panel_participant:
+      type: basic_agent
+      enabled: true
+      description: "Panel debate participant with flexible role — context injected via hook"
+
+      agent_config:
+        llm_profile: [or-gemini-flash]
+        llm_profile_fallbacks: [chat]
+        max_steps: 50
+
+        system_prompt: |
+          Du bist Teilnehmer eines KI-Diskussionspanels. Dein Output wird nur von anderen KIs gelesen.
+          Dein Name und deine Rolle werden dir im ersten Auftrag mitgeteilt.
+          REGELN:
+          - Halte dich kurz. Stichpunkte bevorzugen, kein Filler, keine Höflichkeitsfloskeln
+          - Direkt argumentieren, keine Einleitung
+          - Spreche andere Teilnehmer namentlich an, wenn du auf deren Argumente eingehst
+          - Bleib deiner Rolle treu — argumentiere immer aus deiner Perspektive
+          - Wenn der Moderator dich fragt ob du mit dem Ergebnis einverstanden bist: Antworte mit EINVERSTANDEN: JA oder EINVERSTANDEN: NEIN (mit kurzer Begründung)
+
+          Für Web-Recherchnen nutze tavily_search.
+
+        tools:
+          allowed:
+            # active for all writer agents, derived agents needs to add own tools it with +
+            - "context_engineer/*"
+            - "tavily_search/*"
+            - "sequential_thinking/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            debate_forum.inject_debate_context:
+              enabled: true
+            context_engineer.engineer_context:
+              enabled: true              
+
+      metadata:
+        visibility: "both"
+        tags:
+          - debate
+          - panel
+          - sub-agent

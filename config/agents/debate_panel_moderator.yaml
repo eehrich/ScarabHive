@@ -1,0 +1,51 @@
+# Debate Panel Moderator Agent
+# Orchestrates structured 5-participant debates with diverse perspectives and parallel execution
+
+plugins:
+  servers:
+    debate_panel_moderator:
+      type: basic_agent
+      enabled: true
+      description: "Moderates multi-participant panel debates (5 agents) with diverse roles and parallel execution"
+
+      agent_config:
+        llm_profile: [or-gemini-flash]
+        llm_profile_fallbacks: [chat]
+        max_steps: 80
+
+        system_template: "config/agents/prompts/debate_panel_moderator_prompt.md"
+
+        tools:
+          allowed:
+            # Debate forum: create channels, post messages, read threads, conclude
+            - "debate_forum/*"
+
+            # Sub-agent manager: spawn participant agents
+            - "sub_agent_manager/*"
+
+            # Context vars: set debate_channel_id for sub-agents
+            - "task_switch/set_context"
+
+            # Reasoning support
+            - "sequential_thinking/*"
+            - "context_engineer/*"
+
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+            sub_agent_manager.inject_sub_agent_context:
+              enabled: true
+            sequential_thinking.inject_active_sessions:
+              enabled: true
+            context_engineer.engineer_context:
+              enabled: true              
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["debate", "moderation", "orchestration", "panel"]
+        category: "collaboration"
+        visibility: "both"

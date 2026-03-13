@@ -332,6 +332,19 @@ body {
 .avatar-observer { background: var(--accent-purple); }
 .avatar-default { background: var(--accent-teal); }
 
+/* Panel debate roles */
+.role-visionaer { background: rgba(166, 227, 161, 0.2); color: var(--accent-green); }
+.role-skeptiker { background: rgba(243, 139, 168, 0.2); color: var(--accent-red); }
+.role-pragmatiker { background: rgba(249, 226, 175, 0.2); color: var(--accent-yellow); }
+.role-provokateur { background: rgba(203, 166, 247, 0.2); color: var(--accent-purple); }
+.role-ethiker { background: rgba(148, 226, 213, 0.2); color: var(--accent-teal); }
+
+.avatar-visionaer { background: var(--accent-green); }
+.avatar-skeptiker { background: var(--accent-red); }
+.avatar-pragmatiker { background: var(--accent-yellow); }
+.avatar-provokateur { background: var(--accent-purple); }
+.avatar-ethiker { background: var(--accent-teal); }
+
 /* ── Verdict ───────────────────────────────── */
 .verdict-box {
     margin: 0 16px 12px;
@@ -393,3 +406,70 @@ body {
     border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Participants Sidebar ──────────────────── */
+.participants-sidebar {
+    width: 200px;
+    min-width: 160px;
+    background: var(--bg-sidebar);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+.participants-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 8px;
+}
+
+.participant-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    margin-bottom: 2px;
+}
+
+.participant-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+    color: var(--bg-tertiary);
+}
+
+.participant-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.participant-name {
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.participant-role {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: capitalize;
+}
+
+.participant-msg-count {
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}

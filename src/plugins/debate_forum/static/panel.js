@@ -15,6 +15,11 @@
         moderator: "moderator",
         challenger: "challenger",
         observer: "observer",
+        visionaer: "visionaer",
+        skeptiker: "skeptiker",
+        pragmatiker: "pragmatiker",
+        provokateur: "provokateur",
+        ethiker: "ethiker",
     };
 
     // ── DOM refs ──────────────────────────────────────────────
@@ -31,6 +36,10 @@
     const $filterSearch = document.getElementById("filter-search");
     const $btnRefresh = document.getElementById("btn-refresh");
     const $btnArchive = document.getElementById("btn-archive");
+
+    // Participants sidebar
+    const $participantsSidebar = document.getElementById("participants-sidebar");
+    const $participantsList = document.getElementById("participants-list");
 
     // Stats
     const $statActive = document.querySelector("#stat-active span");
@@ -172,6 +181,7 @@
         if (!messages.length) {
             $chatMessages.innerHTML =
                 '<div class="empty-state">No messages yet — debate has not started</div>';
+            renderParticipants([]);
             return;
         }
 
@@ -203,6 +213,46 @@
         $chatMessages.innerHTML = html;
         // Scroll to bottom
         $chatMessages.scrollTop = $chatMessages.scrollHeight;
+
+        // Update participants sidebar
+        renderParticipants(messages);
+    }
+
+    function renderParticipants(messages) {
+        if (!messages.length) {
+            $participantsSidebar.style.display = "none";
+            return;
+        }
+
+        // Extract unique participants with message counts
+        const participants = new Map();
+        for (const msg of messages) {
+            const key = msg.agent_name;
+            if (!participants.has(key)) {
+                participants.set(key, {
+                    name: msg.agent_name,
+                    role: msg.agent_role,
+                    count: 0,
+                });
+            }
+            participants.get(key).count++;
+        }
+
+        $participantsSidebar.style.display = "flex";
+        $participantsList.innerHTML = Array.from(participants.values())
+            .map((p) => {
+                const rc = roleClass(p.role);
+                return `
+                <div class="participant-item">
+                    <div class="participant-avatar avatar-${rc}">${getInitials(p.name)}</div>
+                    <div class="participant-info">
+                        <span class="participant-name">${escapeHtml(p.name)}</span>
+                        <span class="participant-role">${escapeHtml(p.role)}</span>
+                    </div>
+                    <span class="participant-msg-count">${p.count}</span>
+                </div>`;
+            })
+            .join("");
     }
 
     function renderVerdict(channel) {

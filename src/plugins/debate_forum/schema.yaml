@@ -60,7 +60,7 @@ tools:
             description: "Display name of the agent (e.g. 'Mira', 'Sven', 'Kai')"
           agent_role:
             type: string
-            description: "Role in the debate (advocate, critic, moderator, challenger, observer)"
+            description: "Role in the debate"
           round:
             type: integer
             description: "Discussion round number (1, 2, 3, ...)"
