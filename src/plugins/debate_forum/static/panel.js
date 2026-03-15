@@ -519,7 +519,8 @@
 
     // ── Polling / Refresh ─────────────────────────────────────
     async function refresh() {
-        await Promise.all([loadStats(), loadGroups(), loadChannels()]);
+        await Promise.all([loadStats(), loadGroups()]);
+        await loadChannels(); // must run AFTER loadGroups so getGroupName() works
         if (selectedChannelId) {
             await selectChannel(selectedChannelId);
         }
@@ -528,8 +529,8 @@
     function startPolling() {
         stopPolling();
         pollTimer = setInterval(async () => {
-            await loadStats();
-            await loadChannels();
+            await Promise.all([loadStats(), loadGroups()]);
+            await loadChannels(); // must run AFTER loadGroups so getGroupName() works
             // Refresh messages if a channel is selected and active
             if (selectedChannelId && currentChannel && currentChannel.status === "active") {
                 try {
