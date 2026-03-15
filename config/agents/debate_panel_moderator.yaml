@@ -83,8 +83,9 @@ plugins:
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
-            debate_forum.inject_debate_context:
-              enabled: true              
+            # not needed, he has already the history in his message list
+            #debate_forum.inject_debate_context:
+            #  enabled: true              
             debate_sam.inject_sub_agent_context:
               enabled: true
             sequential_thinking.inject_active_sessions:
