@@ -158,6 +158,21 @@ body {
 .channel-item:hover { background: var(--bg-hover); }
 .channel-item.active { background: var(--bg-active); }
 
+.channel-group-header {
+    padding: 10px 10px 3px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    opacity: 0.7;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.channel-group-header:first-child { padding-top: 4px; }
+
 .channel-status-icon { font-size: 12px; flex-shrink: 0; }
 .channel-name {
     flex: 1;

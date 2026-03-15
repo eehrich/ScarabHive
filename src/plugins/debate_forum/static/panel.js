@@ -21,6 +21,7 @@
     const $chatMsgCount = document.getElementById("chat-msg-count");
     const $verdictBox = document.getElementById("verdict-box");
     const $verdictContent = document.getElementById("verdict-content");
+    const $filterGroup = document.getElementById("filter-group");
     const $filterStatus = document.getElementById("filter-status");
     const $filterSearch = document.getElementById("filter-search");
     const $btnRefresh = document.getElementById("btn-refresh");
@@ -87,14 +88,36 @@
         }
     }
 
+    // ── Groups ────────────────────────────────────────────────
+    async function loadGroups() {
+        try {
+            const data = await apiFetch("groups");
+            const groups = data.groups || [];
+            // Preserve current selection
+            const current = $filterGroup.value;
+            $filterGroup.innerHTML = '<option value="">All Groups</option>';
+            for (const g of groups) {
+                const opt = document.createElement("option");
+                opt.value = g.id;
+                opt.textContent = `${g.name} (${g.channel_count || 0})`;
+                $filterGroup.appendChild(opt);
+            }
+            if (current) $filterGroup.value = current;
+        } catch (e) {
+            console.warn("Failed to load groups:", e);
+        }
+    }
+
     // ── Channels ──────────────────────────────────────────────
     async function loadChannels() {
         try {
             const params = new URLSearchParams();
             const status = $filterStatus.value;
             const search = $filterSearch.value.trim();
+            const groupId = $filterGroup.value;
             if (status) params.set("status", status);
             if (search) params.set("search", search);
+            if (groupId) params.set("group_id", groupId);
 
             const qs = params.toString();
             const data = await apiFetch("channels" + (qs ? "?" + qs : ""));
@@ -114,26 +137,43 @@
         }
     }
 
+    function getGroupName(groupId) {
+        if (!groupId) return null;
+        const opt = $filterGroup.querySelector(`option[value="${groupId}"]`);
+        return opt ? opt.textContent.replace(/\s*\(\d+\)$/, "") : `Group ${groupId}`;
+    }
+
     function renderChannelList() {
         if (channels.length === 0) {
             $channelList.innerHTML = '<div class="empty-state">No channels yet</div>';
             return;
         }
 
-        $channelList.innerHTML = channels
-            .map((ch) => {
-                const isActive = ch.id === selectedChannelId;
-                const badge = ch.message_count
-                    ? `<span class="channel-msg-badge">${ch.message_count}</span>`
-                    : "";
-                return `
-                <div class="channel-item${isActive ? " active" : ""}" data-id="${ch.id}">
-                    <span class="channel-status-icon">${statusIcon(ch.status)}</span>
-                    <span class="channel-name" title="${escapeHtml(ch.topic)}">${escapeHtml(ch.name)}</span>
-                    ${badge}
-                </div>`;
-            })
-            .join("");
+        const filteringByGroup = !!$filterGroup.value;
+        let html = "";
+        let lastGroupId = Symbol(); // unique sentinel
+
+        for (const ch of channels) {
+            // Show group header when not already filtered to a single group
+            if (!filteringByGroup && ch.group_id !== lastGroupId) {
+                const groupLabel = ch.group_id ? escapeHtml(getGroupName(ch.group_id)) : "Ungrouped";
+                html += `<div class="channel-group-header">${groupLabel}</div>`;
+                lastGroupId = ch.group_id;
+            }
+
+            const isActive = ch.id === selectedChannelId;
+            const badge = ch.message_count
+                ? `<span class="channel-msg-badge">${ch.message_count}</span>`
+                : "";
+            html += `
+            <div class="channel-item${isActive ? " active" : ""}" data-id="${ch.id}">
+                <span class="channel-status-icon">${statusIcon(ch.status)}</span>
+                <span class="channel-name" title="${escapeHtml(ch.topic)}">${escapeHtml(ch.name)}</span>
+                ${badge}
+            </div>`;
+        }
+
+        $channelList.innerHTML = html;
 
         // Attach click handlers
         $channelList.querySelectorAll(".channel-item").forEach((el) => {
@@ -395,7 +435,7 @@
 
     // ── Polling / Refresh ─────────────────────────────────────
     async function refresh() {
-        await Promise.all([loadStats(), loadChannels()]);
+        await Promise.all([loadStats(), loadGroups(), loadChannels()]);
         if (selectedChannelId) {
             await selectChannel(selectedChannelId);
         }
@@ -449,6 +489,7 @@
     $btnRefresh.addEventListener("click", refresh);
     $btnArchive.addEventListener("click", archiveChannel);
     $filterStatus.addEventListener("change", loadChannels);
+    $filterGroup.addEventListener("change", loadChannels);
 
     $btnSend.addEventListener("click", sendMessage);
     $chatInputMsg.addEventListener("keydown", (e) => {
@@ -482,5 +523,5 @@
     });
 
     // ── Init ──────────────────────────────────────────────────
-    refresh().then(() => startPolling());
+    loadGroups().then(() => refresh().then(() => startPolling()));
 })();

@@ -35,6 +35,23 @@ class DebateForumServer(SchemaBasedMCPServer):
         super().__init__(name, system_config, mcp_config)
         self.db = db
 
+    # ── Tool: create_group ────────────────────────────────────
+
+    async def create_group(self, params: dict[str, Any]) -> dict[str, Any]:
+        name = params.get("name", "")
+        description = params.get("description", "")
+        if not name:
+            return {"error": "name is required"}
+        result = self.db.create_group(name=name, description=description)
+        return {"status": "created", "group_id": result["group_id"], "name": result["name"]}
+
+    # ── Tool: list_groups ─────────────────────────────────────
+
+    async def list_groups(self, params: dict[str, Any]) -> dict[str, Any]:
+        limit = params.get("limit", 100)
+        groups = self.db.list_groups(limit=limit)
+        return {"groups": groups, "count": len(groups)}
+
     # ── Tool: create_channel ──────────────────────────────────
 
     async def create_channel(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -42,6 +59,7 @@ class DebateForumServer(SchemaBasedMCPServer):
         topic = params.get("topic", "")
         context = params.get("context", "")
         metadata = params.get("metadata")
+        group_id: int | None = params.get("group_id") or None
 
         if not name or not topic:
             return {"error": "name and topic are required"}
@@ -51,7 +69,7 @@ class DebateForumServer(SchemaBasedMCPServer):
             await status.progress(f"Creating channel: {name}")
 
         result = self.db.create_channel(
-            name=name, topic=topic, context=context, metadata=metadata
+            name=name, topic=topic, context=context, metadata=metadata, group_id=group_id
         )
 
         if status:
@@ -61,6 +79,7 @@ class DebateForumServer(SchemaBasedMCPServer):
             "status": "created",
             "channel_id": result["channel_id"],
             "name": result["name"],
+            "group_id": result.get("group_id"),
         }
 
     # ── Tool: post_message ────────────────────────────────────
@@ -206,9 +225,10 @@ class DebateForumServer(SchemaBasedMCPServer):
         status_filter = params.get("status", "") or None
         limit = params.get("limit", 50)
         search = params.get("search", "") or None
+        group_id: int | None = params.get("group_id") or None
 
         channels = self.db.list_channels(
-            status=status_filter, search=search, limit=limit
+            status=status_filter, search=search, limit=limit, group_id=group_id
         )
 
         return {

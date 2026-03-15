@@ -40,6 +40,15 @@ class DebateForumDB:
             conn.commit()
             logger.info("Migrated messages table: added 'pinned' column")
 
+    @staticmethod
+    def _migrate_group_id_column(conn: sqlite3.Connection) -> None:
+        """Add group_id column to channels table if not present (migration)."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(channels)").fetchall()}
+        if "group_id" not in cols:
+            conn.execute("ALTER TABLE channels ADD COLUMN group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL")
+            conn.commit()
+            logger.info("Migrated channels table: added 'group_id' column")
+
     def _get_conn(self) -> sqlite3.Connection:
         """Get thread-local database connection."""
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -55,8 +64,16 @@ class DebateForumDB:
     def _init_schema(self) -> None:
         conn = self._get_conn()
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS channels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,
                 name TEXT NOT NULL,
                 topic TEXT NOT NULL DEFAULT '',
                 context TEXT DEFAULT '',
@@ -85,10 +102,55 @@ class DebateForumDB:
                 ON messages(channel_id, round);
             CREATE INDEX IF NOT EXISTS idx_channels_status
                 ON channels(status);
+            CREATE INDEX IF NOT EXISTS idx_channels_group
+                ON channels(group_id);
         """)
         conn.commit()
-        # Migrate: add pinned column if missing
+        # Migrations
         self._migrate_pinned_column(conn)
+        self._migrate_group_id_column(conn)
+
+    # ── Channel CRUD ──────────────────────────────────────────
+
+    # ── Group CRUD ────────────────────────────────────────────
+
+    def create_group(
+        self,
+        name: str,
+        description: str = "",
+    ) -> dict[str, Any]:
+        conn = self._get_conn()
+        cur = conn.execute(
+            "INSERT INTO groups (name, description) VALUES (?, ?)",
+            (name, description),
+        )
+        conn.commit()
+        group_id = cur.lastrowid
+        return {"group_id": group_id, "name": name, "status": "created"}
+
+    def get_group(self, group_id: int) -> dict[str, Any] | None:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def list_groups(self, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT g.*, COUNT(c.id) AS channel_count "
+            "FROM groups g LEFT JOIN channels c ON c.group_id = g.id "
+            "GROUP BY g.id ORDER BY g.created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_group(self, group_id: int) -> bool:
+        """Delete a group; channels in it become ungrouped (NULL group_id)."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+        conn.commit()
+        return cur.rowcount > 0
 
     # ── Channel CRUD ──────────────────────────────────────────
 
@@ -98,14 +160,15 @@ class DebateForumDB:
         topic: str,
         context: str = "",
         metadata: dict[str, Any] | None = None,
+        group_id: int | None = None,
     ) -> dict[str, Any]:
         conn = self._get_conn()
         cur = conn.execute(
-            "INSERT INTO channels (name, topic, context, metadata_json) VALUES (?, ?, ?, ?)",
-            (name, topic, context, json.dumps(metadata) if metadata else None),
+            "INSERT INTO channels (group_id, name, topic, context, metadata_json) VALUES (?, ?, ?, ?, ?)",
+            (group_id, name, topic, context, json.dumps(metadata) if metadata else None),
         )
         conn.commit()
-        return {"channel_id": cur.lastrowid, "name": name, "status": "active"}
+        return {"channel_id": cur.lastrowid, "name": name, "status": "active", "group_id": group_id}
 
     def get_channel(self, channel_id: int) -> dict[str, Any] | None:
         conn = self._get_conn()
@@ -118,6 +181,7 @@ class DebateForumDB:
         self,
         status: str | None = None,
         search: str | None = None,
+        group_id: int | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -130,17 +194,25 @@ class DebateForumDB:
         if search:
             sql += " AND (name LIKE ? OR topic LIKE ?)"
             params.extend([f"%{search}%", f"%{search}%"])
+        if group_id is not None:
+            sql += " AND group_id = ?"
+            params.append(group_id)
         sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = conn.execute(sql, params).fetchall()
         return [self._row_to_channel(r) for r in rows]
 
-    def count_channels(self, status: str | None = None) -> int:
+    def count_channels(self, status: str | None = None, group_id: int | None = None) -> int:
         conn = self._get_conn()
+        sql = "SELECT COUNT(*) FROM channels WHERE 1=1"
+        params: list[Any] = []
         if status:
-            row = conn.execute("SELECT COUNT(*) FROM channels WHERE status = ?", (status,)).fetchone()
-        else:
-            row = conn.execute("SELECT COUNT(*) FROM channels").fetchone()
+            sql += " AND status = ?"
+            params.append(status)
+        if group_id is not None:
+            sql += " AND group_id = ?"
+            params.append(group_id)
+        row = conn.execute(sql, params).fetchone()
         return row[0]
 
     def conclude_channel(

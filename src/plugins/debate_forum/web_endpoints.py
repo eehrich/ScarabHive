@@ -65,21 +65,26 @@ class DebateForumWebFactory:
         request: Request,
         status: str | None = Query(default=None, description="Filter by status"),
         search: str | None = Query(default=None, description="Search name/topic"),
+        group_id: int | None = Query(default=None, description="Filter by group ID"),
         limit: int = Query(default=50, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
     ):
         channels = self.db.list_channels(
-            status=status, search=search, limit=limit, offset=offset
+            status=status, search=search, limit=limit, offset=offset, group_id=group_id
         )
         # Add message_count to each channel
         for ch in channels:
             ch["message_count"] = self.db.get_message_count(ch["id"])
-        total = self.db.count_channels(status=status)
+        total = self.db.count_channels(status=status, group_id=group_id)
         return {
             "channels": channels,
             "total": total,
             "count": len(channels),
         }
+
+    async def api_list_groups(self, request: Request):
+        groups = self.db.list_groups(limit=200)
+        return {"groups": groups, "count": len(groups)}
 
     async def api_get_channel(self, request: Request, channel_id: int):
         channel = self.db.get_channel(channel_id)
