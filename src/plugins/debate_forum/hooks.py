@@ -1,14 +1,23 @@
 """Debate Forum Plugin - Hook for injecting debate context into sub-agents.
 
-The inject_debate_context hook (pre_llm_call) reads debate messages from the forum
-and injects them into the agent's message history. This eliminates the need for the
-moderator to manually pass the thread to each sub-agent.
+Two-tier injection strategy:
+- **Pinned messages + channel metadata** → ``role="system"`` (ephemeral, re-injected
+  fresh on every LLM call, not persisted in session).
+- **Unpinned forum posts** → ``role="user"`` (permanent, persisted in session).
+  Only NEW messages since the last hook call are added (diff-based).
+  Context optimiser plugins (context_engineer, context_summarizer) can compress
+  older batches over time — no sliding-window limit needed.
+
+Diff tracking:
+  ``debate_last_injected_msg_id`` is stored in session template vars via the
+  SessionTracker.  This survives context compression (the tracker lives outside
+  the message list).
 
 Flow:
-1. Moderator sets context_var `debate_channel_id` (via task_switch/set_context)
+1. Moderator sets context_var ``debate_channel_id`` (via task_switch/set_context)
 2. Sub-agents inherit it when spawned
-3. This hook reads all debate messages and injects them as system context
-4. The sub-agent sees the full debate thread without manual passing
+3. This hook injects pinned context (system) and new posts (user)
+4. Old post batches stay in the conversation and get optimised automatically
 """
 from __future__ import annotations
 
@@ -24,6 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 INJECTION_MARKER = "inject_debate_context"
+INJECTION_MARKER_POSTS = "debate_forum_posts"
 
 
 class DebateForumHooks(SchemaBasedPluginHook):
@@ -37,10 +47,11 @@ class DebateForumHooks(SchemaBasedPluginHook):
             self._config.update(plugin_config)
 
     async def inject_debate_context(self, context: HookContext) -> HookResult:
-        """Inject debate forum messages into agent context before LLM call.
+        """Inject debate forum context before LLM call.
 
-        Reads `debate_channel_id` from session context_vars and injects
-        all debate messages as a system message.
+        Two-tier injection:
+        1. Pinned messages + channel metadata → system message (ephemeral)
+        2. New forum posts since last call → user message (permanent)
         """
         logger.debug(
             "[DebateForumHook] inject_debate_context called for agent=%s session=%s",
@@ -50,59 +61,82 @@ class DebateForumHooks(SchemaBasedPluginHook):
             return HookResult(success=True, modified=False, context=context)
 
         try:
-            # Read context_vars from session
             channel_id = self._get_channel_id(context)
             if not channel_id:
                 logger.debug("[DebateForumHook] No debate_channel_id in context_vars, skipping")
                 return HookResult(success=True, modified=False, context=context)
 
-            # Get config
-            max_messages = self._config.get("max_messages_injected", 6)
-
-            # Load channel metadata (name, topic, context)
             channel = self.db.get_channel(channel_id)
-
-            # Load pinned messages (always included)
             pinned_messages = self.db.get_pinned_messages(channel_id)
             pinned_ids = {m["id"] for m in pinned_messages}
 
-            # Load all messages from forum
-            messages = self.db.get_messages(channel_id, limit=0)  # all
-            if not messages and not pinned_messages:
-                return HookResult(success=True, modified=False, context=context)
-
-            # Take only the most recent N non-pinned messages
-            unpinned_recent = [m for m in messages if m["id"] not in pinned_ids][-max_messages:]
-
-            # Format for injection: pinned first, then recent
-            debate_text = self._format_debate_context(
-                pinned_messages, unpinned_recent, channel_id, channel
-            )
-
-            # Remove old injection
             from agent_system.llm.models import ChatMessage
 
+            modified = False
+
+            # ── 1. Pinned + metadata → system injection (ephemeral) ───────
+            # Remove previous system injection
             for i in range(len(context.messages) - 1, -1, -1):
                 if getattr(context.messages[i], "injected_by", None) == INJECTION_MARKER:
                     context.messages.pop(i)
 
-            # Insert after first system message
-            insert_pos = self._find_insert_position(context.messages)
-            context.messages.insert(
-                insert_pos,
-                ChatMessage(
-                    role="system",
-                    content=debate_text,
-                    injected_by=INJECTION_MARKER,
-                ),
-            )
+            has_metadata = channel and (channel.get("topic") or channel.get("context"))
+            if pinned_messages or has_metadata:
+                pinned_text = self._format_pinned_context(
+                    pinned_messages, channel_id, channel
+                )
+                insert_pos = self._find_insert_position(context.messages)
+                context.messages.insert(
+                    insert_pos,
+                    ChatMessage(
+                        role="system",
+                        content=pinned_text,
+                        injected_by=INJECTION_MARKER,
+                    ),
+                )
+                modified = True
 
-            logger.info(
-                f"[DebateForumHook] Injected {len(pinned_messages)} pinned + "
-                f"{len(unpinned_recent)} recent messages from channel #{channel_id}"
+            # ── 2. New posts → user injection (permanent, diff-based) ─────
+            session_vars = context.agent._session_tracker.get_session_template_vars(
+                context.session_id
             )
+            last_injected_id = int(session_vars.get("debate_last_injected_msg_id", 0))
 
-            return HookResult(success=True, modified=True, context=context)
+            all_messages = self.db.get_messages(channel_id, limit=0)
+            new_messages = [
+                m for m in all_messages
+                if m["id"] not in pinned_ids and m["id"] > last_injected_id
+            ]
+
+            if new_messages:
+                posts_text = self._format_new_posts(new_messages, channel_id)
+                insert_pos = self._find_last_user_position(context.messages)
+                context.messages.insert(
+                    insert_pos,
+                    ChatMessage(
+                        role="user",
+                        content=posts_text,
+                        injected_by=INJECTION_MARKER_POSTS,
+                    ),
+                )
+                max_id = max(m["id"] for m in new_messages)
+                context.agent._session_tracker.set_session_template_vars(
+                    context.session_id,
+                    {"debate_last_injected_msg_id": max_id},
+                )
+                modified = True
+                logger.info(
+                    f"[DebateForumHook] Injected {len(new_messages)} new posts "
+                    f"(msg_id {last_injected_id + 1}..{max_id}) from channel #{channel_id}"
+                )
+
+            if pinned_messages:
+                logger.info(
+                    f"[DebateForumHook] Injected {len(pinned_messages)} pinned messages "
+                    f"from channel #{channel_id}"
+                )
+
+            return HookResult(success=True, modified=modified, context=context)
 
         except Exception as e:
             logger.error(f"[DebateForumHook] Failed: {e}", exc_info=True)
@@ -123,27 +157,17 @@ class DebateForumHooks(SchemaBasedPluginHook):
         return None
 
     @staticmethod
-    def _format_debate_context(
+    def _format_pinned_context(
         pinned: list[dict[str, Any]],
-        recent: list[dict[str, Any]],
         channel_id: int,
         channel: dict[str, Any] | None = None,
     ) -> str:
-        """Format debate messages for injection into agent context.
-
-        Uses XML-style tags to clearly delimit each post, making it easy
-        for LLMs to parse author, role, and content boundaries.
-        Pinned messages are always included; all others go through the sliding window.
-        """
+        """Format pinned messages and channel metadata for system injection."""
         ch_name = channel.get("name", "") if channel else ""
-        header = f"## Debate Forum – Thread / Channel #{channel_id}"
+        header = f"## Debate Forum – Channel #{channel_id}"
         if ch_name:
             header += f" ({ch_name})"
         parts = [header]
-        parts.append(
-            "Dies ist der aktuelle Stand des Debate-Forum-Threads. "
-            "Alle bisherigen Posts der Teilnehmer sind hier aufgelistet.\n"
-        )
 
         if channel:
             topic = channel.get("topic", "")
@@ -152,11 +176,9 @@ class DebateForumHooks(SchemaBasedPluginHook):
                 parts.append(f"**Topic:** {topic}")
             if context:
                 parts.append(f"**Context:** {context}")
-            if topic or context:
-                parts.append("")
 
         if pinned:
-            parts.append("📌 **Pinned messages (always visible):**\n")
+            parts.append("\n📌 **Pinned messages (always visible):**\n")
             for msg in pinned:
                 name = msg.get("agent_name", "?")
                 role = msg.get("agent_role", "?")
@@ -166,33 +188,50 @@ class DebateForumHooks(SchemaBasedPluginHook):
                     f"{content}\n"
                     f"</post>"
                 )
-            parts.append("\n---\n")
 
-        if recent:
-            parts.append("Recent debate messages:\n")
-            current_round = None
-            for msg in recent:
-                r = msg.get("round", 0)
-                if r != current_round:
-                    current_round = r
-                    parts.append(f"\n### Round {r}\n")
+        return "\n".join(parts)
 
-                name = msg.get("agent_name", "?")
-                role = msg.get("agent_role", "?")
-                content = msg.get("content", "").strip()
-                parts.append(
-                    f'<post author="{name}" role="{role}" round="{r}">\n'
-                    f"{content}\n"
-                    f"</post>"
-                )
+    @staticmethod
+    def _format_new_posts(
+        messages: list[dict[str, Any]],
+        channel_id: int,
+    ) -> str:
+        """Format new forum posts for permanent user injection."""
+        parts = [f"[Debate-Forum Channel #{channel_id} – Neue Beiträge]\n"]
+
+        current_round = None
+        for msg in messages:
+            r = msg.get("round", 0)
+            if r != current_round:
+                current_round = r
+                parts.append(f"\n### Runde {r}\n")
+
+            name = msg.get("agent_name", "?")
+            role = msg.get("agent_role", "?")
+            content = msg.get("content", "").strip()
+            msg_id = msg.get("id", "?")
+            parts.append(
+                f'<post author="{name}" role="{role}" round="{r}" msg_id="{msg_id}">\n'
+                f"{content}\n"
+                f"</post>"
+            )
 
         return "\n".join(parts)
 
     @staticmethod
     def _find_insert_position(messages: list) -> int:
-        """Find position after the first system message."""
+        """Find position after the first system message (for system injection)."""
         for i, msg in enumerate(messages):
             role = msg.role if hasattr(msg, "role") else msg.get("role", "")
             if role != "system":
+                return i
+        return len(messages)
+
+    @staticmethod
+    def _find_last_user_position(messages: list) -> int:
+        """Find position of the last user message (to insert new posts before it)."""
+        for i in range(len(messages) - 1, -1, -1):
+            role = messages[i].role if hasattr(messages[i], "role") else messages[i].get("role", "")
+            if role == "user":
                 return i
         return len(messages)

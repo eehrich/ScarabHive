@@ -1,7 +1,8 @@
 """Debate Forum Plugin - Hook Tests.
 
 Tests cover:
-- inject_debate_context hook: message injection, filtering, idempotency
+- inject_debate_context hook: two-tier injection (pinned→system, posts→user)
+- Diff-based injection: only new messages since last call
 - Context var resolution
 - Edge cases (no channel, empty thread, missing vars)
 """
@@ -10,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from plugins.debate_forum.database import DebateForumDB
-from plugins.debate_forum.hooks import DebateForumHooks, INJECTION_MARKER
+from plugins.debate_forum.hooks import DebateForumHooks, INJECTION_MARKER, INJECTION_MARKER_POSTS
 from agent_system.llm.models import ChatMessage
 from agent_system.hooks import HookContext
 
@@ -39,10 +40,17 @@ def _make_context(
     session_id: str = "test-session",
     context_vars: dict | None = None,
 ) -> HookContext:
-    """Create a minimal HookContext with mocked agent/session_tracker."""
+    """Create a minimal HookContext with mocked agent/session_tracker.
+
+    The mock tracker supports get/set_session_template_vars so the hook
+    can track ``debate_last_injected_msg_id`` across calls.
+    """
     agent = MagicMock()
+    _vars = dict(context_vars or {})
+
     tracker = MagicMock()
-    tracker.get_session_template_vars.return_value = context_vars or {}
+    tracker.get_session_template_vars.side_effect = lambda sid: _vars
+    tracker.set_session_template_vars.side_effect = lambda sid, v: _vars.update(v)
     agent._session_tracker = tracker
 
     return HookContext(
@@ -104,8 +112,8 @@ class TestInjectDebateContext:
 
     @pytest.mark.asyncio
     async def test_empty_channel_noop(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Hook should not inject if channel has no messages."""
-        ch = db.create_channel(name="empty", topic="Nothing here")
+        """Hook should not inject if channel has no messages and no topic."""
+        ch = db.create_channel(name="empty", topic="")
         msgs = [_sys("system"), _user("hi")]
         ctx = _make_context(msgs, context_vars={"debate_channel_id": ch["channel_id"]})
         result = await hooks.inject_debate_context(ctx)
@@ -113,8 +121,24 @@ class TestInjectDebateContext:
         assert not result.modified
 
     @pytest.mark.asyncio
-    async def test_injects_all_messages(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Hook should inject all debate messages (no filtering)."""
+    async def test_channel_with_topic_injects_system(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """Channel with topic but no messages should inject system metadata only."""
+        ch = db.create_channel(name="test", topic="Test debate")
+        msgs = [_sys("system"), _user("hi")]
+        ctx = _make_context(msgs, context_vars={"debate_channel_id": ch["channel_id"]})
+        result = await hooks.inject_debate_context(ctx)
+
+        assert result.success
+        assert result.modified
+        assert len(result.context.messages) == 3
+        injected = result.context.messages[1]
+        assert injected.role == "system"
+        assert injected.injected_by == INJECTION_MARKER
+        assert "Test debate" in injected.content
+
+    @pytest.mark.asyncio
+    async def test_unpinned_messages_injected_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """Unpinned forum posts should be injected as role=user (permanent)."""
         ch = db.create_channel(name="test", topic="Test debate")
         cid = ch["channel_id"]
         db.post_message(cid, "Mira", "advocate", 1, "I argue for X")
@@ -126,20 +150,27 @@ class TestInjectDebateContext:
 
         assert result.success
         assert result.modified
-        # Should have 3 messages: system, injected, user
-        assert len(result.context.messages) == 3
-        injected = result.context.messages[1]
-        assert injected.role == "system"
-        assert injected.injected_by == INJECTION_MARKER
-        # Should contain BOTH participants
-        assert "Mira" in injected.content
-        assert "I argue for X" in injected.content
-        assert "Sven" in injected.content
-        assert "I argue against X" in injected.content
+        # system, system(metadata), user(posts), user(original)
+        assert len(result.context.messages) == 4
+
+        # System injection (metadata only, no pinned)
+        sys_injected = result.context.messages[1]
+        assert sys_injected.role == "system"
+        assert sys_injected.injected_by == INJECTION_MARKER
+        assert "Test debate" in sys_injected.content
+
+        # User injection (posts)
+        user_injected = result.context.messages[2]
+        assert user_injected.role == "user"
+        assert user_injected.injected_by == INJECTION_MARKER_POSTS
+        assert "Mira" in user_injected.content
+        assert "I argue for X" in user_injected.content
+        assert "Sven" in user_injected.content
+        assert "I argue against X" in user_injected.content
 
     @pytest.mark.asyncio
-    async def test_idempotent_injection(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Running the hook twice should replace the previous injection, not duplicate."""
+    async def test_diff_injection_only_new_messages(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """Running the hook twice should only inject NEW messages on the second call."""
         ch = db.create_channel(name="test", topic="Test")
         cid = ch["channel_id"]
         db.post_message(cid, "Sven", "critic", 1, "Round 1 argument")
@@ -147,29 +178,32 @@ class TestInjectDebateContext:
         msgs = [_sys("You are Mira"), _user("go")]
         ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
 
-        # First injection
+        # First injection: all messages
         result1 = await hooks.inject_debate_context(ctx)
         assert result1.modified
-        assert len(result1.context.messages) == 3
+        user_msgs = [m for m in result1.context.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(user_msgs) == 1
+        assert "Round 1 argument" in user_msgs[0].content
 
         # Add a new message to the forum
         db.post_message(cid, "Sven", "critic", 2, "Round 2 argument")
 
-        # Second injection on the same context
+        # Second injection on the same context: only round 2 should be new
         result2 = await hooks.inject_debate_context(result1.context)
         assert result2.modified
-        # Still 3 messages (old injection removed, new one added)
-        assert len(result2.context.messages) == 3
-        injected = result2.context.messages[1]
-        assert "Round 2 argument" in injected.content
+        user_msgs = [m for m in result2.context.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(user_msgs) == 2  # Both batches present
+        # Latest batch should contain only round 2
+        latest_batch = user_msgs[-1]
+        assert "Round 2 argument" in latest_batch.content
+        assert "Round 1 argument" not in latest_batch.content
 
     @pytest.mark.asyncio
-    async def test_respects_max_messages(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Hook should limit injected messages to max_messages_injected config."""
+    async def test_no_sliding_window_all_messages_injected(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """All unpinned messages should be injected on first call (no max limit)."""
         ch = db.create_channel(name="test", topic="Test")
         cid = ch["channel_id"]
-        # Post 10 messages
-        for i in range(10):
+        for i in range(15):
             db.post_message(cid, "Sven", "critic", i + 1, f"Argument {i + 1}")
 
         msgs = [_sys("system"), _user("go")]
@@ -177,17 +211,16 @@ class TestInjectDebateContext:
         result = await hooks.inject_debate_context(ctx)
 
         assert result.modified
-        injected = result.context.messages[1]
-        # Default max_messages_injected is 6, so only last 6 should be present
-        assert "Argument 5" in injected.content
-        assert "Argument 10" in injected.content
-        # First 4 should be trimmed (use word boundary to avoid matching "Argument 10" etc.)
-        assert "\nArgument 1\n" not in injected.content
-        assert "\nArgument 4\n" not in injected.content
+        user_msgs = [m for m in result.context.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(user_msgs) == 1
+        content = user_msgs[0].content
+        # ALL 15 messages should be present (no sliding window)
+        for i in range(1, 16):
+            assert f"Argument {i}" in content
 
     @pytest.mark.asyncio
-    async def test_insert_position_after_system(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Injection should be placed after system messages, before user messages."""
+    async def test_user_injection_before_last_user_message(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """User injection should appear before the last user message."""
         ch = db.create_channel(name="test", topic="Test")
         cid = ch["channel_id"]
         db.post_message(cid, "Sven", "critic", 1, "My argument")
@@ -202,15 +235,20 @@ class TestInjectDebateContext:
         result = await hooks.inject_debate_context(ctx)
 
         assert result.modified
-        assert len(result.context.messages) == 5
-        # Position 0: system, 1: injected, 2+: conversation
-        assert result.context.messages[0].role == "system"
-        assert result.context.messages[1].injected_by == INJECTION_MARKER
-        assert result.context.messages[2].role == "user"
+        messages = result.context.messages
+        # system, system(metadata), user1, assistant1, user(injected), user2
+        assert len(messages) == 6
+        assert messages[0].role == "system"
+        assert messages[1].injected_by == INJECTION_MARKER  # metadata
+        assert messages[2].content == "Message 1"
+        assert messages[3].content == "Response 1"
+        assert messages[4].injected_by == INJECTION_MARKER_POSTS  # posts
+        assert messages[4].role == "user"
+        assert messages[5].content == "Message 2"
 
     @pytest.mark.asyncio
     async def test_formats_round_headers(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Injected content should include round headers."""
+        """Injected user content should include round headers."""
         ch = db.create_channel(name="test", topic="Test")
         cid = ch["channel_id"]
         db.post_message(cid, "Sven", "critic", 1, "Round 1")
@@ -220,9 +258,11 @@ class TestInjectDebateContext:
         ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
         result = await hooks.inject_debate_context(ctx)
 
-        injected = result.context.messages[1]
-        assert "### Round 1" in injected.content
-        assert "### Round 2" in injected.content
+        user_msgs = [m for m in result.context.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(user_msgs) == 1
+        content = user_msgs[0].content
+        assert "### Runde 1" in content
+        assert "### Runde 2" in content
 
     @pytest.mark.asyncio
     async def test_invalid_channel_id_noop(self, hooks: DebateForumHooks, db: DebateForumDB):
@@ -232,6 +272,95 @@ class TestInjectDebateContext:
         result = await hooks.inject_debate_context(ctx)
         assert result.success
         assert not result.modified
+
+    @pytest.mark.asyncio
+    async def test_pinned_as_system_unpinned_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """Pinned messages go to system injection, unpinned to user injection."""
+        ch = db.create_channel(name="test", topic="Mixed test")
+        cid = ch["channel_id"]
+        r1 = db.post_message(cid, "Mod", "moderator", 0, "Pinned summary")
+        db.pin_message(r1["message_id"])
+        db.post_message(cid, "Sven", "critic", 1, "Normal argument")
+
+        msgs = [_sys("system"), _user("go")]
+        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
+        result = await hooks.inject_debate_context(ctx)
+
+        assert result.modified
+        sys_injected = [m for m in result.context.messages
+                        if getattr(m, "injected_by", None) == INJECTION_MARKER]
+        user_injected = [m for m in result.context.messages
+                         if getattr(m, "injected_by", None) == INJECTION_MARKER_POSTS]
+
+        assert len(sys_injected) == 1
+        assert len(user_injected) == 1
+        assert "Pinned summary" in sys_injected[0].content
+        assert sys_injected[0].role == "system"
+        assert "Normal argument" in user_injected[0].content
+        assert user_injected[0].role == "user"
+        # Pinned should NOT appear in user injection
+        assert "Pinned summary" not in user_injected[0].content
+
+    @pytest.mark.asyncio
+    async def test_tracks_last_injected_id(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """Hook should update debate_last_injected_msg_id in session vars."""
+        ch = db.create_channel(name="test", topic="Track test")
+        cid = ch["channel_id"]
+        r1 = db.post_message(cid, "Sven", "critic", 1, "First")
+        r2 = db.post_message(cid, "Mira", "advocate", 1, "Second")
+
+        context_vars = {"debate_channel_id": cid}
+        msgs = [_sys("system"), _user("go")]
+        ctx = _make_context(msgs, context_vars=context_vars)
+        await hooks.inject_debate_context(ctx)
+
+        # The tracker should have been called with the max message id
+        tracker = ctx.agent._session_tracker
+        set_calls = tracker.set_session_template_vars.call_args_list
+        assert len(set_calls) == 1
+        stored_id = set_calls[0][0][1]["debate_last_injected_msg_id"]
+        assert stored_id == r2["message_id"]
+
+    @pytest.mark.asyncio
+    async def test_system_injection_is_idempotent(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """System injection (pinned/metadata) should be replaced, not duplicated."""
+        ch = db.create_channel(name="test", topic="Idempotent test")
+        cid = ch["channel_id"]
+        r1 = db.post_message(cid, "Mod", "moderator", 0, "Pinned info")
+        db.pin_message(r1["message_id"])
+
+        msgs = [_sys("system"), _user("go")]
+        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
+
+        # First call
+        await hooks.inject_debate_context(ctx)
+        sys_count_1 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER)
+        assert sys_count_1 == 1
+
+        # Second call: should replace, not duplicate
+        await hooks.inject_debate_context(ctx)
+        sys_count_2 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER)
+        assert sys_count_2 == 1
+
+    @pytest.mark.asyncio
+    async def test_no_new_messages_skips_user_injection(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """If all messages are already injected, no user injection should happen."""
+        ch = db.create_channel(name="test", topic="Test")
+        cid = ch["channel_id"]
+        db.post_message(cid, "Sven", "critic", 1, "Old argument")
+
+        msgs = [_sys("system"), _user("go")]
+        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
+
+        # First call injects everything
+        await hooks.inject_debate_context(ctx)
+        user_count_1 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER_POSTS)
+        assert user_count_1 == 1
+
+        # Second call: no new messages → no additional user injection
+        result = await hooks.inject_debate_context(ctx)
+        user_count_2 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER_POSTS)
+        assert user_count_2 == 1  # still just 1
 
 
 class TestDebateForumHooksSchema:
@@ -256,87 +385,4 @@ class TestDebateForumHooksSchema:
         ctx_hook = next(h for h in hook_defs if h["name"] == "inject_debate_context")
         assert ctx_hook["enabled"] is False
 
-    def test_config_defaults(self, hooks: DebateForumHooks):
-        """Config should have max_messages_injected with a sensible default."""
-        config = hooks.get_config()
-        assert "max_messages_injected" in config
-        assert config["max_messages_injected"] == 6
-
-
-# =============================================================================
-# Config Override Tests (plugins.yaml overrides schema defaults)
-# =============================================================================
-
-class TestConfigOverride:
-    """Tests that plugin_config passed at construction overrides schema defaults."""
-
-    def _make_hooks(self, db: DebateForumDB, plugin_config: dict) -> DebateForumHooks:
-        plugin_dir = Path(__file__).resolve().parent.parent.parent / "src" / "plugins" / "debate_forum"
-        return DebateForumHooks(plugin_dir, db, plugin_config=plugin_config)
-
-    def test_plugin_config_overrides_max_messages(self, db: DebateForumDB):
-        """plugin_config should override the schema default for max_messages_injected."""
-        h = self._make_hooks(db, {"max_messages_injected": 12})
-        assert h.get_config()["max_messages_injected"] == 12
-
-    def test_plugin_config_partial_override(self, db: DebateForumDB):
-        """Only provided keys should be overridden; others keep schema defaults."""
-        h = self._make_hooks(db, {"max_messages_injected": 20})
-        config = h.get_config()
-        assert config["max_messages_injected"] == 20
-        # Other schema keys should still be present
-        assert "max_messages_injected" in config
-
-    def test_no_plugin_config_uses_schema_defaults(self, db: DebateForumDB):
-        """Without plugin_config, schema default (6) should be used."""
-        plugin_dir = Path(__file__).resolve().parent.parent.parent / "src" / "plugins" / "debate_forum"
-        h = DebateForumHooks(plugin_dir, db)
-        assert h.get_config()["max_messages_injected"] == 6
-
-    def test_empty_plugin_config_uses_schema_defaults(self, db: DebateForumDB):
-        """Empty plugin_config dict should not change schema defaults."""
-        h = self._make_hooks(db, {})
-        assert h.get_config()["max_messages_injected"] == 6
-
-    @pytest.mark.asyncio
-    async def test_overridden_limit_applied_during_injection(self, db: DebateForumDB):
-        """Overridden max_messages_injected must be honoured at injection time."""
-        h = self._make_hooks(db, {"max_messages_injected": 3})
-        ch = db.create_channel(name="test", topic="Limit test")
-        cid = ch["channel_id"]
-        for i in range(8):
-            db.post_message(cid, "Sven", "critic", i + 1, f"Msg {i + 1}")
-
-        msgs = [_sys("system"), _user("go")]
-        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
-        result = await h.inject_debate_context(ctx)
-
-        assert result.modified
-        injected = result.context.messages[1].content
-        # Only last 3 should appear
-        assert "Msg 6" in injected
-        assert "Msg 7" in injected
-        assert "Msg 8" in injected
-        # Earlier messages must be absent
-        assert "Msg 1" not in injected
-        assert "Msg 5" not in injected
-
-    @pytest.mark.asyncio
-    async def test_higher_limit_includes_more_messages(self, db: DebateForumDB):
-        """Setting limit to 12 should include more messages than the default 6."""
-        h = self._make_hooks(db, {"max_messages_injected": 12})
-        ch = db.create_channel(name="test", topic="Wide window")
-        cid = ch["channel_id"]
-        for i in range(10):
-            db.post_message(cid, "Anna", "pragmatiker", i + 1, f"Point {i + 1}")
-
-        msgs = [_sys("system"), _user("start")]
-        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
-        result = await h.inject_debate_context(ctx)
-
-        assert result.modified
-        injected = result.context.messages[1].content
-        # All 10 messages fit within the limit of 12
-        for i in range(1, 11):
-            assert f"Point {i}" in injected
 

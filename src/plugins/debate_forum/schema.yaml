@@ -10,14 +10,6 @@ hooks:
       after: ["context_optimization"]
       before: ["message_validation"]
 
-config:
-  max_messages_injected:
-    type: integer
-    default: 6
-    description: "Maximum number of opponent messages to inject"
-    minimum: 1
-    maximum: 20
-
 # Tool definitions for debate_forum plugin
 tools:
   - type: function

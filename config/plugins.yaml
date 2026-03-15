@@ -781,7 +781,6 @@ plugins:
       type: debate_forum
       enabled: true
       config:
-        max_messages_injected: 12
         db_path: "data/debate_forum/forum.db"
 
     simple_prompt_inject:
