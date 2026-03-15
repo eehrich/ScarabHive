@@ -169,8 +169,22 @@ class TestInjectPrompt:
 
     @pytest.mark.asyncio
     async def test_inject_at_end(self, make_plugin, make_context):
-        """Position 'end' should append the message."""
+        """Position 'end' with role=system should still go after system messages."""
         p = make_plugin("Appended text.", position="end")
+        ctx = make_context()
+        result = await p.inject_prompt(ctx)
+
+        msgs = result.context.messages
+        assert len(msgs) == 3
+        # System role forces injection after system messages, not at end
+        assert msgs[1].injected_by == "simple_prompt_inject"
+        assert msgs[1].content == "Appended text."
+        assert msgs[1].role == "system"
+
+    @pytest.mark.asyncio
+    async def test_inject_at_end_with_user_role(self, make_plugin, make_context):
+        """Position 'end' with role=user should actually append."""
+        p = make_plugin("Appended text.", position="end", role="user")
         ctx = make_context()
         result = await p.inject_prompt(ctx)
 
@@ -178,6 +192,7 @@ class TestInjectPrompt:
         assert len(msgs) == 3
         assert msgs[-1].injected_by == "simple_prompt_inject"
         assert msgs[-1].content == "Appended text."
+        assert msgs[-1].role == "user"
 
     @pytest.mark.asyncio
     async def test_inject_with_user_role(self, make_plugin, make_context):
@@ -234,8 +249,8 @@ class TestInjectPrompt:
         assert len(original_messages) == original_len
 
     @pytest.mark.asyncio
-    async def test_multiple_user_messages(self, plugin):
-        """With multiple user messages, injects before the last one."""
+    async def test_multiple_user_messages_system_role(self, plugin):
+        """With role=system, injects after system messages (not mid-conversation)."""
         ctx = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id="r1",
@@ -251,9 +266,32 @@ class TestInjectPrompt:
         msgs = result.context.messages
 
         assert len(msgs) == 5
-        # Injected should be right before "second user"
+        # System role: injected after system messages at the beginning
+        assert msgs[1].injected_by == "simple_prompt_inject"
+        assert msgs[1].role == "system"
+        assert msgs[2].content == "first user"
+
+    @pytest.mark.asyncio
+    async def test_multiple_user_messages_user_role(self, make_plugin):
+        """With role=user, injects before the last user message."""
+        p = make_plugin("Remember: always be concise.", role="user")
+        ctx = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="r1",
+            session_id="s1",
+            messages=[
+                ChatMessage(role="system", content="sys"),
+                ChatMessage(role="user", content="first user"),
+                ChatMessage(role="assistant", content="response"),
+                ChatMessage(role="user", content="second user"),
+            ],
+        )
+        result = await p.inject_prompt(ctx)
+        msgs = result.context.messages
+
+        assert len(msgs) == 5
         assert msgs[3].injected_by == "simple_prompt_inject"
-        assert msgs[4].role == "user"
+        assert msgs[3].role == "user"
         assert msgs[4].content == "second user"
 
 
