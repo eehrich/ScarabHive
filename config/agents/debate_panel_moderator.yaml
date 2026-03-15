@@ -31,10 +31,9 @@ plugins:
 
       # NUR Debate-Agents erlaubt
       allowed_agents:
-        - debate_participant
-
-        #- debate_panel_moderator
-        - debate_panel_participant        
+        - debate_panel_participant_chat
+        - debate_panel_participant_flash
+        - debate_panel_participant_gpt
 
       blocked_agents: []
 

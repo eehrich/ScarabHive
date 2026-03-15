@@ -29,9 +29,12 @@ INJECTION_MARKER = "inject_debate_context"
 class DebateForumHooks(SchemaBasedPluginHook):
     """Hook plugin for debate forum context injection."""
 
-    def __init__(self, plugin_dir: Path, db: "DebateForumDB"):
+    def __init__(self, plugin_dir: Path, db: "DebateForumDB", plugin_config: dict | None = None):
         super().__init__(plugin_dir)
         self.db = db
+        # Merge config from plugins.yaml over schema defaults
+        if plugin_config:
+            self._config.update(plugin_config)
 
     async def inject_debate_context(self, context: HookContext) -> HookResult:
         """Inject debate forum messages into agent context before LLM call.
@@ -130,6 +133,7 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
         Uses XML-style tags to clearly delimit each post, making it easy
         for LLMs to parse author, role, and content boundaries.
+        Pinned messages are always included; all others go through the sliding window.
         """
         ch_name = channel.get("name", "") if channel else ""
         header = f"## Debate Forum – Channel #{channel_id}"

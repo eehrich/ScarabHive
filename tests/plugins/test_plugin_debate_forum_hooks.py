@@ -261,3 +261,82 @@ class TestDebateForumHooksSchema:
         config = hooks.get_config()
         assert "max_messages_injected" in config
         assert config["max_messages_injected"] == 6
+
+
+# =============================================================================
+# Config Override Tests (plugins.yaml overrides schema defaults)
+# =============================================================================
+
+class TestConfigOverride:
+    """Tests that plugin_config passed at construction overrides schema defaults."""
+
+    def _make_hooks(self, db: DebateForumDB, plugin_config: dict) -> DebateForumHooks:
+        plugin_dir = Path(__file__).resolve().parent.parent.parent / "src" / "plugins" / "debate_forum"
+        return DebateForumHooks(plugin_dir, db, plugin_config=plugin_config)
+
+    def test_plugin_config_overrides_max_messages(self, db: DebateForumDB):
+        """plugin_config should override the schema default for max_messages_injected."""
+        h = self._make_hooks(db, {"max_messages_injected": 12})
+        assert h.get_config()["max_messages_injected"] == 12
+
+    def test_plugin_config_partial_override(self, db: DebateForumDB):
+        """Only provided keys should be overridden; others keep schema defaults."""
+        h = self._make_hooks(db, {"max_messages_injected": 20})
+        config = h.get_config()
+        assert config["max_messages_injected"] == 20
+        # Other schema keys should still be present
+        assert "max_messages_injected" in config
+
+    def test_no_plugin_config_uses_schema_defaults(self, db: DebateForumDB):
+        """Without plugin_config, schema default (6) should be used."""
+        plugin_dir = Path(__file__).resolve().parent.parent.parent / "src" / "plugins" / "debate_forum"
+        h = DebateForumHooks(plugin_dir, db)
+        assert h.get_config()["max_messages_injected"] == 6
+
+    def test_empty_plugin_config_uses_schema_defaults(self, db: DebateForumDB):
+        """Empty plugin_config dict should not change schema defaults."""
+        h = self._make_hooks(db, {})
+        assert h.get_config()["max_messages_injected"] == 6
+
+    @pytest.mark.asyncio
+    async def test_overridden_limit_applied_during_injection(self, db: DebateForumDB):
+        """Overridden max_messages_injected must be honoured at injection time."""
+        h = self._make_hooks(db, {"max_messages_injected": 3})
+        ch = db.create_channel(name="test", topic="Limit test")
+        cid = ch["channel_id"]
+        for i in range(8):
+            db.post_message(cid, "Sven", "critic", i + 1, f"Msg {i + 1}")
+
+        msgs = [_sys("system"), _user("go")]
+        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
+        result = await h.inject_debate_context(ctx)
+
+        assert result.modified
+        injected = result.context.messages[1].content
+        # Only last 3 should appear
+        assert "Msg 6" in injected
+        assert "Msg 7" in injected
+        assert "Msg 8" in injected
+        # Earlier messages must be absent
+        assert "Msg 1" not in injected
+        assert "Msg 5" not in injected
+
+    @pytest.mark.asyncio
+    async def test_higher_limit_includes_more_messages(self, db: DebateForumDB):
+        """Setting limit to 12 should include more messages than the default 6."""
+        h = self._make_hooks(db, {"max_messages_injected": 12})
+        ch = db.create_channel(name="test", topic="Wide window")
+        cid = ch["channel_id"]
+        for i in range(10):
+            db.post_message(cid, "Anna", "pragmatiker", i + 1, f"Point {i + 1}")
+
+        msgs = [_sys("system"), _user("start")]
+        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
+        result = await h.inject_debate_context(ctx)
+
+        assert result.modified
+        injected = result.context.messages[1].content
+        # All 10 messages fit within the limit of 12
+        for i in range(1, 11):
+            assert f"Point {i}" in injected
+

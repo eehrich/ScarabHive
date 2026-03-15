@@ -60,9 +60,9 @@ class DebateForumHybridPlugin:
             db=self._db, name=name, server=self.server
         )
 
-        # Create hooks plugin (schema-based)
+        # Create hooks plugin (schema-based), pass plugin config so plugins.yaml values take effect
         plugin_dir = Path(__file__).parent
-        self.hooks_plugin = DebateForumHooks(plugin_dir, self._db)
+        self.hooks_plugin = DebateForumHooks(plugin_dir, self._db, plugin_config=config)
 
         logger.info("DebateForumHybridPlugin initialized: db=%s", db_path)
 
