@@ -79,13 +79,13 @@ plugins:
             # Reasoning support
             - "sequential_thinking/*"
             - "context_engineer/*"
-
-
         hooks:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
+            debate_forum.inject_debate_context:
+              enabled: true              
             debate_sam.inject_sub_agent_context:
               enabled: true
             sequential_thinking.inject_active_sessions:

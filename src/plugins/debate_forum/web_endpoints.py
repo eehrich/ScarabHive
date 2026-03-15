@@ -143,6 +143,27 @@ class DebateForumWebFactory:
             raise HTTPException(status_code=500, detail="Failed to archive channel")
         return {"status": "archived", "channel_id": channel_id}
 
+    async def api_reopen_channel(self, request: Request, channel_id: int):
+        channel = self.db.get_channel(channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+        if channel["status"] == "active":
+            raise HTTPException(status_code=400, detail="Channel is already active")
+        ok = self.db.reopen_channel(channel_id)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to reopen channel")
+        return {"status": "active", "channel_id": channel_id}
+
+    async def api_create_channel(self, request: Request):
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        topic = (body.get("topic") or "").strip()
+        context = (body.get("context") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        result = self.db.create_channel(name=name, topic=topic, context=context)
+        return result
+
     async def api_toggle_pin(self, request: Request, message_id: int):
         body = await request.json()
         pinned = body.get("pinned", True)

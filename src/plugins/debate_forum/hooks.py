@@ -56,6 +56,9 @@ class DebateForumHooks(SchemaBasedPluginHook):
             # Get config
             max_messages = self._config.get("max_messages_injected", 6)
 
+            # Load channel metadata (name, topic, context)
+            channel = self.db.get_channel(channel_id)
+
             # Load pinned messages (always included)
             pinned_messages = self.db.get_pinned_messages(channel_id)
             pinned_ids = {m["id"] for m in pinned_messages}
@@ -70,7 +73,7 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
             # Format for injection: pinned first, then recent
             debate_text = self._format_debate_context(
-                pinned_messages, unpinned_recent, channel_id
+                pinned_messages, unpinned_recent, channel_id, channel
             )
 
             # Remove old injection
@@ -121,17 +124,40 @@ class DebateForumHooks(SchemaBasedPluginHook):
         pinned: list[dict[str, Any]],
         recent: list[dict[str, Any]],
         channel_id: int,
+        channel: dict[str, Any] | None = None,
     ) -> str:
-        """Format debate messages for injection into agent context."""
-        parts = [f"## Debate Forum – Channel #{channel_id}\n"]
+        """Format debate messages for injection into agent context.
+
+        Uses XML-style tags to clearly delimit each post, making it easy
+        for LLMs to parse author, role, and content boundaries.
+        """
+        ch_name = channel.get("name", "") if channel else ""
+        header = f"## Debate Forum – Channel #{channel_id}"
+        if ch_name:
+            header += f" ({ch_name})"
+        parts = [header + "\n"]
+
+        if channel:
+            topic = channel.get("topic", "")
+            context = channel.get("context", "")
+            if topic:
+                parts.append(f"**Topic:** {topic}")
+            if context:
+                parts.append(f"**Context:** {context}")
+            if topic or context:
+                parts.append("")
 
         if pinned:
             parts.append("📌 **Pinned messages (always visible):**\n")
             for msg in pinned:
                 name = msg.get("agent_name", "?")
                 role = msg.get("agent_role", "?")
-                content = msg.get("content", "")
-                parts.append(f"\n**{name}** ({role}) [pinned]:\n{content}")
+                content = msg.get("content", "").strip()
+                parts.append(
+                    f'<post author="{name}" role="{role}" pinned="true">\n'
+                    f"{content}\n"
+                    f"</post>"
+                )
             parts.append("\n---\n")
 
         if recent:
@@ -141,12 +167,16 @@ class DebateForumHooks(SchemaBasedPluginHook):
                 r = msg.get("round", 0)
                 if r != current_round:
                     current_round = r
-                    parts.append(f"\n### Round {r}")
+                    parts.append(f"\n### Round {r}\n")
 
                 name = msg.get("agent_name", "?")
                 role = msg.get("agent_role", "?")
-                content = msg.get("content", "")
-                parts.append(f"\n**{name}** ({role}):\n{content}")
+                content = msg.get("content", "").strip()
+                parts.append(
+                    f'<post author="{name}" role="{role}" round="{r}">\n'
+                    f"{content}\n"
+                    f"</post>"
+                )
 
         return "\n".join(parts)
 

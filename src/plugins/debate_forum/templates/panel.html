@@ -38,7 +38,10 @@
     <div class="forum-container">
         <!-- Channel sidebar -->
         <aside class="channel-sidebar" id="channel-sidebar">
-            <div class="sidebar-header">Channels</div>
+            <div class="sidebar-header">
+                Channels
+                <button class="btn-create-channel" id="btn-create-channel" title="Create channel">+</button>
+            </div>
             <div class="channel-list" id="channel-list">
                 <div class="empty-state">No channels yet</div>
             </div>
@@ -59,6 +62,8 @@
                 </div>
                 <div class="chat-header-actions">
                     <span class="chat-msg-count" id="chat-msg-count"></span>
+                    <button class="btn-sm btn-copy" id="btn-copy" title="Copy channel text to clipboard">📋</button>
+                    <button class="btn-sm btn-reopen" id="btn-reopen" title="Reopen channel" style="display:none">🔓</button>
                     <button class="btn-sm btn-archive" id="btn-archive" title="Archive channel">📦</button>
                 </div>
             </div>
@@ -86,6 +91,20 @@
             <div class="sidebar-header">Participants</div>
             <div class="participants-list" id="participants-list"></div>
         </aside>
+    </div>
+
+    <!-- Create Channel Modal -->
+    <div class="modal-overlay" id="modal-create-channel">
+        <div class="modal-box">
+            <div class="modal-title">New Channel</div>
+            <input type="text" id="create-ch-name" placeholder="Channel name" maxlength="100">
+            <input type="text" id="create-ch-topic" placeholder="Topic" maxlength="200">
+            <textarea id="create-ch-context" placeholder="Context (optional)" rows="3"></textarea>
+            <div class="modal-actions">
+                <button class="btn-modal btn-cancel" id="btn-create-cancel">Cancel</button>
+                <button class="btn-modal btn-confirm" id="btn-create-confirm">Create</button>
+            </div>
+        </div>
     </div>
 
     <script src="static/panel.js"></script>

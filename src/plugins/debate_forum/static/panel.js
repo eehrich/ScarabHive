@@ -9,7 +9,7 @@
     let pollTimer = null;
 
     const POLL_INTERVAL = 4000; // ms
-    const ROLE_PALETTE_SIZE = 7; // number of color slots (slot0–slot6)
+    const ROLE_PALETTE_SIZE = 8; // number of color slots (slot0–slot7)
 
     // ── DOM refs ──────────────────────────────────────────────
     const $channelList = document.getElementById("channel-list");
@@ -26,6 +26,8 @@
     const $filterSearch = document.getElementById("filter-search");
     const $btnRefresh = document.getElementById("btn-refresh");
     const $btnArchive = document.getElementById("btn-archive");
+    const $btnReopen = document.getElementById("btn-reopen");
+    const $btnCopy = document.getElementById("btn-copy");
 
     // Participants sidebar
     const $participantsSidebar = document.getElementById("participants-sidebar");
@@ -204,9 +206,11 @@
             renderVerdict(chData);
             updateChatInputVisibility();
 
-            // Show/hide archive button based on status
+            // Show/hide archive and reopen buttons based on status
             $btnArchive.style.display =
                 chData.status === "archived" ? "none" : "inline-block";
+            $btnReopen.style.display =
+                (chData.status === "concluded" || chData.status === "archived") ? "inline-block" : "none";
         } catch (e) {
             console.warn("Failed to load channel:", e);
             $chatMessages.innerHTML =
@@ -372,6 +376,43 @@
         return div.innerHTML;
     }
 
+    // ── Copy channel text to clipboard ──────────────────────
+    async function copyChannelText() {
+        if (!selectedChannelId) return;
+        try {
+            const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
+            const messages = msgData.messages || [];
+            if (!messages.length) return;
+
+            let text = "";
+            if (currentChannel) {
+                text += `# ${currentChannel.name}\n`;
+                if (currentChannel.topic) text += `Topic: ${currentChannel.topic}\n`;
+                text += "\n";
+            }
+
+            let lastRound = -1;
+            for (const msg of messages) {
+                if (msg.round !== lastRound) {
+                    text += `--- Round ${msg.round} ---\n\n`;
+                    lastRound = msg.round;
+                }
+                const role = (msg.agent_role || "").toUpperCase();
+                text += `[${role} "${msg.agent_name}"]\n${msg.content}\n\n`;
+            }
+
+            if (currentChannel && currentChannel.verdict_summary) {
+                text += `--- Verdict ---\n${currentChannel.verdict_summary}\n`;
+            }
+
+            await navigator.clipboard.writeText(text);
+            $btnCopy.textContent = "✅";
+            setTimeout(() => { $btnCopy.textContent = "📋"; }, 1500);
+        } catch (e) {
+            console.warn("Failed to copy:", e);
+        }
+    }
+
     // ── Archive action ────────────────────────────────────────
     async function archiveChannel() {
         if (!selectedChannelId || !currentChannel) return;
@@ -382,6 +423,19 @@
             await refresh();
         } catch (e) {
             console.warn("Failed to archive:", e);
+        }
+    }
+
+    // ── Reopen action ─────────────────────────────────────────
+    async function reopenChannel() {
+        if (!selectedChannelId || !currentChannel) return;
+        if (currentChannel.status === "active") return;
+
+        try {
+            await apiPost("channels/" + selectedChannelId + "/reopen");
+            await refresh();
+        } catch (e) {
+            console.warn("Failed to reopen:", e);
         }
     }
 
@@ -485,9 +539,61 @@
         }
     }
 
+    // ── Create Channel Modal ─────────────────────────────────
+    const $modalCreate = document.getElementById("modal-create-channel");
+    const $createName = document.getElementById("create-ch-name");
+    const $createTopic = document.getElementById("create-ch-topic");
+    const $createContext = document.getElementById("create-ch-context");
+    const $btnCreateChannel = document.getElementById("btn-create-channel");
+    const $btnCreateCancel = document.getElementById("btn-create-cancel");
+    const $btnCreateConfirm = document.getElementById("btn-create-confirm");
+
+    function openCreateModal() {
+        $createName.value = "";
+        $createTopic.value = "";
+        $createContext.value = "";
+        $modalCreate.classList.add("visible");
+        $createName.focus();
+    }
+
+    function closeCreateModal() {
+        $modalCreate.classList.remove("visible");
+    }
+
+    async function createChannel() {
+        const name = $createName.value.trim();
+        if (!name) { $createName.focus(); return; }
+        try {
+            const result = await apiPostJson("channels", {
+                name: name,
+                topic: $createTopic.value.trim(),
+                context: $createContext.value.trim(),
+            });
+            closeCreateModal();
+            await refresh();
+            if (result.channel_id) {
+                await selectChannel(result.channel_id);
+            }
+        } catch (e) {
+            console.warn("Failed to create channel:", e);
+        }
+    }
+
+    $btnCreateChannel.addEventListener("click", openCreateModal);
+    $btnCreateCancel.addEventListener("click", closeCreateModal);
+    $btnCreateConfirm.addEventListener("click", createChannel);
+    $modalCreate.addEventListener("click", (e) => {
+        if (e.target === $modalCreate) closeCreateModal();
+    });
+    $createName.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") createChannel();
+    });
+
     // ── Event bindings ────────────────────────────────────────
     $btnRefresh.addEventListener("click", refresh);
     $btnArchive.addEventListener("click", archiveChannel);
+    $btnReopen.addEventListener("click", reopenChannel);
+    $btnCopy.addEventListener("click", copyChannelText);
     $filterStatus.addEventListener("change", loadChannels);
     $filterGroup.addEventListener("change", loadChannels);
 
