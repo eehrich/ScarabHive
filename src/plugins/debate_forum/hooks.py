@@ -136,10 +136,14 @@ class DebateForumHooks(SchemaBasedPluginHook):
         Pinned messages are always included; all others go through the sliding window.
         """
         ch_name = channel.get("name", "") if channel else ""
-        header = f"## Debate Forum – Channel #{channel_id}"
+        header = f"## Debate Forum – Thread / Channel #{channel_id}"
         if ch_name:
             header += f" ({ch_name})"
-        parts = [header + "\n"]
+        parts = [header]
+        parts.append(
+            "Dies ist der aktuelle Stand des Debate-Forum-Threads. "
+            "Alle bisherigen Posts der Teilnehmer sind hier aufgelistet.\n"
+        )
 
         if channel:
             topic = channel.get("topic", "")
