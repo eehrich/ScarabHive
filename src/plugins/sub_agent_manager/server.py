@@ -474,12 +474,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     )
                     context_vars = sub_session_data.get("context_vars", {})
                     if context_vars:
-                        # Set session-scoped template vars (preferred, session-isolated)
+                        # Set session-scoped template vars (session-isolated, no global mutation)
                         agent._session_tracker.set_session_template_vars(sub_session_id, context_vars)
-                        # Also set agent-level template_vars for backward compatibility
-                        if agent.agent_config.template_vars is None:
-                            agent.agent_config.template_vars = {}
-                        agent.agent_config.template_vars.update(context_vars)
                         logger.debug(
                             f"Inherited context_vars to sub-agent template_vars: {list(context_vars.keys())}"
                         )
@@ -707,12 +703,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 try:
                     context_vars = sub_session_data.get("context_vars", {})
                     if context_vars:
-                        # Set session-scoped template vars (preferred, session-isolated)
+                        # Set session-scoped template vars (session-isolated, no global mutation)
                         agent._session_tracker.set_session_template_vars(instance_id, context_vars)
-                        # Also set agent-level template_vars for backward compatibility
-                        if agent.agent_config.template_vars is None:
-                            agent.agent_config.template_vars = {}
-                        agent.agent_config.template_vars.update(context_vars)
                         logger.debug(
                             f"Restored context_vars for continued sub-agent: {list(context_vars.keys())}"
                         )
@@ -1244,12 +1236,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     )
                     context_vars = sub_session_data.get("context_vars", {})
                     if context_vars:
-                        # Set session-scoped template vars (preferred, session-isolated)
+                        # Set session-scoped template vars (session-isolated, no global mutation)
                         agent._session_tracker.set_session_template_vars(instance_id, context_vars)
-                        # Also set agent-level template_vars for backward compatibility
-                        if agent.agent_config.template_vars is None:
-                            agent.agent_config.template_vars = {}
-                        agent.agent_config.template_vars.update(context_vars)
                         logger.debug(
                             f"Inherited context_vars to async sub-agent template_vars: {list(context_vars.keys())}"
                         )

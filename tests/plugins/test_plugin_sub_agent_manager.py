@@ -345,13 +345,15 @@ async def test_context_vars_inheritance():
 
 @pytest.mark.asyncio
 async def test_context_vars_loaded_into_agent_template_vars():
-    """Test that context_vars from sub-session are loaded into agent's template_vars.
+    """Test that context_vars from sub-session are loaded into agent's session_tracker template_vars.
     
     This tests the code path in server.py that should load context_vars
-    from the sub-session into the agent's template_vars before execution.
+    from the sub-session into the agent's session-scoped template_vars before execution.
+    Session-scoped vars are used instead of agent_config.template_vars for session isolation.
     """
     from agent_system.services.session_manager import SessionManager
     from agent_system.services.session_service import SessionService
+    from agent_system.servers.agent.components.session_tracking import SessionTracker
     from agent_system.config.models import AgentConfig
     import tempfile
     
@@ -380,28 +382,33 @@ async def test_context_vars_loaded_into_agent_template_vars():
         }
         await session_manager.save_session(sub_data)
         
-        # Create mock agent with EMPTY template_vars
+        # Create mock agent with a real session_tracker (session-isolated)
         mock_agent = MagicMock()
         mock_agent.agent_config = AgentConfig(
             default_llm_profile="test_profile",
-            template_vars={}  # EMPTY - should be populated
+            template_vars={}
         )
+        mock_agent._session_tracker = SessionTracker()
         
         # Now simulate what server._handle_create does:
-        # Load context_vars and inject into agent's template_vars
+        # Load context_vars and inject into agent's session-scoped template_vars
         loaded_session = await session_manager.load_session(user_id, sub_session_id)
         context_vars = loaded_session.get("context_vars", {})
         
         if context_vars:
-            if mock_agent.agent_config.template_vars is None:
-                mock_agent.agent_config.template_vars = {}
-            mock_agent.agent_config.template_vars.update(context_vars)
+            # Session-scoped template vars (session-isolated, no global mutation)
+            mock_agent._session_tracker.set_session_template_vars(sub_session_id, context_vars)
         
-        # Verify context_vars were loaded
-        assert mock_agent.agent_config.template_vars.get("book_id") == "17", \
-            f"book_id should be '17', got: {mock_agent.agent_config.template_vars}"
-        assert mock_agent.agent_config.template_vars.get("workflow_phase") == "structure", \
-            f"workflow_phase should be 'structure', got: {mock_agent.agent_config.template_vars}"
+        # Verify context_vars were loaded into session_tracker (NOT agent_config)
+        session_vars = mock_agent._session_tracker.get_session_template_vars(sub_session_id)
+        assert session_vars.get("book_id") == "17", \
+            f"book_id should be '17', got: {session_vars}"
+        assert session_vars.get("workflow_phase") == "structure", \
+            f"workflow_phase should be 'structure', got: {session_vars}"
+        
+        # Verify agent_config.template_vars is NOT modified (session isolation)
+        assert mock_agent.agent_config.template_vars.get("book_id") is None, \
+            "agent_config.template_vars should NOT be modified (race condition with singletons)"
 
 
 @pytest.mark.asyncio
