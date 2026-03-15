@@ -65,6 +65,7 @@
                     <button class="btn-sm btn-copy" id="btn-copy" title="Copy channel text to clipboard">📋</button>
                     <button class="btn-sm btn-reopen" id="btn-reopen" title="Reopen channel" style="display:none">🔓</button>
                     <button class="btn-sm btn-archive" id="btn-archive" title="Archive channel">📦</button>
+                    <button class="btn-sm btn-delete" id="btn-delete" title="Delete channel permanently">🗑️</button>
                 </div>
             </div>
 
@@ -91,6 +92,18 @@
             <div class="sidebar-header">Participants</div>
             <div class="participants-list" id="participants-list"></div>
         </aside>
+    </div>
+
+    <!-- Delete Channel Confirm Modal -->
+    <div class="modal-overlay" id="modal-delete-channel">
+        <div class="modal-box">
+            <div class="modal-title">Delete Channel</div>
+            <p class="modal-warning">This will permanently delete the channel and all its messages. This cannot be undone.</p>
+            <div class="modal-actions">
+                <button class="btn-modal btn-cancel" id="btn-delete-cancel">Cancel</button>
+                <button class="btn-modal btn-danger" id="btn-delete-confirm">Delete</button>
+            </div>
+        </div>
     </div>
 
     <!-- Create Channel Modal -->

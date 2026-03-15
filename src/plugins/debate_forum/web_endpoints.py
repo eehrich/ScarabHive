@@ -164,6 +164,15 @@ class DebateForumWebFactory:
         result = self.db.create_channel(name=name, topic=topic, context=context)
         return result
 
+    async def api_delete_channel(self, request: Request, channel_id: int):
+        channel = self.db.get_channel(channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+        ok = self.db.delete_channel(channel_id)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to delete channel")
+        return {"status": "deleted", "channel_id": channel_id}
+
     async def api_toggle_pin(self, request: Request, message_id: int):
         body = await request.json()
         pinned = body.get("pinned", True)

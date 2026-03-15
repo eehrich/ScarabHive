@@ -154,6 +154,14 @@ class DebateForumDB:
 
     # ── Channel CRUD ──────────────────────────────────────────
 
+    def delete_channel(self, channel_id: int) -> bool:
+        """Permanently delete a channel and all its messages."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM messages WHERE channel_id = ?", (channel_id,))
+        cur = conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
     def create_channel(
         self,
         name: str,

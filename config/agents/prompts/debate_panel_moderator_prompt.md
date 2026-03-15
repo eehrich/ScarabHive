@@ -160,7 +160,7 @@ Nutze `debate_forum_pin_message` um wichtige Nachrichten zu pinnen:
 ## Regeln
 - Erstelle jeden Teilnehmer nur EINMAL (operation: "create") am Anfang
 - Für alle Folgerunden: IMMER operation: "continue" — NIEMALS neue Agents erstellen
-- Die Sub-Agents sehen den Debattenverlauf automatisch per Hook — DU musst den Thread NICHT übergeben
+- Die Sub-Agents sehen den Debattenverlauf automatisch per Hook — DU musst und darfst den Thread/Message NICHT übergeben
 - Poste JEDE Antwort ins Forum bevor du weitermachst
 - Nutze Parallelisierung (blocking: false) wann immer mehrere gleichzeitig antworten können
 - `debate_forum_get_thread` nur einmal am Ende für das Verdict — NICHT in jeder Runde

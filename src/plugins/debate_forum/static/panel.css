@@ -643,3 +643,16 @@ body {
     border-color: var(--accent);
 }
 .btn-confirm:hover { opacity: 0.85; }
+.btn-danger {
+    background: var(--accent-red);
+    color: #1e1e2e;
+    border-color: var(--accent-red);
+}
+.btn-danger:hover { opacity: 0.85; }
+.modal-warning {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin: 0 0 12px;
+    line-height: 1.5;
+}
+.btn-delete { color: var(--accent-red); }

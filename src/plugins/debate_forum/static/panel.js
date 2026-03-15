@@ -27,7 +27,13 @@
     const $btnRefresh = document.getElementById("btn-refresh");
     const $btnArchive = document.getElementById("btn-archive");
     const $btnReopen = document.getElementById("btn-reopen");
+    const $btnDelete = document.getElementById("btn-delete");
     const $btnCopy = document.getElementById("btn-copy");
+
+    // Delete modal
+    const $modalDelete = document.getElementById("modal-delete-channel");
+    const $btnDeleteCancel = document.getElementById("btn-delete-cancel");
+    const $btnDeleteConfirm = document.getElementById("btn-delete-confirm");
 
     // Participants sidebar
     const $participantsSidebar = document.getElementById("participants-sidebar");
@@ -52,8 +58,8 @@
         return "api/" + path;
     }
 
-    async function apiFetch(path) {
-        const resp = await fetch(apiUrl(path));
+    async function apiFetch(path, options = {}) {
+        const resp = await fetch(apiUrl(path), options);
         if (!resp.ok) throw new Error(`API ${path}: ${resp.status}`);
         return resp.json();
     }
@@ -438,7 +444,31 @@
             console.warn("Failed to reopen:", e);
         }
     }
+    // ── Delete action ───────────────────────────────────────────────────
+    function openDeleteModal() {
+        if (!selectedChannelId) return;
+        $modalDelete.classList.add("visible");
+    }
 
+    function closeDeleteModal() {
+        $modalDelete.classList.remove("visible");
+    }
+
+    async function deleteChannel() {
+        if (!selectedChannelId) return;
+        closeDeleteModal();
+        try {
+            await apiFetch("channels/" + selectedChannelId, { method: "DELETE" });
+            selectedChannelId = null;
+            currentChannel = null;
+            $chatHeader.style.display = "none";
+            $chatMessages.style.display = "none";
+            $chatPlaceholder.style.display = "flex";
+            await loadChannels();
+        } catch (e) {
+            console.warn("Failed to delete:", e);
+        }
+    }
     // ── Send message from chat input ──────────────────────────
     async function sendMessage() {
         if (!selectedChannelId || !currentChannel || currentChannel.status !== "active") return;
@@ -593,7 +623,14 @@
     $btnRefresh.addEventListener("click", refresh);
     $btnArchive.addEventListener("click", archiveChannel);
     $btnReopen.addEventListener("click", reopenChannel);
+    $btnDelete.addEventListener("click", openDeleteModal);
     $btnCopy.addEventListener("click", copyChannelText);
+
+    $btnDeleteCancel.addEventListener("click", closeDeleteModal);
+    $btnDeleteConfirm.addEventListener("click", deleteChannel);
+    $modalDelete.addEventListener("click", (e) => {
+        if (e.target === $modalDelete) closeDeleteModal();
+    });
     $filterStatus.addEventListener("change", loadChannels);
     $filterGroup.addEventListener("change", loadChannels);
 
