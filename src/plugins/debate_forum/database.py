@@ -31,6 +31,15 @@ class DebateForumDB:
         self._init_schema()
         logger.info("DebateForumDB initialized: %s", self.db_path)
 
+    @staticmethod
+    def _migrate_pinned_column(conn: sqlite3.Connection) -> None:
+        """Add pinned column to messages table if not present (migration)."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        if "pinned" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+            logger.info("Migrated messages table: added 'pinned' column")
+
     def _get_conn(self) -> sqlite3.Connection:
         """Get thread-local database connection."""
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -66,6 +75,7 @@ class DebateForumDB:
                 agent_role TEXT NOT NULL DEFAULT '',
                 round INTEGER NOT NULL DEFAULT 1,
                 content TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
@@ -77,6 +87,8 @@ class DebateForumDB:
                 ON channels(status);
         """)
         conn.commit()
+        # Migrate: add pinned column if missing
+        self._migrate_pinned_column(conn)
 
     # ── Channel CRUD ──────────────────────────────────────────
 
@@ -238,6 +250,35 @@ class DebateForumDB:
             parts.append(f"VERDICT: {channel['verdict_summary']}")
 
         return "\n".join(parts)
+
+    # ── Pinning ────────────────────────────────────────────────
+
+    def pin_message(self, message_id: int) -> bool:
+        """Pin a message so it's always included in context injection."""
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE messages SET pinned = 1 WHERE id = ?", (message_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    def unpin_message(self, message_id: int) -> bool:
+        """Unpin a previously pinned message."""
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE messages SET pinned = 0 WHERE id = ?", (message_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    def get_pinned_messages(self, channel_id: int) -> list[dict[str, Any]]:
+        """Get all pinned messages for a channel, ordered by round and id."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE channel_id = ? AND pinned = 1 ORDER BY round, id",
+            (channel_id,),
+        ).fetchall()
+        return [self._row_to_message(r) for r in rows]
 
     # ── Stats ─────────────────────────────────────────────────
 

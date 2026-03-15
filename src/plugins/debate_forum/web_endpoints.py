@@ -48,12 +48,14 @@ class DebateForumWebFactory:
         return FileResponse(
             self.plugin_dir / "static" / "panel.css",
             media_type="text/css",
+            headers={"Cache-Control": "no-cache"},
         )
 
     async def serve_js(self, request: Request):
         return FileResponse(
             self.plugin_dir / "static" / "panel.js",
             media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
         )
 
     # ── API endpoints ─────────────────────────────────────────
@@ -105,6 +107,28 @@ class DebateForumWebFactory:
     async def api_get_stats(self, request: Request):
         return self.db.get_stats()
 
+    async def api_post_message(self, request: Request, channel_id: int):
+        channel = self.db.get_channel(channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+        if channel["status"] != "active":
+            raise HTTPException(status_code=400, detail=f"Channel {channel_id} is {channel['status']}, cannot post")
+        body = await request.json()
+        agent_name = (body.get("agent_name") or "").strip()
+        content = (body.get("content") or "").strip()
+        if not agent_name or not content:
+            raise HTTPException(status_code=400, detail="agent_name and content are required")
+        agent_role = (body.get("agent_role") or "user").strip()
+        round_num = body.get("round", 0)
+        result = self.db.post_message(
+            channel_id=channel_id,
+            agent_name=agent_name,
+            agent_role=agent_role,
+            round_num=round_num,
+            content=content,
+        )
+        return {"status": "posted", "message_id": result["message_id"], "channel_id": channel_id}
+
     async def api_archive_channel(self, request: Request, channel_id: int):
         channel = self.db.get_channel(channel_id)
         if not channel:
@@ -113,6 +137,17 @@ class DebateForumWebFactory:
         if not ok:
             raise HTTPException(status_code=500, detail="Failed to archive channel")
         return {"status": "archived", "channel_id": channel_id}
+
+    async def api_toggle_pin(self, request: Request, message_id: int):
+        body = await request.json()
+        pinned = body.get("pinned", True)
+        if pinned:
+            ok = self.db.pin_message(message_id)
+        else:
+            ok = self.db.unpin_message(message_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"Message {message_id} not found")
+        return {"status": "pinned" if pinned else "unpinned", "message_id": message_id}
 
     # ── Router ────────────────────────────────────────────────
 

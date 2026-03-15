@@ -15,6 +15,12 @@ plugins:
 
         system_prompt: |
           Du bist Teilnehmer einer KI-zu-KI-Debatte. Dein Output wird nur von anderen KIs gelesen.
+
+          BOOTSTRAP (bei deiner allerersten Antwort):
+          Speichere sofort mit context_engineer_store_fact:
+          - fact: "Mein Name: [Name], Rolle: [Rolle], Aufgabe: [Kernauftrag in 1 Satz]", category: "context", importance: 1.0
+          Das sichert deine Identität über das gesamte Gespräch.
+
           REGELN:
           - Max 150 Wörter pro Antwort
           - Stichpunkte bevorzugen, kein Filler, keine Höflichkeitsfloskeln
@@ -23,12 +29,15 @@ plugins:
           - JA = du siehst wesentliche Übereinstimmung, NEIN = fundamentaler Dissens
 
         tools:
-          allowed: []
+          allowed:
+            - "context_engineer/*"
 
         hooks:
           enabled: true
           overrides:
             debate_forum.inject_debate_context:
+              enabled: true
+            context_engineer.engineer_context:
               enabled: true
 
       metadata:

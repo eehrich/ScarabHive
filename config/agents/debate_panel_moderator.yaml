@@ -4,6 +4,18 @@
 plugins:
   servers:
 
+    # Task switch for setting context_vars (debate_channel_id)
+    debate_switch:
+      type: task_switch
+      enabled: true
+      config:
+        task_var_name: "debate_phase"
+        allowed_tasks:
+          - setup
+          - discussion
+          - consensus
+          - concluded
+
     # Spezieller Sub-Agent-Manager für das Debate-System
     debate_sam:
       type: sub_agent_manager
@@ -62,7 +74,7 @@ plugins:
             - "debate_sam/*"
 
             # Context vars: set debate_channel_id for sub-agents
-            - "task_switch/set_context"
+            - "debate_switch/debate_switch_set_context"
 
             # Reasoning support
             - "sequential_thinking/*"

@@ -39,6 +39,10 @@ class DebateForumHooks(SchemaBasedPluginHook):
         Reads `debate_channel_id` from session context_vars and injects
         all debate messages as a system message.
         """
+        logger.debug(
+            "[DebateForumHook] inject_debate_context called for agent=%s session=%s",
+            context.agent_name, context.session_id,
+        )
         if not context.messages or not context.session_id:
             return HookResult(success=True, modified=False, context=context)
 
@@ -46,21 +50,28 @@ class DebateForumHooks(SchemaBasedPluginHook):
             # Read context_vars from session
             channel_id = self._get_channel_id(context)
             if not channel_id:
+                logger.debug("[DebateForumHook] No debate_channel_id in context_vars, skipping")
                 return HookResult(success=True, modified=False, context=context)
 
             # Get config
             max_messages = self._config.get("max_messages_injected", 6)
 
-            # Load messages from forum
+            # Load pinned messages (always included)
+            pinned_messages = self.db.get_pinned_messages(channel_id)
+            pinned_ids = {m["id"] for m in pinned_messages}
+
+            # Load all messages from forum
             messages = self.db.get_messages(channel_id, limit=0)  # all
-            if not messages:
+            if not messages and not pinned_messages:
                 return HookResult(success=True, modified=False, context=context)
 
-            # Take only the most recent N messages
-            recent = messages[-max_messages:]
+            # Take only the most recent N non-pinned messages
+            unpinned_recent = [m for m in messages if m["id"] not in pinned_ids][-max_messages:]
 
-            # Format for injection
-            debate_text = self._format_debate_context(recent, channel_id)
+            # Format for injection: pinned first, then recent
+            debate_text = self._format_debate_context(
+                pinned_messages, unpinned_recent, channel_id
+            )
 
             # Remove old injection
             from agent_system.llm.models import ChatMessage
@@ -81,7 +92,8 @@ class DebateForumHooks(SchemaBasedPluginHook):
             )
 
             logger.info(
-                f"[DebateForumHook] Injected {len(recent)} messages from channel #{channel_id}"
+                f"[DebateForumHook] Injected {len(pinned_messages)} pinned + "
+                f"{len(unpinned_recent)} recent messages from channel #{channel_id}"
             )
 
             return HookResult(success=True, modified=True, context=context)
@@ -105,22 +117,36 @@ class DebateForumHooks(SchemaBasedPluginHook):
         return None
 
     @staticmethod
-    def _format_debate_context(messages: list[dict[str, Any]], channel_id: int) -> str:
+    def _format_debate_context(
+        pinned: list[dict[str, Any]],
+        recent: list[dict[str, Any]],
+        channel_id: int,
+    ) -> str:
         """Format debate messages for injection into agent context."""
         parts = [f"## Debate Forum – Channel #{channel_id}\n"]
-        parts.append("Recent debate messages:\n")
 
-        current_round = None
-        for msg in messages:
-            r = msg.get("round", 0)
-            if r != current_round:
-                current_round = r
-                parts.append(f"\n### Round {r}")
+        if pinned:
+            parts.append("📌 **Pinned messages (always visible):**\n")
+            for msg in pinned:
+                name = msg.get("agent_name", "?")
+                role = msg.get("agent_role", "?")
+                content = msg.get("content", "")
+                parts.append(f"\n**{name}** ({role}) [pinned]:\n{content}")
+            parts.append("\n---\n")
 
-            name = msg.get("agent_name", "?")
-            role = msg.get("agent_role", "?")
-            content = msg.get("content", "")
-            parts.append(f"\n**{name}** ({role}):\n{content}")
+        if recent:
+            parts.append("Recent debate messages:\n")
+            current_round = None
+            for msg in recent:
+                r = msg.get("round", 0)
+                if r != current_round:
+                    current_round = r
+                    parts.append(f"\n### Round {r}")
+
+                name = msg.get("agent_name", "?")
+                role = msg.get("agent_role", "?")
+                content = msg.get("content", "")
+                parts.append(f"\n**{name}** ({role}):\n{content}")
 
         return "\n".join(parts)
 

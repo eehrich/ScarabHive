@@ -145,6 +145,24 @@ tools:
             type: string
             description: "Search in channel name/topic"
 
+  - type: function
+    function:
+      name: "{{ name }}_pin_message"
+      description: >
+        Pin or unpin a message. Pinned messages are always included in the context
+        injection for sub-agents, regardless of the sliding window size.
+        Use this to preserve important context (original task, key decisions, etc.).
+      parameters:
+        type: object
+        properties:
+          message_id:
+            type: integer
+            description: "ID of the message to pin or unpin"
+          pinned:
+            type: boolean
+            description: "true to pin, false to unpin (default: true)"
+        required: [message_id]
+
 # Web UI configuration
 web_ui:
   button:
@@ -197,8 +215,18 @@ web_ui:
       handler: "api_get_stats"
       response_type: "json"
       description: "Get forum statistics"
+    - path: "/api/channels/{channel_id}/messages"
+      method: "POST"
+      handler: "api_post_message"
+      response_type: "json"
+      description: "Post a message to a channel from the web UI"
     - path: "/api/channels/{channel_id}/archive"
       method: "POST"
       handler: "api_archive_channel"
       response_type: "json"
       description: "Archive a channel"
+    - path: "/api/messages/{message_id}/pin"
+      method: "POST"
+      handler: "api_toggle_pin"
+      response_type: "json"
+      description: "Toggle pin status of a message"

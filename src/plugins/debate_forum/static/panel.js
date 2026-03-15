@@ -9,18 +9,7 @@
     let pollTimer = null;
 
     const POLL_INTERVAL = 4000; // ms
-    const ROLE_COLORS = {
-        advocate: "advocate",
-        critic: "critic",
-        moderator: "moderator",
-        challenger: "challenger",
-        observer: "observer",
-        visionaer: "visionaer",
-        skeptiker: "skeptiker",
-        pragmatiker: "pragmatiker",
-        provokateur: "provokateur",
-        ethiker: "ethiker",
-    };
+    const ROLE_PALETTE_SIZE = 7; // number of color slots (slot0–slot6)
 
     // ── DOM refs ──────────────────────────────────────────────
     const $channelList = document.getElementById("channel-list");
@@ -40,6 +29,13 @@
     // Participants sidebar
     const $participantsSidebar = document.getElementById("participants-sidebar");
     const $participantsList = document.getElementById("participants-list");
+
+    // Chat input
+    const $chatInputBar = document.getElementById("chat-input-bar");
+    const $chatInputName = document.getElementById("chat-input-name");
+    const $chatInputRole = document.getElementById("chat-input-role");
+    const $chatInputMsg = document.getElementById("chat-input-msg");
+    const $btnSend = document.getElementById("btn-send");
 
     // Stats
     const $statActive = document.querySelector("#stat-active span");
@@ -62,6 +58,19 @@
     async function apiPost(path) {
         const resp = await fetch(apiUrl(path), { method: "POST" });
         if (!resp.ok) throw new Error(`API POST ${path}: ${resp.status}`);
+        return resp.json();
+    }
+
+    async function apiPostJson(path, body) {
+        const resp = await fetch(apiUrl(path), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `API POST ${path}: ${resp.status}`);
+        }
         return resp.json();
     }
 
@@ -153,6 +162,7 @@
 
             renderMessages(msgData.messages || []);
             renderVerdict(chData);
+            updateChatInputVisibility();
 
             // Show/hide archive button based on status
             $btnArchive.style.display =
@@ -166,7 +176,13 @@
 
     function roleClass(role) {
         const normalized = (role || "").toLowerCase().trim();
-        return ROLE_COLORS[normalized] || "default";
+        if (normalized === "moderator") return "moderator";
+        // Stable color slot derived from role name — works for any role string
+        let hash = 0;
+        for (let i = 0; i < normalized.length; i++) {
+            hash = (hash * 31 + normalized.charCodeAt(i)) & 0xffff;
+        }
+        return "slot" + (hash % ROLE_PALETTE_SIZE);
     }
 
     function getInitials(name) {
@@ -196,14 +212,18 @@
             }
 
             const rc = roleClass(msg.agent_role);
+            const isPinned = msg.pinned ? true : false;
+            const pinIcon = isPinned ? "📌" : "📍";
+            const pinnedClass = isPinned ? " pinned" : "";
             html += `
-            <div class="message-card">
+            <div class="message-card${pinnedClass}" data-msg-id="${msg.id}">
                 <div class="msg-avatar avatar-${rc}">${getInitials(msg.agent_name)}</div>
                 <div class="msg-body">
                     <div class="msg-header">
                         <span class="msg-agent-name">${escapeHtml(msg.agent_name)}</span>
                         <span class="msg-role-badge role-${rc}">${escapeHtml(msg.agent_role)}</span>
                         <span class="msg-timestamp">${formatTimestamp(msg.created_at)}</span>
+                        <button class="btn-pin" title="${isPinned ? 'Unpin' : 'Pin'}" data-msg-id="${msg.id}" data-pinned="${isPinned ? '1' : '0'}">${pinIcon}</button>
                     </div>
                     <div class="msg-content">${escapeHtml(msg.content)}</div>
                 </div>
@@ -325,6 +345,54 @@
         }
     }
 
+    // ── Send message from chat input ──────────────────────────
+    async function sendMessage() {
+        if (!selectedChannelId || !currentChannel || currentChannel.status !== "active") return;
+
+        const name = $chatInputName.value.trim();
+        const role = $chatInputRole.value.trim() || "user";
+        const content = $chatInputMsg.value.trim();
+        if (!name || !content) return;
+
+        // Determine round: use latest round from current messages
+        let round = 0;
+        const roundDividers = $chatMessages.querySelectorAll(".round-divider");
+        if (roundDividers.length > 0) {
+            const lastDiv = roundDividers[roundDividers.length - 1];
+            const match = lastDiv.textContent.match(/(\d+)/);
+            if (match) round = parseInt(match[1], 10);
+        }
+
+        $btnSend.disabled = true;
+        try {
+            await apiPostJson("channels/" + selectedChannelId + "/messages", {
+                agent_name: name,
+                agent_role: role,
+                content: content,
+                round: round,
+            });
+            $chatInputMsg.value = "";
+            // Refresh messages immediately
+            const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
+            renderMessages(msgData.messages || []);
+            $chatMsgCount.textContent = (msgData.count || 0) + " messages";
+        } catch (e) {
+            console.warn("Failed to send message:", e);
+            alert("Failed to send: " + e.message);
+        } finally {
+            $btnSend.disabled = false;
+            $chatInputMsg.focus();
+        }
+    }
+
+    function updateChatInputVisibility() {
+        if (currentChannel && currentChannel.status === "active") {
+            $chatInputBar.style.display = "flex";
+        } else {
+            $chatInputBar.style.display = "none";
+        }
+    }
+
     // ── Polling / Refresh ─────────────────────────────────────
     async function refresh() {
         await Promise.all([loadStats(), loadChannels()]);
@@ -381,6 +449,31 @@
     $btnRefresh.addEventListener("click", refresh);
     $btnArchive.addEventListener("click", archiveChannel);
     $filterStatus.addEventListener("change", loadChannels);
+
+    $btnSend.addEventListener("click", sendMessage);
+    $chatInputMsg.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+
+    // Pin toggle via event delegation
+    $chatMessages.addEventListener("click", async (e) => {
+        const btn = e.target.closest(".btn-pin");
+        if (!btn) return;
+        const msgId = btn.getAttribute("data-msg-id");
+        const currentlyPinned = btn.getAttribute("data-pinned") === "1";
+        btn.disabled = true;
+        try {
+            await apiPostJson("messages/" + msgId + "/pin", { pinned: !currentlyPinned });
+            // Refresh messages to show updated pin state
+            const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
+            renderMessages(msgData.messages || []);
+        } catch (err) {
+            console.warn("Failed to toggle pin:", err);
+        }
+    });
 
     let searchTimeout;
     $filterSearch.addEventListener("input", () => {

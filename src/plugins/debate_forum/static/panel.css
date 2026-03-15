@@ -16,6 +16,8 @@
     --accent-red: #f38ba8;
     --accent-purple: #cba6f7;
     --accent-teal: #94e2d5;
+    --accent-peach: #fab387;
+    --accent-sky: #89dceb;
     --border: #313244;
     --border-light: #45475a;
     --verdict-bg: #1a2332;
@@ -308,6 +310,24 @@ body {
     font-size: 10px;
     color: var(--text-muted);
 }
+.btn-pin {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    opacity: 0.3;
+    transition: opacity 0.15s;
+    margin-left: auto;
+}
+.message-card:hover .btn-pin { opacity: 0.7; }
+.btn-pin:hover { opacity: 1 !important; }
+.message-card.pinned {
+    border-left: 3px solid var(--accent);
+    padding-left: 8px;
+    background: rgba(137, 180, 250, 0.05);
+}
+.message-card.pinned .btn-pin { opacity: 0.9; }
 
 .msg-content {
     font-size: 13px;
@@ -317,33 +337,24 @@ body {
     word-break: break-word;
 }
 
-/* Role colors */
-.role-advocate { background: rgba(166, 227, 161, 0.2); color: var(--accent-green); }
-.role-critic { background: rgba(243, 139, 168, 0.2); color: var(--accent-red); }
-.role-moderator { background: rgba(137, 180, 250, 0.2); color: var(--accent); }
-.role-challenger { background: rgba(249, 226, 175, 0.2); color: var(--accent-yellow); }
-.role-observer { background: rgba(203, 166, 247, 0.2); color: var(--accent-purple); }
-.role-default { background: rgba(148, 226, 213, 0.2); color: var(--accent-teal); }
+/* Role colors — generic palette, assigned dynamically via JS hash */
+.role-moderator  { background: rgba(137, 180, 250, 0.2); color: var(--accent); }
+.role-slot0      { background: rgba(166, 227, 161, 0.2); color: var(--accent-green); }
+.role-slot1      { background: rgba(243, 139, 168, 0.2); color: var(--accent-red); }
+.role-slot2      { background: rgba(249, 226, 175, 0.2); color: var(--accent-yellow); }
+.role-slot3      { background: rgba(203, 166, 247, 0.2); color: var(--accent-purple); }
+.role-slot4      { background: rgba(148, 226, 213, 0.2); color: var(--accent-teal); }
+.role-slot5      { background: rgba(250, 179, 135, 0.2); color: var(--accent-peach); }
+.role-slot6      { background: rgba(137, 220, 235, 0.2); color: var(--accent-sky); }
 
-.avatar-advocate { background: var(--accent-green); }
-.avatar-critic { background: var(--accent-red); }
 .avatar-moderator { background: var(--accent); }
-.avatar-challenger { background: var(--accent-yellow); }
-.avatar-observer { background: var(--accent-purple); }
-.avatar-default { background: var(--accent-teal); }
-
-/* Panel debate roles */
-.role-visionaer { background: rgba(166, 227, 161, 0.2); color: var(--accent-green); }
-.role-skeptiker { background: rgba(243, 139, 168, 0.2); color: var(--accent-red); }
-.role-pragmatiker { background: rgba(249, 226, 175, 0.2); color: var(--accent-yellow); }
-.role-provokateur { background: rgba(203, 166, 247, 0.2); color: var(--accent-purple); }
-.role-ethiker { background: rgba(148, 226, 213, 0.2); color: var(--accent-teal); }
-
-.avatar-visionaer { background: var(--accent-green); }
-.avatar-skeptiker { background: var(--accent-red); }
-.avatar-pragmatiker { background: var(--accent-yellow); }
-.avatar-provokateur { background: var(--accent-purple); }
-.avatar-ethiker { background: var(--accent-teal); }
+.avatar-slot0     { background: var(--accent-green); }
+.avatar-slot1     { background: var(--accent-red); }
+.avatar-slot2     { background: var(--accent-yellow); }
+.avatar-slot3     { background: var(--accent-purple); }
+.avatar-slot4     { background: var(--accent-teal); }
+.avatar-slot5     { background: var(--accent-peach); }
+.avatar-slot6     { background: var(--accent-sky); }
 
 /* ── Verdict ───────────────────────────────── */
 .verdict-box {
@@ -397,6 +408,44 @@ body {
     margin: 0;
     font-size: 12px;
 }
+
+/* ── Chat Input Bar ────────────────────────── */
+.chat-input-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.chat-input-bar input[type="text"] {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    font-size: 13px;
+    outline: none;
+}
+.chat-input-bar input[type="text"]:focus {
+    border-color: var(--accent);
+}
+#chat-input-name { width: 90px; }
+#chat-input-role { width: 80px; }
+#chat-input-msg { flex: 1; }
+#btn-send {
+    background: var(--accent);
+    color: var(--bg-tertiary);
+    border: none;
+    border-radius: var(--radius);
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+#btn-send:hover { opacity: 0.85; }
+#btn-send:disabled { opacity: 0.4; cursor: default; }
 
 /* ── Scrollbar ─────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }

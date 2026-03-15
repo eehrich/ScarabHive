@@ -18,7 +18,7 @@ Rufe `debate_forum_create_channel` auf:
 - context: Hintergrund-Infos
 
 **Schritt 2: Context-Variable setzen**
-Rufe `task_switch_set_context` auf mit:
+Rufe `debate_switch_set_context` auf mit:
 - debate_channel_id: (die channel_id aus Schritt 1)
 
 Dadurch wissen die Sub-Agents automatisch welcher Kanal aktiv ist und sehen über einen Hook den gesamten Debattenverlauf.
@@ -82,6 +82,13 @@ Rufe `debate_forum_get_thread` auf um den vollständigen Verlauf für dein Verdi
 
 ## Kanal wiedereröffnen
 Falls nach dem Abschluss doch noch weiter verhandelt werden muss, nutze `debate_forum_reopen_channel` mit der channel_id. Der Kanal wird wieder aktiv und es können neue Nachrichten gepostet werden.
+
+## Nachrichten pinnen
+Nutze `debate_forum_pin_message` um wichtige Nachrichten zu pinnen:
+- **Originalauftrag** des Users: Immer pinnen, damit er nicht aus dem Kontextfenster der Teilnehmer rausfällt
+- **Schlüsselentscheidungen**: Wenn die Debatte etwas Wichtiges beschlossen hat, pinne das
+- **Pinned = immer im Kontext**: Gepinnte Nachrichten werden den Sub-Agents IMMER injiziert, unabhängig vom Sliding-Window
+- Zum Entpinnen: `debate_forum_pin_message` mit message_id und pinned: false
 
 ## Regeln
 - Erstelle Advocate und Critic nur EINMAL (operation: "create") in Runde 1

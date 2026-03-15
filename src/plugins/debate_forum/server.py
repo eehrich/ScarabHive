@@ -215,3 +215,29 @@ class DebateForumServer(SchemaBasedMCPServer):
             "channels": channels,
             "count": len(channels),
         }
+
+    # ── Tool: pin_message ─────────────────────────────────────
+
+    async def pin_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        message_id = params.get("message_id")
+        pinned = params.get("pinned", True)
+
+        if not message_id:
+            return {"error": "message_id is required"}
+
+        status = params.get("_status")
+
+        if pinned:
+            ok = self.db.pin_message(message_id)
+            action = "pinned"
+        else:
+            ok = self.db.unpin_message(message_id)
+            action = "unpinned"
+
+        if not ok:
+            return {"error": f"Message {message_id} not found"}
+
+        if status:
+            await status.end(f"Message #{message_id} {action}")
+
+        return {"status": action, "message_id": message_id}

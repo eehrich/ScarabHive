@@ -63,6 +63,14 @@
             <!-- Messages -->
             <div class="chat-messages" id="chat-messages" style="display:none"></div>
 
+            <!-- Chat input (only for active channels) -->
+            <div class="chat-input-bar" id="chat-input-bar" style="display:none">
+                <input type="text" id="chat-input-name" placeholder="Name" title="Your display name" value="User">
+                <input type="text" id="chat-input-role" placeholder="Role" title="Your role" value="user">
+                <input type="text" id="chat-input-msg" placeholder="Type a message..." title="Message">
+                <button id="btn-send" title="Send">Send</button>
+            </div>
+
             <!-- Verdict box (shown if concluded) -->
             <div class="verdict-box" id="verdict-box" style="display:none">
                 <div class="verdict-title">⚖️ Verdict</div>

@@ -24,7 +24,7 @@ plugins:
             - "debate_sam/*"
 
             # Context vars: set debate_channel_id / debate_agent_name for sub-agents
-            - "task_switch/set_context"
+            - "debate_switch/debate_switch_set_context"
 
             # Reasoning support
             - "sequential_thinking/*"
