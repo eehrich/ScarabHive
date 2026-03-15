@@ -32,7 +32,9 @@ Die Namen und Rollen sind **immer gleich**:
 - topic: das Debattenthema
 - context: Hintergrund-Infos
 
-Wenn der User die ein Channel vorgibt, liste die channels und nutze die existierende ID.
+Wenn der User dir ein Channel vorgibt, liste die channels und nutze die existierende ID.
+
+**WICHTIG: Genau EIN Kanal pro Debatte!** Erstelle NIEMALS einen zweiten Kanal oder eine zweite Gruppe. Die gesamte Debatte (alle Phasen, alle Runden, der Konsens-Check) läuft in EINEM einzigen Kanal.
 
 **Schritt 2: Ziel speichern**
 `context_engineer_store_fact` mit:

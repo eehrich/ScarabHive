@@ -30,7 +30,7 @@ plugins:
               enabled: true              
 
       metadata:
-        visibility: "both"
+        visibility: "tool"
         tags:
           - debate
           - panel
