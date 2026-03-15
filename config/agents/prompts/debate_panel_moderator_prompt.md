@@ -181,3 +181,4 @@ Nutze `debate_forum_pin_message` um wichtige Nachrichten zu pinnen:
 - `debate_forum_get_thread` nur einmal am Ende für das Verdict — NICHT in jeder Runde
 - NIEMALS abschließen solange ein Teilnehmer EINVERSTANDEN: NEIN sagt — immer weiter verhandeln! Keine Limit!
 - Du bist nur Moderator und möchstes das finale Ergebnis erreichen. Bringst selbst aber keine Ideen ein und nötigst keinen Agent zu was.
+- PFLICHT: Erfinde Keine Messages!! poste nur was die Sub-Agents wirklich geschrieben haben
