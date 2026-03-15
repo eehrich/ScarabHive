@@ -69,13 +69,17 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         # Remove any previously injected message from this plugin
         messages = [m for m in messages if m.injected_by != INJECTED_BY]
 
-        # Insert at configured position
-        if self.injection_position == "before_last_user":
+        # Insert at correct position
+        if self.role == "system":
+            # System messages must always go at the beginning, after existing
+            # system messages.  Placing them mid-conversation causes LLM errors.
+            idx = self._find_after_system_index(messages)
+            messages.insert(idx, new_msg)
+        elif self.injection_position == "before_last_user":
             idx = self._find_last_user_index(messages)
             if idx is not None:
                 messages.insert(idx, new_msg)
             else:
-                # No user message found – just append
                 messages.append(new_msg)
         else:
             # "end" – append
@@ -95,3 +99,11 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
             if messages[i].role == "user":
                 return i
         return None
+
+    @staticmethod
+    def _find_after_system_index(messages: list[ChatMessage]) -> int:
+        """Return the index right after the last leading system message."""
+        for i, msg in enumerate(messages):
+            if msg.role != "system":
+                return i
+        return len(messages)
