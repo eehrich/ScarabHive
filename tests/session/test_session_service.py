@@ -166,3 +166,142 @@ class TestEstimateMessageTokens:
         msg = {"role": "assistant", "tool_calls": []}
         tokens = _estimate_message_tokens(msg)
         assert tokens >= 1
+
+
+# ---------------------------------------------------------------------------
+# SessionService.save_session race-condition tests
+# ---------------------------------------------------------------------------
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+from agent_system.services.session_service import SessionService
+from agent_system.services.session_manager import SessionManager
+
+
+def _make_mock_agent(messages_dicts):
+    """Build a minimal mock agent whose session_tracker holds *messages_dicts*."""
+    agent = MagicMock()
+    agent.agent_config.default_llm_profile = "normal"
+    agent.agent_config.template_vars = {}
+    tracker = MagicMock()
+    # Convert dicts to mock ChatMessage objects
+    mock_msgs = []
+    for d in messages_dicts:
+        m = MagicMock()
+        m.role = d["role"]
+        m.model_dump.return_value = d
+        mock_msgs.append(m)
+    tracker.get_session_messages.return_value = mock_msgs
+    agent._session_tracker = tracker
+    return agent
+
+
+@pytest.fixture
+def session_service_env(tmp_path):
+    storage = tmp_path / "sessions"
+    storage.mkdir()
+    sm = SessionManager(storage_path=str(storage))
+    svc = SessionService(session_manager=sm)
+    return svc, sm
+
+
+@pytest.mark.asyncio
+async def test_save_session_race_creates_then_falls_back(session_service_env):
+    """When _find_session_owner_async misses a session that already exists,
+    save_session should catch the ValueError from create_session and fall
+    back to load-update-save, preserving parent_session."""
+    svc, sm = session_service_env
+
+    # Pre-create a sub-agent session with parent_session (like SAM does)
+    session = await sm.create_session(
+        user_id="user1",
+        session_id="sub_agent_race_001",
+        title="Sub-agent",
+        agent_name="v5b_moderator",
+        llm_profile="normal",
+    )
+    session["parent_session"] = {"session_id": "parent_xyz", "created_at": "2025-01-01T00:00:00Z"}
+    session["depth"] = 2
+    await sm.save_session(session)
+
+    # Clear cache so _find_session_owner_async has to hit filesystem
+    sm.clear_cache()
+
+    # Patch _find_session_owner_async to return None (simulating race)
+    original_find = sm._find_session_owner_async
+
+    async def mock_find_none(session_id):
+        # First call returns None (race), subsequent calls work
+        return None
+
+    msgs = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+    agent = _make_mock_agent(msgs)
+
+    with patch.object(sm, '_find_session_owner_async', side_effect=mock_find_none):
+        # Restore for the retry inside save_session
+        with patch.object(sm, '_find_session_owner_async', wraps=original_find):
+            pass  # We need a different approach
+
+    # Better: patch only the FIRST call
+    call_count = 0
+    async def mock_find_first_miss(session_id):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return None  # First call: miss
+        return await original_find(session_id)  # Retry: find it
+
+    with patch.object(sm, '_find_session_owner_async', side_effect=mock_find_first_miss):
+        result = await svc.save_session(
+            agent=agent,
+            user_id="user1",
+            session_id="sub_agent_race_001",
+            agent_name="v5b_moderator",
+            llm_profile="normal",
+            was_new_session=False,
+        )
+
+    assert result is True
+
+    # Verify parent_session was preserved
+    loaded = await sm.load_session("user1", "sub_agent_race_001")
+    assert loaded["parent_session"]["session_id"] == "parent_xyz"
+    assert loaded["depth"] == 2
+    assert len(loaded["messages"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_save_session_existing_preserves_parent(session_service_env):
+    """Normal path: session exists, load-update-save preserves parent_session."""
+    svc, sm = session_service_env
+
+    session = await sm.create_session(
+        user_id="user1",
+        session_id="sub_normal_001",
+        title="Sub-agent",
+        agent_name="v5b_moderator",
+        llm_profile="normal",
+    )
+    session["parent_session"] = {"session_id": "parent_abc"}
+    session["depth"] = 3
+    session["context_vars"] = {"book_id": "42"}
+    await sm.save_session(session)
+
+    msgs = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "done"}]
+    agent = _make_mock_agent(msgs)
+
+    result = await svc.save_session(
+        agent=agent,
+        user_id="user1",
+        session_id="sub_normal_001",
+        agent_name="v5b_moderator",
+        llm_profile="normal",
+        was_new_session=False,
+    )
+    assert result is True
+
+    loaded = await sm.load_session("user1", "sub_normal_001")
+    assert loaded["parent_session"]["session_id"] == "parent_abc"
+    assert loaded["depth"] == 3
+    assert loaded["context_vars"]["book_id"] == "42"
+    assert len(loaded["messages"]) == 2

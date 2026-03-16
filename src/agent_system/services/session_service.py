@@ -225,44 +225,54 @@ class SessionService:
             # Save or update session
             if not session_exists:
                 logger.debug(f"[SESSION] Creating new session {session_id} for user {actual_user_id}")
-                # Step 1: Create empty session
-                session_data = await self.session_manager.create_session(
-                    session_id=session_id,
-                    user_id=actual_user_id,
-                    title=title,
-                    agent_name=agent_name,
-                    llm_profile=llm_profile
-                )
-                # Step 2: Add messages
+                try:
+                    session_data = await self.session_manager.create_session(
+                        session_id=session_id,
+                        user_id=actual_user_id,
+                        title=title,
+                        agent_name=agent_name,
+                        llm_profile=llm_profile
+                    )
+                except ValueError as create_err:
+                    if "already exists" in str(create_err):
+                        # Race condition: _find_session_owner_async missed the file
+                        # but create_session found it. Fall through to update path.
+                        logger.debug(
+                            f"[SESSION] Session {session_id} exists after all (race), "
+                            f"falling back to update path"
+                        )
+                        actual_user_id = (
+                            await self.session_manager._find_session_owner_async(session_id)
+                            or user_id
+                        )
+                        session_exists = True
+                    else:
+                        raise
+
+            if session_exists:
+                # Load existing session, preserving parent_session, depth, context_vars, etc.
+                session_data = await self.session_manager.load_session(actual_user_id, session_id)
                 session_data["messages"] = messages_dicts
-                
-                # Step 3: Initialize context_vars from agent config defaults if not already set
-                # This ensures defaults (e.g., workflow_phase: "planning") are persisted
+                # Only update title if it's still the default auto-generated title
+                extracted_title = self._extract_session_title(messages_dicts)
+                if session_data.get("title") == extracted_title or not session_data.get("title"):
+                    session_data["title"] = extracted_title
+                # CRITICAL: Always update agent_name and llm_profile from current request
+                session_data["agent_name"] = agent_name
+                session_data["llm_profile"] = llm_profile
+            else:
+                # Truly new session (create_session succeeded above)
+                session_data["messages"] = messages_dicts
+
+                # Initialize context_vars from agent config defaults if not already set
                 if "context_vars" not in session_data or not session_data["context_vars"]:
                     if hasattr(agent, 'agent_config') and agent.agent_config:
                         if hasattr(agent.agent_config, 'template_vars') and agent.agent_config.template_vars:
                             session_data["context_vars"] = agent.agent_config.template_vars.copy()
                             logger.debug(f"[SESSION] Initialized context_vars from agent config: {list(session_data['context_vars'].keys())}")
-                
-                # Step 4: Save back
-                await self.session_manager.save_session(session_data)
-            else:
-                logger.debug(f"[SESSION] Updating existing session {session_id} (owner: {actual_user_id})")
-                # Load existing session with correct owner
-                session_data = await self.session_manager.load_session(actual_user_id, session_id)
-                # Update messages
-                session_data["messages"] = messages_dicts
-                # Only update title if it's still the default auto-generated title
-                # This preserves user-renamed session titles
-                extracted_title = self._extract_session_title(messages_dicts)
-                if session_data.get("title") == extracted_title or not session_data.get("title"):
-                    session_data["title"] = extracted_title
-                # CRITICAL: Always update agent_name and llm_profile from current request
-                # This ensures user-selected agent/llm overrides are persisted
-                session_data["agent_name"] = agent_name
-                session_data["llm_profile"] = llm_profile
-                # Save back
-                await self.session_manager.save_session(session_data)
+
+            # Save back
+            await self.session_manager.save_session(session_data)
 
             logger.debug(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
             return True

@@ -652,7 +652,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             # Verify parent link
             parent_link = sub_session_data.get("parent_session", {}).get("session_id")
             if parent_link != parent_session_id:
-                raise ValueError(f"Sub-agent '{instance_id}' does not belong to current session")
+                raise ValueError(
+                    f"Sub-agent '{instance_id}' does not belong to current session "
+                    f"(actual_parent={parent_link}, caller={parent_session_id})"
+                )
 
             # Get agent type from session data
             agent_type = sub_session_data.get("agent_name")
@@ -1024,10 +1027,17 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
                     parent_link = sub_session_data.get("parent_session", {}).get("session_id")
                     if parent_link != parent_session_id:
+                        logger.debug(
+                            "Delete ownership mismatch for %s: parent_link=%s, expected=%s",
+                            sub_id, parent_link, parent_session_id,
+                        )
                         results.append({
                             "instance_id": sub_id,
                             "status": "error",
-                            "error": f"Sub-agent '{sub_id}' does not belong to current session"
+                            "error": (
+                                f"Sub-agent '{sub_id}' does not belong to current session "
+                                f"(actual_parent={parent_link}, caller={parent_session_id})"
+                            ),
                         })
                         continue
 
@@ -1137,7 +1147,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             # Verify ownership
             parent_link = sub_session_data.get("parent_session", {}).get("session_id")
             if parent_link != parent_session_id:
-                raise ValueError(f"Sub-agent '{instance_id}' does not belong to current session")
+                raise ValueError(
+                    f"Sub-agent '{instance_id}' does not belong to current session "
+                    f"(actual_parent={parent_link}, caller={parent_session_id})"
+                )
 
             # Extract info
             messages = sub_session_data.get("messages", [])

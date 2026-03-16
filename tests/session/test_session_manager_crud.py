@@ -644,3 +644,72 @@ async def test_corrupt_session_file_handling(session_manager, temp_storage):
     
     with pytest.raises(ValueError, match="Corrupt session file"):
         await session_manager.load_session("user1", session["session_id"], bypass_cache=True)
+
+
+# ---------------------------------------------------------------------------
+# Cache-based session lookup (race condition prevention)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_session_owner_async_uses_cache(session_manager):
+    """_find_session_owner_async should find sessions via in-memory cache,
+    even if the filesystem scan would miss them (race prevention)."""
+    session = await session_manager.create_session(
+        user_id="user1",
+        session_id="cached_sid_001",
+        title="Cached"
+    )
+    # Session is in cache now. Remove the file on disk to prove cache lookup works.
+    user_dir = Path(session_manager.storage_path) / "user1"
+    session_file = user_dir / "cached_sid_001.json"
+    session_file.unlink()
+
+    owner = await session_manager._find_session_owner_async("cached_sid_001")
+    assert owner == "user1"
+
+
+@pytest.mark.asyncio
+async def test_find_session_owner_sync_uses_cache(session_manager):
+    """Sync variant should also consult the cache first."""
+    session = await session_manager.create_session(
+        user_id="user1",
+        session_id="cached_sid_002",
+        title="Cached"
+    )
+    user_dir = Path(session_manager.storage_path) / "user1"
+    (user_dir / "cached_sid_002.json").unlink()
+
+    owner = session_manager._find_session_owner("cached_sid_002")
+    assert owner == "user1"
+
+
+@pytest.mark.asyncio
+async def test_session_id_exists_globally_uses_cache(session_manager):
+    """_session_id_exists_globally should detect cached sessions."""
+    await session_manager.create_session(
+        user_id="user1",
+        session_id="cached_sid_003",
+        title="Cached"
+    )
+    user_dir = Path(session_manager.storage_path) / "user1"
+    (user_dir / "cached_sid_003.json").unlink()
+
+    assert session_manager._session_id_exists_globally("cached_sid_003") is True
+
+
+@pytest.mark.asyncio
+async def test_save_session_preserves_parent_session(session_manager):
+    """save_session must not strip parent_session (sub-agent metadata)."""
+    session = await session_manager.create_session(
+        user_id="user1",
+        session_id="sub_agent_001",
+        title="Sub-agent"
+    )
+    session["parent_session"] = {"session_id": "parent_001", "created_at": "2025-01-01T00:00:00Z"}
+    session["depth"] = 2
+    await session_manager.save_session(session)
+
+    loaded = await session_manager.load_session("user1", "sub_agent_001")
+    assert loaded["parent_session"]["session_id"] == "parent_001"
+    assert loaded["depth"] == 2

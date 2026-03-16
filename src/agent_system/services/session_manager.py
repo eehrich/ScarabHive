@@ -165,6 +165,12 @@ class SessionManager:
         Returns:
             True if session exists for any user, False otherwise
         """
+        # Check in-memory cache first (avoids filesystem race)
+        if session_id in self._cache:
+            cached_data, cached_time = self._cache[session_id]
+            if time.time() - cached_time < self._cache_ttl:
+                return True
+
         # Check all user directories for this session ID
         for user_dir in self.storage_path.iterdir():
             if user_dir.is_dir():
@@ -182,6 +188,13 @@ class SessionManager:
         Returns:
             user_id if session found, None otherwise
         """
+        # Check in-memory cache first (avoids filesystem race when session
+        # was just created by another coroutine in the same process).
+        if session_id in self._cache:
+            cached_data, cached_time = self._cache[session_id]
+            if time.time() - cached_time < self._cache_ttl:
+                return cached_data.get("user_id")
+
         for user_dir in self.storage_path.iterdir():
             if user_dir.is_dir():
                 session_file = user_dir / f"{session_id}.json"
@@ -208,6 +221,12 @@ class SessionManager:
         Returns:
             user_id if session found, None otherwise
         """
+        # Check in-memory cache first
+        if session_id in self._cache:
+            cached_data, cached_time = self._cache[session_id]
+            if time.time() - cached_time < self._cache_ttl:
+                return cached_data.get("user_id")
+
         for user_dir in self.storage_path.iterdir():
             if user_dir.is_dir():
                 session_file = user_dir / f"{session_id}.json"
