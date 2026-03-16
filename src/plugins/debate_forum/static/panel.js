@@ -158,10 +158,37 @@
         }
 
         const filteringByGroup = !!$filterGroup.value;
+
+        // When showing all groups: bucket by group, sort groups by newest
+        // channel, sort channels within group chronologically (oldest first).
+        let ordered = channels;
+        if (!filteringByGroup) {
+            const buckets = new Map(); // group_id → [channels]
+            for (const ch of channels) {
+                const gid = ch.group_id || 0;
+                if (!buckets.has(gid)) buckets.set(gid, []);
+                buckets.get(gid).push(ch);
+            }
+            // Sort channels within each group: oldest first (chronological)
+            for (const arr of buckets.values()) {
+                arr.sort((a, b) => (a.id || 0) - (b.id || 0));
+            }
+            // Sort groups: newest first (by highest channel id in group)
+            const sortedGroups = [...buckets.entries()].sort((a, b) => {
+                const maxA = Math.max(...a[1].map(c => c.id || 0));
+                const maxB = Math.max(...b[1].map(c => c.id || 0));
+                return maxB - maxA;
+            });
+            ordered = [];
+            for (const [, arr] of sortedGroups) {
+                ordered.push(...arr);
+            }
+        }
+
         let html = "";
         let lastGroupId = Symbol(); // unique sentinel
 
-        for (const ch of channels) {
+        for (const ch of ordered) {
             // Show group header when not already filtered to a single group
             if (!filteringByGroup && ch.group_id !== lastGroupId) {
                 const groupLabel = ch.group_id ? escapeHtml(getGroupName(ch.group_id)) : "Ungrouped";
