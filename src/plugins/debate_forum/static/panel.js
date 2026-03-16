@@ -414,6 +414,32 @@
             .join("");
     }
 
+    function renderVerdictValue(key, val) {
+        const label = key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        if (val === null || val === undefined) {
+            return `<li><strong>${escapeHtml(label)}:</strong> <em>—</em></li>`;
+        }
+        if (Array.isArray(val)) {
+            let h = `<li><strong>${escapeHtml(label)}:</strong><ul>`;
+            for (const item of val) {
+                if (typeof item === "object" && item !== null) {
+                    h += `<li>${escapeHtml(JSON.stringify(item, null, 2))}</li>`;
+                } else {
+                    h += `<li>${escapeHtml(String(item))}</li>`;
+                }
+            }
+            return h + `</ul></li>`;
+        }
+        if (typeof val === "object") {
+            let h = `<li><strong>${escapeHtml(label)}:</strong><ul>`;
+            for (const [k, v] of Object.entries(val)) {
+                h += renderVerdictValue(k, v);
+            }
+            return h + `</ul></li>`;
+        }
+        return `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(String(val))}</li>`;
+    }
+
     function renderVerdict(channel) {
         if (channel.status === "concluded" && (channel.verdict_summary || channel.verdict_json)) {
             $verdictBox.style.display = "block";
@@ -438,17 +464,7 @@
                 if (interestingKeys.length > 0) {
                     html += `<details class="verdict-details"><summary>Details</summary><ul>`;
                     for (const key of interestingKeys) {
-                        const val = vj[key];
-                        const label = key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-                        if (Array.isArray(val)) {
-                            html += `<li><strong>${escapeHtml(label)}:</strong><ul>`;
-                            for (const item of val) {
-                                html += `<li>${escapeHtml(String(item))}</li>`;
-                            }
-                            html += `</ul></li>`;
-                        } else {
-                            html += `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(String(val))}</li>`;
-                        }
+                        html += renderVerdictValue(key, vj[key]);
                     }
                     html += `</ul></details>`;
                 }
