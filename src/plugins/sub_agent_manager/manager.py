@@ -132,13 +132,23 @@ class SubAgentManager:
 
             # Create parent session with actual metadata from agent
             # This handles CLI/ephemeral sessions that haven't been saved yet
-            await session_manager.create_session(
-                user_id=user_id,
-                session_id=parent_session_id,
-                title="Coordinator Session",
-                agent_name=parent_agent_name,
-                llm_profile=parent_llm_profile
-            )
+            # Race condition guard: parallel sub-agent creates may all find
+            # the parent missing and try to create it simultaneously.  The
+            # first one wins; the rest just load the already-created session.
+            try:
+                await session_manager.create_session(
+                    user_id=user_id,
+                    session_id=parent_session_id,
+                    title="Coordinator Session",
+                    agent_name=parent_agent_name,
+                    llm_profile=parent_llm_profile
+                )
+            except ValueError as exc:
+                if "already exists" not in str(exc):
+                    raise
+                logger.debug(
+                    f"Parent session {parent_session_id} was created concurrently, loading it"
+                )
             parent_data = await session_manager.load_session(user_id, parent_session_id)
 
         # Check nesting depth
