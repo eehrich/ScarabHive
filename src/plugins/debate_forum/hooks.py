@@ -1,8 +1,9 @@
 """Debate Forum Plugin - Hook for injecting debate context into sub-agents.
 
 Two-tier injection strategy:
-- **Pinned messages + channel metadata** → ``role="system"`` (ephemeral, re-injected
-  fresh on every LLM call, not persisted in session).
+- **Pinned messages + channel metadata** → ``role="user"`` (ephemeral, re-injected
+  fresh on every LLM call, not persisted in session).  Injected as user messages
+  so that LLMs treat them with the same priority as conversation content.
 - **Unpinned forum posts** → ``role="user"`` (permanent, persisted in session).
   Only NEW messages since the last hook call are added (diff-based).
   Context optimiser plugins (context_engineer, context_summarizer) can compress
@@ -50,7 +51,7 @@ class DebateForumHooks(SchemaBasedPluginHook):
         """Inject debate forum context before LLM call.
 
         Two-tier injection:
-        1. Pinned messages + channel metadata → system message (ephemeral)
+        1. Pinned messages + channel metadata → user message (ephemeral)
         2. New forum posts since last call → user message (permanent)
         """
         logger.debug(
@@ -74,8 +75,8 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
             modified = False
 
-            # ── 1. Pinned + metadata → system injection (ephemeral) ───────
-            # Remove previous system injection
+            # ── 1. Pinned + metadata → user injection (ephemeral) ─────
+            # Remove previous ephemeral injection
             for i in range(len(context.messages) - 1, -1, -1):
                 if getattr(context.messages[i], "injected_by", None) == INJECTION_MARKER:
                     context.messages.pop(i)
@@ -85,11 +86,11 @@ class DebateForumHooks(SchemaBasedPluginHook):
                 pinned_text = self._format_pinned_context(
                     pinned_messages, channel_id, channel
                 )
-                insert_pos = self._find_insert_position(context.messages)
+                insert_pos = self._find_pinned_insert_position(context.messages)
                 context.messages.insert(
                     insert_pos,
                     ChatMessage(
-                        role="system",
+                        role="user",
                         content=pinned_text,
                         injected_by=INJECTION_MARKER,
                     ),
@@ -162,7 +163,7 @@ class DebateForumHooks(SchemaBasedPluginHook):
         channel_id: int,
         channel: dict[str, Any] | None = None,
     ) -> str:
-        """Format pinned messages and channel metadata for system injection."""
+        """Format pinned messages and channel metadata for user injection."""
         ch_name = channel.get("name", "") if channel else ""
         header = f"## Debate Forum – Channel #{channel_id}"
         if ch_name:
@@ -220,12 +221,27 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
     @staticmethod
     def _find_insert_position(messages: list) -> int:
-        """Find position after the first system message (for system injection)."""
+        """Find position after the first system message."""
         for i, msg in enumerate(messages):
             role = msg.role if hasattr(msg, "role") else msg.get("role", "")
             if role != "system":
                 return i
         return len(messages)
+
+    @staticmethod
+    def _find_pinned_insert_position(messages: list) -> int:
+        """Find position for pinned context: after system messages but before
+        the first user task message, so the agent always sees pinned context
+        before any debate posts."""
+        after_system = 0
+        for i, msg in enumerate(messages):
+            role = msg.role if hasattr(msg, "role") else msg.get("role", "")
+            if role != "system":
+                after_system = i
+                break
+        else:
+            after_system = len(messages)
+        return after_system
 
     @staticmethod
     def _find_last_user_position(messages: list) -> int:

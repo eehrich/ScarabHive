@@ -1,7 +1,7 @@
 """Debate Forum Plugin - Hook Tests.
 
 Tests cover:
-- inject_debate_context hook: two-tier injection (pinned→system, posts→user)
+- inject_debate_context hook: two-tier injection (pinned→user ephemeral, posts→user permanent)
 - Diff-based injection: only new messages since last call
 - Context var resolution
 - Edge cases (no channel, empty thread, missing vars)
@@ -122,7 +122,7 @@ class TestInjectDebateContext:
 
     @pytest.mark.asyncio
     async def test_channel_with_topic_injects_system(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Channel with topic but no messages should inject system metadata only."""
+        """Channel with topic but no messages should inject metadata as user message."""
         ch = db.create_channel(name="test", topic="Test debate")
         msgs = [_sys("system"), _user("hi")]
         ctx = _make_context(msgs, context_vars={"debate_channel_id": ch["channel_id"]})
@@ -132,7 +132,7 @@ class TestInjectDebateContext:
         assert result.modified
         assert len(result.context.messages) == 3
         injected = result.context.messages[1]
-        assert injected.role == "system"
+        assert injected.role == "user"
         assert injected.injected_by == INJECTION_MARKER
         assert "Test debate" in injected.content
 
@@ -150,12 +150,12 @@ class TestInjectDebateContext:
 
         assert result.success
         assert result.modified
-        # system, system(metadata), user(posts), user(original)
+        # system, user(metadata), user(posts), user(original)
         assert len(result.context.messages) == 4
 
-        # System injection (metadata only, no pinned)
+        # User injection (metadata, ephemeral)
         sys_injected = result.context.messages[1]
-        assert sys_injected.role == "system"
+        assert sys_injected.role == "user"
         assert sys_injected.injected_by == INJECTION_MARKER
         assert "Test debate" in sys_injected.content
 
@@ -236,7 +236,7 @@ class TestInjectDebateContext:
 
         assert result.modified
         messages = result.context.messages
-        # system, system(metadata), user1, assistant1, user(injected), user2
+        # system, user(metadata), user1, assistant1, user(injected), user2
         assert len(messages) == 6
         assert messages[0].role == "system"
         assert messages[1].injected_by == INJECTION_MARKER  # metadata
@@ -275,7 +275,7 @@ class TestInjectDebateContext:
 
     @pytest.mark.asyncio
     async def test_pinned_as_system_unpinned_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Pinned messages go to system injection, unpinned to user injection."""
+        """Pinned messages go to ephemeral user injection, unpinned to permanent user injection."""
         ch = db.create_channel(name="test", topic="Mixed test")
         cid = ch["channel_id"]
         r1 = db.post_message(cid, "Mod", "moderator", 0, "Pinned summary")
@@ -295,7 +295,7 @@ class TestInjectDebateContext:
         assert len(sys_injected) == 1
         assert len(user_injected) == 1
         assert "Pinned summary" in sys_injected[0].content
-        assert sys_injected[0].role == "system"
+        assert sys_injected[0].role == "user"
         assert "Normal argument" in user_injected[0].content
         assert user_injected[0].role == "user"
         # Pinned should NOT appear in user injection
