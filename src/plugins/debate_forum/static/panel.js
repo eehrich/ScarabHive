@@ -151,6 +151,21 @@
         return opt ? opt.textContent.replace(/\s*\(\d+\)$/, "") : `Group ${groupId}`;
     }
 
+    // ── Collapsed-groups state (persisted in localStorage) ──
+    const COLLAPSED_KEY = "debate_forum_collapsed_groups";
+    function loadCollapsed() {
+        try {
+            const raw = localStorage.getItem(COLLAPSED_KEY);
+            return raw ? new Set(JSON.parse(raw)) : null; // null = first visit
+        } catch { return null; }
+    }
+    function saveCollapsed(set) {
+        try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set])); } catch {}
+    }
+    let collapsedGroups = loadCollapsed(); // null until first render (default all collapsed)
+
+    const MAX_VISIBLE_GROUPS = 10; // hide oldest groups when more than this
+
     function renderChannelList() {
         if (channels.length === 0) {
             $channelList.innerHTML = '<div class="empty-state">No channels yet</div>';
@@ -159,60 +174,107 @@
 
         const filteringByGroup = !!$filterGroup.value;
 
-        // When showing all groups: bucket by group, sort groups by newest
-        // channel, sort channels within group chronologically (oldest first).
-        let ordered = channels;
-        if (!filteringByGroup) {
-            const buckets = new Map(); // group_id → [channels]
+        // When filtering by one group, render flat list (no headers)
+        if (filteringByGroup) {
+            let html = "";
             for (const ch of channels) {
-                const gid = ch.group_id || 0;
-                if (!buckets.has(gid)) buckets.set(gid, []);
-                buckets.get(gid).push(ch);
+                const isActive = ch.id === selectedChannelId;
+                const badge = ch.message_count
+                    ? `<span class="channel-msg-badge">${ch.message_count}</span>`
+                    : "";
+                html += `
+                <div class="channel-item${isActive ? " active" : ""}" data-id="${ch.id}">
+                    <span class="channel-status-icon">${statusIcon(ch.status)}</span>
+                    <span class="channel-name" title="${escapeHtml(ch.topic)}">${escapeHtml(ch.name)}</span>
+                    ${badge}
+                </div>`;
             }
-            // Sort channels within each group: oldest first (chronological)
-            for (const arr of buckets.values()) {
-                arr.sort((a, b) => (a.id || 0) - (b.id || 0));
-            }
-            // Sort groups: newest first (by highest channel id in group)
-            const sortedGroups = [...buckets.entries()].sort((a, b) => {
-                const maxA = Math.max(...a[1].map(c => c.id || 0));
-                const maxB = Math.max(...b[1].map(c => c.id || 0));
-                return maxB - maxA;
+            $channelList.innerHTML = html;
+            $channelList.querySelectorAll(".channel-item").forEach((el) => {
+                el.addEventListener("click", () => selectChannel(parseInt(el.dataset.id, 10)));
             });
-            ordered = [];
-            for (const [, arr] of sortedGroups) {
-                ordered.push(...arr);
+            return;
+        }
+
+        // Bucket channels by group
+        const buckets = new Map(); // group_id → [channels]
+        for (const ch of channels) {
+            const gid = ch.group_id || 0;
+            if (!buckets.has(gid)) buckets.set(gid, []);
+            buckets.get(gid).push(ch);
+        }
+        // Sort channels within each group: oldest first (chronological)
+        for (const arr of buckets.values()) {
+            arr.sort((a, b) => (a.id || 0) - (b.id || 0));
+        }
+        // Sort groups: newest first (by highest channel id in group)
+        const sortedGroups = [...buckets.entries()].sort((a, b) => {
+            const maxA = Math.max(...a[1].map(c => c.id || 0));
+            const maxB = Math.max(...b[1].map(c => c.id || 0));
+            return maxB - maxA;
+        });
+
+        // First render: default all collapsed
+        if (collapsedGroups === null) {
+            collapsedGroups = new Set(sortedGroups.map(([gid]) => String(gid)));
+            saveCollapsed(collapsedGroups);
+        }
+
+        // Limit visible groups — hide oldest entirely
+        const visibleGroups = sortedGroups.slice(0, MAX_VISIBLE_GROUPS);
+        const hiddenCount = sortedGroups.length - visibleGroups.length;
+
+        let html = "";
+        for (const [gid, arr] of visibleGroups) {
+            const gidStr = String(gid);
+            const collapsed = collapsedGroups.has(gidStr);
+            const groupLabel = gid ? escapeHtml(getGroupName(gid)) : "Ungrouped";
+            const chevron = collapsed ? "▸" : "▾";
+            const chCount = arr.length;
+            html += `<div class="channel-group-header" data-gid="${gidStr}" title="${groupLabel}">`
+                + `<span class="group-chevron">${chevron}</span> `
+                + `<span class="group-label">${groupLabel}</span>`
+                + `<span class="group-count">${chCount}</span>`
+                + `</div>`;
+
+            if (!collapsed) {
+                for (const ch of arr) {
+                    const isActive = ch.id === selectedChannelId;
+                    const badge = ch.message_count
+                        ? `<span class="channel-msg-badge">${ch.message_count}</span>`
+                        : "";
+                    html += `
+                    <div class="channel-item${isActive ? " active" : ""}" data-id="${ch.id}">
+                        <span class="channel-status-icon">${statusIcon(ch.status)}</span>
+                        <span class="channel-name" title="${escapeHtml(ch.topic)}">${escapeHtml(ch.name)}</span>
+                        ${badge}
+                    </div>`;
+                }
             }
         }
 
-        let html = "";
-        let lastGroupId = Symbol(); // unique sentinel
-
-        for (const ch of ordered) {
-            // Show group header when not already filtered to a single group
-            if (!filteringByGroup && ch.group_id !== lastGroupId) {
-                const groupLabel = ch.group_id ? escapeHtml(getGroupName(ch.group_id)) : "Ungrouped";
-                html += `<div class="channel-group-header">${groupLabel}</div>`;
-                lastGroupId = ch.group_id;
-            }
-
-            const isActive = ch.id === selectedChannelId;
-            const badge = ch.message_count
-                ? `<span class="channel-msg-badge">${ch.message_count}</span>`
-                : "";
-            html += `
-            <div class="channel-item${isActive ? " active" : ""}" data-id="${ch.id}">
-                <span class="channel-status-icon">${statusIcon(ch.status)}</span>
-                <span class="channel-name" title="${escapeHtml(ch.topic)}">${escapeHtml(ch.name)}</span>
-                ${badge}
-            </div>`;
+        if (hiddenCount > 0) {
+            html += `<div class="channel-group-overflow">${hiddenCount} older group${hiddenCount > 1 ? "s" : ""} hidden — use group filter</div>`;
         }
 
         $channelList.innerHTML = html;
 
-        // Attach click handlers
+        // Click handlers: channels
         $channelList.querySelectorAll(".channel-item").forEach((el) => {
             el.addEventListener("click", () => selectChannel(parseInt(el.dataset.id, 10)));
+        });
+        // Click handlers: group headers toggle collapse
+        $channelList.querySelectorAll(".channel-group-header").forEach((el) => {
+            el.addEventListener("click", () => {
+                const gid = el.getAttribute("data-gid");
+                if (collapsedGroups.has(gid)) {
+                    collapsedGroups.delete(gid);
+                } else {
+                    collapsedGroups.add(gid);
+                }
+                saveCollapsed(collapsedGroups);
+                renderChannelList();
+            });
         });
     }
 
