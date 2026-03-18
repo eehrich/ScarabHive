@@ -11,7 +11,7 @@ plugins:
       agent_config:
         llm_profile: [or-gemini-flash]
         llm_profile_fallbacks: [gemini-flash]
-        max_steps: 50
+        max_steps: 30
 
         system_template: "config/agents/prompts/debate_panel_participant_prompt.md"
         tools:
