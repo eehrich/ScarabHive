@@ -62,7 +62,7 @@ plugins:
         llm_profile_fallbacks: [chat]
         max_steps: 500
 
-        system_template: "config/agents/prompts/debate_panel_moderator_prompt.md"
+        system_template: "./prompts/debate_panel_moderator_prompt.md"
 
         tools:
           allowed:

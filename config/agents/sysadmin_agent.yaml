@@ -78,7 +78,7 @@ plugins:
       agent_config:
         llm_profile: normal
         max_steps: 100
-        system_template: "config/agents/prompts/system_admin_prompt.yaml"
+        system_template: "./prompts/system_admin_prompt.yaml"
 
         tools:
           allowed:

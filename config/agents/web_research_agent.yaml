@@ -43,7 +43,7 @@ plugins:
         agent_config:
           llm_profile: normal
           max_steps: 10
-          system_template: "config/agents/prompts/meta_web_research_agent.yaml"
+          system_template: "./prompts/meta_web_research_agent.yaml"
 
           hooks:
             enabled: true

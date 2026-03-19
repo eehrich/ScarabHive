@@ -44,6 +44,33 @@ def deep_merge(base: dict, overlay: dict) -> dict:
     return result
 
 
+def _resolve_relative_paths(data: dict, base_dir: Path) -> dict:
+    """Resolve relative paths (starting with ./) in agent config values.
+
+    Walks the config tree and resolves ``system_template`` values that
+    start with ``./`` relative to *base_dir* (the directory of the YAML
+    file that declared them).  This allows agent configs co-located with
+    plugins to use ``system_template: ./prompts/foo.md`` instead of
+    hard-coding a project-relative path.
+    """
+    PATH_KEYS = {"system_template"}
+
+    def _walk(obj: object) -> object:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key in PATH_KEYS and isinstance(value, str) and (value.startswith("./") or value.startswith("../")):
+                    resolved = str((base_dir / value).resolve())
+                    obj[key] = resolved
+                else:
+                    _walk(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+        return obj
+
+    return _walk(data)  # type: ignore[return-value]
+
+
 def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     """Load and return an `AgentSystemConfig` using environment variables and
     optional YAML config file. Environment variables take precedence for
@@ -122,6 +149,9 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                 try:
                     part = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
                     logger.debug(f"Loaded included config: {inc_path.name}")
+                    
+                    # Resolve relative paths (./prompts/...) relative to include file dir
+                    _resolve_relative_paths(part, inc_path.parent)
                     
                     # Merge based on included file structure
                     # Deep merge llm_system to allow multiple files to contribute models/profiles

@@ -13,7 +13,7 @@ plugins:
       agent_config:
         llm_profile: normal
         max_steps: 15
-        system_template: "config/agents/prompts/coding_agent_prompt.md"
+        system_template: "./prompts/coding_agent_prompt.md"
         
         tools:
           allowed:

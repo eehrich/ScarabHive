@@ -14,7 +14,7 @@ includes:
   - mcp_servers.yaml
   - mcp_server_mode.yaml
   - agents/*.yaml
-  - agents_writer/*.yaml
+  - ../src/plugins_writer/*/agents/*.yaml
   - agents_trading/*.yaml
   - agents_priv/*.yaml
 

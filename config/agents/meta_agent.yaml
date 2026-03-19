@@ -9,7 +9,7 @@ plugins:
         llm_profile: normal
         max_steps: 50
 
-        system_template: "config/agents/prompts/meta_agent_prompt.yaml"
+        system_template: "./prompts/meta_agent_prompt.yaml"
 
         tools:
           allowed:

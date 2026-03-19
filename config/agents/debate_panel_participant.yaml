@@ -13,7 +13,7 @@ plugins:
         llm_profile_fallbacks: [gemini-flash]
         max_steps: 30
 
-        system_template: "config/agents/prompts/debate_panel_participant_prompt.md"
+        system_template: "./prompts/debate_panel_participant_prompt.md"
         tools:
           allowed:
             # active for all writer agents, derived agents needs to add own tools it with +

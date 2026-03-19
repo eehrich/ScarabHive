@@ -9,7 +9,7 @@ plugins:
       agent_config:
         llm_profile: normal
         max_steps: 200
-        system_template: "config/agents/prompts/file_ops_test_prompt.yaml"
+        system_template: "./prompts/file_ops_test_prompt.yaml"
         
         tools:
           allowed:
