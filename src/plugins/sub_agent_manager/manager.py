@@ -50,7 +50,8 @@ class SubAgentManager:
         registry: MCPRegistry, 
         max_nesting_depth: int = 5,
         max_sub_agents_per_type: int = 3,
-        max_sub_agents_per_session: int = 10
+        max_sub_agents_per_session: int = 10,
+        auto_archive_on_limit: bool = False
     ):
         """Initialize SubAgentManager.
 
@@ -60,12 +61,15 @@ class SubAgentManager:
             max_nesting_depth: Maximum recursion depth for nested sub-agents
             max_sub_agents_per_type: Maximum number of active sub-agents per type per session
             max_sub_agents_per_session: Maximum total number of active sub-agents per session
+            auto_archive_on_limit: If True, automatically archive the oldest sub-agent when
+                a limit is reached instead of returning limit_reached error.
         """
         self._session_service = session_service
         self._registry = registry
         self.max_nesting_depth = max_nesting_depth
         self.max_sub_agents_per_type = max_sub_agents_per_type
         self.max_sub_agents_per_session = max_sub_agents_per_session
+        self.auto_archive_on_limit = auto_archive_on_limit
         
         # Activity update tracking: only save when activity actually changes
         # to avoid excessive session saves during streaming
@@ -75,7 +79,8 @@ class SubAgentManager:
             f"SubAgentManager initialized ("
             f"max_nesting_depth={max_nesting_depth}, "
             f"max_sub_agents_per_type={max_sub_agents_per_type}, "
-            f"max_sub_agents_per_session={max_sub_agents_per_session})"
+            f"max_sub_agents_per_session={max_sub_agents_per_session}, "
+            f"auto_archive_on_limit={auto_archive_on_limit})"
         )
 
     async def create_sub_session(
@@ -170,11 +175,20 @@ class SubAgentManager:
         
         # Check total session limit
         if len(active_sub_agents) >= self.max_sub_agents_per_session:
-            raise ValueError(
-                f"Maximum number of active sub-agents per session "
-                f"({self.max_sub_agents_per_session}) reached. "
-                f"Active sub-agents: {len(active_sub_agents)}"
-            )
+            if self.auto_archive_on_limit:
+                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_sub_agents)
+                await self._archive_sub_agent(parent_session_id, oldest_id)
+                active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
+                logger.info(
+                    f"Auto-archived sub-agent {oldest_id} (session limit) "
+                    f"to make room in parent {parent_session_id}"
+                )
+            else:
+                raise ValueError(
+                    f"Maximum number of active sub-agents per session "
+                    f"({self.max_sub_agents_per_session}) reached. "
+                    f"Active sub-agents: {len(active_sub_agents)}"
+                )
         
         # Check per-type limit
         active_agents_of_type = [
@@ -183,11 +197,21 @@ class SubAgentManager:
         ]
         
         if len(active_agents_of_type) >= self.max_sub_agents_per_type:
-            raise ValueError(
-                f"Maximum number of active sub-agents of type '{agent_type}' "
-                f"({self.max_sub_agents_per_type}) reached. "
-                f"Active sub-agents: {active_agents_of_type}"
-            )
+            if self.auto_archive_on_limit:
+                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_agents_of_type)
+                await self._archive_sub_agent(parent_session_id, oldest_id)
+                active_agents_of_type = [sid for sid in active_agents_of_type if sid != oldest_id]
+                active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
+                logger.info(
+                    f"Auto-archived sub-agent {oldest_id} (type limit: {agent_type}) "
+                    f"to make room in parent {parent_session_id}"
+                )
+            else:
+                raise ValueError(
+                    f"Maximum number of active sub-agents of type '{agent_type}' "
+                    f"({self.max_sub_agents_per_type}) reached. "
+                    f"Active sub-agents: {active_agents_of_type}"
+                )
 
         # Generate unique instance ID (short format)
         sub_session_id = await self._generate_instance_id(agent_type, instance_label)
@@ -430,6 +454,38 @@ class SubAgentManager:
             activity_updated_at=datetime.now(UTC).isoformat() if activity else None
         )
         logger.debug(f"Updated activity for {sub_session_id}: {activity}")
+
+    def _find_oldest_sub_agent(self, sub_agents: dict, candidate_ids: list[str]) -> str:
+        """Find the oldest sub-agent by created_at timestamp.
+
+        Args:
+            sub_agents: Dict of sub-agent metadata keyed by instance_id
+            candidate_ids: IDs to search within
+
+        Returns:
+            Instance ID of the oldest sub-agent
+        """
+        candidates = [
+            (sid, sub_agents[sid].get("created_at", ""))
+            for sid in candidate_ids
+        ]
+        candidates.sort(key=lambda x: x[1])  # ascending = oldest first
+        return candidates[0][0]
+
+    async def _archive_sub_agent(self, parent_session_id: str, sub_session_id: str) -> None:
+        """Archive a sub-agent by setting its status to 'archived' in parent metadata.
+
+        Args:
+            parent_session_id: Parent session ID
+            sub_session_id: Sub-agent instance ID to archive
+        """
+        await self.update_sub_session_metadata(
+            parent_session_id=parent_session_id,
+            sub_session_id=sub_session_id,
+            status="archived",
+            archived_at=datetime.now(UTC).isoformat()
+        )
+        logger.debug(f"Archived sub-agent {sub_session_id} in parent {parent_session_id}")
 
     async def _generate_instance_id(
         self,

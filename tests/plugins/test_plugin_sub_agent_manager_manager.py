@@ -405,3 +405,196 @@ async def test_create_sub_session_enforces_max_per_session_limit(mock_session_se
             agent_type="data_analyst",
             initial_message="Fourth agent task"
         )
+
+
+# ---------------------------------------------------------------------------
+# Auto-archive tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auto_archive_on_per_type_limit(mock_session_service, mock_registry):
+    """When auto_archive_on_limit=True and per-type limit hit, oldest sub-agent is archived."""
+    manager = SubAgentManager(
+        mock_session_service, mock_registry,
+        max_nesting_depth=5, max_sub_agents_per_type=2,
+        auto_archive_on_limit=True
+    )
+
+    older_ts = "2026-01-01T10:00:00+00:00"
+    newer_ts = "2026-01-01T11:00:00+00:00"
+
+    parent_data = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_research_001": {
+                    "agent_type": "web_research",
+                    "status": "active",
+                    "created_at": older_ts,
+                },
+                "sub_research_002": {
+                    "agent_type": "web_research",
+                    "status": "active",
+                    "created_at": newer_ts,
+                },
+            }
+        },
+    }
+    mock_session_service.session_manager.load_session = AsyncMock(return_value=parent_data)
+
+    mock_agent = MagicMock()
+    mock_agent.agent_config.default_llm_profile = "gpt-4"
+    mock_registry.get = MagicMock(return_value=mock_agent)
+
+    result = await manager.create_sub_session(
+        parent_session_id="parent123",
+        agent_type="web_research",
+        initial_message="Third task",
+    )
+
+    # Should succeed and return a valid ID
+    assert result.startswith("sub_web_research_")
+
+    # update_session_metadata must have been called to archive the oldest sub-agent
+    calls = mock_session_service.session_manager.update_session_metadata.call_args_list
+    archive_calls = [
+        c for c in calls
+        if "sub_research_001" in str(c) and "archived" in str(c)
+    ]
+    assert len(archive_calls) >= 1, "Oldest sub-agent (sub_research_001) should have been archived"
+
+
+@pytest.mark.asyncio
+async def test_auto_archive_archives_oldest_not_newest(mock_session_service, mock_registry):
+    """Auto-archive picks the oldest sub-agent (smallest created_at), not the newest."""
+    manager = SubAgentManager(
+        mock_session_service, mock_registry,
+        max_nesting_depth=5, max_sub_agents_per_type=2,
+        auto_archive_on_limit=True
+    )
+
+    parent_data = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_research_newest": {
+                    "agent_type": "web_research",
+                    "status": "active",
+                    "created_at": "2026-06-01T12:00:00+00:00",
+                },
+                "sub_research_oldest": {
+                    "agent_type": "web_research",
+                    "status": "active",
+                    "created_at": "2026-01-01T08:00:00+00:00",
+                },
+            }
+        },
+    }
+    mock_session_service.session_manager.load_session = AsyncMock(return_value=parent_data)
+
+    mock_agent = MagicMock()
+    mock_agent.agent_config.default_llm_profile = "gpt-4"
+    mock_registry.get = MagicMock(return_value=mock_agent)
+
+    await manager.create_sub_session(
+        parent_session_id="parent123",
+        agent_type="web_research",
+        initial_message="New task",
+    )
+
+    calls = mock_session_service.session_manager.update_session_metadata.call_args_list
+    # sub_research_oldest should be archived, not sub_research_newest
+    oldest_archived = any(
+        "sub_research_oldest" in str(c) and "archived" in str(c) for c in calls
+    )
+    newest_archived = any(
+        "sub_research_newest" in str(c) and "archived" in str(c) for c in calls
+    )
+    assert oldest_archived, "Oldest sub-agent should be archived"
+    assert not newest_archived, "Newest sub-agent should NOT be archived"
+
+
+@pytest.mark.asyncio
+async def test_auto_archive_on_session_limit(mock_session_service, mock_registry):
+    """When auto_archive_on_limit=True and session limit hit, oldest sub-agent is archived."""
+    manager = SubAgentManager(
+        mock_session_service, mock_registry,
+        max_nesting_depth=5, max_sub_agents_per_type=10,
+        max_sub_agents_per_session=3,
+        auto_archive_on_limit=True
+    )
+
+    parent_data = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_type_a_001": {
+                    "agent_type": "type_a",
+                    "status": "active",
+                    "created_at": "2026-01-01T09:00:00+00:00",
+                },
+                "sub_type_b_001": {
+                    "agent_type": "type_b",
+                    "status": "active",
+                    "created_at": "2026-01-01T10:00:00+00:00",
+                },
+                "sub_type_c_001": {
+                    "agent_type": "type_c",
+                    "status": "active",
+                    "created_at": "2026-01-01T11:00:00+00:00",
+                },
+            }
+        },
+    }
+    mock_session_service.session_manager.load_session = AsyncMock(return_value=parent_data)
+
+    mock_agent = MagicMock()
+    mock_agent.agent_config.default_llm_profile = "gpt-4"
+    mock_registry.get = MagicMock(return_value=mock_agent)
+
+    result = await manager.create_sub_session(
+        parent_session_id="parent123",
+        agent_type="type_d",
+        initial_message="Fourth task",
+    )
+
+    assert result.startswith("sub_type_d_")
+
+    calls = mock_session_service.session_manager.update_session_metadata.call_args_list
+    # Oldest overall (sub_type_a_001) should be archived
+    oldest_archived = any(
+        "sub_type_a_001" in str(c) and "archived" in str(c) for c in calls
+    )
+    assert oldest_archived, "Oldest session sub-agent should be archived on session limit"
+
+
+@pytest.mark.asyncio
+async def test_auto_archive_disabled_still_raises(mock_session_service, mock_registry):
+    """When auto_archive_on_limit=False (default), limit still raises ValueError."""
+    manager = SubAgentManager(
+        mock_session_service, mock_registry,
+        max_nesting_depth=5, max_sub_agents_per_type=2,
+        auto_archive_on_limit=False
+    )
+
+    parent_data = {
+        "session_id": "parent123",
+        "depth": 1,
+        "metadata": {
+            "sub_agents": {
+                "sub_research_001": {"agent_type": "web_research", "status": "active", "created_at": "2026-01-01T10:00:00+00:00"},
+                "sub_research_002": {"agent_type": "web_research", "status": "active", "created_at": "2026-01-01T11:00:00+00:00"},
+            }
+        },
+    }
+    mock_session_service.session_manager.load_session = AsyncMock(return_value=parent_data)
+
+    with pytest.raises(ValueError, match="Maximum number of active sub-agents of type 'web_research'"):
+        await manager.create_sub_session(
+            parent_session_id="parent123",
+            agent_type="web_research",
+            initial_message="Third task",
+        )

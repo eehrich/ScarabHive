@@ -68,6 +68,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
         self.max_sub_agents_per_type = int(getattr(mcp_config, 'max_sub_agents_per_type', 3))
         
+        # Auto-archive oldest sub-agent when limit is reached
+        self.auto_archive_on_limit = bool(getattr(mcp_config, 'auto_archive_on_limit', False))
+
         # Timeout configuration
         self.default_wait_timeout = int(getattr(mcp_config, 'default_wait_timeout', 3600))  # Default 1 hour
 
@@ -231,7 +234,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             registry, 
             self.max_nesting_depth,
             self.max_sub_agents_per_type,
-            self.max_sub_agents
+            self.max_sub_agents,
+            auto_archive_on_limit=self.auto_archive_on_limit
         )
 
     def _extract_registry(self, params: dict[str, Any]):

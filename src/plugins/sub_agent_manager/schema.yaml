@@ -164,6 +164,7 @@ config:
   max_message_history: 100
   max_sub_agents_per_type: 3
   default_wait_timeout: 3600  # Default timeout in seconds for wait/wait_all operations (1 hour)
+  auto_archive_on_limit: false  # If true, auto-archive oldest sub-agent when limit is reached
   allowed_agents:
     - basic_agent
     - web_research_agent

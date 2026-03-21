@@ -648,6 +648,8 @@ plugins:
       enabled: true
       max_nesting_depth: 5
       max_sub_agents_per_type: 6
+      auto_archive_on_limit: true 
+
       allowed_agents:
         - financial_analyst_agent
         - code_reviewer_agent
