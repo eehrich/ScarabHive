@@ -121,12 +121,26 @@ body {
 /* ── Channel Sidebar ───────────────────────── */
 .channel-sidebar {
     width: 240px;
-    min-width: 200px;
+    min-width: 140px;
+    max-width: 500px;
     background: var(--bg-sidebar);
-    border-right: 1px solid var(--border);
+    border-right: none;
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+}
+
+/* ── Sidebar Splitter ──────────────────────── */
+.sidebar-splitter {
+    width: 4px;
+    cursor: col-resize;
+    background: var(--border);
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+.sidebar-splitter:hover,
+.sidebar-splitter.dragging {
+    background: var(--accent, #007acc);
 }
 
 .sidebar-header {
@@ -266,6 +280,7 @@ body {
 }
 .chat-header-info { display: flex; flex-direction: column; gap: 2px; }
 .chat-channel-name { font-weight: 600; font-size: 14px; }
+.chat-channel-id { font-size: 11px; color: var(--text-muted); font-weight: 400; margin-left: 6px; }
 .chat-channel-topic { font-size: 11px; color: var(--text-muted); }
 .chat-header-actions {
     display: flex;

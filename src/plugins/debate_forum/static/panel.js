@@ -293,7 +293,7 @@
             ]);
 
             currentChannel = chData;
-            $chatChannelName.textContent = chData.name;
+            $chatChannelName.textContent = chData.name + "  #" + chData.id;
             $chatChannelTopic.textContent = chData.topic;
             $chatMsgCount.textContent = (msgData.count || 0) + " messages";
 
@@ -770,6 +770,33 @@
         clearTimeout(searchTimeout);
         searchTimeout = setTimeout(loadChannels, 300);
     });
+
+    // ── Sidebar Splitter ───────────────────────────────────────
+    const $splitter = document.getElementById("sidebar-splitter");
+    const $sidebar = document.getElementById("channel-sidebar");
+    if ($splitter && $sidebar) {
+        let dragging = false;
+        $splitter.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            dragging = true;
+            $splitter.classList.add("dragging");
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+        });
+        document.addEventListener("mousemove", (e) => {
+            if (!dragging) return;
+            const rect = $sidebar.parentElement.getBoundingClientRect();
+            const newWidth = Math.min(Math.max(e.clientX - rect.left, 140), 500);
+            $sidebar.style.width = newWidth + "px";
+        });
+        document.addEventListener("mouseup", () => {
+            if (!dragging) return;
+            dragging = false;
+            $splitter.classList.remove("dragging");
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+        });
+    }
 
     // ── Init ──────────────────────────────────────────────────
     loadGroups().then(() => refresh().then(() => startPolling()));
