@@ -132,7 +132,9 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 context_window=context_window,
                 capabilities=capabilities,
                 parallel_tool_calls=parallel_tool_calls,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                thinking_level=thinking_level,
+                thinking_budget=thinking_budget,
             )
         else:
             # Build default_extra dict for additional parameters

@@ -78,6 +78,11 @@ class HTTPXOpenAIClient(LLMClient):
         self.parallel_tool_calls = parallel_tool_calls
         self.max_tokens = max_tokens  # Limit output tokens (None = provider default)
         self.extra_params = extra_params
+
+        # Thinking/reasoning params — pop from extra_params to avoid raw injection
+        self.thinking_level: str | None = self.extra_params.pop("thinking_level", None)
+        self.thinking_budget: int | None = self.extra_params.pop("thinking_budget", None)
+
         self.capabilities = capabilities or {}
         self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
         
@@ -289,6 +294,31 @@ class HTTPXOpenAIClient(LLMClient):
             for msg in message_dicts:
                 msg.pop("reasoning_content", None)
 
+    def _build_reasoning_param(self) -> dict | None:
+        """Build the ``reasoning`` parameter for providers that support it.
+
+        OpenRouter (and the OpenAI o-series API) accept::
+
+            "reasoning": {"effort": "high"}
+
+        Maps ``thinking_level`` (from config) → ``effort`` value.
+        ``thinking_budget`` is passed as ``max_tokens`` inside ``reasoning``
+        when set (provider support varies).
+
+        Returns:
+            Dict suitable for ``payload["reasoning"]``, or *None* if no
+            thinking parameters are configured.
+        """
+        if not self.thinking_level and not self.thinking_budget:
+            return None
+
+        reasoning: dict[str, Any] = {}
+        if self.thinking_level:
+            reasoning["effort"] = self.thinking_level
+        if self.thinking_budget:
+            reasoning["max_tokens"] = self.thinking_budget
+        return reasoning
+
     def _filter_audio_from_content(self, content: Any) -> Any:
         """Filter and normalize content for OpenAI API.
         
@@ -464,6 +494,11 @@ class HTTPXOpenAIClient(LLMClient):
         # OpenRouter: request detailed usage (cached_tokens, cost)
         if self._is_openrouter:
             payload["usage"] = {"include": True}
+
+        # Thinking/reasoning config for thinking models (OpenRouter, DeepSeek, etc.)
+        reasoning = self._build_reasoning_param()
+        if reasoning:
+            payload["reasoning"] = reasoning
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -682,6 +717,11 @@ class HTTPXOpenAIClient(LLMClient):
         # OpenRouter: request detailed usage (cached_tokens, cost)
         if self._is_openrouter:
             payload["usage"] = {"include": True}
+
+        # Thinking/reasoning config for thinking models (OpenRouter, DeepSeek, etc.)
+        reasoning = self._build_reasoning_param()
+        if reasoning:
+            payload["reasoning"] = reasoning
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1118,6 +1158,11 @@ class HTTPXOpenAIClient(LLMClient):
             "messages": message_dicts,
             **self.extra_params
         }
+
+        # Thinking/reasoning config for thinking models (OpenRouter, DeepSeek, etc.)
+        reasoning = self._build_reasoning_param()
+        if reasoning:
+            payload["reasoning"] = reasoning
 
         if tools:
             if self._is_gemini_via_openrouter:
