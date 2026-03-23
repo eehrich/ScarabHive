@@ -41,6 +41,22 @@ llm_system:
         json_mode: true
         multimodal: true  # Native image/audio/video processing
 
+    openrouter-gemini-3-flash-minimal:
+      provider: openai_httpx
+      model: google/gemini-3-flash-preview
+      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000  # 1M token context, but limited here for performance
+      request_timeout: 240
+      thinking_level: minimal
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true  # Native image/audio/video processing
+
       # Notes:
       # - Fast and cost-effective thinking model
       # - Optimized for agentic workflows, multi-turn chat, coding
@@ -123,6 +139,11 @@ llm_system:
       model_ref: openrouter-gemini-3-flash
       description: "OpenRouter Gemini 3 Flash - Fast with audio/video support"
       max_steps: 500
+
+    or-gemini-flash-minimal:
+      model_ref: openrouter-gemini-3-flash-minimal
+      description: "OpenRouter Gemini 3 Flash - Minimal thinking level"
+      max_steps: 500      
 
     or-gemini-flash-unlimited:
       model_ref: openrouter-gemini-3-flash-unlimited
