@@ -45,6 +45,7 @@ def server(db: DebateForumDB, mock_system_config: MagicMock, mock_mcp_config: Ma
     srv.system_config = mock_system_config
     srv.mcp_config = mock_mcp_config
     srv.db = db
+    srv.min_message_length = 50
     return srv
 
 
@@ -263,7 +264,7 @@ class TestDebateForumServer:
             "agent_name": "Mira",
             "agent_role": "advocate",
             "round": 1,
-            "content": "First argument.",
+            "content": "First argument in favor of Synopsis A with strong character arcs.",
             "_status": status_mock,
         })
         assert result["status"] == "posted"
@@ -276,7 +277,7 @@ class TestDebateForumServer:
             "agent_name": "A",
             "agent_role": "r",
             "round": 1,
-            "content": "test",
+            "content": "This is a test message long enough to pass the minimum length filter.",
         })
         assert "error" in result
         assert "not found" in result["error"]
@@ -290,10 +291,23 @@ class TestDebateForumServer:
             "agent_name": "A",
             "agent_role": "r",
             "round": 1,
-            "content": "too late",
+            "content": "This message arrives too late after the channel has been concluded.",
         })
         assert "error" in result
         assert "concluded" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_post_message_too_short(self, server: DebateForumServer):
+        ch = await server.create_channel({"name": "ch", "topic": "t"})
+        result = await server.post_message({
+            "channel_id": ch["channel_id"],
+            "agent_name": "A",
+            "agent_role": "r",
+            "round": 1,
+            "content": "Hallo Sven",
+        })
+        assert "error" in result
+        assert "too short" in result["error"]
 
     @pytest.mark.asyncio
     async def test_get_thread_text(self, server: DebateForumServer):
@@ -303,7 +317,7 @@ class TestDebateForumServer:
             "agent_name": "Mira",
             "agent_role": "advocate",
             "round": 1,
-            "content": "Approach A is best.",
+            "content": "Approach A is by far the best option given the current constraints and goals.",
         })
         result = await server.get_thread({"channel_id": ch["channel_id"]})
         assert "thread" in result
@@ -318,7 +332,7 @@ class TestDebateForumServer:
             "agent_name": "A",
             "agent_role": "r",
             "round": 1,
-            "content": "msg",
+            "content": "This is a test message with enough content for the JSON thread format.",
         })
         result = await server.get_thread({
             "channel_id": ch["channel_id"],
@@ -388,14 +402,14 @@ class TestDebateForumServer:
             "agent_name": "Mira",
             "agent_role": "advocate",
             "round": 1,
-            "content": "Synopsis A has the strongest character arc.",
+            "content": "Synopsis A has the strongest character arc with deep emotional development.",
         })
         await server.post_message({
             "channel_id": cid,
             "agent_name": "Sven",
             "agent_role": "critic",
             "round": 1,
-            "content": "Synopsis A's pacing is inconsistent in act 2.",
+            "content": "Synopsis A's pacing is inconsistent in act 2, breaks dramatic tension.",
         })
 
         # Round 2: rebuttal

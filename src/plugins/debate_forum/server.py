@@ -31,9 +31,11 @@ class DebateForumServer(SchemaBasedMCPServer):
         system_config: "AgentSystemConfig",
         mcp_config: "MCPServerConfig",
         db: DebateForumDB,
+        min_message_length: int = 50,
     ):
         super().__init__(name, system_config, mcp_config)
         self.db = db
+        self.min_message_length = min_message_length
 
     # ── Tool: create_group ────────────────────────────────────
 
@@ -100,6 +102,13 @@ class DebateForumServer(SchemaBasedMCPServer):
             return {"error": f"Channel {channel_id} not found"}
         if channel["status"] != "active":
             return {"error": f"Channel {channel_id} is {channel['status']}, cannot post"}
+
+        # Filter truncated/retry artifacts (e.g. "Hallo Sven", "Sven")
+        if self.min_message_length > 0 and len(content.strip()) < self.min_message_length:
+            return {
+                "error": f"Message too short ({len(content.strip())} chars, min {self.min_message_length}). "
+                         f"Likely a truncated API response. Please provide full message."
+            }
 
         status = params.get("_status")
         if status:

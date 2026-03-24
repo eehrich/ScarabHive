@@ -53,7 +53,10 @@ class DebateForumHybridPlugin:
         self._db = DebateForumDB(db_path)
 
         # Create MCP server (provides tools)
-        self.server = DebateForumServer(name, system_config, mcp_config, db=self._db)
+        self.server = DebateForumServer(
+            name, system_config, mcp_config, db=self._db,
+            min_message_length=config.get("min_message_length", 50),
+        )
 
         # Create web factory (provides REST API + HTML panel)
         self.web_factory = DebateForumWebFactory(
