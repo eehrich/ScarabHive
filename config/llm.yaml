@@ -179,7 +179,7 @@ llm_system:
       api_key: "***REMOVED***"
       context_window: 200000
       request_timeout: 180
-      max_tokens: 16384
+      max_tokens: 32768
       include_thinking: false
       enable_prompt_caching: true
       capabilities:
@@ -198,7 +198,7 @@ llm_system:
       api_key: "***REMOVED***"      
       context_window: 200000
       request_timeout: 300
-      max_tokens: 16384
+      max_tokens: 32768
       include_thinking: true
       thinking_budget: 8192
       enable_prompt_caching: true

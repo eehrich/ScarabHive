@@ -129,6 +129,46 @@ llm_system:
       # - Use for tasks with unpredictably large outputs (e.g. full story design JSON)
       # - Pricing: ~$2 input / ~$12 output per 1M tokens
 
+    # ---------------------------------------------------------------------------
+    # ANTHROPIC CLAUDE MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+
+    openrouter-claude-sonnet:
+      provider: openai_httpx
+      model: anthropic/claude-sonnet-4-6
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 240
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - Claude Sonnet 4.5 without Extended Thinking (no thinking tokens billed)
+      # - Best for creative writing: scene generation, voice matching, story design
+      # - Pricing: ~$3 input / ~$15 output per 1M tokens via OpenRouter
+
+    openrouter-claude-sonnet-unlimited:
+      provider: openai_httpx
+      model: anthropic/claude-sonnet-4-6
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 240
+      max_tokens: 0  # No limit - let provider decide
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - Same as openrouter-claude-sonnet but WITHOUT output token limit
+      # - Use for very long scene generation or full chapter rewrites
 
 
   # =============================================================================
@@ -158,5 +198,15 @@ llm_system:
     or-gemini-pro-unlimited:
       model_ref: openrouter-gemini-3-pro-unlimited
       description: "OpenRouter Gemini 3 Pro - No output token limit (for large structured outputs)"
+      max_steps: 500
+
+    or-claude-sonnet:
+      model_ref: openrouter-claude-sonnet
+      description: "OpenRouter Claude Sonnet 4.5 - Best for creative writing and scene generation"
+      max_steps: 500
+
+    or-claude-sonnet-unlimited:
+      model_ref: openrouter-claude-sonnet-unlimited
+      description: "OpenRouter Claude Sonnet 4.5 - No output token limit (for long scenes/rewrites)"
       max_steps: 500
     
