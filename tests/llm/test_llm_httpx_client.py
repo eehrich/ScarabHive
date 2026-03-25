@@ -915,6 +915,78 @@ class TestGeminiMalformedRetry(TestHTTPXOpenAIClient):
         assert gemini_client._is_gemini_via_openrouter is True
 
 
+class TestAnthropicViaOpenRouterCaching:
+    """Test Anthropic prompt caching via OpenRouter."""
+
+    @pytest.fixture
+    def anthropic_or_client(self):
+        """HTTPXOpenAIClient configured as Anthropic via OpenRouter."""
+        return HTTPXOpenAIClient(
+            model="anthropic/claude-sonnet-4-6",
+            api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    @pytest.fixture
+    def non_anthropic_or_client(self):
+        """HTTPXOpenAIClient configured as non-Anthropic via OpenRouter."""
+        return HTTPXOpenAIClient(
+            model="google/gemini-2.5-pro",
+            api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    def test_anthropic_via_openrouter_detection(self, anthropic_or_client):
+        assert anthropic_or_client._is_anthropic_via_openrouter is True
+
+    def test_non_anthropic_via_openrouter_not_detected(self, non_anthropic_or_client):
+        assert non_anthropic_or_client._is_anthropic_via_openrouter is False
+
+    def test_cache_control_injected_on_system_message(self, anthropic_or_client):
+        """System messages get cache_control content blocks."""
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+        anthropic_or_client._apply_anthropic_cache_control(msgs)
+        assert isinstance(msgs[0]["content"], list)
+        assert msgs[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert msgs[0]["content"][0]["text"] == "You are a helpful assistant."
+        # User message unchanged
+        assert msgs[1]["content"] == "Hello"
+
+    def test_cache_control_on_structured_system_content(self, anthropic_or_client):
+        """System messages with list content get cache_control on last text block."""
+        msgs = [
+            {"role": "system", "content": [
+                {"type": "text", "text": "Part 1"},
+                {"type": "text", "text": "Part 2"},
+            ]},
+        ]
+        anthropic_or_client._apply_anthropic_cache_control(msgs)
+        assert "cache_control" not in msgs[0]["content"][0]
+        assert msgs[0]["content"][1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_tool_cache_control_on_last_tool(self, anthropic_or_client):
+        """cache_control added to last tool definition."""
+        tools = [
+            {"type": "function", "function": {"name": "a"}},
+            {"type": "function", "function": {"name": "b"}},
+        ]
+        anthropic_or_client._apply_anthropic_tool_cache_control(tools)
+        assert "cache_control" not in tools[0]
+        assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_no_cache_control_for_non_anthropic(self, non_anthropic_or_client):
+        """Non-Anthropic models via OpenRouter don't get cache_control."""
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+        ]
+        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
+        # Content should stay as plain string
+        assert msgs[0]["content"] == "You are a helpful assistant."
+
+
 if __name__ == "__main__":
     # Run tests with pytest when executed directly
     pytest.main([__file__, "-v"])

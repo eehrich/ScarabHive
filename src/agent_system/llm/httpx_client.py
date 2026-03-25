@@ -99,6 +99,12 @@ class HTTPXOpenAIClient(LLMClient):
             self._is_openrouter and "gemini" in model.lower()
         )
 
+        # Detect Anthropic/Claude models via OpenRouter — need cache_control injection.
+        # OpenRouter passes cache_control through to Anthropic for prompt caching.
+        self._is_anthropic_via_openrouter = (
+            self._is_openrouter and "claude" in model.lower()
+        )
+
         # Detect DeepSeek models — need special reasoning_content handling.
         # DeepSeek thinking mode requires reasoning_content on ALL assistant messages
         # (even empty string), otherwise returns HTTP 400.
@@ -271,6 +277,38 @@ class HTTPXOpenAIClient(LLMClient):
             clean['reasoning_content'] = d['reasoning_content']
         return clean
 
+    def _apply_anthropic_cache_control(self, message_dicts: list) -> None:
+        """Inject cache_control on system messages for Anthropic prompt caching via OpenRouter.
+
+        Converts system message content to structured content blocks with
+        ``cache_control: {"type": "ephemeral"}`` on the last block, enabling
+        Anthropic prompt caching for 70-80% cost savings on repeated prefixes.
+
+        Modifies message_dicts in-place.
+        """
+        for msg in message_dicts:
+            if msg.get("role") != "system":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [
+                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                ]
+            elif isinstance(content, list):
+                # Add cache_control to the last text block
+                for i in range(len(content) - 1, -1, -1):
+                    if isinstance(content[i], dict) and content[i].get("type") == "text":
+                        content[i]["cache_control"] = {"type": "ephemeral"}
+                        break
+
+    def _apply_anthropic_tool_cache_control(self, tools: list) -> None:
+        """Add cache_control to the last tool definition for Anthropic prompt caching.
+
+        Modifies tools in-place.
+        """
+        if tools:
+            tools[-1]["cache_control"] = {"type": "ephemeral"}
+
     def _postprocess_messages_for_provider(self, message_dicts: list) -> None:
         """Post-process serialized messages for provider-specific requirements.
         
@@ -282,8 +320,14 @@ class HTTPXOpenAIClient(LLMClient):
         For non-DeepSeek providers, `reasoning_content` is stripped since it's not
         a standard OpenAI Chat Completions API field.
         
+        Anthropic via OpenRouter: inject cache_control on system messages for
+        prompt caching (70-80% cost savings).
+        
         Modifies message_dicts in-place.
         """
+        if self._is_anthropic_via_openrouter:
+            self._apply_anthropic_cache_control(message_dicts)
+
         if self._is_deepseek:
             # DeepSeek: ensure ALL assistant messages have reasoning_content
             for msg in message_dicts:
@@ -510,6 +554,9 @@ class HTTPXOpenAIClient(LLMClient):
                 logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (model={self.model})")
             else:
                 payload["tools"] = tools
+            # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
+            if self._is_anthropic_via_openrouter:
+                self._apply_anthropic_tool_cache_control(payload["tools"])
             payload["tool_choice"] = "auto"
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
             # OpenRouter may pass it through and confuse the Gemini backend.
@@ -733,6 +780,9 @@ class HTTPXOpenAIClient(LLMClient):
                 logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (streaming, model={self.model})")
             else:
                 payload["tools"] = tools
+            # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
+            if self._is_anthropic_via_openrouter:
+                self._apply_anthropic_tool_cache_control(payload["tools"])
             payload["tool_choice"] = "auto"
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
             if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
@@ -1170,6 +1220,9 @@ class HTTPXOpenAIClient(LLMClient):
                 logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (non-streaming-fallback, model={self.model})")
             else:
                 payload["tools"] = tools
+            # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
+            if self._is_anthropic_via_openrouter:
+                self._apply_anthropic_tool_cache_control(payload["tools"])
             payload["tool_choice"] = "auto"
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
             if self.parallel_tool_calls and not self._is_gemini_via_openrouter:

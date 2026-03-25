@@ -126,11 +126,12 @@ class AnthropicAsyncClient(LLMClient):
 
     def _convert_messages(
         self, messages: List[ChatMessage]
-    ) -> tuple[Optional[str], List[Dict[str, Any]]]:
+    ) -> tuple[Optional[str | List[Dict[str, Any]]], List[Dict[str, Any]]]:
         """Convert ChatMessage list to Anthropic format.
         
         Returns:
             (system_prompt, messages_list)
+            system_prompt is a string or list of content blocks (with cache_control)
         """
         system_prompt: Optional[str] = None
         converted_messages: List[Dict[str, Any]] = []
@@ -229,6 +230,12 @@ class AnthropicAsyncClient(LLMClient):
                     "content": msg.content or ""
                 })
         
+        # Apply prompt caching: convert system prompt to content blocks with cache_control
+        if self.enable_prompt_caching and system_prompt:
+            system_prompt = [
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+            ]
+        
         return system_prompt, converted_messages
 
     def _convert_tools(self, tools: List[Dict]) -> List[Dict[str, Any]]:
@@ -250,6 +257,10 @@ class AnthropicAsyncClient(LLMClient):
                 "description": func.get("description", ""),
                 "input_schema": input_schema
             })
+        
+        # Apply prompt caching: add cache_control to the last tool definition
+        if self.enable_prompt_caching and anthropic_tools:
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
         
         return anthropic_tools
 

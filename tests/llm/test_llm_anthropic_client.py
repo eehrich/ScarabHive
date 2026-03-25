@@ -42,7 +42,7 @@ class TestAnthropicClientMessageConversion:
         assert converted[0]["content"] == "Hello, how are you?"
 
     def test_convert_system_message(self, anthropic_client):
-        """Test that system messages are extracted separately."""
+        """Test that system messages are extracted with cache_control."""
         messages = [
             ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content="Hello")
@@ -50,13 +50,18 @@ class TestAnthropicClientMessageConversion:
         
         system_prompt, converted = anthropic_client._convert_messages(messages)
         
-        assert system_prompt == "You are a helpful assistant."
+        # With enable_prompt_caching=True (default), system prompt becomes cached content blocks
+        assert isinstance(system_prompt, list)
+        assert len(system_prompt) == 1
+        assert system_prompt[0]["type"] == "text"
+        assert system_prompt[0]["text"] == "You are a helpful assistant."
+        assert system_prompt[0]["cache_control"] == {"type": "ephemeral"}
         assert len(converted) == 1  # Only user message
         assert converted[0]["role"] == "user"
         assert converted[0]["content"] == "Hello"
 
     def test_convert_multiple_system_messages(self, anthropic_client):
-        """Test that multiple system messages are concatenated."""
+        """Test that multiple system messages are concatenated with cache_control."""
         messages = [
             ChatMessage(role="system", content="You are helpful."),
             ChatMessage(role="system", content="Be concise."),
@@ -65,7 +70,10 @@ class TestAnthropicClientMessageConversion:
         
         system_prompt, converted = anthropic_client._convert_messages(messages)
         
-        assert system_prompt == "You are helpful.\nBe concise."
+        assert isinstance(system_prompt, list)
+        assert len(system_prompt) == 1
+        assert system_prompt[0]["text"] == "You are helpful.\nBe concise."
+        assert system_prompt[0]["cache_control"] == {"type": "ephemeral"}
         assert len(converted) == 1
 
     def test_convert_assistant_message(self, anthropic_client):
@@ -367,3 +375,56 @@ class TestAnthropicClientSchemaClean:
         
         # Check nested additionalProperties is removed
         assert "additionalProperties" not in cleaned["properties"]["items"]["items"]
+
+
+class TestAnthropicPromptCaching:
+    """Test prompt caching cache_control injection."""
+
+    @pytest.fixture
+    def client_no_caching(self):
+        """Create an AnthropicAsyncClient with prompt caching disabled."""
+        with patch('anthropic.AsyncAnthropic') as mock_anthropic:
+            mock_anthropic.return_value = MagicMock()
+            from agent_system.llm.anthropic_client import AnthropicAsyncClient
+            return AnthropicAsyncClient(
+                model="claude-sonnet-4-20250514",
+                api_key="test-api-key",
+                enable_prompt_caching=False,
+            )
+
+    def test_system_prompt_cached_by_default(self, anthropic_client):
+        """System prompt becomes content block with cache_control when caching enabled."""
+        messages = [
+            ChatMessage(role="system", content="You are helpful."),
+            ChatMessage(role="user", content="Hi"),
+        ]
+        system_prompt, _ = anthropic_client._convert_messages(messages)
+        assert isinstance(system_prompt, list)
+        assert system_prompt[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_system_prompt_plain_when_caching_disabled(self, client_no_caching):
+        """System prompt stays a plain string when caching is disabled."""
+        messages = [
+            ChatMessage(role="system", content="You are helpful."),
+            ChatMessage(role="user", content="Hi"),
+        ]
+        system_prompt, _ = client_no_caching._convert_messages(messages)
+        assert system_prompt == "You are helpful."
+
+    def test_tool_cache_control_on_last_tool(self, anthropic_client):
+        """cache_control is added to the last tool definition only."""
+        tools = [
+            {"type": "function", "function": {"name": "tool_a", "description": "A", "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {"name": "tool_b", "description": "B", "parameters": {"type": "object", "properties": {}}}},
+        ]
+        converted = anthropic_client._convert_tools(tools)
+        assert "cache_control" not in converted[0]
+        assert converted[-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_tool_no_cache_control_when_disabled(self, client_no_caching):
+        """No cache_control on tools when caching is disabled."""
+        tools = [
+            {"type": "function", "function": {"name": "tool_a", "description": "A", "parameters": {"type": "object", "properties": {}}}},
+        ]
+        converted = client_no_caching._convert_tools(tools)
+        assert "cache_control" not in converted[0]
