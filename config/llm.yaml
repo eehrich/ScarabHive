@@ -92,6 +92,25 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
+    gemini-3-flash-nostream-unlimited:
+      provider: gemini_sdk
+      model: gemini-3-flash-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000  # 1M token context, but limited here for performance
+      request_timeout: 240
+      include_thoughts: false
+      thinking_level: high  # Gemini 3 uses thinking_level: minimal, low, medium, high
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
     gemini-3-pro:
       provider: gemini_sdk
       model: gemini-3.1-pro-preview
@@ -131,6 +150,25 @@ llm_system:
         json_mode: true
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
+
+    gemini-3-pro-nostream-unlimited:
+      provider: gemini_sdk
+      model: gemini-3.1-pro-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000  # 1M token context, but limited here for performance
+      request_timeout: 240
+      include_thoughts: false
+      thinking_level: high  # Gemini 3 uses thinking_level: low, high
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions        
 
     # ---------------------------------------------------------------------------
     # GEMINI BATCH MODELS (provider: batch)
@@ -681,6 +719,11 @@ llm_system:
       description: "Google Gemini Flash"
       max_steps: 500
 
+    gemini-flash-unlimited:
+      model_ref: gemini-3-flash-nostream-unlimited
+      description: "Google Gemini Flash (unlimited)"
+      max_steps: 500
+
     gemini-flash-stream:
       model_ref: gemini-3-flash
       description: "Google Gemini Flash"
@@ -694,6 +737,11 @@ llm_system:
     gemini-pro:
       model_ref: gemini-3-pro-nostream
       description: "Google Gemini Pro"
+      max_steps: 500
+
+    gemini-pro-unlimited:
+      model_ref: gemini-3-pro-nostream-unlimited
+      description: "Google Gemini Pro (unlimited)"
       max_steps: 500
 
     gemini-pro-stream:
