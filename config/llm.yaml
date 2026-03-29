@@ -379,7 +379,7 @@ llm_system:
 
     gpt-5-nano:
       provider: openai_httpx
-      model: gpt-5-nano
+      model: gpt-5.4-nano
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -394,7 +394,7 @@ llm_system:
 
     gpt-5-mini:
       provider: openai_httpx
-      model: gpt-5-mini
+      model: gpt-5.4-mini
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -417,7 +417,7 @@ llm_system:
 
     gpt-5:
       provider: openai_httpx
-      model: gpt-5.2
+      model: gpt-5.4
       api_key: ***REMOVED***
       context_window: 272000 # >272K it is getting expensive
       request_timeout: 240
@@ -437,7 +437,7 @@ llm_system:
 
     gpt-5-codex:
       provider: openai_httpx
-      model: gpt-5.2-codex
+      model: gpt-5.4-codex
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -457,7 +457,7 @@ llm_system:
 
     gpt-5-codex-mini:
       provider: openai_httpx
-      model: gpt-5.2-codex-mini
+      model: gpt-5.4-codex-mini
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -484,7 +484,7 @@ llm_system:
     gpt-5-nano-batch:
       provider: batch
       batch_provider: openai            
-      model: gpt-5-nano
+      model: gpt-5.4-nano
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -498,7 +498,7 @@ llm_system:
     gpt-5-mini-batch:
       provider: batch
       batch_provider: openai            
-      model: gpt-5-mini
+      model: gpt-5.4-mini
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
@@ -515,7 +515,7 @@ llm_system:
     gpt-5-batch:
       provider: batch
       batch_provider: openai            
-      model: gpt-5.2
+      model: gpt-5.4
       api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 240
