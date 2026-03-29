@@ -61,6 +61,7 @@ class HTTPXOpenAIClient(LLMClient):
         capabilities: Optional[dict] = None,
         parallel_tool_calls: bool = True,
         max_tokens: Optional[int] = None,
+        safety_settings: Optional[dict[str, str]] = None,
         **extra_params
     ):
         # LLMClient doesn't have __init__, so no super() call needed
@@ -82,6 +83,9 @@ class HTTPXOpenAIClient(LLMClient):
         # Thinking/reasoning params — pop from extra_params to avoid raw injection
         self.thinking_level: str | None = self.extra_params.pop("thinking_level", None)
         self.thinking_budget: int | None = self.extra_params.pop("thinking_budget", None)
+
+        # Store safety settings for Gemini content filtering (via OpenRouter)
+        self.safety_settings = safety_settings
 
         self.capabilities = capabilities or {}
         self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
@@ -562,6 +566,14 @@ class HTTPXOpenAIClient(LLMClient):
             # OpenRouter may pass it through and confuse the Gemini backend.
             if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
                 payload["parallel_tool_calls"] = True
+
+        # Gemini via OpenRouter: inject safety settings for content filtering
+        if self._is_gemini_via_openrouter and self.safety_settings:
+            payload["safety_settings"] = [
+                {"category": category, "threshold": threshold}
+                for category, threshold in self.safety_settings.items()
+            ]
+
         url = f"{self.base_url}/chat/completions"
 
         # Notify pre-request hook (LLM-client level)
@@ -787,6 +799,13 @@ class HTTPXOpenAIClient(LLMClient):
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
             if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
                 payload["parallel_tool_calls"] = True
+
+        # Gemini via OpenRouter: inject safety settings for content filtering
+        if self._is_gemini_via_openrouter and self.safety_settings:
+            payload["safety_settings"] = [
+                {"category": category, "threshold": threshold}
+                for category, threshold in self.safety_settings.items()
+            ]
 
         url = f"{self.base_url}/chat/completions"
 
@@ -1227,6 +1246,13 @@ class HTTPXOpenAIClient(LLMClient):
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
             if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
                 payload["parallel_tool_calls"] = True
+
+        # Gemini via OpenRouter: inject safety settings for content filtering
+        if self._is_gemini_via_openrouter and self.safety_settings:
+            payload["safety_settings"] = [
+                {"category": category, "threshold": threshold}
+                for category, threshold in self.safety_settings.items()
+            ]
 
         url = f"{self.base_url}/chat/completions"
 

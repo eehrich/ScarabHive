@@ -121,6 +121,7 @@ class LLMModelConfig(BaseModel):
     thinking_level: Optional[Literal["minimal", "low", "medium", "high"]] = None  # Thinking level (Gemini 3 only)
     modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
     max_tokens: Optional[int] = None  # Maximum output tokens (limits response length, reduces costs)
+    safety_settings: Optional[Dict[str, str]] = None  # Gemini safety settings: {HarmCategory: HarmBlockThreshold}
     
     # Batch provider (only for provider="batch")
     batch_provider: Optional[Literal["gemini", "openai", "anthropic"]] = None  # Which batch API to use

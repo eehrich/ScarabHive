@@ -360,6 +360,7 @@ class BatchLLMClient(LLMClient):
         extra_params = getattr(self.underlying_client, 'extra_params', {})
         thinking_budget = extra_params.get('thinking_budget')
         thinking_level = extra_params.get('thinking_level')
+        safety_settings = getattr(self.underlying_client, 'safety_settings', None)
         
         try:
             # Submit to queue and get future with cancellation support
@@ -372,6 +373,7 @@ class BatchLLMClient(LLMClient):
                 max_tokens=max_tokens,
                 thinking_budget=thinking_budget,
                 thinking_level=thinking_level,
+                safety_settings=safety_settings,
                 cancellation_token=cancellation_token,
                 status_scope=status_scope,
             )

@@ -79,6 +79,7 @@ class GeminiSDKClient(LLMClient):
         include_thoughts: bool | None = None,
         thinking_budget: int | None = None,
         thinking_level: str | None = None,
+        safety_settings: dict[str, str] | None = None,
         **extra_params
     ):
         """Initialize Gemini SDK client.
@@ -96,6 +97,7 @@ class GeminiSDKClient(LLMClient):
             include_thoughts: Enable thought/reasoning output
             thinking_budget: Token budget for thinking (Gemini 2.5 models)
             thinking_level: Thinking level: minimal, low, medium, high (Gemini 3 models)
+            safety_settings: Gemini safety settings: {HarmCategory: HarmBlockThreshold}
             **extra_params: Additional generation parameters (temperature, top_p, etc.)
         """
         self.model = model
@@ -118,6 +120,9 @@ class GeminiSDKClient(LLMClient):
         # Store thinking_level in extra_params for consistency (Gemini 3 models)
         if thinking_level is not None:
             self.extra_params["thinking_level"] = thinking_level
+        
+        # Store safety settings for Gemini content filtering
+        self.safety_settings = safety_settings
         
         # Initialize the official client
         self._client = genai.Client(api_key=api_key)
@@ -311,6 +316,17 @@ class GeminiSDKClient(LLMClient):
                 # SDK expects lowercase values ("low", "medium", "high", "minimal")
                 sdk_thinking_kwargs["thinking_level"] = thinking_config["thinkingLevel"]
             config.thinking_config = types.ThinkingConfig(**sdk_thinking_kwargs)
+        
+        # Add safety settings if configured
+        if self.safety_settings:
+            config.safety_settings = [
+                types.SafetySetting(
+                    category=category,
+                    threshold=threshold,
+                )
+                for category, threshold in self.safety_settings.items()
+            ]
+            logger.debug(f"[GeminiSDK] Safety settings: {len(self.safety_settings)} categories configured")
         
         return config
 

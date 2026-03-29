@@ -114,7 +114,7 @@ class TestLLMOverrideModelSelection:
         
         # Create mock LLM override with vision-capable model
         llm_override = MagicMock()
-        llm_override.model = "gpt-5.1"  # Model with vision support
+        llm_override.model = "gpt-5"  # Model with vision support
         
         # Create mock agent with non-vision model as default
         mock_agent = MagicMock()
@@ -133,7 +133,7 @@ class TestLLMOverrideModelSelection:
         else:
             model_name = mock_agent.llm.model
             
-        assert model_name == "gpt-5.1"
+        assert model_name == "gpt-5"
         
         # Test case 2: Without llm_override  
         llm_override_none = None

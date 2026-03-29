@@ -47,6 +47,7 @@ class GeminiClient(LLMClient):
         thinking_budget: int | None = None,
         thinking_level: str | None = None,
         max_tokens: int | None = None,
+        safety_settings: dict[str, str] | None = None,
         **extra_params
     ):
         self.model = model
@@ -71,6 +72,9 @@ class GeminiClient(LLMClient):
         # Store thinking_level in extra_params for consistency (Gemini 3 models)
         if thinking_level is not None:
             self.extra_params["thinking_level"] = thinking_level
+
+        # Store safety settings for Gemini content filtering
+        self.safety_settings = safety_settings
 
         # Setup HTTPX timeouts
         if httpx_timeouts:
@@ -160,6 +164,12 @@ class GeminiClient(LLMClient):
             payload["tools"] = [{
                 "functionDeclarations": function_declarations
             }]
+
+        if self.safety_settings:
+            payload["safetySettings"] = [
+                {"category": category, "threshold": threshold}
+                for category, threshold in self.safety_settings.items()
+            ]
 
         url = f"{self.base_url}/models/{self.model}:streamGenerateContent?key={self.api_key}&alt=sse"
 

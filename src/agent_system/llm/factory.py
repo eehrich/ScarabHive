@@ -144,6 +144,9 @@ def create_llm_from_profile(
 
     if llm_kwargs.get("max_tokens") is not None:
         make_kwargs["max_tokens"] = llm_kwargs.get("max_tokens")
+
+    if llm_kwargs.get("safety_settings") is not None:
+        make_kwargs["safety_settings"] = llm_kwargs.get("safety_settings")
     
     # Create the underlying LLM client
     underlying_client = make_llm(
@@ -262,6 +265,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
 
     if model_config.max_tokens is not None:
         llm_kwargs["max_tokens"] = model_config.max_tokens
+
+    if model_config.safety_settings is not None:
+        llm_kwargs["safety_settings"] = model_config.safety_settings
 
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)
     httpx_timeouts = None

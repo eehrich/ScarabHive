@@ -270,6 +270,16 @@ class GeminiBatchClient(BatchProviderClient):
                     sdk_thinking_kwargs["thinking_level"] = thinking_config["thinkingLevel"]
                 config['thinking_config'] = types.ThinkingConfig(**sdk_thinking_kwargs)
             
+            # Add safety settings if specified
+            if req.safety_settings:
+                config['safety_settings'] = [
+                    types.SafetySetting(
+                        category=category,
+                        threshold=threshold,
+                    )
+                    for category, threshold in req.safety_settings.items()
+                ]
+            
             if config:
                 request_dict['config'] = config
             

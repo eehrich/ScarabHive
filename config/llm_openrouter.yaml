@@ -34,6 +34,11 @@ llm_system:
       request_timeout: 240
       thinking_level: high
       max_tokens: 16384
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
       capabilities:
         tools: true
         function_calling: true
@@ -50,6 +55,11 @@ llm_system:
       request_timeout: 240
       thinking_level: minimal
       max_tokens: 16384
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
       capabilities:
         tools: true
         function_calling: true
@@ -73,6 +83,11 @@ llm_system:
       request_timeout: 400
       thinking_level: high
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
       capabilities:
         tools: true
         function_calling: true
@@ -94,6 +109,11 @@ llm_system:
       request_timeout: 300
       thinking_level: high
       max_tokens: 16384
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
       capabilities:
         tools: true
         function_calling: true
@@ -117,6 +137,11 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
       capabilities:
         tools: true
         function_calling: true

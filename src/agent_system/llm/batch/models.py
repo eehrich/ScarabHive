@@ -50,6 +50,7 @@ class BatchRequest:
         max_tokens: Optional max output tokens limit
         thinking_budget: Token budget for thinking (Gemini 2.5 models)
         thinking_level: Thinking intensity level (Gemini 3 models): minimal, low, medium, high
+        safety_settings: Optional Gemini safety settings: {HarmCategory: HarmBlockThreshold}
         session_id: Optional session ID for tracking
         agent_name: Optional agent name for tracking
         created_at: Timestamp when request was created
@@ -63,6 +64,7 @@ class BatchRequest:
     max_tokens: Optional[int] = None
     thinking_budget: Optional[int] = None
     thinking_level: Optional[str] = None
+    safety_settings: Optional[Dict[str, str]] = None
     session_id: Optional[str] = None
     agent_name: Optional[str] = None
     created_at: datetime = field(default_factory=_utc_now)

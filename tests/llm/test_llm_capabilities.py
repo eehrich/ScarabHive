@@ -130,7 +130,7 @@ class TestPredefinedCapabilities:
         init_capabilities_registry()
 
         # Check that models were loaded
-        gpt5_caps = get_model_capabilities("gpt-5.1")
+        gpt5_caps = get_model_capabilities("gpt-5")
         assert gpt5_caps is not None
         assert gpt5_caps.tools is True
         assert gpt5_caps.image_input is True
@@ -158,7 +158,7 @@ class TestGetModelCapabilities:
         """Test exact model name matching."""
         init_capabilities_registry()
 
-        caps = get_model_capabilities("gpt-5.1")
+        caps = get_model_capabilities("gpt-5")
         assert caps.image_input is True
         assert caps.tools is True
 
@@ -183,7 +183,7 @@ class TestValidateCapabilityRequest:
     def test_supported_capability(self):
         """Test validation with supported capability."""
         init_capabilities_registry()
-        is_supported, error = validate_capability_request("gpt-5.1", ModelCapability.IMAGE_INPUT)
+        is_supported, error = validate_capability_request("gpt-5", ModelCapability.IMAGE_INPUT)
         assert is_supported is True
         assert error is None
 
@@ -198,7 +198,7 @@ class TestValidateCapabilityRequest:
     def test_capability_as_string(self):
         """Test validation with string capability."""
         init_capabilities_registry()
-        is_supported, error = validate_capability_request("gpt-5.1", "image_input")
+        is_supported, error = validate_capability_request("gpt-5", "image_input")
         assert is_supported is True
         assert error is None
 
@@ -208,7 +208,7 @@ class TestValidateCapabilityRequest:
 
     def test_invalid_capability_string(self):
         """Test validation with invalid capability string."""
-        is_supported, error = validate_capability_request("gpt-5.1", "invalid_capability")
+        is_supported, error = validate_capability_request("gpt-5", "invalid_capability")
         assert is_supported is False
         assert error is not None
         assert "Unknown capability" in error
@@ -216,7 +216,7 @@ class TestValidateCapabilityRequest:
     def test_tools_capability(self):
         """Test tools capability validation."""
         init_capabilities_registry()
-        is_supported, error = validate_capability_request("gpt-5.1", ModelCapability.TOOLS)
+        is_supported, error = validate_capability_request("gpt-5", ModelCapability.TOOLS)
         assert is_supported is True
         assert error is None
 
@@ -224,7 +224,7 @@ class TestValidateCapabilityRequest:
         """Test audio capability validation."""
         init_capabilities_registry()
         # GPT-5 doesn't support audio
-        is_supported, error = validate_capability_request("gpt-5.1", ModelCapability.AUDIO_INPUT)
+        is_supported, error = validate_capability_request("gpt-5", ModelCapability.AUDIO_INPUT)
         assert is_supported is False
         assert error is not None
 
@@ -241,7 +241,7 @@ class TestGetCompatibleModels:
         """Test finding models with image input support."""
         init_capabilities_registry()
         models = get_compatible_models(ModelCapability.IMAGE_INPUT)
-        assert "gpt-5.1" in models
+        assert "gpt-5" in models
         assert "gpt-4.1" in models
         assert "gpt-5-nano" not in models  # Nano doesn't support vision
 
@@ -251,7 +251,7 @@ class TestGetCompatibleModels:
         models = get_compatible_models(ModelCapability.AUDIO_INPUT)
         assert "gpt-audio" in models
         assert "gpt-realtime" in models
-        assert "gpt-5.1" not in models  # gpt-5.1 doesn't have audio input
+        assert "gpt-5" not in models  # gpt-5 doesn't have audio input
 
     def test_tools_compatible_models(self):
         """Test finding models with tool support."""
@@ -259,7 +259,7 @@ class TestGetCompatibleModels:
         models = get_compatible_models(ModelCapability.TOOLS)
         # All models should support tools
         assert len(models) > 0
-        assert "gpt-5.1" in models
+        assert "gpt-5" in models
 
     def test_function_calling_compatible_models(self):
         """Test finding models with function calling support."""
@@ -267,13 +267,13 @@ class TestGetCompatibleModels:
         models = get_compatible_models(ModelCapability.FUNCTION_CALLING)
         # Should be same as tools
         assert len(models) > 0
-        assert "gpt-5.1" in models
+        assert "gpt-5" in models
 
     def test_capability_as_string(self):
         """Test finding compatible models with string capability."""
         init_capabilities_registry()
         models = get_compatible_models("image_input")
-        assert "gpt-5.1" in models
+        assert "gpt-5" in models
         assert "gpt-4.1" in models
 
 
@@ -282,7 +282,7 @@ class TestCapabilityIntegration:
 
     def test_multimodal_workflow(self):
         """Test complete multimodal capability checking workflow."""
-        # gpt-5 model doesn't exist in config, gpt-5.1 doesn't have image_input
+        # gpt-5 model doesn't exist in config, gpt-5 doesn't have image_input
         # This test is testing hypothetical capabilities, mark as skip
         import pytest
         pytest.skip("gpt-5 model not configured, vision models not in current config")
@@ -309,17 +309,17 @@ class TestCapabilityIntegration:
         assert "does not support" in error
 
         # Try to use GPT-5 for audio (should fail)
-        is_supported, error = validate_capability_request("gpt-5.1", "audio_input")
+        is_supported, error = validate_capability_request("gpt-5", "audio_input")
         assert is_supported is False
 
     def test_provider_specific_features(self):
         """Test provider-specific feature detection."""
         init_capabilities_registry()
 
-        # Test actual models from config - gpt-5.1 has both tools and vision
-        gpt51_caps = get_model_capabilities("gpt-5.1")
-        assert gpt51_caps.tools is True
-        assert gpt51_caps.image_input is True  # gpt-5.1 supports vision
+        # Test actual models from config - gpt-5 has both tools and vision
+        gpt5_caps = get_model_capabilities("gpt-5")
+        assert gpt5_caps.tools is True
+        assert gpt5_caps.image_input is True  # gpt-5 supports vision
 
         # GPT Audio has audio support
         audio_caps = get_model_capabilities("gpt-audio")
