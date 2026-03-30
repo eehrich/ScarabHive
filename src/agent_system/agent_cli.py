@@ -1344,7 +1344,6 @@ def main() -> None:
                 image_paths=image_paths,
                 audio_paths=audio_paths,
                 text_file_paths=text_file_paths,
-                max_size_mb=None  # No hard limit, just warnings
             )
 
             vprint("[cli] created multimodal message")

@@ -155,3 +155,8 @@ qwen/qwen3.5-flash-02-23:
   input: 0.065
   output: 0.26
   cached_input: 0.0065
+
+qwen/qwen3.5-9b:
+  input: 0.05
+  output: 0.15
+  cached_input: 0.005

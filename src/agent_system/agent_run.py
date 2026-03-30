@@ -315,7 +315,6 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     image_paths=images,
                     audio_paths=audios,
                     text_file_paths=texts,
-                    max_size_mb=None  # No hard limit, just warnings
                 )
 
                 logger.info("Created multimodal message")

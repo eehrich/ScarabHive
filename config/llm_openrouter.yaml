@@ -221,7 +221,7 @@ llm_system:
       model: qwen/qwen3.5-flash-02-23
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 200000
+      context_window: 1000000
       request_timeout: 400
       max_tokens: 0
       capabilities:
@@ -229,6 +229,26 @@ llm_system:
         function_calling: true
         streaming: false
         json_mode: true
+
+    openrouter-qwen3.5-9b:
+      provider: openai_httpx
+      model: qwen/qwen3.5-9b
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 256000
+      request_timeout: 240
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - Qwen3.5-9B: Dense 9B model, 256K context
+      # - Ultra cheap: $0.05 input / $0.15 output per 1M tokens
+      # - Good for cross-scene analysis: whole book fits in context
+      # - Cheaper than Flash, good multilingual support
 
     # ---------------------------------------------------------------------------
     # ANTHROPIC CLAUDE MODELS via OpenRouter
@@ -329,5 +349,10 @@ llm_system:
     or-qwen-flash-unlimited:
       model_ref: openrouter-qwen3.5-flash-unlimited
       description: "OpenRouter Qwen3.5 Flash - No output token limit"
+      max_steps: 500
+
+    or-qwen-9b:
+      model_ref: openrouter-qwen3.5-9b
+      description: "OpenRouter Qwen3.5 9B - Ultra cheap 256K context, cross-scene analysis"
       max_steps: 500
     
