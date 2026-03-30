@@ -155,6 +155,82 @@ llm_system:
       # - Pricing: ~$2 input / ~$12 output per 1M tokens
 
     # ---------------------------------------------------------------------------
+    # XAI GROK MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+
+    openrouter-grok-4.1-fast:
+      provider: openai_httpx
+      model: x-ai/grok-4.1-fast
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 240
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - xAI's best agentic tool calling model (0.31% tool error rate)
+      # - 2M native context, 124 tok/s throughput
+      # - Reasoning can be toggled via reasoning.enabled parameter
+      # - Pricing: $0.20 input / $0.50 output / $0.05 cached per 1M tokens
+
+    openrouter-grok-4.1-fast-unlimited:
+      provider: openai_httpx
+      model: x-ai/grok-4.1-fast
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 400
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+    # ---------------------------------------------------------------------------
+    # QWEN MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+
+    openrouter-qwen3.5-flash:
+      provider: openai_httpx
+      model: qwen/qwen3.5-flash-02-23
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 240
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - Qwen3.5 Flash: hybrid MoE + linear attention, 1M native context
+      # - Extremely cheap: $0.065 input / $0.26 output per 1M tokens
+      # - Good multilingual support (100+ languages)
+      # - Pricing: 11.5x cheaper output than Gemini Flash
+
+    openrouter-qwen3.5-flash-unlimited:
+      provider: openai_httpx
+      model: qwen/qwen3.5-flash-02-23
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 400
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+    # ---------------------------------------------------------------------------
     # ANTHROPIC CLAUDE MODELS via OpenRouter
     # ---------------------------------------------------------------------------
 
@@ -233,5 +309,25 @@ llm_system:
     or-claude-sonnet-unlimited:
       model_ref: openrouter-claude-sonnet-unlimited
       description: "OpenRouter Claude Sonnet 4.5 - No output token limit (for long scenes/rewrites)"
+      max_steps: 500
+
+    or-grok-fast:
+      model_ref: openrouter-grok-4.1-fast
+      description: "OpenRouter Grok 4.1 Fast - Best tool calling, 2M context, very fast"
+      max_steps: 500
+
+    or-grok-fast-unlimited:
+      model_ref: openrouter-grok-4.1-fast-unlimited
+      description: "OpenRouter Grok 4.1 Fast - No output token limit"
+      max_steps: 500
+
+    or-qwen-flash:
+      model_ref: openrouter-qwen3.5-flash
+      description: "OpenRouter Qwen3.5 Flash - Ultra cheap, 1M context, good multilingual"
+      max_steps: 500
+
+    or-qwen-flash-unlimited:
+      model_ref: openrouter-qwen3.5-flash-unlimited
+      description: "OpenRouter Qwen3.5 Flash - No output token limit"
       max_steps: 500
     
