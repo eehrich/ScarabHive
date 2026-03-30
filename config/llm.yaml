@@ -126,6 +126,31 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
+    gemini-3-flash-nostream-minimal:
+      provider: gemini_sdk
+      model: gemini-3-flash-preview
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000
+      request_timeout: 240
+      include_thoughts: false
+      thinking_level: minimal
+      max_tokens: 16384
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
     gemini-3-pro:
       provider: gemini_sdk
       model: gemini-3.1-pro-preview
@@ -747,6 +772,11 @@ llm_system:
     gemini-flash:
       model_ref: gemini-3-flash-nostream
       description: "Google Gemini Flash"
+      max_steps: 500
+
+    gemini-flash-minimal:
+      model_ref: gemini-3-flash-nostream-minimal
+      description: "Google Gemini Flash (minimal thinking)"
       max_steps: 500
 
     gemini-flash-unlimited:
