@@ -160,3 +160,8 @@ qwen/qwen3.5-9b:
   input: 0.05
   output: 0.15
   cached_input: 0.005
+
+qwen/qwen3.5-397b-a17b:
+  input: 0.39
+  output: 2.34
+  cached_input: 0.039

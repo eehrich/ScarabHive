@@ -250,6 +250,25 @@ llm_system:
       # - Good for cross-scene analysis: whole book fits in context
       # - Cheaper than Flash, good multilingual support
 
+    openrouter-qwen3.5-full:
+      provider: openai_httpx
+      model: qwen/qwen3.5-397b-a17b
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 262000
+      request_timeout: 600
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - Qwen3.5 397B-A17B: Full flagship model, 262K context
+      # - MoE architecture with linear attention, state-of-the-art performance
+      # - Pricing: $0.39 input / $2.34 output per 1M tokens
+
     # ---------------------------------------------------------------------------
     # ANTHROPIC CLAUDE MODELS via OpenRouter
     # ---------------------------------------------------------------------------
@@ -354,5 +373,10 @@ llm_system:
     or-qwen-9b:
       model_ref: openrouter-qwen3.5-9b
       description: "OpenRouter Qwen3.5 9B - Ultra cheap 256K context, cross-scene analysis"
+      max_steps: 500
+
+    or-qwen-full:
+      model_ref: openrouter-qwen3.5-full
+      description: "OpenRouter Qwen3.5 397B Full - Flagship model, state-of-the-art performance"
       max_steps: 500
     
