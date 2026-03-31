@@ -1661,12 +1661,39 @@ class Agent(MCPServer):
 
             assistant = llm_out.get("assistant", {}) if llm_out else {}
 
-            # Check if LLM returned an error response
+            # Check if LLM returned an error response (e.g. upstream content filter, provider error)
             if "error" in assistant:
                 error_info = assistant["error"]
                 error_msg = error_info.get("message", "Unknown LLM error")
                 error_type = error_info.get("type", "unknown")
                 logger.warning(f"LLM returned error: {error_type} - {error_msg}")
+
+                # Try fallback profile if available (upstream errors like content filters
+                # are often provider-specific — a different model may succeed)
+                if fallback_index < len(fallback_profiles):
+                    fallback_profile = fallback_profiles[fallback_index]
+                    fallback_index += 1
+                    logger.warning(
+                        f"[{self.name}] Upstream error from LLM, switching to fallback: {fallback_profile}"
+                    )
+                    await status_worker.progress(
+                        f"LLM error ({error_type}), switching to {fallback_profile}",
+                        meta={"step": step + 1, "fallback": fallback_profile}
+                    )
+                    fallback_llm = self._create_fallback_llm(fallback_profile)
+                    if fallback_llm:
+                        active_llm = fallback_llm
+                        self.llm_profile_info = f"{fallback_profile}:fallback"
+                        import time as _fb_time
+                        self._active_fallback_llm = fallback_llm
+                        self._active_fallback_profile = fallback_profile
+                        self._fallback_activated_at = _fb_time.time()
+                        # Re-run this step with fallback (decrement step counter, continue loop)
+                        step -= 1
+                        continue
+                    else:
+                        logger.error(f"[{self.name}] Failed to create fallback LLM for upstream error")
+
                 yield {"type": "error", "message": error_msg, "error_type": error_type}
                 return
 

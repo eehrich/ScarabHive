@@ -1411,6 +1411,15 @@ class HTTPXOpenAIClient(LLMClient):
         try:
             logger.debug(f"Formatting response_data keys: {list(response_data.keys())}")
 
+            # Check for provider-level errors returned inside a 200 response body
+            # (e.g. OpenRouter proxying upstream errors from Qwen/Alibaba, Gemini, etc.)
+            if "error" in response_data:
+                error_info = response_data["error"]
+                error_msg = error_info.get("message", "Unknown upstream error") if isinstance(error_info, dict) else str(error_info)
+                error_code = error_info.get("code", "unknown") if isinstance(error_info, dict) else "unknown"
+                logger.warning(f"Provider returned error in response body: [{error_code}] {error_msg}")
+                return {"assistant": {"role": "assistant", "content": "", "error": {"message": error_msg, "type": f"upstream_error_{error_code}"}}}
+
             choices = response_data.get("choices", [])
             if not choices:
                 return {"assistant": {"role": "assistant", "content": ""}}

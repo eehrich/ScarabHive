@@ -31,7 +31,7 @@ llm_system:
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 240
+      request_timeout: 600
       thinking_level: high
       max_tokens: 16384
       safety_settings:
@@ -52,7 +52,7 @@ llm_system:
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 240
+      request_timeout: 600
       thinking_level: minimal
       max_tokens: 16384
       safety_settings:
@@ -80,7 +80,7 @@ llm_system:
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
-      request_timeout: 400
+      request_timeout: 600
       thinking_level: high
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
       safety_settings:
@@ -106,7 +106,7 @@ llm_system:
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 300
+      request_timeout: 600
       thinking_level: high
       max_tokens: 16384
       safety_settings:
@@ -164,7 +164,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
-      request_timeout: 240
+      request_timeout: 600
       max_tokens: 16384
       capabilities:
         tools: true
@@ -184,7 +184,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
-      request_timeout: 400
+      request_timeout: 600
       max_tokens: 0
       capabilities:
         tools: true
@@ -201,8 +201,8 @@ llm_system:
       model: qwen/qwen3.5-flash-02-23
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 240
+      context_window: 1000000
+      request_timeout: 600
       max_tokens: 16384
       capabilities:
         tools: true
@@ -222,7 +222,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
-      request_timeout: 400
+      request_timeout: 600
       max_tokens: 0
       capabilities:
         tools: true
@@ -236,7 +236,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 256000
-      request_timeout: 240
+      request_timeout: 600
       max_tokens: 16384
       capabilities:
         tools: true
@@ -260,7 +260,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
-      request_timeout: 240
+      request_timeout: 600
       max_tokens: 16384
       capabilities:
         tools: true
@@ -279,7 +279,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
-      request_timeout: 240
+      request_timeout: 600
       max_tokens: 0  # No limit - let provider decide
       capabilities:
         tools: true
