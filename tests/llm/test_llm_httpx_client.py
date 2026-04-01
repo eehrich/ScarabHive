@@ -986,6 +986,27 @@ class TestAnthropicViaOpenRouterCaching:
         # Content should stay as plain string
         assert msgs[0]["content"] == "You are a helpful assistant."
 
+    def test_openrouter_has_default_app_headers(self, anthropic_or_client):
+        """OpenRouter clients get default X-Title and HTTP-Referer at init."""
+        assert anthropic_or_client._headers["X-Title"] == "ScarabHive"
+        assert "HTTP-Referer" in anthropic_or_client._headers
+
+    def test_set_app_title_sets_unique_referer(self, anthropic_or_client):
+        """set_app_title creates per-agent referer for unique OpenRouter app_id."""
+        anthropic_or_client.set_app_title("coding_agent")
+        assert anthropic_or_client._headers["X-Title"] == "coding_agent"
+        assert anthropic_or_client._headers["HTTP-Referer"].endswith("/coding_agent")
+
+    def test_set_app_title_noop_on_non_openrouter(self):
+        """set_app_title is a no-op for non-OpenRouter clients."""
+        client = HTTPXOpenAIClient(
+            model="gpt-5",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+        )
+        client.set_app_title("coding_agent")
+        assert "X-Title" not in client._headers
+
 
 if __name__ == "__main__":
     # Run tests with pytest when executed directly

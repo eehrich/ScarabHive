@@ -347,6 +347,12 @@ class LLMClient:
             await asyncio.sleep(sleep_time)
             elapsed += sleep_time
 
+    def set_app_title(self, title: str) -> None:
+        """Set the application title for providers that support it (e.g., OpenRouter X-Title).
+
+        Override in subclasses that can use this information.
+        """
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         raise NotImplementedError
 

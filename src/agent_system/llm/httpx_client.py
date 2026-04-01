@@ -166,8 +166,30 @@ class HTTPXOpenAIClient(LLMClient):
         self._headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "AgentSystem-HTTPX/1.0"
+            "User-Agent": "ScarabHive-HTTPX/1.0"
         }
+
+        # OpenRouter app attribution headers
+        # See https://openrouter.ai/docs/api-reference/overview#headers
+        # OpenRouter creates a unique app_id per (API-key, HTTP-Referer) pair.
+        # We use set_app_title() to append the agent name to the referer,
+        # giving each agent its own entry in the OpenRouter dashboard.
+        self._openrouter_base_referer = "https://github.com/eehrich/ScarabHive"
+        if self._is_openrouter:
+            self._headers["HTTP-Referer"] = self._openrouter_base_referer
+            self._headers["X-Title"] = "ScarabHive"
+
+    def set_app_title(self, title: str) -> None:
+        """Set per-agent OpenRouter app identity.
+
+        OpenRouter keys apps by (API-key, HTTP-Referer). By appending the
+        agent name to the referer URL each agent gets its own row in the
+        OpenRouter activity dashboard.  X-Title is set to match so the
+        dashboard shows a human-readable name.
+        """
+        if self._is_openrouter and title:
+            self._headers["HTTP-Referer"] = f"{self._openrouter_base_referer}/{title}"
+            self._headers["X-Title"] = title
 
     def _get_keepalive_socket_options(self) -> list:
         """Get TCP keep-alive socket options for the current platform.

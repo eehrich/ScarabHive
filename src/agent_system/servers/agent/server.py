@@ -201,6 +201,10 @@ class Agent(MCPServer):
                         logger.warning("LLM initialization failed: %s", msg)
                     self.llm = None
 
+        # Set per-agent OpenRouter app identity (unique HTTP-Referer per agent)
+        if self.llm is not None and hasattr(self.llm, 'set_app_title'):
+            self.llm.set_app_title(name)
+
         # Context management now handled by hook plugins (context_optimizer, context_summarizer)
 
         # Configure cancellation system with agent config values
@@ -328,6 +332,7 @@ class Agent(MCPServer):
                 llm_profile=fallback_profile,
                 ssl_verify=ssl_verify,
             )
+            fallback_llm.set_app_title(self.name)
             logger.info(f"[{self.name}] Created fallback LLM for profile: {fallback_profile}")
             return fallback_llm
         except Exception as e:
@@ -866,7 +871,13 @@ class Agent(MCPServer):
         # won't have hooks from __init__ since they are freshly created)
         if llm_override is not None and self._hook_manager:
             self._hook_manager.wire_llm_hooks(llm_override)
-        
+
+        # Set per-agent app identity on override LLMs (they bypass __init__'s
+        # set_app_title call since they are freshly created by CLI --llm or
+        # use_advanced_model).
+        if llm_override is not None and hasattr(llm_override, 'set_app_title'):
+            llm_override.set_app_title(self.name)
+
         try:
             # Pass status_scope parameters to _run_events which will open them AFTER
             # sending the 'start' event - this ensures frontend has currentRequestId
