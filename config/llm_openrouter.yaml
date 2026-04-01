@@ -270,6 +270,178 @@ llm_system:
       # - Pricing: $0.39 input / $2.34 output per 1M tokens
 
     # ---------------------------------------------------------------------------
+    # META LLAMA MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+
+    openrouter-llama-4-maverick:
+      provider: openai_httpx
+      model: meta-llama/llama-4-maverick
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000
+      request_timeout: 600
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+      # Notes:
+      # - Llama 4 Maverick: 400B total MoE (17B active), 1M native context
+      # - Good at roleplay/creative writing tasks
+      # - Very affordable: $0.15 input / $0.60 output per 1M tokens
+      # - Supports multilingual text and image input
+
+    # ---------------------------------------------------------------------------
+    # OPENAI GPT MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+
+    openrouter-gpt-5.4:
+      provider: openai_httpx
+      model: openai/gpt-5.4
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 272000  # 1.05M total, but >272K doubles pricing
+      request_timeout: 600
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+      # Notes:
+      # - OpenAI's flagship frontier model, unified Codex+GPT
+      # - 1M+ context (922K input, 128K output), text + image input
+      # - Pricing (≤272K): $2.50 input / $15.00 output / $0.25 cached per 1M tokens
+      # - Pricing (>272K): $5.00 input / $22.50 output / $0.50 cached per 1M tokens
+
+    openrouter-gpt-5.4-unlimited:
+      provider: openai_httpx
+      model: openai/gpt-5.4
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 272000
+      request_timeout: 600
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+    openrouter-gpt-5.4-mini:
+      provider: openai_httpx
+      model: openai/gpt-5.4-mini
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000
+      request_timeout: 600
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+      # Notes:
+      # - GPT-5.4 core capabilities in a faster, cheaper model
+      # - 400K context, text + image input
+      # - Pricing: $0.75 input / $4.50 output / $0.075 cached per 1M tokens
+
+    openrouter-gpt-5.4-mini-unlimited:
+      provider: openai_httpx
+      model: openai/gpt-5.4-mini
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000
+      request_timeout: 600
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+    openrouter-gpt-5:
+      provider: openai_httpx
+      model: openai/gpt-5
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000
+      request_timeout: 600
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+      # Notes:
+      # - GPT-5 predecessor to GPT-5.4, still very capable
+      # - 400K context, text + image input, adaptive reasoning
+      # - Pricing: $1.25 input / $10.00 output / $0.125 cached per 1M tokens
+      # - ~50% cheaper than GPT-5.4 (≤272K tier)
+
+    openrouter-gpt-5-unlimited:
+      provider: openai_httpx
+      model: openai/gpt-5
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000
+      request_timeout: 600
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+    openrouter-gpt-oss-120b:
+      provider: openai_httpx
+      model: openai/gpt-oss-120b
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 131072
+      request_timeout: 600
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: false
+
+      # Notes:
+      # - OpenAI open-weight MoE (117B params, 5.1B active per forward pass)
+      # - Configurable reasoning depth, chain-of-thought, tool use
+      # - 131K context, text only (no image)
+      # - Pricing: $0.039 input / $0.19 output per 1M tokens — extremely cheap
+
+    openrouter-gpt-oss-120b-unlimited:
+      provider: openai_httpx
+      model: openai/gpt-oss-120b
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 131072
+      request_timeout: 600
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: false
+
+    # ---------------------------------------------------------------------------
     # ANTHROPIC CLAUDE MODELS via OpenRouter
     # ---------------------------------------------------------------------------
 
@@ -378,5 +550,50 @@ llm_system:
     or-qwen-full:
       model_ref: openrouter-qwen3.5-full
       description: "OpenRouter Qwen3.5 397B Full - Flagship model, state-of-the-art performance"
+      max_steps: 500
+
+    or-llama-maverick:
+      model_ref: openrouter-llama-4-maverick
+      description: "OpenRouter Llama 4 Maverick - 400B MoE, good for creative writing"
+      max_steps: 500
+
+    or-gpt-full:
+      model_ref: openrouter-gpt-5.4
+      description: "OpenRouter GPT-5.4 - Flagship model, best allrounder for prose + coding"
+      max_steps: 500
+
+    or-gpt-full-unlimited:
+      model_ref: openrouter-gpt-5.4-unlimited
+      description: "OpenRouter GPT-5.4 - No output token limit"
+      max_steps: 500
+
+    or-gpt-mini:
+      model_ref: openrouter-gpt-5.4-mini
+      description: "OpenRouter GPT-5.4 Mini - Fast, cheap, near-full quality"
+      max_steps: 500
+
+    or-gpt-mini-unlimited:
+      model_ref: openrouter-gpt-5.4-mini-unlimited
+      description: "OpenRouter GPT-5.4 Mini - No output token limit"
+      max_steps: 500
+
+    or-gpt-5:
+      model_ref: openrouter-gpt-5
+      description: "OpenRouter GPT-5 - Cheaper predecessor, ~50% less than GPT-5.4"
+      max_steps: 500
+
+    or-gpt-5-unlimited:
+      model_ref: openrouter-gpt-5-unlimited
+      description: "OpenRouter GPT-5 - No output token limit"
+      max_steps: 500
+
+    or-gpt-oss-120b:
+      model_ref: openrouter-gpt-oss-120b
+      description: "OpenRouter gpt-oss-120b - OpenAI open-weight MoE, ultra cheap"
+      max_steps: 500
+
+    or-gpt-oss-120b-unlimited:
+      model_ref: openrouter-gpt-oss-120b-unlimited
+      description: "OpenRouter gpt-oss-120b - No output token limit"
       max_steps: 500
     
