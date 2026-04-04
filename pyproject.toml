@@ -64,6 +64,7 @@ dependencies = [
     "posthog>=3.0.0,<3.2.0",  # Pin compatible version - 7.x has breaking changes
     "chroma-hnswlib>=0.7.6",  # ChromaDB's compatible fork (NOT hnswlib!)
     "sqlite-vec>=0.1.0",
+    "sentence-transformers>=4.0.0",
     "onnxruntime>=1.20.0",
     "psutil>=5.9.0",  # For performance profiling
     "pydub>=0.25.0",  # Audio manipulation (requires ffmpeg)

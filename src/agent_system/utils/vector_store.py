@@ -22,6 +22,7 @@ Usage:
 """
 
 import logging
+import math
 import platform
 import struct
 import sqlite3
@@ -123,6 +124,68 @@ def get_vector_backend() -> str:
 class VectorStoreError(Exception):
     """Vector store operation errors."""
     pass
+
+
+# ---------------------------------------------------------------------------
+# Standalone embedding utilities (no VectorStore instance required)
+# ---------------------------------------------------------------------------
+_embedding_model_instance = None
+
+
+def get_embedding_model():
+    """Lazy-load and cache a SentenceTransformer model globally.
+
+    Returns the model instance (``all-MiniLM-L6-v2``, 384-dim, CPU).
+    The model is downloaded on first call and then cached for the
+    lifetime of the process.
+    """
+    global _embedding_model_instance  # noqa: PLW0603
+    if _embedding_model_instance is None:
+        from sentence_transformers import SentenceTransformer
+        _embedding_model_instance = SentenceTransformer(
+            "all-MiniLM-L6-v2", device="cpu",
+        )
+        logger.info("Shared SentenceTransformer loaded (all-MiniLM-L6-v2)")
+    return _embedding_model_instance
+
+
+def compute_embedding(text: str) -> List[float]:
+    """Return 384-dim embedding for *text*."""
+    model = get_embedding_model()
+    return model.encode(text, convert_to_numpy=True).tolist()
+
+
+def cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Cosine similarity between two equal-length float vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def texts_are_duplicate(
+    text_a: str,
+    text_b: str,
+    threshold: float = 0.85,
+) -> tuple[bool, float]:
+    """Check whether two texts are near-duplicates via embedding similarity.
+
+    Returns ``(is_duplicate, similarity_score)``.
+
+    Typical cosine ranges for German prose:
+    - Unrelated scenes: 0.30 – 0.50
+    - Same setting, advancing plot: 0.50 – 0.70
+    - True continuation (same characters, different events): 0.70 – 0.85
+    - Near-identical / duplicate content: > 0.85
+    """
+    if not text_a.strip() or not text_b.strip():
+        return False, 0.0
+    emb_a = compute_embedding(text_a)
+    emb_b = compute_embedding(text_b)
+    sim = cosine_similarity(emb_a, emb_b)
+    return sim >= threshold, sim
 
 
 class VectorStore:
