@@ -129,24 +129,31 @@ class VectorStoreError(Exception):
 # ---------------------------------------------------------------------------
 # Standalone embedding utilities (no VectorStore instance required)
 # ---------------------------------------------------------------------------
-_embedding_model_instance = None
+_embedding_models: dict = {}
+
+
+def _load_sentence_transformer(model_name: str):
+    """Load a SentenceTransformer model, using local cache when available.
+
+    Models are cached per name for the lifetime of the process.
+    """
+    if model_name not in _embedding_models:
+        from sentence_transformers import SentenceTransformer
+        try:
+            _embedding_models[model_name] = SentenceTransformer(
+                model_name, device="cpu", local_files_only=True,
+            )
+        except OSError:
+            _embedding_models[model_name] = SentenceTransformer(
+                model_name, device="cpu",
+            )
+        logger.info(f"SentenceTransformer loaded ({model_name})")
+    return _embedding_models[model_name]
 
 
 def get_embedding_model():
-    """Lazy-load and cache a SentenceTransformer model globally.
-
-    Returns the model instance (``all-MiniLM-L6-v2``, 384-dim, CPU).
-    The model is downloaded on first call and then cached for the
-    lifetime of the process.
-    """
-    global _embedding_model_instance  # noqa: PLW0603
-    if _embedding_model_instance is None:
-        from sentence_transformers import SentenceTransformer
-        _embedding_model_instance = SentenceTransformer(
-            "all-MiniLM-L6-v2", device="cpu",
-        )
-        logger.info("Shared SentenceTransformer loaded (all-MiniLM-L6-v2)")
-    return _embedding_model_instance
+    """Lazy-load and cache the default SentenceTransformer (all-MiniLM-L6-v2)."""
+    return _load_sentence_transformer("all-MiniLM-L6-v2")
 
 
 def compute_embedding(text: str) -> List[float]:
@@ -569,11 +576,7 @@ class VectorStore:
         if self._sentence_transformer is None:
             # Try sentence-transformers first
             try:
-                from sentence_transformers import SentenceTransformer
-                self._sentence_transformer = SentenceTransformer(
-                    self.embedding_model_name,
-                    device='cpu'
-                )
+                self._sentence_transformer = _load_sentence_transformer(self.embedding_model_name)
                 logger.info(f"Using SentenceTransformer: {self.embedding_model_name}")
                 return self._sentence_transformer
             except Exception as e:
