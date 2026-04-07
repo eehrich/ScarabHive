@@ -886,7 +886,7 @@ async def test_whitespace_only_thought(server, mock_status):
 
 @pytest.mark.asyncio
 async def test_duplicate_branch_id(server, mock_status):
-    """Test creating branch with duplicate ID fails."""
+    """Test creating branch with duplicate ID silently switches to it."""
     result = await server.execute({
         "thought": "Root",
         "thought_number": 1,
@@ -909,20 +909,20 @@ async def test_duplicate_branch_id(server, mock_status):
         "_status": mock_status
     })
     
-    # Attempt to create duplicate branch
+    # Attempt to create duplicate branch — silently switches
     result_dup = await server.execute({
         "session_id": session_id,
         "thought": "Duplicate branch",
         "thought_number": 3,
         "total_thoughts": 3,
         "branch_from_thought": 1,
-        "branch_id": "test_branch",  # Duplicate
+        "branch_id": "test_branch",  # Duplicate — will switch
         "next_thought_needed": True,
         "_status": mock_status
     })
     
-    assert result_dup["status"] == "error"
-    assert "already exists" in result_dup["error"]
+    assert result_dup["status"] == "success"
+    assert result_dup["branch"] == "test_branch"
 
 
 # ===== Status Message Tests =====
@@ -1448,8 +1448,8 @@ async def test_revise_nonexistent_thought_fails(server, mock_status):
 
 
 @pytest.mark.asyncio
-async def test_branch_id_already_exists_fails(server, mock_status):
-    """Test that creating branch with existing ID fails."""
+async def test_branch_id_already_exists_switches(server, mock_status):
+    """Test that creating branch with existing ID silently switches to it."""
     result = await server.execute({
         "thought": "First",
         "thought_number": 1,
@@ -1474,20 +1474,20 @@ async def test_branch_id_already_exists_fails(server, mock_status):
     
     assert result2["status"] == "success"
     
-    # Try to create same branch again
+    # Try to create same branch again — silently switches
     result3 = await server.execute({
         "session_id": session_id,
         "thought": "Another",
         "thought_number": 3,
         "total_thoughts": 3,
         "next_thought_needed": False,
-        "branch_id": "test_branch",  # Already exists!
+        "branch_id": "test_branch",  # Already exists — will switch
         "branch_from_thought": 1,
         "_status": mock_status
     })
     
-    assert result3["status"] == "error"
-    assert "already exists" in result3["error"]
+    assert result3["status"] == "success"
+    assert result3["branch"] == "test_branch"
 
 
 @pytest.mark.asyncio
@@ -1655,8 +1655,8 @@ async def test_revise_nonexistent_thought_error(server, mock_status):
 
 
 @pytest.mark.asyncio
-async def test_create_branch_with_existing_id_error(server, mock_status):
-    """Test error when trying to create branch with existing ID."""
+async def test_create_branch_with_existing_id_switches(server, mock_status):
+    """Test that creating branch with existing ID silently switches to it."""
     result1 = await server.execute({
         "thought": "First",
         "thought_number": 1,
@@ -1679,7 +1679,7 @@ async def test_create_branch_with_existing_id_error(server, mock_status):
     })
     assert result2["status"] == "success"
     
-    # Try to create same branch again
+    # Try to create same branch again — silently switches
     result3 = await server.execute({
         "session_id": session_id,
         "thought": "Try to recreate alternative",
@@ -1687,12 +1687,12 @@ async def test_create_branch_with_existing_id_error(server, mock_status):
         "total_thoughts": 3,
         "next_thought_needed": False,
         "branch_from_thought": 2,
-        "branch_id": "alternative",           # Already exists!
+        "branch_id": "alternative",           # Already exists — will switch
         "_status": mock_status
     })
     
-    assert result3["status"] == "error"
-    assert "Branch 'alternative' already exists" in result3["error"]
+    assert result3["status"] == "success"
+    assert result3["branch"] == "alternative"
 
 
 @pytest.mark.asyncio

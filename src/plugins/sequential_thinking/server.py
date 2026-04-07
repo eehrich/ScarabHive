@@ -499,14 +499,18 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             if branch_from_thought is not None and branch_id:
                 # Creating new branch - must not exist
                 if branch_id in session.branches:
-                    await safe_status_call("error", f"Branch '{branch_id}' already exists")
-                    return {"status": "error", "error": f"Branch '{branch_id}' already exists"}
-
-                await safe_status_call(
-                    "progress",
-                    f"Creating branch '{branch_id}' from thought {branch_from_thought}"
-                )
-                self._create_branch(session, branch_id, branch_from_thought)
+                    # Silently switch to existing branch instead of erroring
+                    logger.debug(
+                        "Branch '%s' already exists in session %s — switching to it",
+                        branch_id, session_id,
+                    )
+                    session.current_branch = branch_id
+                else:
+                    await safe_status_call(
+                        "progress",
+                        f"Creating branch '{branch_id}' from thought {branch_from_thought}"
+                    )
+                    self._create_branch(session, branch_id, branch_from_thought)
             elif branch_id:
                 # Switching to existing branch (no branch_from_thought specified)
                 if branch_id not in session.branches:
