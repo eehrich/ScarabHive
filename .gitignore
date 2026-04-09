@@ -9,7 +9,7 @@
 *.old
 *.swp
 *.swo
-*.wav
+#*.wav
 *.flac
 *.mp3
 *.m4a
