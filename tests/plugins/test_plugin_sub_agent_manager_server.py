@@ -1216,3 +1216,212 @@ class TestOrphanedRunningAgents:
         
         # No DB updates (no orphaned running/pending agents)
         mock_manager.update_sub_session_metadata.assert_not_called()
+
+
+class TestMinResultLengthGuard:
+    """Test auto-retry when sub-agent result is below min_result_length threshold."""
+
+    @pytest.fixture
+    def min_len_server(self, mock_config):
+        """Server with min_result_length_by_agent configured."""
+        config = Mock(spec=MCPConfig)
+        config.max_sub_agents_per_session = 10
+        config.max_nesting_depth = 5
+        config.max_sub_agents_per_type = 3
+        config.allowed_agents = ["*"]
+        config.blocked_agents = []
+        config.min_result_length_by_agent = {"test_writer": 100}
+        config.min_result_retries = 2
+        return SubAgentManagerServer(
+            name="test_sam",
+            system_config=mock_config,
+            mcp_config=config,
+        )
+
+    def _make_blocking_mocks(self, server, run_events_fn):
+        """Set up all mocks for a blocking _handle_create call."""
+        mock_agent = Mock()
+        mock_agent.run_events = run_events_fn
+        mock_agent.agent_config = Mock()
+        mock_agent.agent_config.default_llm_profile = "test"
+        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker.set_session_metadata = Mock()
+        mock_agent._session_tracker.set_session_template_vars = Mock()
+
+        mock_registry = Mock()
+        mock_registry.get = Mock(return_value=mock_agent)
+
+        mock_manager = AsyncMock()
+        mock_manager._extract_user_id = Mock(return_value="test_user")
+        mock_manager.create_sub_session = AsyncMock(return_value="sub_minlen")
+        mock_manager.update_sub_agent_activity = AsyncMock()
+        mock_manager.update_sub_session_metadata = AsyncMock()
+
+        mock_session_manager = AsyncMock()
+        mock_session_manager.load_session = AsyncMock(return_value={"context_vars": {}})
+        mock_session_service = Mock()
+        mock_session_service.session_manager = mock_session_manager
+        mock_session_service.save_session = AsyncMock()
+
+        server._extract_registry = Mock(return_value=mock_registry)
+        server._extract_session_service = Mock(return_value=mock_session_service)
+        server._get_manager = Mock(return_value=mock_manager)
+
+        return mock_agent
+
+    def test_config_loaded(self, min_len_server):
+        """Config values are read correctly."""
+        assert min_len_server._min_result_length_by_agent == {"test_writer": 100}
+        assert min_len_server._min_result_retries == 2
+
+    def test_config_defaults_when_missing(self, server):
+        """Defaults to empty dict and 2 retries when not configured."""
+        assert server._min_result_length_by_agent == {}
+        assert server._min_result_retries == 2
+
+    @pytest.mark.asyncio
+    async def test_short_result_triggers_retry_success(self, min_len_server):
+        """Short result auto-retries; uses longer result from retry."""
+        call_count = 0
+
+        async def mock_run_events(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield {"type": "final", "summary": "Hallo Welt"}
+                yield {"type": "end"}
+            else:
+                yield {"type": "final", "summary": "A" * 200}
+                yield {"type": "end"}
+
+        self._make_blocking_mocks(min_len_server, mock_run_events)
+
+        result = await min_len_server._handle_create({
+            "agent_type": "test_writer",
+            "task": "Write synopsis",
+            "blocking": True,
+            "_session_id": "parent_session",
+            "_request_id": "req_001",
+        })
+
+        assert result["status"] == "completed"
+        assert len(result["result"]) >= 100
+        assert call_count == 2  # Initial + 1 retry
+
+    @pytest.mark.asyncio
+    async def test_normal_length_no_retry(self, min_len_server):
+        """Result above threshold does not trigger retry."""
+        call_count = 0
+
+        async def mock_run_events(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            yield {"type": "final", "summary": "B" * 500}
+            yield {"type": "end"}
+
+        self._make_blocking_mocks(min_len_server, mock_run_events)
+
+        result = await min_len_server._handle_create({
+            "agent_type": "test_writer",
+            "task": "Write synopsis",
+            "blocking": True,
+            "_session_id": "parent_session",
+            "_request_id": "req_002",
+        })
+
+        assert result["status"] == "completed"
+        assert len(result["result"]) == 500
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_agent_no_retry(self, min_len_server):
+        """Agent types not in config never trigger retry."""
+        call_count = 0
+
+        async def mock_run_events(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            yield {"type": "final", "summary": "short"}
+            yield {"type": "end"}
+
+        self._make_blocking_mocks(min_len_server, mock_run_events)
+
+        result = await min_len_server._handle_create({
+            "agent_type": "other_agent",
+            "task": "Do something",
+            "blocking": True,
+            "_session_id": "parent_session",
+            "_request_id": "req_003",
+        })
+
+        assert result["status"] == "completed"
+        assert result["result"] == "short"
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_uses_last_result(self, min_len_server):
+        """When all retries produce short results, uses the last one."""
+        async def mock_run_events(*args, **kwargs):
+            yield {"type": "final", "summary": "still short"}
+            yield {"type": "end"}
+
+        self._make_blocking_mocks(min_len_server, mock_run_events)
+
+        result = await min_len_server._handle_create({
+            "agent_type": "test_writer",
+            "task": "Write synopsis",
+            "blocking": True,
+            "_session_id": "parent_session",
+            "_request_id": "req_004",
+        })
+
+        assert result["status"] == "completed"
+        assert result["result"] == "still short"
+
+    @pytest.mark.asyncio
+    async def test_error_result_not_retried(self, min_len_server):
+        """Error results are never retried even if short."""
+        call_count = 0
+
+        async def mock_run_events(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            yield {"type": "error", "message": "LLM failed"}
+
+        self._make_blocking_mocks(min_len_server, mock_run_events)
+
+        result = await min_len_server._handle_create({
+            "agent_type": "test_writer",
+            "task": "Write synopsis",
+            "blocking": True,
+            "_session_id": "parent_session",
+            "_request_id": "req_005",
+        })
+
+        assert result["status"] == "completed"
+        assert result["result"].startswith("Error:")
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_result_not_retried(self, min_len_server):
+        """Cancelled results are never retried."""
+        call_count = 0
+
+        async def mock_run_events(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            yield {"type": "cancelled", "reason": "User cancelled"}
+
+        self._make_blocking_mocks(min_len_server, mock_run_events)
+
+        result = await min_len_server._handle_create({
+            "agent_type": "test_writer",
+            "task": "Write synopsis",
+            "blocking": True,
+            "_session_id": "parent_session",
+            "_request_id": "req_006",
+        })
+
+        assert result["status"] == "completed"
+        assert result["result"].startswith("Cancelled:")
+        assert call_count == 1

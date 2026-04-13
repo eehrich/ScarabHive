@@ -85,6 +85,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self.phase_variable = phase_config.get('phase_variable', 'workflow_phase')
         self.phase_agents = phase_config.get('phase_agents', {})
 
+        # Min result length per agent type: auto-retry if result is too short.
+        # Config: {"v5b_synopsis_writer": 500, "v5b_beat_generator": 50}
+        self._min_result_length_by_agent: dict[str, int] = dict(
+            getattr(mcp_config, 'min_result_length_by_agent', {}) or {}
+        )
+        self._min_result_retries: int = int(
+            getattr(mcp_config, 'min_result_retries', 2)
+        )
+
         # Track running sub-agent instances to prevent concurrent execution
         # Format: {sub_session_id: True}
         self._running_agents: set[str] = set()
@@ -562,6 +571,52 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         logger.info(f"Sub-agent {sub_session_id} was cancelled: {result_text}")
                         await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
                         break  # Stop waiting for more events
+
+                # -- Min result length guard: auto-retry with continue if too short --
+                min_len = self._min_result_length_by_agent.get(agent_name, 0)
+                if min_len > 0 and result_text and not result_text.startswith(("Error:", "Cancelled:")) and len(result_text) < min_len:
+                    for retry_attempt in range(self._min_result_retries):
+                        logger.warning(
+                            "Sub-agent %s result too short (%d < %d chars), auto-retry %d/%d",
+                            agent_name, len(result_text), min_len,
+                            retry_attempt + 1, self._min_result_retries,
+                        )
+                        if status:
+                            await status.progress(
+                                f"⚠ {agent_name} result too short ({len(result_text)} chars), retrying..."
+                            )
+                        retry_result = ""
+                        retry_req_id = f"{sub_request_id}_minlen_{retry_attempt}"
+                        _register_request_user(retry_req_id, user_id)
+                        async for event in agent.run_events(
+                            task="Deine Antwort war unvollständig oder leer. Vervollständige deine Antwort.",
+                            request_id=retry_req_id,
+                            session_id=sub_session_id,
+                        ):
+                            event_type = event.get("type")
+                            if event_type == "final":
+                                retry_result = event.get("summary", "")
+                                await manager.update_sub_agent_activity(
+                                    parent_session_id, sub_session_id, None
+                                )
+                            elif event_type in ("end", "error", "cancelled"):
+                                if event_type == "error":
+                                    retry_result = f"Error: {event.get('message', '')}"
+                                break
+                        if retry_result and len(retry_result) >= min_len:
+                            result_text = retry_result
+                            logger.info(
+                                "Sub-agent %s retry %d succeeded (%d chars)",
+                                agent_name, retry_attempt + 1, len(result_text),
+                            )
+                            break
+                        if retry_result:
+                            result_text = retry_result  # Use latest even if still short
+                    if len(result_text) < min_len:
+                        logger.warning(
+                            "Sub-agent %s still too short after %d retries (%d chars, min=%d)",
+                            agent_name, self._min_result_retries, len(result_text), min_len,
+                        )
 
                 # Save session with messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
