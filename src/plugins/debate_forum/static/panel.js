@@ -164,7 +164,7 @@
     }
     let collapsedGroups = loadCollapsed(); // null until first render (default all collapsed)
 
-    const MAX_VISIBLE_GROUPS = 10; // hide oldest groups when more than this
+    const MAX_VISIBLE_GROUPS = 20; // hide oldest groups when more than this
 
     function renderChannelList() {
         if (channels.length === 0) {
@@ -228,7 +228,7 @@
         for (const [gid, arr] of visibleGroups) {
             const gidStr = String(gid);
             const collapsed = collapsedGroups.has(gidStr);
-            const groupLabel = gid ? escapeHtml(getGroupName(gid)) : "Ungrouped";
+            const groupLabel = gid ? `${escapeHtml(getGroupName(gid))} (#${escapeHtml(String(gid))})` : "Ungrouped";
             const chevron = collapsed ? "▸" : "▾";
             const chCount = arr.length;
             html += `<div class="channel-group-header" data-gid="${gidStr}" title="${groupLabel}">`

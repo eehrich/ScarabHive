@@ -1,6 +1,7 @@
 """Tests for simple_prompt_inject plugin.
 
-Tests the hook-based prompt injection with various configurations.
+Tests the hook-based prompt injection with various configurations,
+including prompt_file loading and Jinja2 template rendering.
 """
 from __future__ import annotations
 
@@ -28,10 +29,12 @@ def make_plugin(plugin_dir):
     """Factory fixture to create plugin with custom config."""
     from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
 
-    def _make(prompt_text: str = "Injected.", position: str = "before_last_user", role: str = "system"):
+    def _make(prompt_text: str = "Injected.", position: str = "before_last_user",
+              role: str = "system", prompt_file: str = ""):
         mcp_config = MagicMock()
         mcp_config.config = {
             "prompt_text": prompt_text,
+            "prompt_file": prompt_file,
             "injection_position": position,
             "role": role,
         }
@@ -50,7 +53,7 @@ def plugin(make_plugin):
 def make_context():
     """Factory fixture to create HookContext with messages."""
 
-    def _make(messages: list[ChatMessage] | None = None):
+    def _make(messages: list[ChatMessage] | None = None, agent=None):
         if messages is None:
             messages = [
                 ChatMessage(role="system", content="You are a helpful assistant."),
@@ -61,10 +64,33 @@ def make_context():
             request_id="test-req-1",
             session_id="test-session-1",
             agent_name="test_agent",
+            agent=agent,
             messages=messages,
         )
 
     return _make
+
+
+@pytest.fixture
+def mock_agent():
+    """Mock agent with template_vars."""
+    agent = MagicMock()
+    agent.agent_config.template_vars = {"user_name": "Alice", "lang": "German"}
+    agent._session_tracker = None  # No session tracker
+    return agent
+
+
+@pytest.fixture
+def mock_agent_with_session():
+    """Mock agent with session-scoped template_vars."""
+    agent = MagicMock()
+    agent.agent_config.template_vars = {"user_name": "Alice", "lang": "German"}
+    agent._session_tracker.get_session_template_vars.return_value = {
+        "user_name": "Bob",
+        "lang": "French",
+        "extra": "session_only",
+    }
+    return agent
 
 
 # ============================================================================
@@ -83,13 +109,13 @@ class TestSchemaLoading:
     def test_config_defaults(self, plugin_dir):
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
         p = SimplePromptInjectPlugin(plugin_dir)  # no mcp_config → uses schema defaults
-        assert p.prompt_text == ""
+        assert p.prompt_template == ""
         assert p.injection_position == "before_last_user"
         assert p.role == "system"
 
     def test_config_override_via_mcp_config(self, make_plugin):
         p = make_plugin("custom text", "end", "user")
-        assert p.prompt_text == "custom text"
+        assert p.prompt_template == "custom text"
         assert p.injection_position == "end"
         assert p.role == "user"
 
@@ -112,7 +138,7 @@ class TestPluginFactory:
         mcp_config = MagicMock()
         mcp_config.config = {"prompt_text": "hello"}
         plugin = PLUGIN_FACTORY(mcp_config=mcp_config)
-        assert plugin.prompt_text == "hello"
+        assert plugin.prompt_template == "hello"
 
 
 # ============================================================================
@@ -322,3 +348,194 @@ class TestDispatch:
 
         assert result.success is True
         assert result.modified is False
+
+
+# ============================================================================
+# prompt_file loading
+# ============================================================================
+
+class TestPromptFile:
+    """Test loading prompts from .md files."""
+
+    def test_load_from_file(self, plugin_dir, tmp_path):
+        """prompt_file should load content from a .md file."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        md_file = tmp_path / "test_prompt.md"
+        md_file.write_text("# Instructions\nBe helpful.", encoding="utf-8")
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        assert p.prompt_template == "# Instructions\nBe helpful."
+
+    def test_prompt_file_takes_precedence(self, plugin_dir, tmp_path):
+        """prompt_file should override prompt_text when both are set."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        md_file = tmp_path / "from_file.md"
+        md_file.write_text("From file", encoding="utf-8")
+
+        mcp_config = MagicMock()
+        mcp_config.config = {
+            "prompt_text": "From text",
+            "prompt_file": str(md_file),
+        }
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        assert p.prompt_template == "From file"
+
+    def test_file_not_found_raises(self, plugin_dir):
+        """Missing prompt_file should raise FileNotFoundError."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_file": "/nonexistent/path.md"}
+
+        with pytest.raises(FileNotFoundError, match="prompt_file not found"):
+            SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+    def test_empty_prompt_file_fallback_to_text(self, plugin_dir):
+        """Empty prompt_file string should fall back to prompt_text."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_file": "", "prompt_text": "fallback text"}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        assert p.prompt_template == "fallback text"
+
+    @pytest.mark.asyncio
+    async def test_inject_from_file(self, plugin_dir, tmp_path, make_context):
+        """Content from prompt_file should be injected correctly."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        md_file = tmp_path / "inject.md"
+        md_file.write_text("File-based prompt", encoding="utf-8")
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        ctx = make_context()
+        result = await p.inject_prompt(ctx)
+
+        assert result.success is True
+        assert result.modified is True
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert len(injected) == 1
+        assert injected[0].content == "File-based prompt"
+
+
+# ============================================================================
+# Jinja2 template rendering
+# ============================================================================
+
+class TestTemplateRendering:
+    """Test Jinja2 template rendering with agent template_vars."""
+
+    @pytest.mark.asyncio
+    async def test_render_prompt_text_with_vars(self, plugin_dir, make_context, mock_agent):
+        """prompt_text should be rendered with template_vars."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_text": "Hello {{ user_name }}, respond in {{ lang }}."}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        ctx = make_context(agent=mock_agent)
+        result = await p.inject_prompt(ctx)
+
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert len(injected) == 1
+        assert injected[0].content == "Hello Alice, respond in German."
+
+    @pytest.mark.asyncio
+    async def test_render_prompt_file_with_vars(self, plugin_dir, tmp_path, make_context, mock_agent):
+        """prompt_file content should be rendered with template_vars."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        md_file = tmp_path / "tmpl.md"
+        md_file.write_text("# Guide for {{ user_name }}\nLanguage: {{ lang }}", encoding="utf-8")
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        ctx = make_context(agent=mock_agent)
+        result = await p.inject_prompt(ctx)
+
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert len(injected) == 1
+        assert injected[0].content == "# Guide for Alice\nLanguage: German"
+
+    @pytest.mark.asyncio
+    async def test_session_vars_take_precedence(self, plugin_dir, make_context, mock_agent_with_session):
+        """Session-scoped template_vars should override agent_config vars."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_text": "Hello {{ user_name }}, lang={{ lang }}, extra={{ extra }}."}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        ctx = make_context(agent=mock_agent_with_session)
+        result = await p.inject_prompt(ctx)
+
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert injected[0].content == "Hello Bob, lang=French, extra=session_only."
+
+    @pytest.mark.asyncio
+    async def test_no_agent_skips_rendering(self, make_plugin, make_context):
+        """Without agent context, template should be used as-is (no rendering)."""
+        p = make_plugin("Hello {{ user_name }}.")
+        ctx = make_context(agent=None)
+        result = await p.inject_prompt(ctx)
+
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert injected[0].content == "Hello {{ user_name }}."
+
+    @pytest.mark.asyncio
+    async def test_no_template_vars_skips_rendering(self, plugin_dir, make_context):
+        """Agent without template_vars → template returned as-is."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        agent = MagicMock()
+        agent.agent_config.template_vars = None
+        agent._session_tracker = None
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_text": "Literal {{ braces }}."}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        ctx = make_context(agent=agent)
+        result = await p.inject_prompt(ctx)
+
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert injected[0].content == "Literal {{ braces }}."
+
+    @pytest.mark.asyncio
+    async def test_jinja_syntax_error_falls_back(self, plugin_dir, make_context, mock_agent):
+        """Invalid Jinja2 syntax should gracefully fall back to raw template."""
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_text": "Bad syntax {% if %}"}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        ctx = make_context(agent=mock_agent)
+        result = await p.inject_prompt(ctx)
+
+        assert result.success is True
+        assert result.modified is True
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert injected[0].content == "Bad syntax {% if %}"
+
+    @pytest.mark.asyncio
+    async def test_plain_text_no_vars_injected_as_is(self, plugin, make_context):
+        """Plain text without Jinja2 syntax still works (no agent → no vars)."""
+        ctx = make_context()
+        result = await plugin.inject_prompt(ctx)
+
+        injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+        assert injected[0].content == "Remember: always be concise."

@@ -15,7 +15,18 @@ config:
   prompt_text:
     type: string
     default: ""
-    description: "The text to inject into the conversation. Empty string means no injection."
+    description: >
+      The text to inject into the conversation. Empty string means no injection.
+      Supports Jinja2 template syntax with agent template_vars.
+
+  prompt_file:
+    type: string
+    default: ""
+    description: >
+      Path to a .md file whose content is used as the injection prompt.
+      Resolved relative to the config/ directory (or absolute).
+      Takes precedence over prompt_text when set.
+      Supports Jinja2 template syntax with agent template_vars.
 
   injection_position:
     type: string

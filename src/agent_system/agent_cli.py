@@ -614,6 +614,8 @@ def main() -> None:
     run_parser.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
     run_parser.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List all sessions for the current user")
     run_parser.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
+    run_parser.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
+                            help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
 
 
 
@@ -1465,6 +1467,20 @@ def main() -> None:
                 initial_vars = agent.agent_config.template_vars.copy()
                 agent._session_tracker.set_session_template_vars(actual_session_id, initial_vars)
                 logger.debug(f"[cli] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
+
+        # Merge CLI --vars overrides into session template_vars
+        cli_vars_raw = getattr(args, 'template_vars', None)
+        if cli_vars_raw and hasattr(agent, '_session_tracker'):
+            cli_vars: dict[str, str] = {}
+            for item in cli_vars_raw:
+                if '=' not in item:
+                    print(f"Warning: ignoring invalid --vars entry (expected KEY=VALUE): {item}", file=sys.stderr)
+                    continue
+                key, _, value = item.partition('=')
+                cli_vars[key.strip()] = value.strip()
+            if cli_vars:
+                agent._session_tracker.set_session_template_vars(actual_session_id, cli_vars)
+                logger.debug(f"[cli] Applied CLI template_vars overrides: {list(cli_vars.keys())}")
 
         return True, was_new_session  # Continue with task execution
 
