@@ -17,7 +17,7 @@ import httpx
 import ssl
 
 from agent_system.llm.clients import LLMClient
-from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
+from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
 from agent_system.core.cancellation import CancellationToken
 from agent_system.llm import openai_utils
 from agent_system.llm.gemini_utils import sanitize_schema_for_gemini
@@ -682,6 +682,11 @@ class HTTPXOpenAIClient(LLMClient):
                             "is_streaming": False, "duration_ms": _duration_ms,
                             "error": error_msg, "timestamp_ms": _time.time() * 1000,
                         })
+                        if response.status_code >= 500:
+                            raise LLMServerError(
+                                error_msg, provider="httpx", model=self.model,
+                                status_code=response.status_code,
+                            )
                         raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                     # Parse successful response
@@ -932,6 +937,11 @@ class HTTPXOpenAIClient(LLMClient):
                             error_text = error_body.decode('utf-8', errors='replace')
                             error_msg = f"HTTP {response.status_code}: {error_text[:200]}"
                             logger.error(f"HTTPX streaming request failed: {error_msg}")
+                            if response.status_code >= 500:
+                                raise LLMServerError(
+                                    error_msg, provider="httpx", model=self.model,
+                                    status_code=response.status_code,
+                                )
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                         # Parse SSE stream with chunk timeout

@@ -14,7 +14,7 @@ from ...config.models import AgentSystemConfig, MCPConfig
 from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager, CancellationToken
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
-from ...llm.models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError
+from ...llm.models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...mcp.status import (
     status_scope,
@@ -1681,6 +1681,32 @@ class Agent(MCPServer):
                     else:
                         # No more fallbacks available
                         logger.error(f"[{self.name}] No fallback profiles available, rate limit exceeded")
+                        raise
+
+                except LLMServerError as e:
+                    # 5xx server errors (e.g. DeepSeek 504) — try fallback, but NOT persistent.
+                    # Server errors are transient outages; the primary LLM should be retried next time.
+                    if fallback_index < len(fallback_profiles):
+                        fallback_profile = fallback_profiles[fallback_index]
+                        fallback_index += 1
+                        logger.warning(
+                            f"[{self.name}] Server error {e.status_code} from {e.model}: {e}. "
+                            f"Switching to fallback profile: {fallback_profile}"
+                        )
+                        await status_worker.progress(
+                            f"Server error {e.status_code}, switching to {fallback_profile}",
+                            meta={"step": step + 1, "fallback": fallback_profile}
+                        )
+                        fallback_llm = self._create_fallback_llm(fallback_profile)
+                        if fallback_llm:
+                            current_llm = fallback_llm
+                            self.llm_profile_info = f"{fallback_profile}:fallback"
+                            continue  # Retry with fallback (non-persistent)
+                        else:
+                            logger.error(f"[{self.name}] Failed to create fallback LLM for server error")
+                            raise
+                    else:
+                        logger.error(f"[{self.name}] No fallback profiles available, server error unrecoverable")
                         raise
                 
                 except asyncio.CancelledError:

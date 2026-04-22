@@ -20,6 +20,15 @@ class LLMQuotaExhaustedError(LLMRateLimitError):
     pass
 
 
+class LLMServerError(Exception):
+    """Raised when LLM server returns 5xx after all retries are exhausted - triggers fallback."""
+    def __init__(self, message: str, provider: str = "", model: str = "", status_code: int = 0):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.status_code = status_code
+
+
 class ContentType(str, Enum):
     """Types of content in multimodal messages."""
     TEXT = "text"

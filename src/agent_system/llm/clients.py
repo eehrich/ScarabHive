@@ -128,7 +128,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 api_key=api_key,
                 base_url=base_url or "https://api.openai.com/v1",
                 timeout_config=timeout_config,
-                max_retries=3,
+                max_retries=1,  # 2 attempts total — faster fallback on 5xx (e.g. DeepSeek 504)
                 retry_backoff=1.0,
                 verify=ssl_verify,
                 context_window=context_window,
