@@ -229,3 +229,107 @@ class TestStreamingToolExecution:
         # Same message roles
         assert all(m1.role == m2.role for m1, m2 in zip(streaming_messages, wrapper_messages))
 
+
+
+class TestMalformedToolArguments:
+    """Regression tests for repair_json returning non-dict values.
+
+    When an LLM (e.g., DeepSeek-chat) emits malformed tool arguments, the
+    json-repair library can return list/str/number instead of a dict. The
+    downstream code calls params.get(...) which would crash with AttributeError.
+
+    Triggering case observed in production: v5b_synopsis_moderator posting a
+    ~15KB synopsis as tool argument; repair_json returned a list.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_wrapped_single_dict_unwraps(self, manager_with_streaming):
+        """[{...}] → {...} — LLM accidentally wrapped args in a single-item list."""
+        manager, forwarder = manager_with_streaming
+
+        # Malformed JSON that repair_json returns as a list with one dict
+        # (simulates LLM wrapping args in brackets)
+        raw = '[{"key": "value"}]'
+        tool_calls = [{
+            "id": "call_1",
+            "function": {"name": "test_tool", "arguments": raw},
+        }]
+
+        tool_messages = []
+        async for item in manager.execute_tools_streaming(
+            tool_calls=tool_calls,
+            tool_name_mapping={"test_tool": "test_tool"},
+            available_tools=["test_tool"],
+            step=1,
+            request_id="unwrap_test",
+            status_forwarder=forwarder,
+        ):
+            if item["type"] == "complete":
+                tool_messages = item["messages"]
+                break
+
+        # Must complete without AttributeError — params was unwrapped to dict
+        assert len(tool_messages) == 1
+        assert tool_messages[0].role == "tool"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_args_return_parse_error(self, manager_with_streaming):
+        """[...multiple...] / bare list → treated as parse failure, not crash."""
+        manager, forwarder = manager_with_streaming
+
+        # List with 2 dicts — ambiguous, can't unwrap
+        raw = '[{"a": 1}, {"b": 2}]'
+        tool_calls = [{
+            "id": "call_1",
+            "function": {"name": "test_tool", "arguments": raw},
+        }]
+
+        tool_messages = []
+        async for item in manager.execute_tools_streaming(
+            tool_calls=tool_calls,
+            tool_name_mapping={"test_tool": "test_tool"},
+            available_tools=["test_tool"],
+            step=1,
+            request_id="parse_err_test",
+            status_forwarder=forwarder,
+        ):
+            if item["type"] == "complete":
+                tool_messages = item["messages"]
+                break
+
+        # Must complete with one error-tool-message (no crash)
+        assert len(tool_messages) == 1
+        assert tool_messages[0].role == "tool"
+        # The error content should mention JSON parse failure
+        import json as _json
+        content = _json.loads(tool_messages[0].content)
+        assert content.get("type") == "JSONParseError"
+
+    @pytest.mark.asyncio
+    async def test_bare_string_args_return_parse_error(self, manager_with_streaming):
+        """Bare string after repair → parse failure, not crash."""
+        manager, forwarder = manager_with_streaming
+
+        # Malformed: just a bare string (repair_json might return the string)
+        raw = '"just a string"'
+        tool_calls = [{
+            "id": "call_1",
+            "function": {"name": "test_tool", "arguments": raw},
+        }]
+
+        tool_messages = []
+        async for item in manager.execute_tools_streaming(
+            tool_calls=tool_calls,
+            tool_name_mapping={"test_tool": "test_tool"},
+            available_tools=["test_tool"],
+            step=1,
+            request_id="string_test",
+            status_forwarder=forwarder,
+        ):
+            if item["type"] == "complete":
+                tool_messages = item["messages"]
+                break
+
+        # Must complete with error message, not crash with AttributeError
+        assert len(tool_messages) == 1
+        assert tool_messages[0].role == "tool"

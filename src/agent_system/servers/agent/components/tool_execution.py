@@ -218,6 +218,31 @@ class ToolExecutionManager:
             elif isinstance(raw_args, dict):
                 params = raw_args
 
+            # Defensive: both json.loads and repair_json can return non-dict values
+            # (list/str/number) if the LLM wrapped args in [...] or emitted a bare value.
+            # Downstream code assumes params is a dict (params.get(...)), so normalise:
+            # - [{...}] → {...}   (LLM wrapped a single dict in a list — common mistake)
+            # - anything else → treat as parse failure so the LLM gets a clear error back
+            if not json_parse_failed and not isinstance(params, dict):
+                if (
+                    isinstance(params, list)
+                    and len(params) == 1
+                    and isinstance(params[0], dict)
+                ):
+                    logger.info(
+                        "Unwrapped list-wrapped tool arguments for %s ([{...}] → {...})",
+                        tool_name,
+                    )
+                    params = params[0]
+                else:
+                    logger.warning(
+                        "Tool arguments for %s parsed as %s, expected dict — "
+                        "treating as parse failure",
+                        tool_name, type(params).__name__,
+                    )
+                    json_parse_failed = True
+                    params = {}
+
             # If JSON parsing failed, return an error to the LLM so it can retry
             if json_parse_failed:
                 tool_call_id = tc.get("id") or f"parse-error-{int(time.time()*1000)}"
