@@ -632,20 +632,33 @@ class SessionManager:
         session_lock = await self._get_session_lock(session_id)
         async with session_lock:
             path = self._get_session_path(user_id, session_id)
-            
+            safe_user_id = self._sanitize_user_id(user_id)
+
             if not path.exists():
-                # Before raising NotFoundError, check if session exists for another user
-                # This prevents session ID conflicts across users
+                # Before raising NotFoundError, check if session exists for ANOTHER user.
+                # This prevents session ID conflicts across users.
+                # IMPORTANT: skip the caller's own directory — otherwise a concurrent
+                # create_session by the same user that completes between path.exists()
+                # and this iterdir loop would be misreported as "belongs to another
+                # user" (race condition: the file appears in cli_user/ during the loop,
+                # we see it, and falsely flag it as cross-user).
                 for existing_user_dir in self.storage_path.iterdir():
-                    if existing_user_dir.is_dir():
-                        other_user_path = existing_user_dir / f"{session_id}.json"
-                        if other_user_path.exists():
-                            # Session exists but belongs to another user
-                            raise SessionPermissionError(
-                                f"Session {session_id} already exists and belongs to another user"
-                            )
-                # Session truly doesn't exist
-                raise SessionNotFoundError(f"Session {session_id} not found")
+                    if not existing_user_dir.is_dir():
+                        continue
+                    if existing_user_dir.name == safe_user_id:
+                        continue  # never compare against own directory
+                    other_user_path = existing_user_dir / f"{session_id}.json"
+                    if other_user_path.exists():
+                        # Session exists but belongs to another user
+                        raise SessionPermissionError(
+                            f"Session {session_id} already exists and belongs to another user"
+                        )
+                # Re-check own path after the iterdir scan: a concurrent writer in
+                # the same user-dir may have completed the atomic write between our
+                # initial path.exists() and now. If the file is now there, fall
+                # through and read it instead of raising NotFound.
+                if not path.exists():
+                    raise SessionNotFoundError(f"Session {session_id} not found")
             
             session_data = await self._read_session_file_async(path)
             

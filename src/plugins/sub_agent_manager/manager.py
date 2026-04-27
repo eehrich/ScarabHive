@@ -552,11 +552,22 @@ class SubAgentManager:
         Returns:
             User ID (from params, directory name, or 'anonymous')
         """
-        # Priority 1: Use injected user_id from tool params
+        # Priority 1: Use injected user_id from tool params — but only if it
+        # is a non-empty string. ``None`` or empty values must fall through to
+        # the directory search; otherwise load_session(None, ...) ends up in
+        # ``data/sessions/None/`` (which never exists), and the subsequent
+        # cross-user check raises SessionPermissionError because the real
+        # session lives under the actual user_id (e.g. ``cli_user``).
         if params and "_user_id" in params:
-            user_id = params["_user_id"]
-            logger.debug(f"Using user_id '{user_id}' from injected params")
-            return user_id
+            raw = params["_user_id"]
+            if raw and isinstance(raw, str) and raw.strip():
+                user_id = raw.strip()
+                logger.debug(f"Using user_id '{user_id}' from injected params")
+                return user_id
+            logger.debug(
+                f"_user_id in params but value is empty/None ({raw!r}) — "
+                "falling through to directory search"
+            )
 
         # Priority 2: Search all user directories for this session_id
         storage_path = self._session_service.session_manager.storage_path
