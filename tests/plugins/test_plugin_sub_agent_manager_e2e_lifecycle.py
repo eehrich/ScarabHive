@@ -479,3 +479,86 @@ async def test_e2e_list_filtering(
     print("   Total created: 3")
     print(f"   Active only: {len(active_only)}")
     print(f"   Including completed: {len(all_subs)}")
+
+
+@pytest.mark.asyncio
+async def test_create_sub_session_retries_on_cross_process_collision(
+    temp_session_storage,
+    session_manager,
+    session_service,
+    sub_agent_manager,
+):
+    """Cross-process collision: another process wrote the same instance_id
+    between our uniqueness-check and our create_session. The retry-loop must
+    regenerate a new id and succeed instead of bubbling the error.
+
+    Simulates the multi-process race that hits when 5 parallel agent-cli
+    runs all start their _class_counter at the same value.
+    """
+    # Create coordinator
+    coord_id = "coord_collision_test"
+    await session_manager.create_session(
+        user_id="testuser",
+        session_id=coord_id,
+        title="Coord",
+        agent_name="meta_agent",
+        llm_profile="default",
+    )
+
+    # Wrap session_manager.create_session: first call raises "already exists",
+    # subsequent calls go through. This emulates the cross-process race —
+    # another process already wrote OUR generated id, and we get the rejection.
+    real_create = session_manager.create_session
+    call_count = {"n": 0}
+
+    async def flaky_create(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Simulate cross-process winner having written this id first.
+            raise ValueError(f"Session {kwargs['session_id']} already exists")
+        return await real_create(**kwargs)
+
+    session_manager.create_session = flaky_create
+    try:
+        sub_id = await sub_agent_manager.create_sub_session(
+            parent_session_id=coord_id,
+            agent_type="web_research_agent",
+            initial_message="task",
+        )
+    finally:
+        session_manager.create_session = real_create
+
+    assert sub_id, "create_sub_session should succeed after retry"
+    assert call_count["n"] >= 2, "create_session must have been retried at least once"
+    sub_file = temp_session_storage / "testuser" / f"{sub_id}.json"
+    assert sub_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_create_sub_session_eventually_gives_up_on_persistent_collision(
+    temp_session_storage,
+    session_manager,
+    session_service,
+    sub_agent_manager,
+):
+    """If every retry hits "already exists", the error eventually bubbles up
+    so the caller-side retry loop can react. Must not infinite-loop."""
+    coord_id = "coord_persist_collision"
+    await session_manager.create_session(
+        user_id="testuser",
+        session_id=coord_id,
+        title="Coord",
+        agent_name="meta_agent",
+        llm_profile="default",
+    )
+
+    async def always_collide(**kwargs):
+        raise ValueError(f"Session {kwargs['session_id']} already exists")
+
+    session_manager.create_session = always_collide
+    with pytest.raises(ValueError, match="already exists"):
+        await sub_agent_manager.create_sub_session(
+            parent_session_id=coord_id,
+            agent_type="web_research_agent",
+            initial_message="task",
+        )

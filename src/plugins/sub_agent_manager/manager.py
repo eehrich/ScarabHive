@@ -213,10 +213,7 @@ class SubAgentManager:
                     f"Active sub-agents: {active_agents_of_type}"
                 )
 
-        # Generate unique instance ID (short format)
-        sub_session_id = await self._generate_instance_id(agent_type, instance_label)
-
-        # Get actual agent to extract llm_profile
+        # Get actual agent to extract llm_profile (check before id generation)
         agent = self._registry.get(agent_type)
         if not agent:
             raise ValueError(f"Agent type '{agent_type}' not found in registry")
@@ -225,14 +222,55 @@ class SubAgentManager:
         if not agent_llm_profile:
             raise ValueError(f"Agent '{agent_type}' has no agent_config.llm_profile")
 
-        # Create session via existing SessionManager with actual agent metadata
-        await session_manager.create_session(
-            user_id=user_id,
-            session_id=sub_session_id,
-            title=initial_message[:100] if len(initial_message) <= 100 else f"{initial_message[:97]}...",
-            agent_name=agent_type,
-            llm_profile=agent_llm_profile
+        # Generate unique instance ID + create session.
+        #
+        # Race condition guard for multi-process scenarios (e.g. 5 parallel
+        # agent-cli runs): each Python process has its OWN ``_class_counter``
+        # starting at ``(int(time.time()) % 86400) * 100``. Parallel processes
+        # land on the same counter and collide. The asyncio class-lock is
+        # process-local and doesn't help cross-process.
+        #
+        # ``_generate_instance_id`` checks uniqueness against the filesystem,
+        # but between that check and ``create_session`` (which runs the same
+        # check + write atomically) another process can race in. So we wrap
+        # the create in a retry loop: on collision, generate a NEW id and
+        # try again. The class_counter advances on each retry, so we won't
+        # hit the same id twice from this process.
+        max_id_collision_retries = 10
+        title = (
+            initial_message[:100]
+            if len(initial_message) <= 100
+            else f"{initial_message[:97]}..."
         )
+        sub_session_id: str = ""
+        for attempt in range(max_id_collision_retries):
+            sub_session_id = await self._generate_instance_id(agent_type, instance_label)
+            try:
+                await session_manager.create_session(
+                    user_id=user_id,
+                    session_id=sub_session_id,
+                    title=title,
+                    agent_name=agent_type,
+                    llm_profile=agent_llm_profile,
+                )
+                break  # success
+            except ValueError as exc:
+                msg = str(exc)
+                if "already exists" not in msg:
+                    raise
+                # Cross-process collision — another agent-cli process raced and
+                # wrote this exact session_id. Generate a fresh id (counter is
+                # already incremented in our own class state) and retry.
+                if attempt < max_id_collision_retries - 1:
+                    logger.info(
+                        "Sub-session id collision (cross-process race) on %s — "
+                        "regenerating id (attempt %d/%d)",
+                        sub_session_id, attempt + 1, max_id_collision_retries,
+                    )
+                    continue
+                # Final attempt failed — re-raise so the caller's normal retry
+                # path can react.
+                raise
 
         logger.info(
             f"Created sub-session: {sub_session_id} (parent: {parent_session_id}, depth: {child_depth})"
