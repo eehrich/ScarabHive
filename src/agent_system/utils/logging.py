@@ -8,6 +8,35 @@ from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 
+class FailTolerantRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that swallows PermissionError on Windows during rotation.
+
+    Multi-process Logging-Konflikt: wenn mehrere Prozesse (z.B. parallele agent-cli
+    Instanzen aus einem Batch-Run) gleichzeitig dieselbe Logdatei offen halten,
+    schlägt ``os.rename`` mit ``[WinError 32] Process used by another process``
+    fehl. Statt dann den ganzen Log-Pfad mit einem CallStack-Trace lahmzulegen
+    (siehe Issue: Logging-Errors während Batch-Runs), ignorieren wir den
+    Rotation-Fehler und schreiben weiter in die bestehende Datei. Worst-Case:
+    die Datei wächst über ``maxBytes`` hinaus, bis das Lock frei ist und beim
+    nächsten Rotation-Versuch wieder klappt.
+    """
+
+    def rotate(self, source: str, dest: str) -> None:
+        try:
+            super().rotate(source, dest)
+        except (PermissionError, OSError) as e:
+            # Stderr-Direkt-Print weil das Logging-System gerade ja Probleme hat.
+            # `flush=True` damit die Meldung nicht in Stream-Buffer hängenbleibt.
+            try:
+                print(
+                    f"[logging] Rotation skipped (file held by another process): "
+                    f"{source} -> {dest}: {e}",
+                    file=sys.stderr, flush=True,
+                )
+            except Exception:
+                pass
+
+
 class ColorizedFormatter(logging.Formatter):
     """A colored log formatter that mimics uvicorn's styling."""
     
@@ -192,11 +221,11 @@ def setup_logging(
     # tests that inspect root handlers see it. We ensure earlier handlers
     # were closed above to avoid duplicate open descriptors.
     if rotation_enabled:
-        file_handler = RotatingFileHandler(
-            file_path, 
-            maxBytes=max_bytes, 
+        file_handler = FailTolerantRotatingFileHandler(
+            file_path,
+            maxBytes=max_bytes,
             backupCount=backup_count,
-            encoding="utf-8"
+            encoding="utf-8",
         )
     else:
         file_handler = logging.FileHandler(file_path, mode="w", encoding="utf-8")
