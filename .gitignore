@@ -16,6 +16,7 @@
 *.ogg
 *.aac
 *.pyc
+*.lock
 
 *_bak*
 *.egg-info/
