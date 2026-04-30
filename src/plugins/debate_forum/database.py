@@ -287,7 +287,7 @@ class DebateForumDB:
         limit: int = 0,
     ) -> list[dict[str, Any]]:
         conn = self._get_conn()
-        sql = "SELECT * FROM messages WHERE channel_id = ? ORDER BY round, id"
+        sql = "SELECT * FROM messages WHERE channel_id = ? ORDER BY id"
         params: list[Any] = [channel_id]
         if limit > 0:
             sql += " LIMIT ?"

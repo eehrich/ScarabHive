@@ -341,13 +341,17 @@
         }
 
         let html = "";
-        let lastRound = -1;
+        let maxRoundSeen = -1;
 
         for (const msg of messages) {
-            // Round divider
-            if (msg.round !== lastRound) {
-                html += `<div class="round-divider">Round ${msg.round}</div>`;
-                lastRound = msg.round;
+            // Messages are now chronological (sorted by id). Only emit a
+            // round divider when entering a NEW (higher) round — otherwise
+            // moderator posts in old rounds would create spurious dividers
+            // that fragment the timeline.
+            const r = typeof msg.round === "number" ? msg.round : 0;
+            if (r > maxRoundSeen) {
+                html += `<div class="round-divider">Round ${r}</div>`;
+                maxRoundSeen = r;
             }
 
             const rc = roleClass(msg.agent_role);
