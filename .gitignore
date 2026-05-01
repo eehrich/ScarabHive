@@ -40,6 +40,9 @@ nul
 
 tmp_backlog.md
 
+# v5b/v4 batch test outputs (per-run logs + scene-draft JSON dumps)
+src/plugins_writer/**/batch_logs/
+
 data/users.db
 data/cache/
 data/sessions/
