@@ -652,7 +652,7 @@ llm_system:
     # ---------------------------------------------------------------------------
     deepseek-chat:
       provider: openai_httpx
-      model: deepseek-chat
+      model: deepseek-v4-flash
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000
@@ -665,7 +665,7 @@ llm_system:
 
     deepseek-reasoner:
       provider: openai_httpx
-      model: deepseek-reasoner
+      model: deepseek-v4-flash
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000
@@ -676,9 +676,23 @@ llm_system:
         streaming: true
         json_mode: true        
 
+
+    deepseek-pro:
+      provider: openai_httpx
+      model: deepseek-v4-pro
+      api_key: "***REMOVED***"
+      base_url: https://api.deepseek.com/v1
+      context_window: 100000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true      
+
     deepseek-chat-nostream:
       provider: openai_httpx
-      model: deepseek-chat
+      model: deepseek-v4-flash
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000
@@ -691,7 +705,7 @@ llm_system:
 
     deepseek-reasoner-nostream:
       provider: openai_httpx
-      model: deepseek-reasoner
+      model: deepseek-v4-flash
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000

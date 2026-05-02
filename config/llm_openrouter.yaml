@@ -482,6 +482,117 @@ llm_system:
       # - Same as openrouter-claude-sonnet but WITHOUT output token limit
       # - Use for very long scene generation or full chapter rewrites
 
+    # ---------------------------------------------------------------------------
+    # DEEPSEEK MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+    # DeepSeek V4 Flash and V4 Pro routed through OpenRouter for higher rate
+    # limits and unified billing. The same V4-Flash model serves both
+    # "chat" (non-thinking) and "reasoner" (thinking) modes — toggled via
+    # thinking_level. V4-Pro is the larger flagship variant.
+
+    openrouter-deepseek-chat:
+      provider: openai_httpx
+      model: deepseek/deepseek-v4-flash
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 100000
+      request_timeout: 600
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - DeepSeek V4 Flash, non-thinking mode (chat)
+      # - Cheap and fast for medium tasks
+      # - See https://openrouter.ai/deepseek/deepseek-v4-flash
+
+    openrouter-deepseek-chat-unlimited:
+      provider: openai_httpx
+      model: deepseek/deepseek-v4-flash
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 100000
+      request_timeout: 600
+      max_tokens: 0  # No limit - let provider decide
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+    openrouter-deepseek-reasoner:
+      provider: openai_httpx
+      model: deepseek/deepseek-v4-flash
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 100000
+      request_timeout: 600
+      thinking_level: high
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - DeepSeek V4 Flash, thinking mode enabled via reasoning.effort=high
+      # - Same model as openrouter-deepseek-chat, just with reasoning toggled on
+      # - Use for tasks that benefit from extended chain-of-thought
+
+    openrouter-deepseek-reasoner-unlimited:
+      provider: openai_httpx
+      model: deepseek/deepseek-v4-flash
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 100000
+      request_timeout: 600
+      thinking_level: high
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+    openrouter-deepseek-pro:
+      provider: openai_httpx
+      model: deepseek/deepseek-v4-pro
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 100000
+      request_timeout: 600
+      thinking_level: high
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
+      # Notes:
+      # - DeepSeek V4 Pro, flagship variant with thinking enabled
+      # - More capable than V4 Flash, higher cost
+      # - See https://openrouter.ai/deepseek/deepseek-v4-pro
+
+    openrouter-deepseek-pro-unlimited:
+      provider: openai_httpx
+      model: deepseek/deepseek-v4-pro
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 100000
+      request_timeout: 600
+      thinking_level: high
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+
 
   # =============================================================================
   # PROFILES for easy access
@@ -596,4 +707,34 @@ llm_system:
       model_ref: openrouter-gpt-oss-120b-unlimited
       description: "OpenRouter gpt-oss-120b - No output token limit"
       max_steps: 500
-    
+
+    or-deepseek-chat:
+      model_ref: openrouter-deepseek-chat
+      description: "OpenRouter DeepSeek V4 Flash - Cheap, fast, non-thinking mode"
+      max_steps: 500
+
+    or-deepseek-chat-unlimited:
+      model_ref: openrouter-deepseek-chat-unlimited
+      description: "OpenRouter DeepSeek V4 Flash - No output token limit"
+      max_steps: 500
+
+    or-deepseek-reasoner:
+      model_ref: openrouter-deepseek-reasoner
+      description: "OpenRouter DeepSeek V4 Flash - Thinking mode for reasoning tasks"
+      max_steps: 500
+
+    or-deepseek-reasoner-unlimited:
+      model_ref: openrouter-deepseek-reasoner-unlimited
+      description: "OpenRouter DeepSeek V4 Flash - Thinking mode, no output token limit"
+      max_steps: 500
+
+    or-deepseek-pro:
+      model_ref: openrouter-deepseek-pro
+      description: "OpenRouter DeepSeek V4 Pro - Flagship variant, thinking mode"
+      max_steps: 500
+
+    or-deepseek-pro-unlimited:
+      model_ref: openrouter-deepseek-pro-unlimited
+      description: "OpenRouter DeepSeek V4 Pro - Flagship, no output token limit"
+      max_steps: 500
+

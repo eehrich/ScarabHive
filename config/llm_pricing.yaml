@@ -31,6 +31,16 @@ deepseek-reasoner:
   output: 0.42
   cached_input: 0.028
 
+deepseek-v4-flash:
+  input: 0.14
+  output: 0.28
+  cached_input: 0.0028 # yes cached is 10 times chapeter than on OR
+
+deepseek-v4-pro:
+  input: 1.74
+  output: 3.48
+  cached_input: 0.0145
+
 # =============================================================================
 # Google Gemini — Direct SDK (generativelanguage.googleapis.com)
 # Cache read = 0.1x of input price (implicit caching, no storage fee)
@@ -163,6 +173,19 @@ deepseek/deepseek-v3.2:
   input: 0.26
   output: 0.38
   cached_input: 0.13
+
+# DeepSeek V4 Flash via OpenRouter — chat (non-thinking) and reasoner (thinking)
+# share the same model ID; thinking is toggled per request
+deepseek/deepseek-v4-flash:
+  input: 0.14
+  output: 0.28
+  cached_input: 0.028
+
+# DeepSeek V4 Pro via OpenRouter — flagship variant
+deepseek/deepseek-v4-pro:
+  input: 1.74
+  output: 3.48
+  cached_input: 0.145
 
 # xAI Grok via OpenRouter — cache read = 0.25x of input price
 x-ai/grok-4.1-fast:
