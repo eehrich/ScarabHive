@@ -577,20 +577,26 @@ class SessionManager:
         title: str = "New Conversation",
         agent_name: str = "basic_agent",
         llm_profile: str = "default",
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new session.
-        
+
         Args:
             user_id: User identifier (from JWT)
             title: Session title
             agent_name: Agent to use
             llm_profile: LLM profile to use
             session_id: Optional custom session ID (generated if not provided)
-        
+            parent_session_id: If set, the new session is a sub-agent of this
+                parent. ``parent_session`` is filled into the session data
+                immediately so the index entry lands in
+                ``.subs.<parent>.index.json`` on first write — no migration
+                cleanup, no main-index contention from parallel sub-spawns.
+
         Returns:
             Session data dictionary
-        
+
         Raises:
             ValueError: If session_id already exists (after max retries)
         """
@@ -639,7 +645,17 @@ class SessionManager:
                     "tags": []
                 }
             }
-            
+
+            # Set parent link upfront so the first index write goes straight
+            # to the per-parent sub-index. Avoids 12+ sub-agents racing on
+            # main index.json during parallel spawn.
+            if parent_session_id:
+                safe_parent = self._validate_session_id(parent_session_id)
+                session_data["parent_session"] = {
+                    "session_id": safe_parent,
+                    "created_at": now,
+                }
+
             await self._atomic_write_async(path, session_data)
             
             # Cache the new session (with cleanup if needed)

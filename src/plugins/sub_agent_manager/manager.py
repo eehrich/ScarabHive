@@ -252,6 +252,7 @@ class SubAgentManager:
                     title=title,
                     agent_name=agent_type,
                     llm_profile=agent_llm_profile,
+                    parent_session_id=parent_session_id,
                 )
                 break  # success
             except ValueError as exc:

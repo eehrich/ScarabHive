@@ -105,6 +105,68 @@ async def test_save_with_parent_cleans_up_main_entry(sm):
 
 
 @pytest.mark.asyncio
+async def test_create_with_parent_id_skips_main_index(sm):
+    """When create_session is called with parent_session_id, the entry must
+    land directly in the sub-index — no temporary main-index entry, no
+    migration cleanup. This is the fast path that prevents parallel
+    sub-spawns from contending on the main index file."""
+    main = await sm.create_session(user_id="u1", title="P", session_id="parent_fast")
+
+    # Fast path: pass parent_session_id at create time
+    await sm.create_session(
+        user_id="u1",
+        title="Sub",
+        session_id="sub_fast",
+        parent_session_id=main["session_id"],
+    )
+
+    ud = _user_dir(sm, "u1")
+    main_idx = _read_index(ud / "index.json")
+    assert "sub_fast" not in main_idx, (
+        "sub-session created with parent_session_id must NOT appear in main "
+        "index — that would re-introduce the contention this fix targets"
+    )
+
+    sub_idx = _read_index(ud / f".subs.{main['session_id']}.index.json")
+    assert "sub_fast" in sub_idx
+    assert sub_idx["sub_fast"]["parent_session"]["session_id"] == main["session_id"]
+
+    # And the session file itself must carry parent_session
+    sub_data = await sm.load_session("u1", "sub_fast")
+    assert sub_data["parent_session"]["session_id"] == main["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_sub_creates_with_parent_id_dont_touch_main(sm):
+    """Many sub-agents spawning in parallel with parent_session_id set must
+    leave the main index entirely untouched (only the parent itself is in
+    main). Regression test for the contention bug."""
+    main = await sm.create_session(user_id="u1", title="P", session_id="parent_par")
+
+    # Spawn 20 subs concurrently — exercises lock paths even in single-process
+    sub_ids = [f"sub_par_{i}" for i in range(20)]
+    await asyncio.gather(*[
+        sm.create_session(
+            user_id="u1",
+            title="S",
+            session_id=sid,
+            parent_session_id=main["session_id"],
+        )
+        for sid in sub_ids
+    ])
+
+    ud = _user_dir(sm, "u1")
+    main_idx = _read_index(ud / "index.json")
+    # Main holds the parent itself, nothing else
+    assert set(main_idx.keys()) == {"parent_par"}, (
+        f"main index must hold only the top-level parent, found: {sorted(main_idx.keys())}"
+    )
+
+    sub_idx = _read_index(ud / f".subs.{main['session_id']}.index.json")
+    assert set(sub_idx.keys()) == set(sub_ids)
+
+
+@pytest.mark.asyncio
 async def test_two_parents_get_separate_sub_indices(sm):
     """Two parallel main sessions produce two distinct sub-index files."""
     p1 = await sm.create_session(user_id="u1", title="P1", session_id="parent_p1")
