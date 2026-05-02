@@ -113,17 +113,35 @@ class SessionManager:
             raise ValueError(f"Invalid session ID format: {session_id!r}")
         return session_id
 
-    def _get_index_path(self, user_id: str) -> Path:
-        """Get the path to the index file for a user.
-        
-        Args:
-            user_id: User identifier
-        
-        Returns:
-            Path to index.json file
+    def _get_index_path(
+        self,
+        user_id: str,
+        parent_session_id: Optional[str] = None,
+    ) -> Path:
+        """Index file path. Top-level: ``<user>/index.json``. Sub-agents:
+        ``<user>/.subs.<parent>.index.json`` (per-parent partition so parallel
+        ``agent-cli`` processes write to different files, no contention).
         """
         safe_user_id = self._sanitize_user_id(user_id)
-        return self.storage_path / safe_user_id / "index.json"
+        user_dir = self.storage_path / safe_user_id
+        if parent_session_id:
+            safe_parent = self._validate_session_id(parent_session_id)
+            return user_dir / f".subs.{safe_parent}.index.json"
+        return user_dir / "index.json"
+
+    @staticmethod
+    def _extract_parent_id(session_data_or_metadata: Dict[str, Any]) -> Optional[str]:
+        """Pull the parent session_id from a session-data or index-metadata dict.
+
+        Sessions track their parent via ``parent_session = {"session_id": ..., "created_at": ...}``.
+        Returns None for top-level sessions.
+        """
+        parent = session_data_or_metadata.get("parent_session")
+        if isinstance(parent, dict):
+            pid = parent.get("session_id")
+            if isinstance(pid, str) and pid:
+                return pid
+        return None
 
     def _get_session_path(self, user_id: str, session_id: str) -> Path:
         """Get the file path for a session.
@@ -365,8 +383,12 @@ class SessionManager:
         """Async wrapper for reading session file to avoid blocking event loop."""
         return await asyncio.to_thread(self._read_session_file, path)
 
-    async def _read_index_async(self, user_id: str) -> Dict[str, Dict[str, Any]]:
-        """Read session index file.
+    async def _read_index_async(
+        self,
+        user_id: str,
+        parent_session_id: Optional[str] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Read a single session index file (main or per-parent sub index).
         
         Args:
             user_id: User identifier
@@ -377,55 +399,93 @@ class SessionManager:
         Raises:
             FileNotFoundError: If index doesn't exist
         """
-        index_path = self._get_index_path(user_id)
+        index_path = self._get_index_path(user_id, parent_session_id)
         if not index_path.exists():
             raise FileNotFoundError(f"Index file not found: {index_path}")
-        
+
         def read_index():
             with open(index_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        
+
         return await asyncio.to_thread(read_index)
 
-    async def _write_index_async(self, user_id: str, index_data: Dict[str, Dict[str, Any]]) -> None:
-        """Write session index file atomically with retry on Windows file lock conflicts.
-        
-        Args:
-            user_id: User identifier
-            index_data: Dict mapping session_id -> metadata
-        """
-        index_path = self._get_index_path(user_id)
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Reuse the robust atomic write method that handles Windows file locks
-        await self._atomic_write_async(index_path, index_data)
+    async def _read_all_indexes_async(self, user_id: str) -> Dict[str, Dict[str, Any]]:
+        """Read main index plus all per-parent sub indices and merge.
 
-    async def _rebuild_index(self, user_id: str) -> Dict[str, Dict[str, Any]]:
-        """Rebuild index from session files.
-        
-        Args:
-            user_id: User identifier
-        
-        Returns:
-            Dict mapping session_id -> metadata
+        Used by list_sessions for a unified view across partitions.
+        Reads only the small index files, not every session blob.
         """
         safe_user_id = self._sanitize_user_id(user_id)
         user_dir = self.storage_path / safe_user_id
-        
         if not user_dir.exists():
             return {}
-        
-        index_data = {}
-        
+
+        merged: Dict[str, Dict[str, Any]] = {}
+
+        def read_one(path: Path) -> Dict[str, Dict[str, Any]]:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
+            except Exception as e:  # noqa: BLE001 — skip broken index
+                logger.warning("Failed to read index file %s: %s", path, e)
+                return {}
+
+        candidates = [user_dir / "index.json"] + sorted(user_dir.glob(".subs.*.index.json"))
+        for path in candidates:
+            if not path.exists():
+                continue
+            data = await asyncio.to_thread(read_one, path)
+            merged.update(data)
+        return merged
+
+    async def _write_index_async(
+        self,
+        user_id: str,
+        index_data: Dict[str, Dict[str, Any]],
+        parent_session_id: Optional[str] = None,
+    ) -> None:
+        """Write a session index file atomically (main or per-parent sub index)."""
+        index_path = self._get_index_path(user_id, parent_session_id)
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        await self._atomic_write_async(index_path, index_data)
+
+    async def _rebuild_index(
+        self,
+        user_id: str,
+        parent_session_id: Optional[str] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Rebuild a single index file from session files on disk.
+
+        Args:
+            user_id: User identifier.
+            parent_session_id: If set, rebuild only this parent's sub-index
+                (entries whose ``parent_session.session_id`` matches). Otherwise
+                rebuild the main index (entries without a parent).
+
+        Returns:
+            Dict mapping session_id -> metadata for the rebuilt index.
+        """
+        safe_user_id = self._sanitize_user_id(user_id)
+        user_dir = self.storage_path / safe_user_id
+
+        if not user_dir.exists():
+            return {}
+
+        index_data: Dict[str, Dict[str, Any]] = {}
+
         for session_file in user_dir.glob("*.json"):
-            # Skip index, backups, and temp files
+            # Skip index files, backups, temp files
             if session_file.name in ('index.json', 'index.tmp') or session_file.name.startswith('.'):
                 continue
-            
+
             try:
                 session_data = await self._read_session_file_async(session_file)
-                
-                # Extract metadata
+                pid = self._extract_parent_id(session_data)
+                # Only include entries that belong in this index partition
+                if pid != parent_session_id:
+                    continue
+
                 index_data[session_data["session_id"]] = {
                     "session_id": session_data["session_id"],
                     "user_id": session_data["user_id"],
@@ -438,53 +498,78 @@ class SessionManager:
                     "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
                     "tags": session_data["metadata"].get("tags", []),
                     "parent_session": session_data.get("parent_session"),
-                    "depth": session_data.get("depth", 0)
+                    "depth": session_data.get("depth", 0),
                 }
             except Exception as e:
                 logger.warning("Failed to read session %s for index rebuild: %s", session_file, e)
                 continue
-        
-        # Write rebuilt index
+
         if index_data:
-            await self._write_index_async(user_id, index_data)
-            logger.info("Rebuilt index for user %s with %d sessions", user_id, len(index_data))
-        
+            await self._write_index_async(user_id, index_data, parent_session_id)
+            logger.info(
+                "Rebuilt %s index for user %s with %d sessions",
+                ("sub-index for parent " + parent_session_id) if parent_session_id else "main",
+                user_id, len(index_data),
+            )
+
         return index_data
 
-    async def _update_index_entry(self, user_id: str, session_id: str, metadata: Dict[str, Any]) -> None:
-        """Update a single entry in the index.
-        
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
-            metadata: Session metadata to store
-        """
-        try:
-            index_data = await self._read_index_async(user_id)
-        except FileNotFoundError:
-            # Index doesn't exist, rebuild it
-            index_data = await self._rebuild_index(user_id)
-        
-        # Update entry
-        index_data[session_id] = metadata
-        
-        # Write back
-        await self._write_index_async(user_id, index_data)
+    async def _update_index_entry(
+        self,
+        user_id: str,
+        session_id: str,
+        metadata: Dict[str, Any],
+        parent_session_id: Optional[str] = None,
+    ) -> None:
+        """Update a single entry in the appropriate index (main or per-parent sub).
 
-    async def _remove_index_entry(self, user_id: str, session_id: str) -> None:
-        """Remove an entry from the index.
-        
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
+        ``parent_session_id`` is auto-detected from ``metadata.parent_session``
+        if not supplied — top-level sessions go to main index, sub-agent
+        sessions go to ``.subs.<parent>.index.json``.
+        """
+        if parent_session_id is None:
+            parent_session_id = self._extract_parent_id(metadata)
+
+        try:
+            index_data = await self._read_index_async(user_id, parent_session_id)
+        except FileNotFoundError:
+            index_data = await self._rebuild_index(user_id, parent_session_id)
+
+        index_data[session_id] = metadata
+        await self._write_index_async(user_id, index_data, parent_session_id)
+
+        # Migration cleanup: when an entry is now in a sub-index, ensure it's
+        # not still lingering in main from an earlier write (sub-agents are
+        # created via create_session first → land in main → then save_session
+        # adds parent_session and routes to sub here). One-off cost on the
+        # first save with a parent; subsequent saves no-op the main read.
+        if parent_session_id is not None:
+            try:
+                main_idx = await self._read_index_async(user_id)
+            except FileNotFoundError:
+                return
+            if main_idx.pop(session_id, None) is not None:
+                await self._write_index_async(user_id, main_idx)
+
+    async def _remove_index_entry(
+        self,
+        user_id: str,
+        session_id: str,
+        parent_session_id: Optional[str],
+    ) -> None:
+        """Remove an entry from the index partition where it lives.
+
+        ``parent_session_id`` MUST be the same value that was used when the
+        entry was last written (None for top-level sessions, parent's id for
+        sub-agents). The caller knows this from the session data — there's
+        no fallback search to keep this on the fast path.
         """
         try:
-            index_data = await self._read_index_async(user_id)
-            index_data.pop(session_id, None)
-            await self._write_index_async(user_id, index_data)
+            data = await self._read_index_async(user_id, parent_session_id)
         except FileNotFoundError:
-            # Index doesn't exist, nothing to remove
-            pass
+            return
+        if data.pop(session_id, None) is not None:
+            await self._write_index_async(user_id, data, parent_session_id)
 
     async def create_session(
         self,
@@ -843,8 +928,10 @@ class SessionManager:
             # Remove from cache
             self._cache.pop(session_id, None)
             
-            # Remove from index
-            await self._remove_index_entry(user_id, session_id)
+            # Remove from index (target the right partition based on parent)
+            await self._remove_index_entry(
+                user_id, session_id, self._extract_parent_id(session_data),
+            )
             
             logger.info("Deleted session %s for user %s", session_id, user_id)
 
@@ -859,37 +946,30 @@ class SessionManager:
         """
         safe_user_id = self._sanitize_user_id(user_id)
         user_dir = self.storage_path / safe_user_id
-        
+
         if not user_dir.exists():
             logger.debug("No sessions directory for user %s", user_id)
             return []
-        
-        # Try to read from index file
+
+        # Read main index + every per-parent sub-index and merge.
+        # Per-parent sub-indices live in ".subs.<parent>.index.json" — they
+        # exist so that parallel agent-cli processes don't write-collide on
+        # the main index. ``list_sessions`` is the unified view.
         try:
-            index_data = await self._read_index_async(user_id)
+            index_data = await self._read_all_indexes_async(user_id)
+            if not index_data:
+                # Nothing read — either no index files at all (fresh user)
+                # or all empty. Try a full rebuild as a last resort.
+                index_data = await self._rebuild_index(user_id)
+
             sessions = list(index_data.values())
-            
-            # Sort by updated_at (most recent first)
             sessions.sort(key=lambda s: s["updated_at"], reverse=True)
-            
-            logger.debug("Listed %d sessions for user %s from index", len(sessions), user_id)
+            logger.debug("Listed %d sessions for user %s", len(sessions), user_id)
             return sessions
-            
-        except FileNotFoundError:
-            # Index doesn't exist, rebuild it
-            logger.info("Index not found for user %s, rebuilding...", user_id)
-            index_data = await self._rebuild_index(user_id)
-            sessions = list(index_data.values())
-            
-            # Sort by updated_at (most recent first)
-            sessions.sort(key=lambda s: s["updated_at"], reverse=True)
-            
-            logger.debug("Listed %d sessions for user %s after rebuild", len(sessions), user_id)
-            return sessions
-        
+
         except Exception as e:
-            # Index is corrupt, rebuild it
-            logger.warning("Corrupt index for user %s, rebuilding: %s", user_id, e)
+            # Read pipeline blew up — rebuild main index from disk.
+            logger.warning("Index read failed for user %s, rebuilding main: %s", user_id, e)
             index_data = await self._rebuild_index(user_id)
             sessions = list(index_data.values())
             
