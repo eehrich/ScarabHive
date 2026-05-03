@@ -169,8 +169,8 @@ async def test_parallel_sub_creates_with_parent_id_dont_touch_main(sm):
 @pytest.mark.asyncio
 async def test_two_parents_get_separate_sub_indices(sm):
     """Two parallel main sessions produce two distinct sub-index files."""
-    p1 = await sm.create_session(user_id="u1", title="P1", session_id="parent_p1")
-    p2 = await sm.create_session(user_id="u1", title="P2", session_id="parent_p2")
+    await sm.create_session(user_id="u1", title="P1", session_id="parent_p1")
+    await sm.create_session(user_id="u1", title="P2", session_id="parent_p2")
 
     for parent_id, sub_id in [("parent_p1", "sub_a"), ("parent_p2", "sub_b")]:
         await sm.create_session(user_id="u1", title="S", session_id=sub_id)
@@ -179,8 +179,8 @@ async def test_two_parents_get_separate_sub_indices(sm):
         await sm.save_session(d)
 
     ud = _user_dir(sm, "u1")
-    idx_p1 = _read_index(ud / f".subs.parent_p1.index.json")
-    idx_p2 = _read_index(ud / f".subs.parent_p2.index.json")
+    idx_p1 = _read_index(ud / ".subs.parent_p1.index.json")
+    idx_p2 = _read_index(ud / ".subs.parent_p2.index.json")
 
     assert "sub_a" in idx_p1 and "sub_b" not in idx_p1
     assert "sub_b" in idx_p2 and "sub_a" not in idx_p2
@@ -214,8 +214,8 @@ async def test_list_sessions_merges_main_and_sub_indices(sm):
 @pytest.mark.asyncio
 async def test_list_sessions_user_isolation_across_partitions(sm):
     """Two users with sub-agents don't see each other's sessions."""
-    m1 = await sm.create_session(user_id="u1", title="Main1", session_id="m_one")
-    m2 = await sm.create_session(user_id="u2", title="Main2", session_id="m_two")
+    await sm.create_session(user_id="u1", title="Main1", session_id="m_one")
+    await sm.create_session(user_id="u2", title="Main2", session_id="m_two")
 
     for user, parent_id, sub_id in [("u1", "m_one", "sub_one"), ("u2", "m_two", "sub_two")]:
         await sm.create_session(user_id=user, title="S", session_id=sub_id)
@@ -271,8 +271,8 @@ async def test_delete_main_session_removes_from_main_only(sm):
 @pytest.mark.asyncio
 async def test_rebuild_only_includes_matching_parent_partition(sm):
     """_rebuild_index with parent_session_id only includes sub-agents of that parent."""
-    p1 = await sm.create_session(user_id="u1", title="P1", session_id="reb_p1")
-    p2 = await sm.create_session(user_id="u1", title="P2", session_id="reb_p2")
+    await sm.create_session(user_id="u1", title="P1", session_id="reb_p1")
+    await sm.create_session(user_id="u1", title="P2", session_id="reb_p2")
     for parent_id, sub_id in [("reb_p1", "sub_r1"), ("reb_p2", "sub_r2")]:
         await sm.create_session(user_id="u1", title="S", session_id=sub_id)
         d = await sm.load_session("u1", sub_id)
