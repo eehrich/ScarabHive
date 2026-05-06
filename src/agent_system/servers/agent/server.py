@@ -878,6 +878,21 @@ class Agent(MCPServer):
         if llm_override is not None and hasattr(llm_override, 'set_app_title'):
             llm_override.set_app_title(self.name)
 
+        # Start a background checkpoint loop so long-running tool calls don't
+        # leave the session unsaved on disk. The loop persists messages up to
+        # the last consistent tool_call/tool_result boundary, so the file is
+        # always reload-safe (orphan-free).
+        checkpoint_session_id: Optional[str] = None
+        checkpoint_user_id: Optional[str] = None
+        if self._session_service and session_id and self._session_tracker is not None:
+            try:
+                meta = self._session_tracker.get_session_metadata(session_id) or {}
+                checkpoint_user_id = meta.get("user_id", "anonymous")
+                self._session_service.start_checkpoint_loop(self, checkpoint_user_id, session_id)
+                checkpoint_session_id = session_id
+            except Exception as e:
+                logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
+
         try:
             # Pass status_scope parameters to _run_events which will open them AFTER
             # sending the 'start' event - this ensures frontend has currentRequestId
@@ -897,6 +912,12 @@ class Agent(MCPServer):
         except GeneratorExit:
             # Generator is being closed early - clean exit without error
             raise
+        finally:
+            if checkpoint_session_id and self._session_service:
+                try:
+                    await self._session_service.stop_checkpoint_loop(checkpoint_session_id)
+                except Exception as e:
+                    logger.debug(f"Failed to stop checkpoint loop for {checkpoint_session_id}: {e}")
 
     async def _initialize_request_and_conversation(
         self,

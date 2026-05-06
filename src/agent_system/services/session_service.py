@@ -5,12 +5,58 @@ This service handles loading and saving sessions for both API and CLI contexts.
 It provides a clean interface for session restoration and persistence.
 """
 
+import asyncio
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from agent_system.services.session_manager import SessionPermissionError, SessionNotFoundError
 
 logger = logging.getLogger(__name__)
+
+
+# Default checkpoint interval. Tunable via SessionService init.
+DEFAULT_CHECKPOINT_INTERVAL_SECONDS = 30
+
+
+def _trim_to_safe_boundary(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Trim a message list to the last consistent tool_call/tool_result boundary.
+
+    Walks the messages forward, tracking which assistant tool_call IDs have
+    matching tool result messages. The "last safe boundary" is the position
+    after the most recent message where every tool_call seen so far has been
+    answered. Anything after that boundary (typically a pending assistant
+    tool_call whose tool is still running) is dropped.
+
+    The result is reload-safe: every assistant tool_call has a matching tool
+    message, so the LLM-loop can pick the conversation back up cleanly.
+    """
+    open_ids: set[str] = set()
+    last_safe_end = 0
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                tc_id = tc.get("id") if isinstance(tc, dict) else None
+                if tc_id:
+                    open_ids.add(tc_id)
+        elif role == "tool":
+            tcid = msg.get("tool_call_id")
+            if tcid:
+                open_ids.discard(tcid)
+        if not open_ids:
+            last_safe_end = i + 1
+    return messages[:last_safe_end]
+
+
+def _msg_to_dict(msg: Any) -> Dict[str, Any]:
+    """Convert a ChatMessage (or compatible) into a JSON-ready dict."""
+    if isinstance(msg, dict):
+        return msg
+    if hasattr(msg, "model_dump"):
+        return msg.model_dump(mode="json")
+    if hasattr(msg, "dict"):
+        return msg.dict()
+    return dict(msg)
 
 
 def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
@@ -66,14 +112,19 @@ def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
 class SessionService:
     """Service for managing session loading, restoration, and saving."""
 
-    def __init__(self, session_manager):
+    def __init__(self, session_manager, checkpoint_interval_seconds: int = DEFAULT_CHECKPOINT_INTERVAL_SECONDS):
         """
         Initialize the session service.
 
         Args:
             session_manager: SessionManager instance for persistence operations
+            checkpoint_interval_seconds: Period of background checkpoint saves while
+                a request is active. Set to 0 to disable.
         """
         self.session_manager = session_manager
+        self.checkpoint_interval_seconds = checkpoint_interval_seconds
+        # session_id -> asyncio.Task running the checkpoint loop
+        self._checkpoint_tasks: Dict[str, asyncio.Task] = {}
 
     async def load_and_restore_session(
         self,
@@ -324,3 +375,137 @@ class SessionService:
                             return part.get("text", "")[:50]
 
         return "New conversation"
+
+    # ------------------------------------------------------------------
+    # Periodic checkpointing (orphan-safe save during long-running tools)
+    # ------------------------------------------------------------------
+
+    async def checkpoint_session(self, agent, user_id: str, session_id: str) -> bool:
+        """Persist the current in-memory session state up to the last consistent
+        tool_call/tool_result boundary.
+
+        Background-safe alternative to save_session for use while a long-running
+        tool is executing: the trim guarantees no orphan tool_calls land in the
+        file. Skips silently if there is nothing reload-safe to write yet
+        (e.g. the very first assistant turn is still pending).
+        """
+        if not self.session_manager:
+            return False
+        tracker = getattr(agent, "_session_tracker", None)
+        if tracker is None:
+            return False
+
+        try:
+            messages_list = tracker.get_session_messages(session_id)
+            messages_dicts = [_msg_to_dict(m) for m in messages_list]
+            for md in messages_dicts:
+                if "estimated_tokens" not in md:
+                    md["estimated_tokens"] = _estimate_message_tokens(md)
+
+            safe_messages = _trim_to_safe_boundary(messages_dicts)
+            runtime_vars = tracker.get_session_template_vars(session_id) if hasattr(tracker, "get_session_template_vars") else {}
+
+            if not safe_messages and not runtime_vars:
+                # Nothing useful to checkpoint yet
+                return False
+
+            # Find the actual session owner if the session is already on disk
+            session_owner = await self.session_manager._find_session_owner_async(session_id)
+            actual_user_id = session_owner if session_owner else user_id
+
+            if session_owner is None:
+                # Session not on disk yet — only create one if we have at least
+                # something meaningful to write. We skip pure context_vars-only
+                # checkpoints for non-existent sessions to avoid littering disk
+                # with empty session files for transient sub-agents.
+                if not safe_messages:
+                    return False
+                title = self._extract_session_title(safe_messages)
+                meta = tracker.get_session_metadata(session_id) if hasattr(tracker, "get_session_metadata") else {}
+                agent_name = (meta or {}).get("agent_name") or getattr(agent, "name", "agent")
+                llm_profile = (meta or {}).get("llm_profile") or "normal"
+                try:
+                    session_data = await self.session_manager.create_session(
+                        session_id=session_id,
+                        user_id=actual_user_id,
+                        title=title,
+                        agent_name=agent_name,
+                        llm_profile=llm_profile,
+                    )
+                except ValueError:
+                    # Race: session was created in the meantime — fall back to load
+                    session_owner = await self.session_manager._find_session_owner_async(session_id)
+                    if not session_owner:
+                        return False
+                    actual_user_id = session_owner
+                    session_data = await self.session_manager.load_session(actual_user_id, session_id)
+            else:
+                session_data = await self.session_manager.load_session(actual_user_id, session_id)
+
+            session_data["messages"] = safe_messages
+            if runtime_vars:
+                existing = session_data.get("context_vars")
+                if not isinstance(existing, dict):
+                    existing = {}
+                existing.update(runtime_vars)
+                session_data["context_vars"] = existing
+
+            await self.session_manager.save_session(session_data)
+            logger.debug(
+                f"[CHECKPOINT] Session {session_id}: persisted {len(safe_messages)} safe messages "
+                f"(trimmed from {len(messages_dicts)})"
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"[CHECKPOINT] Failed for session {session_id}: {e}")
+            return False
+
+    def start_checkpoint_loop(self, agent, user_id: str, session_id: str) -> None:
+        """Start a background task that periodically checkpoints this session.
+
+        Idempotent: a second call for the same session_id is a no-op as long as
+        the previous loop is still running.
+        """
+        if self.checkpoint_interval_seconds <= 0:
+            return
+        existing = self._checkpoint_tasks.get(session_id)
+        if existing is not None and not existing.done():
+            return
+
+        interval = self.checkpoint_interval_seconds
+
+        async def _loop() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(interval)
+                    await self.checkpoint_session(agent, user_id, session_id)
+            except asyncio.CancelledError:
+                return
+
+        try:
+            task = asyncio.create_task(_loop(), name=f"session-checkpoint-{session_id}")
+        except RuntimeError:
+            # No running event loop (e.g. unit test in sync context)
+            return
+        self._checkpoint_tasks[session_id] = task
+
+    async def stop_checkpoint_loop(self, session_id: str, final_checkpoint_agent=None, final_checkpoint_user_id: Optional[str] = None) -> None:
+        """Stop the background checkpoint loop for this session.
+
+        If ``final_checkpoint_agent`` is provided, runs one last checkpoint
+        synchronously after cancelling the loop — useful to flush the final
+        pre-save state when a request is winding down.
+        """
+        task = self._checkpoint_tasks.pop(session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if final_checkpoint_agent is not None and final_checkpoint_user_id is not None:
+            try:
+                await self.checkpoint_session(final_checkpoint_agent, final_checkpoint_user_id, session_id)
+            except Exception as e:
+                logger.debug(f"[CHECKPOINT] Final checkpoint failed for {session_id}: {e}")

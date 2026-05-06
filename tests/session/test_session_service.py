@@ -1,7 +1,69 @@
 """Tests for SessionService including token estimation."""
 
 import pytest
-from agent_system.services.session_service import _estimate_message_tokens
+from agent_system.services.session_service import _estimate_message_tokens, _trim_to_safe_boundary
+
+
+class TestTrimToSafeBoundary:
+    """Tests for the orphan-tool_call trim used by periodic checkpoints."""
+
+    def test_empty_list(self):
+        assert _trim_to_safe_boundary([]) == []
+
+    def test_only_user(self):
+        msgs = [{"role": "user", "content": "hello"}]
+        assert _trim_to_safe_boundary(msgs) == msgs
+
+    def test_completed_tool_round_trip(self):
+        msgs = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "tool_calls": [{"id": "tc1"}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ]
+        assert _trim_to_safe_boundary(msgs) == msgs
+
+    def test_pending_tool_call_dropped(self):
+        msgs = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "tool_calls": [{"id": "tc1"}]},
+            # tool result missing — pipeline still running
+        ]
+        trimmed = _trim_to_safe_boundary(msgs)
+        assert trimmed == [{"role": "user", "content": "go"}]
+
+    def test_partial_parallel_tool_calls_dropped(self):
+        # Assistant fires two tool_calls, only one is answered → entire assistant is unsafe
+        msgs = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "tool_calls": [{"id": "tc1"}, {"id": "tc2"}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "ok"},
+        ]
+        trimmed = _trim_to_safe_boundary(msgs)
+        assert trimmed == [{"role": "user", "content": "go"}]
+
+    def test_keeps_history_drops_only_trailing_orphan(self):
+        msgs = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "tool_calls": [{"id": "tc1"}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "r1"},
+            {"role": "assistant", "content": "step done"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "tool_calls": [{"id": "tc2"}]},
+            # tc2 still pending
+        ]
+        trimmed = _trim_to_safe_boundary(msgs)
+        assert trimmed == msgs[:5]
+
+    def test_user_message_alone_is_safe_boundary(self):
+        msgs = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "tool_calls": [{"id": "tc1"}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "r1"},
+            {"role": "user", "content": "follow-up"},
+        ]
+        # Trailing user message is fine — it's a complete state
+        assert _trim_to_safe_boundary(msgs) == msgs
 
 
 class TestEstimateMessageTokens:
@@ -175,7 +237,7 @@ class TestEstimateMessageTokens:
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from agent_system.services.session_service import SessionService
-from agent_system.services.session_manager import SessionManager
+from agent_system.services.session_manager import SessionManager, SessionNotFoundError
 
 
 def _make_mock_agent(messages_dicts, runtime_template_vars=None):
@@ -384,3 +446,150 @@ async def test_save_session_runtime_vars_merge_overrides_existing(session_servic
     assert cv["book_id"] == "1"            # persisted preserved (not in runtime)
     assert cv["persisted_only"] == "x"     # persisted preserved
     assert cv["new_key"] == "y"            # runtime adds new key
+
+
+# ---------------------------------------------------------------------------
+# checkpoint_session tests (orphan-safe periodic save)
+# ---------------------------------------------------------------------------
+
+
+def _make_checkpoint_agent(messages_dicts, runtime_template_vars=None, metadata=None):
+    """Mock agent for checkpoint tests. Tracker exposes raw dicts directly."""
+    agent = MagicMock()
+    agent.name = "test_agent"
+    tracker = MagicMock()
+    # checkpoint_session iterates and calls _msg_to_dict — returning dicts directly works
+    tracker.get_session_messages.return_value = list(messages_dicts)
+    tracker.get_session_template_vars.return_value = runtime_template_vars or {}
+    tracker.get_session_metadata.return_value = metadata or {}
+    agent._session_tracker = tracker
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_session_existing_writes_safe_messages(session_service_env):
+    """Checkpoint into an existing session file: trims pending tool_call, persists rest."""
+    svc, sm = session_service_env
+
+    await sm.create_session(
+        user_id="user1",
+        session_id="ckpt_existing",
+        title="Test",
+        agent_name="test_agent",
+        llm_profile="normal",
+    )
+
+    msgs = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "tool_calls": [{"id": "tc_pipeline"}]},
+        # tc_pipeline still running — orphan
+    ]
+    agent = _make_checkpoint_agent(msgs, runtime_template_vars={"phase": "running"})
+
+    ok = await svc.checkpoint_session(agent, "user1", "ckpt_existing")
+    assert ok is True
+
+    loaded = await sm.load_session("user1", "ckpt_existing")
+    # Only the user message survives the trim
+    assert len(loaded["messages"]) == 1
+    assert loaded["messages"][0]["role"] == "user"
+    # Runtime context_vars are persisted alongside
+    assert loaded["context_vars"]["phase"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_session_creates_new_when_missing(session_service_env):
+    """If session is not yet on disk, checkpoint creates it (only if there
+    are safe messages — bare context_vars-only checkpoints are skipped)."""
+    svc, sm = session_service_env
+
+    msgs = [
+        {"role": "user", "content": "kickoff"},
+        {"role": "assistant", "tool_calls": [{"id": "tc1"}]},
+    ]
+    agent = _make_checkpoint_agent(
+        msgs,
+        runtime_template_vars={"book_id": "42"},
+        metadata={"user_id": "user1", "agent_name": "linear_book", "llm_profile": "normal"},
+    )
+
+    ok = await svc.checkpoint_session(agent, "user1", "ckpt_new")
+    assert ok is True
+
+    loaded = await sm.load_session("user1", "ckpt_new")
+    assert len(loaded["messages"]) == 1  # orphan trimmed
+    assert loaded["messages"][0]["content"] == "kickoff"
+    assert loaded["context_vars"]["book_id"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_session_skips_when_nothing_safe(session_service_env):
+    """No safe messages and no runtime vars → silent no-op, no file written."""
+    svc, sm = session_service_env
+
+    agent = _make_checkpoint_agent([], runtime_template_vars={})
+
+    ok = await svc.checkpoint_session(agent, "user1", "ckpt_empty")
+    assert ok is False
+
+    # Session file must not have been created
+    with pytest.raises(SessionNotFoundError):
+        await sm.load_session("user1", "ckpt_empty")
+
+
+@pytest.mark.asyncio
+async def test_start_stop_checkpoint_loop_runs_periodically(session_service_env):
+    """Background loop runs at the configured interval, stops cleanly on cancel."""
+    svc, sm = session_service_env
+    svc.checkpoint_interval_seconds = 1  # fast for the test
+
+    await sm.create_session(
+        user_id="user1",
+        session_id="loop_001",
+        title="Loop test",
+        agent_name="test_agent",
+        llm_profile="normal",
+    )
+
+    msgs = [{"role": "user", "content": "ping"}]
+    agent = _make_checkpoint_agent(msgs)
+
+    svc.start_checkpoint_loop(agent, "user1", "loop_001")
+    assert "loop_001" in svc._checkpoint_tasks
+    # Wait long enough for the loop to fire at least once
+    await asyncio.sleep(1.3)
+
+    loaded = await sm.load_session("user1", "loop_001")
+    assert len(loaded["messages"]) == 1
+
+    await svc.stop_checkpoint_loop("loop_001")
+    assert "loop_001" not in svc._checkpoint_tasks
+
+
+@pytest.mark.asyncio
+async def test_start_checkpoint_loop_idempotent(session_service_env):
+    """Calling start twice for the same session does not spawn a second task."""
+    svc, sm = session_service_env
+    svc.checkpoint_interval_seconds = 60  # don't actually fire during test
+
+    agent = _make_checkpoint_agent([{"role": "user", "content": "x"}])
+
+    svc.start_checkpoint_loop(agent, "user1", "idem_001")
+    first_task = svc._checkpoint_tasks["idem_001"]
+    svc.start_checkpoint_loop(agent, "user1", "idem_001")
+    second_task = svc._checkpoint_tasks["idem_001"]
+
+    assert first_task is second_task
+
+    await svc.stop_checkpoint_loop("idem_001")
+
+
+@pytest.mark.asyncio
+async def test_disabled_when_interval_zero(session_service_env):
+    """checkpoint_interval_seconds=0 disables the loop entirely."""
+    svc, sm = session_service_env
+    svc.checkpoint_interval_seconds = 0
+
+    agent = _make_checkpoint_agent([{"role": "user", "content": "x"}])
+    svc.start_checkpoint_loop(agent, "user1", "off_001")
+    assert "off_001" not in svc._checkpoint_tasks
