@@ -115,24 +115,29 @@ window.AgentSystem.SessionInfo = {
   
   renderContent: function(data, trackerData) {
     const contextVars = data.context_vars || {};
+    const descendants = data.descendants_context_vars || [];
     const messages = data.messages || [];
-    
+
     // Calculate context distribution
     const stats = this.calculateContextStats(messages, trackerData);
-    
+
     return `
       <div class="session-info-content">
-        ${this.renderContextVarsSection(contextVars)}
+        ${this.renderContextVarsSection(contextVars, descendants)}
         ${this.renderContextWindowSection(stats, trackerData)}
         ${this.renderMessagesSection(stats)}
       </div>
     `;
   },
-  
-  renderContextVarsSection: function(contextVars) {
+
+  renderContextVarsSection: function(contextVars, descendants = []) {
     const keys = Object.keys(contextVars);
-    
-    if (keys.length === 0) {
+    const ownVarsHtml = keys.length > 0 ? this.renderVarsList(contextVars) : '';
+    const ownEmpty = keys.length === 0;
+    const descendantsHtml = this.renderDescendantsTree(descendants);
+    const hasAny = !ownEmpty || descendantsHtml.length > 0;
+
+    if (!hasAny) {
       return `
         <div class="si-section">
           <div class="si-section-header">
@@ -143,7 +148,24 @@ window.AgentSystem.SessionInfo = {
         </div>
       `;
     }
-    
+
+    const totalCount = keys.length + this.countDescendantVars(descendants);
+
+    return `
+      <div class="si-section">
+        <div class="si-section-header">
+          <span class="si-icon">🏷️</span>
+          <span class="si-title">Context Variables</span>
+          <span class="si-count">${totalCount}</span>
+        </div>
+        ${ownEmpty ? '' : `<div class="si-vars-list">${ownVarsHtml}</div>`}
+        ${ownEmpty && descendantsHtml ? '<div class="si-empty-hint" style="margin-bottom:6px">No vars on this session — showing sub-sessions</div>' : ''}
+        ${descendantsHtml}
+      </div>
+    `;
+  },
+
+  renderVarsList: function(contextVars) {
     const phaseColors = {
       'planning': '#569cd6',
       'characters': '#c586c0',
@@ -151,11 +173,11 @@ window.AgentSystem.SessionInfo = {
       'content': '#dcdcaa',
       'review': '#ce9178'
     };
-    
+
     let varsHtml = '';
     for (const [key, value] of Object.entries(contextVars)) {
       let valueHtml = '';
-      
+
       if (key === 'workflow_phase' && phaseColors[value]) {
         const color = phaseColors[value];
         valueHtml = `<span class="si-phase-badge" style="background:${color}20;color:${color};border:1px solid ${color}40;">${value}</span>`;
@@ -164,7 +186,7 @@ window.AgentSystem.SessionInfo = {
       } else {
         valueHtml = `<span class="si-var-value">${this.escapeHtml(String(value))}</span>`;
       }
-      
+
       varsHtml += `
         <div class="si-var-row">
           <span class="si-var-name">${this.escapeHtml(key)}</span>
@@ -172,19 +194,47 @@ window.AgentSystem.SessionInfo = {
         </div>
       `;
     }
-    
-    return `
-      <div class="si-section">
-        <div class="si-section-header">
-          <span class="si-icon">🏷️</span>
-          <span class="si-title">Context Variables</span>
-          <span class="si-count">${keys.length}</span>
+    return varsHtml;
+  },
+
+  countDescendantVars: function(descendants) {
+    let n = 0;
+    for (const d of descendants || []) {
+      n += Object.keys(d.context_vars || {}).length;
+      n += this.countDescendantVars(d.children || []);
+    }
+    return n;
+  },
+
+  renderDescendantsTree: function(descendants, depth = 1) {
+    if (!descendants || descendants.length === 0) return '';
+    let html = '';
+    for (const d of descendants) {
+      const sid = d.session_id || '';
+      const agent = d.agent_name || '?';
+      const cv = d.context_vars || {};
+      const cvKeys = Object.keys(cv);
+      const childrenHtml = this.renderDescendantsTree(d.children || [], depth + 1);
+
+      // Skip nodes with no vars and no descendant-vars to avoid noise
+      if (cvKeys.length === 0 && childrenHtml.length === 0) continue;
+
+      const indentPx = 12 * depth;
+      const varsListHtml = cvKeys.length > 0 ? `<div class="si-vars-list">${this.renderVarsList(cv)}</div>` : '';
+      html += `
+        <div class="si-subsession" style="margin-left:${indentPx}px;border-left:2px solid #3a3a3a;padding-left:8px;margin-top:8px">
+          <div class="si-subsession-header" style="font-size:11px;color:#9cdcfe;margin-bottom:4px">
+            <span style="color:#888">⤷</span>
+            <span class="si-subsession-agent">${this.escapeHtml(agent)}</span>
+            <span class="si-subsession-id" style="color:#666;font-family:monospace">(${this.escapeHtml(sid)})</span>
+            <span class="si-count" style="margin-left:6px">${cvKeys.length}</span>
+          </div>
+          ${varsListHtml}
+          ${childrenHtml}
         </div>
-        <div class="si-vars-list">
-          ${varsHtml}
-        </div>
-      </div>
-    `;
+      `;
+    }
+    return html;
   },
   
   renderContextWindowSection: function(stats, trackerData) {

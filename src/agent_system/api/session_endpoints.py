@@ -20,6 +20,108 @@ logger = logging.getLogger(__name__)
 session_router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
+async def _build_descendants_context_vars(
+    session_manager,
+    mcp_registry,
+    user_id: str,
+    root_session_id: str,
+) -> List[Dict[str, Any]]:
+    """Walk the session hierarchy below ``root_session_id`` and collect
+    context_vars for every descendant.
+
+    Returns a recursive tree structure with one entry per direct child:
+
+        [
+            {
+                "session_id": "sub_v5b_story_designer_6850002",
+                "agent_name": "v5b_story_designer",
+                "context_vars": {...},   # persisted + live-merged from tracker
+                "children": [ ... recursive ... ]
+            },
+            ...
+        ]
+
+    For each session the persisted ``context_vars`` are merged with whatever
+    the agent's session_tracker currently holds, so live updates show up
+    even before the next checkpoint write.
+    """
+    if not session_manager:
+        return []
+
+    # The list_sessions index does not include context_vars, so we list once
+    # to get the parent->children topology, then load each descendant's full
+    # session file to read its persisted context_vars.
+    sessions = await session_manager.list_sessions(user_id)
+    children_by_parent: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in sessions:
+        parent_info = entry.get("parent_session")
+        if not isinstance(parent_info, dict):
+            continue
+        parent_id = parent_info.get("session_id")
+        if not parent_id:
+            continue
+        children_by_parent.setdefault(parent_id, []).append(entry)
+
+    async def _load_persisted_vars(sid: str) -> Dict[str, Any]:
+        try:
+            data = await session_manager.load_session(user_id, sid)
+            cv = data.get("context_vars")
+            return cv if isinstance(cv, dict) else {}
+        except Exception:
+            return {}
+
+    # Cache mcp_registry agent lookups so we don't re-resolve per node
+    agent_cache: Dict[str, Any] = {}
+
+    def _resolve_agent(name: Optional[str]):
+        if not name or not mcp_registry:
+            return None
+        if name in agent_cache:
+            return agent_cache[name]
+        try:
+            from agent_system.servers.agent.server import Agent as _Agent
+            resolved = mcp_registry.get(name)
+            if isinstance(resolved, _Agent):
+                agent_cache[name] = resolved
+                return resolved
+        except Exception:
+            pass
+        agent_cache[name] = None
+        return None
+
+    def _live_merge_vars(agent: Any, sid: str, persisted: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = dict(persisted) if isinstance(persisted, dict) else {}
+        if agent is None or not hasattr(agent, "_session_tracker"):
+            return merged
+        try:
+            runtime = agent._session_tracker.get_session_template_vars(sid) or {}
+        except Exception:
+            runtime = {}
+        if runtime:
+            merged.update(runtime)
+        return merged
+
+    async def _walk(parent_id: str) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for child in children_by_parent.get(parent_id, []):
+            sid = child.get("session_id")
+            if not sid:
+                continue
+            agent_name = child.get("agent_name")
+            agent = _resolve_agent(agent_name)
+            persisted = await _load_persisted_vars(sid)
+            merged = _live_merge_vars(agent, sid, persisted)
+            out.append({
+                "session_id": sid,
+                "agent_name": agent_name,
+                "context_vars": merged,
+                "children": await _walk(sid),
+            })
+        return out
+
+    return await _walk(root_session_id)
+
+
 class CreateSessionRequest(BaseModel):
     """Request model for creating a session."""
     title: str = "New Conversation"
@@ -255,6 +357,21 @@ async def get_session(
                     existing = {}
                 merged = {**existing, **runtime_vars}
                 session["context_vars"] = merged
+
+        # Build hierarchical descendants tree with their context_vars (live-merged).
+        # The Session Info panel uses this so users can see vars set on sub-agent
+        # sessions even when the top-level session has none yet (e.g. linear_book
+        # in early phases — vars are only set on spawned sub-agents).
+        try:
+            session["descendants_context_vars"] = await _build_descendants_context_vars(
+                session_manager=session_manager,
+                mcp_registry=mcp_registry,
+                user_id=user_id,
+                root_session_id=session_id,
+            )
+        except Exception as desc_err:
+            logger.debug(f"Could not build descendants tree for {session_id}: {desc_err}")
+            session["descendants_context_vars"] = []
 
         # Format assistant messages to HTML for frontend display
         if session.get("messages"):
