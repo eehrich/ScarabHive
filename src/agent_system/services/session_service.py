@@ -271,6 +271,26 @@ class SessionService:
                             session_data["context_vars"] = agent.agent_config.template_vars.copy()
                             logger.debug(f"[SESSION] Initialized context_vars from agent config: {list(session_data['context_vars'].keys())}")
 
+            # Sync runtime template_vars back into persisted context_vars.
+            # Plugins may update session-scoped template_vars during the run via
+            # agent._session_tracker.set_session_template_vars(...) without writing
+            # session_data["context_vars"] directly. Without this sync those updates
+            # would never reach the persisted session and the Session Info panel would
+            # show stale or empty values for non-pipeline sessions.
+            session_tracker = getattr(agent, "_session_tracker", None)
+            if session_tracker is not None:
+                try:
+                    runtime_vars = session_tracker.get_session_template_vars(session_id)
+                except Exception as tracker_err:
+                    logger.debug(f"[SESSION] Could not read runtime template_vars: {tracker_err}")
+                    runtime_vars = None
+                if runtime_vars:
+                    existing = session_data.get("context_vars")
+                    if not isinstance(existing, dict):
+                        existing = {}
+                    existing.update(runtime_vars)
+                    session_data["context_vars"] = existing
+
             # Save back
             await self.session_manager.save_session(session_data)
 

@@ -178,8 +178,12 @@ from agent_system.services.session_service import SessionService
 from agent_system.services.session_manager import SessionManager
 
 
-def _make_mock_agent(messages_dicts):
-    """Build a minimal mock agent whose session_tracker holds *messages_dicts*."""
+def _make_mock_agent(messages_dicts, runtime_template_vars=None):
+    """Build a minimal mock agent whose session_tracker holds *messages_dicts*.
+
+    runtime_template_vars: dict returned by get_session_template_vars(), simulating
+    runtime template_vars set by plugins (e.g. task_switch.set_context).
+    """
     agent = MagicMock()
     agent.agent_config.default_llm_profile = "normal"
     agent.agent_config.template_vars = {}
@@ -192,6 +196,7 @@ def _make_mock_agent(messages_dicts):
         m.model_dump.return_value = d
         mock_msgs.append(m)
     tracker.get_session_messages.return_value = mock_msgs
+    tracker.get_session_template_vars.return_value = runtime_template_vars or {}
     agent._session_tracker = tracker
     return agent
 
@@ -305,3 +310,77 @@ async def test_save_session_existing_preserves_parent(session_service_env):
     assert loaded["depth"] == 3
     assert loaded["context_vars"]["book_id"] == "42"
     assert len(loaded["messages"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_save_session_syncs_runtime_template_vars_into_context_vars(session_service_env):
+    """Runtime template_vars set via session_tracker (e.g. by task_switch or
+    pipeline phases) must be synced into persisted context_vars on save —
+    otherwise the Session Info panel shows stale/empty values."""
+    svc, sm = session_service_env
+
+    session = await sm.create_session(
+        user_id="user1",
+        session_id="sync_001",
+        title="Test",
+        agent_name="chat_agent",
+        llm_profile="normal",
+    )
+    # Start with NO context_vars
+    await sm.save_session(session)
+
+    # Simulate a plugin setting runtime template_vars during the run
+    msgs = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "done"}]
+    agent = _make_mock_agent(msgs, runtime_template_vars={"workflow_phase": "review", "book_id": "99"})
+
+    result = await svc.save_session(
+        agent=agent,
+        user_id="user1",
+        session_id="sync_001",
+        agent_name="chat_agent",
+        llm_profile="normal",
+        was_new_session=False,
+    )
+    assert result is True
+
+    loaded = await sm.load_session("user1", "sync_001")
+    assert loaded["context_vars"]["workflow_phase"] == "review"
+    assert loaded["context_vars"]["book_id"] == "99"
+
+
+@pytest.mark.asyncio
+async def test_save_session_runtime_vars_merge_overrides_existing(session_service_env):
+    """When both persisted context_vars AND runtime template_vars exist, runtime
+    values should override (since the tracker holds the most recent state) while
+    persisted-only keys are preserved."""
+    svc, sm = session_service_env
+
+    session = await sm.create_session(
+        user_id="user1",
+        session_id="merge_001",
+        title="Test",
+        agent_name="v5b_story_designer",
+        llm_profile="normal",
+    )
+    session["context_vars"] = {"phase": "synopsis", "book_id": "1", "persisted_only": "x"}
+    await sm.save_session(session)
+
+    msgs = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "ok"}]
+    agent = _make_mock_agent(msgs, runtime_template_vars={"phase": "beats", "new_key": "y"})
+
+    result = await svc.save_session(
+        agent=agent,
+        user_id="user1",
+        session_id="merge_001",
+        agent_name="v5b_story_designer",
+        llm_profile="normal",
+        was_new_session=False,
+    )
+    assert result is True
+
+    loaded = await sm.load_session("user1", "merge_001")
+    cv = loaded["context_vars"]
+    assert cv["phase"] == "beats"          # runtime wins
+    assert cv["book_id"] == "1"            # persisted preserved (not in runtime)
+    assert cv["persisted_only"] == "x"     # persisted preserved
+    assert cv["new_key"] == "y"            # runtime adds new key
