@@ -221,30 +221,45 @@ async def get_session(
 
         session = await session_manager.load_session(user_id, session_id)
 
+        # Resolve the session's agent (for both formatting and live-var injection)
+        session_agent_name = session.get("agent_name")
+        session_agent = None
+        if session_agent_name and mcp_registry:
+            try:
+                from agent_system.servers.agent.server import Agent as _Agent
+                resolved = mcp_registry.get(session_agent_name)
+                if isinstance(resolved, _Agent):
+                    session_agent = resolved
+                else:
+                    logger.debug(f"Session agent '{session_agent_name}' is not an Agent instance, skipping live lookups")
+            except KeyError:
+                logger.debug(f"Session agent '{session_agent_name}' not found in registry, skipping live lookups")
+            except Exception as e:
+                logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, skipping live lookups")
+
+        # Inject live runtime template_vars from the agent's session tracker.
+        # save_session persists context_vars only after messages are committed
+        # (see services/session_service.py). For sessions still in-flight (no
+        # messages saved yet, e.g. a Pipeline run currently in phase 3) the
+        # tracker holds the truth — without this merge the Session Info panel
+        # shows "No context variables set" while the run is active.
+        if session_agent is not None and hasattr(session_agent, "_session_tracker"):
+            try:
+                runtime_vars = session_agent._session_tracker.get_session_template_vars(session_id)
+            except Exception as tracker_err:
+                logger.debug(f"Could not read runtime template_vars for {session_id}: {tracker_err}")
+                runtime_vars = None
+            if runtime_vars:
+                existing = session.get("context_vars")
+                if not isinstance(existing, dict):
+                    existing = {}
+                merged = {**existing, **runtime_vars}
+                session["context_vars"] = merged
+
         # Format assistant messages to HTML for frontend display
         if session.get("messages"):
-            # Get the agent that was used in this session
-            session_agent_name = session.get("agent_name")
-            formatting_agent = None
-
-            # Try to get the specific agent from the session
-            # IMPORTANT: Do NOT fallback to default_agent if session agent not found!
-            # Different agents have different hook configurations (e.g., markdown_formatter enabled/disabled).
-            # Using a different agent's hooks would apply wrong formatting settings.
-            if session_agent_name and mcp_registry:
-                try:
-                    from agent_system.servers.agent.server import Agent as _Agent
-                    session_agent = mcp_registry.get(session_agent_name)
-                    if isinstance(session_agent, _Agent):
-                        formatting_agent = session_agent
-                    else:
-                        logger.debug(f"Session agent '{session_agent_name}' is not an Agent instance, skipping formatting")
-                except KeyError:
-                    logger.debug(f"Session agent '{session_agent_name}' not found in registry, skipping formatting")
-                except Exception as e:
-                    logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, skipping formatting")
-
             # Only format if we found the exact session agent (no fallback to avoid wrong hook settings)
+            formatting_agent = session_agent
             if formatting_agent:
                 try:
                     # CRITICAL: Create a COPY of messages for formatting to avoid modifying stored session
