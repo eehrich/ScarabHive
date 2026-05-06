@@ -206,35 +206,39 @@ window.AgentSystem.SessionInfo = {
     return n;
   },
 
-  renderDescendantsTree: function(descendants, depth = 1) {
+  renderDescendantsTree: function(descendants) {
     if (!descendants || descendants.length === 0) return '';
-    let html = '';
+    const items = [];
     for (const d of descendants) {
-      const sid = d.session_id || '';
-      const agent = d.agent_name || '?';
       const cv = d.context_vars || {};
       const cvKeys = Object.keys(cv);
-      const childrenHtml = this.renderDescendantsTree(d.children || [], depth + 1);
-
+      const childrenHtml = this.renderDescendantsTree(d.children || []);
       // Skip nodes with no vars and no descendant-vars to avoid noise
       if (cvKeys.length === 0 && childrenHtml.length === 0) continue;
+      items.push(this.renderDescendantNode(d, cv, cvKeys, childrenHtml));
+    }
+    if (items.length === 0) return '';
+    return `<div class="si-subsessions">${items.join('')}</div>`;
+  },
 
-      const indentPx = 12 * depth;
-      const varsListHtml = cvKeys.length > 0 ? `<div class="si-vars-list">${this.renderVarsList(cv)}</div>` : '';
-      html += `
-        <div class="si-subsession" style="margin-left:${indentPx}px;border-left:2px solid #3a3a3a;padding-left:8px;margin-top:8px">
-          <div class="si-subsession-header" style="font-size:11px;color:#9cdcfe;margin-bottom:4px">
-            <span style="color:#888">⤷</span>
-            <span class="si-subsession-agent">${this.escapeHtml(agent)}</span>
-            <span class="si-subsession-id" style="color:#666;font-family:monospace">(${this.escapeHtml(sid)})</span>
-            <span class="si-count" style="margin-left:6px">${cvKeys.length}</span>
-          </div>
+  renderDescendantNode: function(d, cv, cvKeys, childrenHtml) {
+    const sid = d.session_id || '';
+    const agent = d.agent_name || '?';
+    const totalCount = cvKeys.length + this.countDescendantVars(d.children || []);
+    const varsListHtml = cvKeys.length > 0 ? `<div class="si-vars-list">${this.renderVarsList(cv)}</div>` : '';
+    // <details> for native collapse, default closed
+    return `
+      <details class="si-subsession">
+        <summary class="si-subsession-summary">
+          <span class="si-subsession-agent">${this.escapeHtml(agent)}</span>
+          <span class="si-count">${totalCount}</span>
+        </summary>
+        <div class="si-subsession-body">
           ${varsListHtml}
           ${childrenHtml}
         </div>
-      `;
-    }
-    return html;
+      </details>
+    `;
   },
   
   renderContextWindowSection: function(stats, trackerData) {

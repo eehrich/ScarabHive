@@ -666,6 +666,80 @@
   color: var(--text-primary, #d4d4d4);
 }
 
+/* Sub-session collapsibles (descendants tree) */
+.si-subsessions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.si-subsession {
+  background: var(--bg-tertiary, #1e1e1e);
+  border-radius: 4px;
+  border-left: 2px solid #3a3a3a;
+}
+
+.si-subsession[open] {
+  border-left-color: #569cd6;
+}
+
+.si-subsession-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-primary, #d4d4d4);
+  user-select: none;
+}
+
+.si-subsession-summary::-webkit-details-marker {
+  display: none;
+}
+
+.si-subsession-summary::before {
+  content: "▶";
+  font-size: 8px;
+  color: #888;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.si-subsession[open] > .si-subsession-summary::before {
+  transform: rotate(90deg);
+}
+
+.si-subsession-summary:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.si-subsession-agent {
+  flex: 1;
+  font-family: monospace;
+  color: #9cdcfe;
+}
+
+.si-subsession-summary .si-count {
+  background: var(--bg-secondary, #2d2d30);
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.si-subsession-body {
+  padding: 4px 8px 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Nested sub-sessions: smaller indent, no extra background */
+.si-subsession-body .si-subsessions {
+  margin-top: 2px;
+}
+
 /* Context Window Bar */
 .si-context-bar-container {
   margin-bottom: 12px;
