@@ -139,6 +139,12 @@ gpu = [
 line-length = 100
 exclude = [".venv", ".pytest_cache", "*.egg-info", "logs", "docs", "src/**/__pycache__", "src/plugins_writer_OLD"]
 
+[tool.ruff.lint.per-file-ignores]
+# Test files commonly re-use pytest fixture names both at module level
+# (re-import for visibility) and in test signatures — F811 is a false
+# positive in that pattern.
+"tests/**/*.py" = ["F811"]
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
