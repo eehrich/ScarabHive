@@ -676,6 +676,7 @@ plugins:
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
         max_messages: 150
+        summarization_trigger_percentage: 0.9
 
     context_optimizer:
       type: context_optimizer
@@ -706,10 +707,10 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction
-        layer1_threshold: 50000   # Start reversible compaction (tool refs, variables)
-        layer2_threshold: 70000   # Start semi-reversible compaction (archival with summaries)
-        layer3_threshold: 90000   # Start irreversible compaction (drop old messages)
-        target_tokens: 35000      # Target token count after compaction
+        layer1_threshold: 75000   # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 100000  # Start semi-reversible compaction (archival with summaries)
+        layer3_threshold: 120000  # Start irreversible compaction (drop old messages)
+        target_tokens: 55000      # Target token count after compaction
 
         store_media_before_compaction: true  # Aktiviert MediaStore
         media_store_ttl_seconds: 604800      # 7 Tage
