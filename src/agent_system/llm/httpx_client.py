@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class HTTPXTimeoutConfig:
     """Fine-grained timeout configuration for HTTPX client."""
-    connect: float = 10.0      # Connection establishment timeout
+    connect: float = 30.0      # Connection establishment timeout (incl. TLS handshake)
     read: float = 180.0        # Read timeout (waiting for response data)
     write: float = 10.0        # Write timeout (sending request data)
     pool: float = 5.0          # Pool timeout (getting connection from pool)
@@ -732,19 +732,26 @@ class HTTPXOpenAIClient(LLMClient):
                 raise  # Re-raise cancellation
             except Exception as e:
                 last_exception = e
+                err_label = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying in {backoff_time}s")
-                    await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await self._notify_retry("openai_httpx", self.model, url, False, str(e), attempt, self.max_retries + 1)
+                    logger.warning(
+                        f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}) "
+                        f"model={self.model} url={url}: {err_label}. Retrying in {backoff_time}s"
+                    )
+                    await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model} ({err_label})")
+                    await self._notify_retry("openai_httpx", self.model, url, False, err_label, attempt, self.max_retries + 1)
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                 else:
-                    logger.error(f"Request failed after {self.max_retries + 1} attempts")
-                    await self._report_status(status_scope, f"Request failed after retries: {self.model}")
-                    raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception}") from last_exception
+                    logger.error(
+                        f"Request failed after {self.max_retries + 1} attempts "
+                        f"model={self.model} url={url}: {err_label}"
+                    )
+                    await self._report_status(status_scope, f"Request failed after retries: {self.model} ({err_label})")
+                    raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}") from last_exception
 
         # Should never reach here
-        raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception}") from last_exception
+        raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception!r}") from last_exception
 
     async def _make_request_streaming(
         self,
