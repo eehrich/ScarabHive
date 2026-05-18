@@ -73,15 +73,28 @@ class ImageComposeServer(SchemaBasedMCPServer):
                 compose, spec, out_full, self.fonts_dir, self.font_aliases, self.project_root,
             )
 
+            warnings_list = meta.get("warnings", []) or []
+            # If anything is off-canvas or otherwise dubious, surface it via
+            # status="warning" so the calling agent can't ignore the warnings
+            # field. The file is still written either way.
+            result_status = "warning" if warnings_list else "success"
+
             result: Dict[str, Any] = {
-                "status": "success",
+                "status": result_status,
                 "output_path": str(out_full),
                 "size": meta["size"],
                 "format": meta["format"],
                 "bytes": meta["bytes"],
                 "layers_rendered": meta["layers_rendered"],
-                "warnings": meta.get("warnings", []),
+                "warnings": warnings_list,
             }
+            if warnings_list:
+                result["action_required"] = (
+                    "Re-compose: address each item in `warnings` (e.g. reduce "
+                    "layer size, change position/anchor, shorten title) and "
+                    "call image_compose_render again. Don't accept the cover "
+                    "as-is when warnings are present."
+                )
 
             if include_content:
                 mime = _MIME_BY_FORMAT.get(meta["format"], "application/octet-stream")
@@ -96,10 +109,19 @@ class ImageComposeServer(SchemaBasedMCPServer):
                 }]
 
             if status:
-                await status.end(
+                end_msg = (
                     f"Rendered {out_full.name}: "
-                    f"{meta['size'][0]}x{meta['size'][1]} ({meta['bytes']} bytes)",
-                    meta={"output_path": str(out_full), "bytes": meta["bytes"]},
+                    f"{meta['size'][0]}x{meta['size'][1]} ({meta['bytes']} bytes)"
+                )
+                if warnings_list:
+                    end_msg += f" — {len(warnings_list)} warning(s)"
+                await status.end(
+                    end_msg,
+                    meta={
+                        "output_path": str(out_full),
+                        "bytes": meta["bytes"],
+                        "warnings": len(warnings_list),
+                    },
                 )
             return result
 

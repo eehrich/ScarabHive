@@ -301,6 +301,116 @@ class TestCompose:
         )
         assert found_light, "expected white text pixels somewhere"
 
+    def test_literal_backslash_n_treated_as_newline(self, tmp_path, fonts_dir):
+        """Agents sometimes pass the two-character escape '\\n' instead of a
+        real newline (double-JSON-encoding). The compositor must split on it
+        anyway — otherwise the title overflows and shows a literal '\\n'."""
+        # Build a tall narrow canvas so two short lines fit but a single long
+        # line wouldn't. If the compositor splits "Bittere\\nReduktion" into
+        # two lines, layout fits; otherwise the line would be ~9 chars wide.
+        out, meta = _render({
+            "size": [400, 300], "background": "#000000",
+            "layers": [{
+                "type": "text",
+                "text": "Bittere\\nReduktion",   # literal backslash + n
+                "font": "serif_bold", "size": 60, "color": "#ffffff",
+                "position": {"anchor": "center"},
+                "align": "center",
+            }],
+        }, tmp_path, fonts_dir)
+        assert meta["layers_rendered"] == 1
+        img = Image.open(out).convert("RGBA")
+        # Top half and bottom half should each contain text pixels — proves
+        # the string was split into two lines.
+        def has_text(y0, y1):
+            return any(
+                img.getpixel((x, y))[0] > 200
+                for x in range(20, 380, 10)
+                for y in range(y0, y1, 5)
+            )
+        assert has_text(40, 140), "no text in top half — split didn't happen"
+        assert has_text(160, 260), "no text in bottom half — split didn't happen"
+
+    def test_text_without_max_width_wraps_at_canvas_margin(self, tmp_path, fonts_dir):
+        """If the caller omits max_width, a too-wide single line must still be
+        wrapped instead of overflowing the canvas (was: stayed on one line and
+        ran past the canvas edges)."""
+        long_title = "Der unbedingt viel zu lange Titel der niemals passt"
+        out, _ = _render({
+            "size": [600, 400], "background": "#000000",
+            "layers": [{
+                "type": "text", "text": long_title,
+                "font": "sans_bold", "size": 50, "color": "#ffffff",
+                "position": {"anchor": "center"},
+                "align": "center",
+                # no max_width given on purpose
+            }],
+        }, tmp_path, fonts_dir)
+        img = Image.open(out).convert("RGBA")
+        # The first/last 30 px columns (within the 80 px safe margin) must NOT
+        # contain text pixels — text must have wrapped to stay inside.
+        left_band_has_text = any(
+            img.getpixel((x, y))[0] > 200
+            for x in range(0, 30)
+            for y in range(0, 400, 5)
+        )
+        right_band_has_text = any(
+            img.getpixel((x, y))[0] > 200
+            for x in range(570, 600)
+            for y in range(0, 400, 5)
+        )
+        assert not left_band_has_text, "text leaked into left safe margin"
+        assert not right_band_has_text, "text leaked into right safe margin"
+
+    def test_overflow_warning_for_rect_outside_canvas(self, tmp_path, fonts_dir):
+        """A rect whose bbox extends past the canvas must produce a warning
+        naming the layer index, type, and how far it overflows on each side.
+        File is still written."""
+        out, meta = _render({
+            "size": [200, 200], "background": "transparent",
+            "layers": [
+                {"type": "rect", "rect": [-30, -10, 100, 100], "fill": "#ff0000"},
+                {"type": "rect", "rect": [150, 150, 100, 100], "fill": "#00ff00"},
+            ],
+        }, tmp_path, fonts_dir)
+        # File rendered
+        assert Image.open(out).size == (200, 200)
+        assert meta["layers_rendered"] == 2
+        # Warnings for both layers
+        warns = meta["warnings"]
+        joined = " | ".join(warns)
+        assert "layer 0 (rect)" in joined
+        assert "layer 1 (rect)" in joined
+        assert "left by 30px" in joined
+        assert "top by 10px" in joined
+        assert "right by 50px" in joined
+        assert "bottom by 50px" in joined
+
+    def test_no_overflow_warning_for_fitted_layers(self, tmp_path, fonts_dir):
+        """Layers that fit inside the canvas don't generate warnings."""
+        _, meta = _render({
+            "size": [200, 200], "background": "#000000",
+            "layers": [
+                {"type": "rect", "rect": [10, 10, 180, 180], "fill": "#ffffff"},
+                {"type": "vignette", "strength": 0.3},
+            ],
+        }, tmp_path, fonts_dir)
+        assert meta["warnings"] == []
+
+    def test_overflow_warning_for_oversized_text(self, tmp_path, fonts_dir):
+        """A text layer that can't fit on the canvas (because the agent set a
+        huge font without sizing the canvas appropriately) must trigger an
+        overflow warning identifying the text layer."""
+        _, meta = _render({
+            "size": [100, 80], "background": "#000000",
+            "layers": [{
+                "type": "text", "text": "ABCDEFGHIJ", "font": "sans_bold",
+                "size": 80, "color": "#ffffff", "position": [0, 0],
+            }],
+        }, tmp_path, fonts_dir)
+        assert any("layer 0 (text) extends beyond canvas" in w for w in meta["warnings"]), \
+            f"expected canvas-overflow warning, got: {meta['warnings']}"
+
     def test_gradient_layer(self, tmp_path, fonts_dir):
         out, _ = _render({
             "size": [50, 50], "background": "transparent",

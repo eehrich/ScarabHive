@@ -64,7 +64,8 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
         ltype = (layer or {}).get("type", "?") if isinstance(layer, dict) else "?"
         try:
             canvas = _render_layer(
-                canvas, layer, size, fonts_dir, font_aliases, project_root, warnings,
+                canvas, layer, size, fonts_dir, font_aliases, project_root,
+                warnings, layer_index=idx,
             )
             rendered += 1
         except CompositionError as e:
@@ -230,9 +231,46 @@ def _resolve_rect(rect: Any, position: Any, size: Any,
 
 # ── Layer dispatcher ──────────────────────────────────────────────────────
 
+# Layer types that legitimately fill or exceed the canvas — we don't warn for
+# these even if they extend beyond the canvas (it's their job).
+_FULL_CANVAS_TYPES = frozenset({"vignette"})
+
+
+def _check_canvas_overflow(layer_index: int, layer_type: str,
+                            pos: tuple[int, int], layer_size: tuple[int, int],
+                            canvas_size: tuple[int, int],
+                            warnings: list[str]) -> None:
+    """Append a warning if the layer's bounding box leaves the canvas.
+
+    Skipped for full-canvas layers (vignette) and for `image` layers using
+    `fit=cover/contain/stretch` to canvas size (those are intended full-bleed).
+    """
+    if layer_type in _FULL_CANVAS_TYPES:
+        return
+    x, y = pos
+    w, h = layer_size
+    cw, ch = canvas_size
+    over: list[str] = []
+    if x < 0:
+        over.append(f"left by {-x}px")
+    if y < 0:
+        over.append(f"top by {-y}px")
+    if x + w > cw:
+        over.append(f"right by {x + w - cw}px")
+    if y + h > ch:
+        over.append(f"bottom by {y + h - ch}px")
+    if over:
+        warnings.append(
+            f"layer {layer_index} ({layer_type}) extends beyond canvas: "
+            + ", ".join(over)
+            + f". Layer size {w}x{h} at top-left ({x},{y}); canvas {cw}x{ch}."
+        )
+
+
 def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
                   fonts_dir: Path, font_aliases: dict[str, str],
-                  project_root: Path, warnings: list[str]) -> Image.Image:
+                  project_root: Path, warnings: list[str],
+                  layer_index: int = 0) -> Image.Image:
     if not isinstance(layer, dict):
         raise CompositionError("layer must be an object")
     t = layer.get("type")
@@ -261,6 +299,10 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
         layer_img = layer_img.rotate(-rotation, resample=Image.BICUBIC, expand=True)
         after_w, after_h = layer_img.size
         pos = (pos[0] - (after_w - before_w) // 2, pos[1] - (after_h - before_h) // 2)
+
+    # Canvas-overflow check — file is still rendered, but we surface the issue
+    # so the calling agent can re-compose with adjusted size/position.
+    _check_canvas_overflow(layer_index, t, pos, layer_img.size, canvas_size, warnings)
 
     # Opacity
     opacity = float(layer.get("opacity", 1.0))
@@ -304,6 +346,9 @@ def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
     if text is None:
         raise CompositionError("text layer: 'text' is required")
     text = str(text)
+    # Tolerate literal "\n" / "\r\n" / "\r" written as two-character escapes by
+    # callers that double-encoded their JSON. Real newlines pass through unchanged.
+    text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
     if layer.get("uppercase"):
         text = text.upper()
 
@@ -316,15 +361,18 @@ def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
     line_height = float(layer.get("line_height", 1.1))
     tracking = int(layer.get("tracking", 0))
 
-    # Wrapping
+    # Wrapping. If the caller didn't set max_width we fall back to "canvas width
+    # minus an 80 px safe margin on each side" so a too-wide title is wrapped
+    # instead of overflowing the canvas.
     max_w_field = layer.get("max_width")
     cw, ch = canvas_size
+    _DEFAULT_SAFE_MARGIN = 80
     if isinstance(max_w_field, dict) and "width_pct" in max_w_field:
         max_w: int | None = int(cw * float(max_w_field["width_pct"]) / 100.0)
     elif max_w_field is not None:
         max_w = int(max_w_field)
     else:
-        max_w = None
+        max_w = max(1, cw - 2 * _DEFAULT_SAFE_MARGIN)
 
     lines = _wrap_text(text, font, max_w, tracking)
 
