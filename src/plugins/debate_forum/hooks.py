@@ -1,9 +1,11 @@
 """Debate Forum Plugin - Hook for injecting debate context into sub-agents.
 
 Two-tier injection strategy:
-- **Pinned messages + channel metadata** → ``role="user"`` (ephemeral, re-injected
-  fresh on every LLM call, not persisted in session).  Injected as user messages
-  so that LLMs treat them with the same priority as conversation content.
+- **Pinned messages + channel metadata** → ``role="system"`` (re-injected fresh
+  on every LLM call). System role guarantees compaction-safety
+  (context_engineer's ``keep_system_messages=True`` never archives system
+  messages). Pinned-set changes rarely (only on explicit pin_message events),
+  so prompt-cache stays warm between turns.
 - **Unpinned forum posts** → ``role="user"`` (permanent, persisted in session).
   Only NEW messages since the last hook call are added (diff-based).
   Context optimiser plugins (context_engineer, context_summarizer) can compress
@@ -51,7 +53,8 @@ class DebateForumHooks(SchemaBasedPluginHook):
         """Inject debate forum context before LLM call.
 
         Two-tier injection:
-        1. Pinned messages + channel metadata → user message (ephemeral)
+        1. Pinned messages + channel metadata → system message
+           (compaction-safe; cache stays warm between unchanged pin-sets)
         2. New forum posts since last call → user message (permanent)
         """
         logger.debug(
@@ -75,8 +78,8 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
             modified = False
 
-            # ── 1. Pinned + metadata → user injection (ephemeral) ─────
-            # Remove previous ephemeral injection
+            # ── 1. Pinned + metadata → system injection (compaction-safe) ─────
+            # Remove previous injection (matched by injected_by marker)
             for i in range(len(context.messages) - 1, -1, -1):
                 if getattr(context.messages[i], "injected_by", None) == INJECTION_MARKER:
                     context.messages.pop(i)
@@ -90,7 +93,7 @@ class DebateForumHooks(SchemaBasedPluginHook):
                 context.messages.insert(
                     insert_pos,
                     ChatMessage(
-                        role="user",
+                        role="system",
                         content=pinned_text,
                         injected_by=INJECTION_MARKER,
                     ),

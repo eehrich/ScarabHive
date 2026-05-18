@@ -122,7 +122,7 @@ class TestInjectDebateContext:
 
     @pytest.mark.asyncio
     async def test_channel_with_topic_injects_system(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Channel with topic but no messages should inject metadata as user message."""
+        """Channel with topic but no messages should inject metadata as system message."""
         ch = db.create_channel(name="test", topic="Test debate")
         msgs = [_sys("system"), _user("hi")]
         ctx = _make_context(msgs, context_vars={"debate_channel_id": ch["channel_id"]})
@@ -132,13 +132,14 @@ class TestInjectDebateContext:
         assert result.modified
         assert len(result.context.messages) == 3
         injected = result.context.messages[1]
-        assert injected.role == "user"
+        assert injected.role == "system"
         assert injected.injected_by == INJECTION_MARKER
         assert "Test debate" in injected.content
 
     @pytest.mark.asyncio
     async def test_unpinned_messages_injected_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Unpinned forum posts should be injected as role=user (permanent)."""
+        """Unpinned forum posts should be injected as role=user (permanent),
+        pinned-context/metadata as role=system (compaction-safe)."""
         ch = db.create_channel(name="test", topic="Test debate")
         cid = ch["channel_id"]
         db.post_message(cid, "Mira", "advocate", 1, "I argue for X")
@@ -150,12 +151,12 @@ class TestInjectDebateContext:
 
         assert result.success
         assert result.modified
-        # system, user(metadata), user(posts), user(original)
+        # system, system(metadata), user(posts), user(original)
         assert len(result.context.messages) == 4
 
-        # User injection (metadata, ephemeral)
+        # System injection (metadata / pinned)
         sys_injected = result.context.messages[1]
-        assert sys_injected.role == "user"
+        assert sys_injected.role == "system"
         assert sys_injected.injected_by == INJECTION_MARKER
         assert "Test debate" in sys_injected.content
 
@@ -275,7 +276,7 @@ class TestInjectDebateContext:
 
     @pytest.mark.asyncio
     async def test_pinned_as_system_unpinned_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Pinned messages go to ephemeral user injection, unpinned to permanent user injection."""
+        """Pinned messages → system injection (compaction-safe); unpinned → user injection (permanent)."""
         ch = db.create_channel(name="test", topic="Mixed test")
         cid = ch["channel_id"]
         r1 = db.post_message(cid, "Mod", "moderator", 0, "Pinned summary")
@@ -295,7 +296,7 @@ class TestInjectDebateContext:
         assert len(sys_injected) == 1
         assert len(user_injected) == 1
         assert "Pinned summary" in sys_injected[0].content
-        assert sys_injected[0].role == "user"
+        assert sys_injected[0].role == "system"
         assert "Normal argument" in user_injected[0].content
         assert user_injected[0].role == "user"
         # Pinned should NOT appear in user injection
