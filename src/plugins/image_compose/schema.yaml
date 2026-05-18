@@ -1,0 +1,114 @@
+# image_compose plugin — single render tool, freeform JSON spec.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_render"
+      description: >
+        Compose a layered image from a JSON spec (PNG / WEBP / JPEG).
+        Layers render bottom-up in array order. Returns the saved file path
+        and (by default) attaches the rendered image for visual inspection.
+
+        SPEC:
+          {
+            "size":       [w, h],                       # default [1024, 1536] (2:3 book cover)
+            "background": "#rrggbb[aa]" | [r,g,b(,a)] | "transparent",   # default transparent
+            "format":     "png" | "webp" | "jpeg",      # default from output extension or "png"
+            "quality":    95,                           # webp/jpeg only (1..100)
+            "layers":     [ { layer }, ... ]
+          }
+
+        COMMON LAYER FIELDS:
+          type        — image | text | rect | gradient | svg | vignette
+          opacity     — 0.0 .. 1.0 (default 1.0)
+          rotation    — degrees, around layer center (default 0)
+          blend_mode  — normal | multiply | screen | overlay (default normal)
+          position    — [x, y]                                            (pixels from top-left)
+                        OR { "anchor": <a>, "offset": [dx, dy] }
+                        OR { "anchor": <a>, "offset_pct": [dx_pct, dy_pct] }
+                        anchor ∈ top_left|top_center|top_right|center_left|center|
+                                  center_right|bottom_left|bottom_center|bottom_right
+
+        LAYER: image
+          src   — project-relative path OR data URI (data:image/...;base64,...)
+          size  — [w, h] OR { "width_pct": N, "height_pct": N }  (default: native)
+          fit   — cover | contain | stretch (default cover, only with size)
+
+        LAYER: text
+          text        — string (\n for line breaks)
+          font        — alias (sans, sans_bold, serif, serif_bold, mono, display)
+                        or filename in fonts_dir or absolute path
+          size        — pt/px
+          color       — "#rrggbb" or "#rrggbbaa"
+          align       — left | center | right (default left)
+          max_width   — px OR { "width_pct": N } — enables word-wrap
+          line_height — multiplier (default 1.1)
+          tracking    — letter-spacing px (default 0)
+          uppercase   — bool
+          stroke      — { "width": px, "color": "#rrggbb" }                 (outline)
+          shadow      — { "offset": [dx, dy], "blur": px, "color": "#rrggbbaa" }
+
+        LAYER: rect
+          rect    — [x, y, w, h]   (overrides position+size)
+          fill    — color (omit for outline-only)
+          radius  — corner radius px (default 0)
+          border  — { "width": px, "color": "#rrggbb" }
+
+        LAYER: gradient
+          rect       — [x, y, w, h]   OR use position + size
+          colors     — list of colors (>=2). Use "#rrggbbaa" with alpha for fades.
+          stops      — optional list of 0..1 floats (length must match colors)
+          direction  — right|bottom_right|bottom|bottom_left|left|top_left|top|top_right
+                       OR angle in degrees (0°=right, 90°=down)
+          (legacy: "from" + "to" accepted as 2-color shortcut)
+
+        LAYER: svg
+          svg     — raw SVG string. Agents should generate the SVG directly here.
+          size    — [w, h] target render size (aspect preserved)
+
+        LAYER: vignette
+          strength — 0.0 .. 1.0 (default 0.3)
+          color    — "#rrggbb" (default "#000000")
+
+        BOOK-COVER COMPOSITION TIPS:
+          • Place a gradient (transparent → dark, direction=bottom) over the lower
+            third before drawing a light title — guarantees legibility on busy art.
+          • Use stroke (width 2-3, contrasting color) on titles over high-frequency
+            backgrounds; shadow (blur 6-12) for softer readability.
+          • Bundle the author name as a smaller all-caps text layer with tracking.
+
+      parameters:
+        type: object
+        properties:
+          spec:
+            type: object
+            description: "Composition spec — see description for full structure."
+            additionalProperties: true
+          output_path:
+            type: string
+            description: "Destination file path (relative to project root or absolute). Parent dirs are created."
+          include_content:
+            type: boolean
+            default: true
+            description: "Attach the rendered image to the response so the calling agent can visually QA it."
+        required: [spec, output_path]
+        additionalProperties: false
+
+config:
+  type: object
+  properties:
+    fonts_dir:
+      type: string
+      default: "data/fonts"
+      description: "Directory containing TTF/OTF files. Aliases resolve here first; system fonts are tried as fallback."
+    font_aliases:
+      type: object
+      description: >
+        Map of alias name → font filename (relative to fonts_dir) or absolute path.
+        Example: { "serif_bold": "CrimsonPro-Bold.ttf" }
+      additionalProperties:
+        type: string
+    output_root:
+      type: string
+      default: "."
+      description: "Base directory for resolving relative output paths."

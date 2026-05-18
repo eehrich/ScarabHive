@@ -150,6 +150,14 @@ plugins:
       enabled: true
       description: "Monitor and query batch queue status"
 
+    image_compose:
+      type: image_compose
+      enabled: true
+      description: "Compose layered images (background + text + shapes + gradients + SVG)"
+      fonts_dir: "data/fonts"
+      output_root: "."
+      # font_aliases: { serif_bold: "CrimsonPro-Bold.ttf", sans: "Inter-Regular.ttf" }
+
     comfyui:
       type: comfyui
       enabled: true  # ComfyUI server must be running on localhost:8188
