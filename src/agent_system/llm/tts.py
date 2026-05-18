@@ -31,7 +31,7 @@ import logging
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,17 @@ class GeminiTTSClient(TTSClient):
         if system_instruction:
             text = f"{system_instruction}\n\n{text}"
 
-        audio_data = await self._generate(text, config)
+        audio_data = await self._generate(
+            text,
+            config,
+            hook_meta={
+                "voice": voice_name,
+                "seed": seed,
+                "language": language,
+                "system_instruction_chars": len(system_instruction) if system_instruction else 0,
+                "speakers": "single",
+            },
+        )
 
         return TTSResult(
             audio_data=audio_data,
@@ -315,7 +325,15 @@ class GeminiTTSClient(TTSClient):
         )
 
         voice_names = ", ".join(f"{s.name}={s.voice.name}" for s in speakers)
-        audio_data = await self._generate(text, config)
+        audio_data = await self._generate(
+            text,
+            config,
+            hook_meta={
+                "voices": voice_names,
+                "language": language,
+                "speakers": f"multi:{len(speakers)}",
+            },
+        )
 
         return TTSResult(
             audio_data=audio_data,
@@ -328,7 +346,13 @@ class GeminiTTSClient(TTSClient):
 
     # ----- internal ----------------------------------------------------------
 
-    async def _generate(self, text: str, config: Any) -> bytes:
+    async def _generate(
+        self,
+        text: str,
+        config: Any,
+        *,
+        hook_meta: Optional[Dict[str, Any]] = None,
+    ) -> bytes:
         """Call the Gemini generate_content API and extract audio bytes.
 
         Runs the synchronous SDK call in a thread executor to stay async.
@@ -336,18 +360,29 @@ class GeminiTTSClient(TTSClient):
 
         Emits PRE_LLM_REQUEST / POST_LLM_RESPONSE hook events so the message
         debugger (and any other hook consumer) sees the TTS call.
+
+        Args:
+            text: The (possibly system-prompt-prefixed) input text.
+            config: GenerateContentConfig passed to the SDK.
+            hook_meta: Extra request metadata for the debugger payload —
+                voice, seed, language, speakers, etc. Not used by the SDK.
         """
         import asyncio
         import time as _time
         from google.genai.errors import ServerError, APIError
 
         url = f"google-genai://{self.model}:generate_content"
-        request_payload = {
+        # Send full text (not preview) so the debugger has the complete prompt.
+        # 7-10 kB per scene is fine for the SQLite debugger DB; the raw audio
+        # response is what would blow it up, and we never put that in payloads.
+        request_payload: Dict[str, Any] = {
             "model": self.model,
-            "contents_preview": text[:500],
+            "contents": text,
             "contents_chars": len(text),
             "modalities": ["AUDIO"],
         }
+        if hook_meta:
+            request_payload.update(hook_meta)
         await self._notify_tts_pre_request(url, request_payload)
 
         last_error: Optional[Exception] = None
