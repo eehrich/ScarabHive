@@ -722,8 +722,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         if re.match(r'^\$?VAR_\d+$', query_stripped, re.IGNORECASE):
             return 'variable'
         
-        # Pattern 2: Tool result reference (TR_xxx or call_xxx - may contain underscores in ID)
-        if re.match(r'^TR_[a-zA-Z0-9_]+$', query_stripped) or re.match(r'^call_[a-zA-Z0-9_]+$', query_stripped):
+        # Pattern 2: Tool result reference (TR_xxx, $TR_xxx, or call_xxx).
+        # Accept the leading "$" too — agents often conflate TR_ refs with
+        # variable syntax (e.g. "$TR_BFCDDCA04A") and would otherwise get
+        # misrouted into the variable handler.
+        if (re.match(r'^\$?TR_[a-zA-Z0-9_]+$', query_stripped)
+                or re.match(r'^call_[a-zA-Z0-9_]+$', query_stripped)):
             return 'tool_result'
         
         # Pattern 3: Looks like a hex hash (8+ hex chars)
@@ -789,10 +793,17 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             )
         
         elif recall_type == 'tool_result':
+            # Explicit TR_xxx lookup → return the FULL stored result. The
+            # 500-char preview default was for archive browsing; when the
+            # agent has a concrete reference it wants the data back, not a
+            # teaser (otherwise it loops calling the original tool again).
+            ref = query.strip()
+            if ref.startswith("$"):
+                ref = ref[1:]
             return await self._handle_get_tool_result(
-                reference=query.strip(),
+                reference=ref,
                 session_id=session_id,
-                mode="preview"
+                mode="full",
             )
         
         elif recall_type == 'media':

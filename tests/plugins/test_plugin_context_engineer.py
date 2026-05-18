@@ -198,6 +198,108 @@ class TestToolResultStore:
         assert "tool1" in stats["by_tool"]
         assert "tool2" in stats["by_tool"]
 
+    # ── Regression: short_id collision across tool_ prefixed IDs ──────────
+
+    def test_short_ids_unique_for_tool_prefixed_ids(self, temp_db_path):
+        """Tool-call IDs like 'tool_writer_content_book_*' must NOT collapse to
+        the same TR_xxx reference (previous bug: first 8 chars of the prefix
+        collided, so every writer-tool result shared id 'TR_tool_wri')."""
+        store = ToolResultStore(temp_db_path)
+        ids = [
+            "tool_writer_content_book_001",
+            "tool_writer_content_book_002",
+            "tool_writer_content_series_001",
+            "tool_writer_workflow_set_context_001",
+        ]
+        refs = [
+            json.loads(store.store_and_reference(
+                tool_call_id=tcid, tool_name="writer_content", content=f"c-{tcid}",
+            ))["ref_id"]
+            for tcid in ids
+        ]
+        assert len(set(refs)) == len(refs), f"short_ids collided: {refs}"
+        assert all(r.startswith("TR_") for r in refs)
+
+    def test_retrieve_roundtrip_tool_prefix(self, temp_db_path):
+        """The TR_xxx returned by store_and_reference must round-trip via retrieve()
+        for non-'call_' tool_call_ids (the broken case in the original bug report)."""
+        store = ToolResultStore(temp_db_path)
+        ref = json.loads(store.store_and_reference(
+            tool_call_id="tool_writer_content_book_42",
+            tool_name="writer_content",
+            content="full book payload",
+        ))
+        entry = store.retrieve(ref["ref_id"])
+        assert entry is not None
+        assert entry.content == "full book payload"
+        assert entry.id == "tool_writer_content_book_42"
+
+    def test_retrieve_roundtrip_call_prefix(self, temp_db_path):
+        """Existing 'call_xxx' tool IDs must keep working after the fix."""
+        store = ToolResultStore(temp_db_path)
+        ref = json.loads(store.store_and_reference(
+            tool_call_id="call_abc123def456", tool_name="read_file", content="hello",
+        ))
+        entry = store.retrieve(ref["ref_id"])
+        assert entry is not None
+        assert entry.content == "hello"
+
+    def test_tr_reference_does_not_fall_through_to_prefix_match(self, temp_db_path):
+        """An unknown TR_xxx must return None — not silently match some other row
+        via the legacy prefix-match path (root cause of the wrong-data loop)."""
+        store = ToolResultStore(temp_db_path)
+        store.store_and_reference(
+            tool_call_id="tool_writer_content_book_001",
+            tool_name="x", content="X",
+        )
+        assert store.retrieve("TR_0000000000") is None
+
+    def test_retrieve_legacy_call_id_directly(self, temp_db_path):
+        """Looking up by raw tool_call_id (or its prefix) keeps working."""
+        store = ToolResultStore(temp_db_path)
+        store.store_and_reference(
+            tool_call_id="call_legacydirect_123", tool_name="x", content="payload",
+        )
+        # Exact
+        e = store.retrieve("call_legacydirect_123")
+        assert e is not None and e.content == "payload"
+        # Prefix
+        e = store.retrieve("call_legacydirect")
+        assert e is not None and e.content == "payload"
+
+    def test_migration_backfills_short_id_for_old_rows(self, temp_db_path, tmp_path):
+        """A DB created before this fix has rows without short_id. After re-opening
+        with the new store, those rows must become retrievable via their TR_xxx ref."""
+        import sqlite3
+        from plugins.context_engineer.tool_result_store import _compute_short_id
+
+        # Simulate pre-fix DB: create the table without short_id column, insert a row.
+        conn = sqlite3.connect(str(temp_db_path))
+        conn.execute("""
+            CREATE TABLE tool_results (
+                id TEXT PRIMARY KEY, tool_name TEXT NOT NULL, content TEXT NOT NULL,
+                content_hash TEXT NOT NULL, token_count INTEGER NOT NULL,
+                timestamp TEXT NOT NULL, session_id TEXT NOT NULL, summary TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        legacy_id = "tool_writer_content_book_legacy"
+        conn.execute(
+            "INSERT INTO tool_results (id, tool_name, content, content_hash, "
+            "token_count, timestamp, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (legacy_id, "writer_content", "legacy payload", "deadbeef", 5,
+             "2026-05-17T15:55:00", "default"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Open with the new store → migration must add short_id + backfill it.
+        store = ToolResultStore(temp_db_path)
+        expected_short_id = _compute_short_id(legacy_id)
+        entry = store.retrieve(expected_short_id)
+        assert entry is not None, "legacy row not retrievable via TR_xxx after migration"
+        assert entry.content == "legacy payload"
+
 
 # =============================================================================
 # VariableManager Tests

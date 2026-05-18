@@ -25,6 +25,20 @@ from agent_system.llm.token_utils import estimate_content_tokens
 
 logger = logging.getLogger(__name__)
 
+# Length of the hash portion (in hex chars) of a short_id.
+# 10 hex chars = 40 bits → ~1M IDs before 50% birthday-collision chance.
+_SHORT_ID_HASH_LEN = 10
+
+
+def _compute_short_id(tool_call_id: str) -> str:
+    """Stable, collision-resistant short reference for a tool_call_id.
+
+    Uses a SHA-256-derived suffix so distinct call IDs always map to distinct
+    short IDs — independent of the prefix (`call_`, `tool_`, internal, …).
+    """
+    digest = hashlib.sha256(tool_call_id.encode()).hexdigest()[:_SHORT_ID_HASH_LEN]
+    return f"TR_{digest}"
+
 
 @dataclass
 class ToolResultEntry:
@@ -108,7 +122,7 @@ class ToolResultStore:
     def _init_db(self) -> None:
         """Initialize SQLite database."""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         self._db = sqlite3.connect(str(self.storage_path), check_same_thread=False)
         self._db.execute("""
             CREATE TABLE IF NOT EXISTS tool_results (
@@ -120,16 +134,34 @@ class ToolResultStore:
                 timestamp TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 summary TEXT,
+                short_id TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migration: add short_id column to existing databases (idempotent)
+        cols = {row[1] for row in self._db.execute("PRAGMA table_info(tool_results)").fetchall()}
+        if "short_id" not in cols:
+            self._db.execute("ALTER TABLE tool_results ADD COLUMN short_id TEXT")
+        # Backfill short_id for any legacy rows that don't have it yet
+        legacy = self._db.execute(
+            "SELECT id FROM tool_results WHERE short_id IS NULL OR short_id = ''"
+        ).fetchall()
+        for (legacy_id,) in legacy:
+            self._db.execute(
+                "UPDATE tool_results SET short_id = ? WHERE id = ?",
+                (_compute_short_id(legacy_id), legacy_id),
+            )
         self._db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tool_results_session 
+            CREATE INDEX IF NOT EXISTS idx_tool_results_session
             ON tool_results(session_id)
         """)
         self._db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tool_results_hash 
+            CREATE INDEX IF NOT EXISTS idx_tool_results_hash
             ON tool_results(content_hash)
+        """)
+        self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tool_results_short_id
+            ON tool_results(short_id)
         """)
         self._db.commit()
     
@@ -154,19 +186,17 @@ class ToolResultStore:
             Compact reference string to replace content in context
         """
         session_id = session_id or self.session_id or "default"
-        
+
         # Generate content hash
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
-        
+
         # Estimate tokens
         token_count = estimate_content_tokens(content)
-        
-        # Create short ID for reference
-        # Use 'TR_' prefix (Tool Result) to distinguish from tool_call_ids which use 'call_'
-        # This prevents LLM confusion when it sees multiple 'call_xxx' patterns in context
-        raw_id = tool_call_id.replace("call_", "")[:8] if tool_call_id.startswith("call_") else tool_call_id[:8]
-        short_id = f"TR_{raw_id}"
-        
+
+        # Create short ID for reference (collision-resistant hash of full tool_call_id —
+        # independent of prefix style: 'call_', 'tool_', or anything else).
+        short_id = _compute_short_id(tool_call_id)
+
         # Store in database
         entry = ToolResultEntry(
             id=tool_call_id,
@@ -178,11 +208,11 @@ class ToolResultStore:
             session_id=session_id,
             summary=summary
         )
-        
+
         self._db.execute("""
-            INSERT OR REPLACE INTO tool_results 
-            (id, tool_name, content, content_hash, token_count, timestamp, session_id, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO tool_results
+            (id, tool_name, content, content_hash, token_count, timestamp, session_id, summary, short_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             entry.id,
             entry.tool_name,
@@ -191,7 +221,8 @@ class ToolResultStore:
             entry.token_count,
             entry.timestamp.isoformat(),
             entry.session_id,
-            entry.summary
+            entry.summary,
+            short_id,
         ))
         self._db.commit()
         
@@ -212,55 +243,48 @@ class ToolResultStore:
     
     def retrieve(self, reference_id: str) -> ToolResultEntry | None:
         """Retrieve full tool result by reference ID.
-        
-        Supports both new (TR_xxx) and legacy (call_xxx) reference formats.
-        
+
+        Resolution order:
+          1. ``TR_xxx`` reference → exact match on the indexed ``short_id`` column.
+          2. Otherwise treat ``reference_id`` as a (possibly partial) raw ``tool_call_id``:
+             try exact match, then prefix match.
+
         Args:
-            reference_id: Short reference ID (from the reference string)
-            
+            reference_id: Short reference (``TR_<10 hex>``) or raw tool_call_id.
+
         Returns:
-            ToolResultEntry if found, None otherwise
+            ToolResultEntry if found, None otherwise.
         """
-        # Normalize reference_id: TR_xxx -> call_xxx for DB lookup
-        # The DB stores full tool_call_ids which start with 'call_'
-        lookup_id = reference_id
+        select_cols = (
+            "SELECT id, tool_name, content, content_hash, token_count, "
+            "timestamp, session_id, summary FROM tool_results "
+        )
+
+        # Path 1: TR_<hash> reference → exact lookup on short_id column.
         if reference_id.startswith("TR_"):
-            # Convert TR_xxx to call_xxx for prefix matching
-            lookup_id = f"call_{reference_id[3:]}"
-        
-        # Try exact match first
-        cursor = self._db.execute(
-            "SELECT id, tool_name, content, content_hash, token_count, timestamp, session_id, summary "
-            "FROM tool_results WHERE id = ?",
-            (lookup_id,)
-        )
-        row = cursor.fetchone()
-        
-        if row:
-            return ToolResultEntry.from_row(row)
-        
-        # Try prefix match (short ID)
-        cursor = self._db.execute(
-            "SELECT id, tool_name, content, content_hash, token_count, timestamp, session_id, summary "
-            "FROM tool_results WHERE id LIKE ? LIMIT 1",
-            (f"{lookup_id}%",)
-        )
-        row = cursor.fetchone()
-        
-        if row:
-            return ToolResultEntry.from_row(row)
-        
-        # Legacy fallback: try the original reference_id directly (for old call_xxx format)
-        if reference_id != lookup_id:
-            cursor = self._db.execute(
-                "SELECT id, tool_name, content, content_hash, token_count, timestamp, session_id, summary "
-                "FROM tool_results WHERE id LIKE ? LIMIT 1",
-                (f"{reference_id}%",)
-            )
-            row = cursor.fetchone()
+            row = self._db.execute(
+                select_cols + "WHERE short_id = ? LIMIT 1",
+                (reference_id,),
+            ).fetchone()
             if row:
                 return ToolResultEntry.from_row(row)
-        
+            return None  # No TR_xxx → don't fall through to a wrong prefix match
+
+        # Path 2: raw tool_call_id (or its prefix) — exact then prefix match.
+        row = self._db.execute(
+            select_cols + "WHERE id = ?",
+            (reference_id,),
+        ).fetchone()
+        if row:
+            return ToolResultEntry.from_row(row)
+
+        row = self._db.execute(
+            select_cols + "WHERE id LIKE ? LIMIT 1",
+            (f"{reference_id}%",),
+        ).fetchone()
+        if row:
+            return ToolResultEntry.from_row(row)
+
         return None
     
     def retrieve_by_hash(self, content_hash: str) -> ToolResultEntry | None:
