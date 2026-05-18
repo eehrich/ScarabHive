@@ -918,7 +918,7 @@ llm_system:
   tts_models:
     gemini-tts-flash:
       provider: gemini_tts
-      model: gemini-2.5-flash-preview-tts
+      model: gemini-3.1-flash-tts-preview
       api_key: "***REMOVED***"
       request_timeout: 300
       max_retries: 3
@@ -936,7 +936,7 @@ llm_system:
   tts_profiles:
     gemini-tts:
       model_ref: gemini-tts-flash
-      description: "Gemini 2.5 Flash TTS - fast, cost-effective"
+      description: "Gemini 3.1 Flash TTS - fast, cost-effective"
       default_voice: Kore
 
     gemini-tts-pro:

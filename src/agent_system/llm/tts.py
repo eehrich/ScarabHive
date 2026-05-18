@@ -330,14 +330,28 @@ class GeminiTTSClient(TTSClient):
 
     async def _generate(self, text: str, config: Any) -> bytes:
         """Call the Gemini generate_content API and extract audio bytes.
-        
+
         Runs the synchronous SDK call in a thread executor to stay async.
         Retries on transient server errors with exponential backoff.
+
+        Emits PRE_LLM_REQUEST / POST_LLM_RESPONSE hook events so the message
+        debugger (and any other hook consumer) sees the TTS call.
         """
         import asyncio
+        import time as _time
         from google.genai.errors import ServerError, APIError
 
+        url = f"google-genai://{self.model}:generate_content"
+        request_payload = {
+            "model": self.model,
+            "contents_preview": text[:500],
+            "contents_chars": len(text),
+            "modalities": ["AUDIO"],
+        }
+        await self._notify_tts_pre_request(url, request_payload)
+
         last_error: Optional[Exception] = None
+        _start = _time.time()
 
         for attempt in range(self.max_retries):
             try:
@@ -375,6 +389,12 @@ class GeminiTTSClient(TTSClient):
                     "Gemini TTS generated %.1fs audio (%d bytes) model=%s",
                     duration, len(audio_bytes), self.model,
                 )
+                await self._notify_tts_post_response(
+                    url=url,
+                    duration_ms=(_time.time() - _start) * 1000,
+                    audio_seconds=duration,
+                    audio_bytes_len=len(audio_bytes),
+                )
                 return audio_bytes
 
             except ServerError as exc:
@@ -384,6 +404,12 @@ class GeminiTTSClient(TTSClient):
                 logger.warning(
                     "Gemini TTS transient error (attempt %d/%d): %s — retrying in %ds",
                     attempt + 1, self.max_retries, exc, wait,
+                )
+                await self._notify_tts_post_response(
+                    url=url,
+                    duration_ms=(_time.time() - _start) * 1000,
+                    error=f"[RETRY {attempt + 1}/{self.max_retries}] {type(exc).__name__}: {exc}",
+                    finish_reason="retry",
                 )
                 await asyncio.sleep(wait)
 
@@ -396,18 +422,114 @@ class GeminiTTSClient(TTSClient):
                         "Gemini TTS rate limited (attempt %d/%d): %s — retrying in %ds",
                         attempt + 1, self.max_retries, exc, wait,
                     )
+                    await self._notify_tts_post_response(
+                        url=url,
+                        duration_ms=(_time.time() - _start) * 1000,
+                        error=f"[RETRY {attempt + 1}/{self.max_retries}] 429: {exc}",
+                        finish_reason="retry",
+                    )
                     await asyncio.sleep(wait)
                 else:
+                    await self._notify_tts_post_response(
+                        url=url,
+                        duration_ms=(_time.time() - _start) * 1000,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
                     raise
 
             except Exception as exc:
                 # Non-retryable error
                 logger.error("Gemini TTS error: %s", exc)
+                await self._notify_tts_post_response(
+                    url=url,
+                    duration_ms=(_time.time() - _start) * 1000,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
                 raise
 
+        await self._notify_tts_post_response(
+            url=url,
+            duration_ms=(_time.time() - _start) * 1000,
+            error=f"Failed after {self.max_retries} attempts: {last_error!r}",
+        )
         raise RuntimeError(
             f"Gemini TTS failed after {self.max_retries} attempts: {last_error}"
         )
+
+    async def _notify_tts_pre_request(self, url: str, payload: Dict[str, Any]) -> None:
+        """Fire PRE_LLM_REQUEST hook so the message debugger sees TTS calls.
+
+        TTS calls bypass the per-agent ``wire_llm_hooks`` path (they're invoked
+        directly, not via Agent), so we dispatch to the global hook registry here.
+        """
+        try:
+            import time as _time
+            from ..hooks import get_hook_registry, HookContext, HookType
+            try:
+                from ..mcp.status import current_request_id
+                req_id = current_request_id.get('') or ''
+            except Exception:
+                req_id = ''
+            context = HookContext(
+                hook_type=HookType.PRE_LLM_REQUEST,
+                request_id=req_id,
+                session_id='',
+                agent=None,
+                agent_name='gemini_tts',
+                llm_request_payload=payload,
+                llm_provider='gemini_tts',
+                llm_model=self.model,
+                llm_request_url=url,
+                llm_is_streaming=False,
+                metadata={"timestamp_ms": _time.time() * 1000},
+            )
+            await get_hook_registry().execute_hooks(HookType.PRE_LLM_REQUEST, context)
+        except Exception as e:
+            logger.debug("Gemini TTS pre_llm_request hook error: %s", e)
+
+    async def _notify_tts_post_response(
+        self,
+        *,
+        url: str,
+        duration_ms: float,
+        audio_seconds: Optional[float] = None,
+        audio_bytes_len: Optional[int] = None,
+        error: Optional[str] = None,
+        finish_reason: Optional[str] = None,
+    ) -> None:
+        """Fire POST_LLM_RESPONSE hook with TTS result or error."""
+        try:
+            import time as _time
+            from ..hooks import get_hook_registry, HookContext, HookType
+            try:
+                from ..mcp.status import current_request_id
+                req_id = current_request_id.get('') or ''
+            except Exception:
+                req_id = ''
+            response_data: Dict[str, Any] = {}
+            if audio_seconds is not None:
+                response_data["audio_seconds"] = audio_seconds
+            if audio_bytes_len is not None:
+                response_data["audio_bytes"] = audio_bytes_len
+            context = HookContext(
+                hook_type=HookType.POST_LLM_RESPONSE,
+                request_id=req_id,
+                session_id='',
+                agent=None,
+                agent_name='gemini_tts',
+                llm_response_data=response_data or None,
+                llm_provider='gemini_tts',
+                llm_model=self.model,
+                llm_request_url=url,
+                llm_duration_ms=duration_ms,
+                llm_error=error,
+                llm_finish_reason=finish_reason or ("stop" if not error else None),
+                llm_is_streaming=False,
+                metadata={"timestamp_ms": _time.time() * 1000},
+            )
+            await get_hook_registry().execute_hooks(HookType.POST_LLM_RESPONSE, context)
+        except Exception as e:
+            logger.debug("Gemini TTS post_llm_response hook error: %s", e)
 
 
 # ---------------------------------------------------------------------------

@@ -566,7 +566,7 @@ async def register_plugin_hooks(
                 f"Registered hook '{full_hook_name}' from plugin '{plugin_name}' "
                 f"(type={hook_type.value}, enabled={enabled}, description='{description}')"
             )
-            
+
         except Exception as e:
             logger.error(
                 f"Failed to register hook '{hook_metadata.get('name', 'unknown')}' "
@@ -574,5 +574,66 @@ async def register_plugin_hooks(
                 exc_info=True
             )
             continue
-    
+
     return registered_hooks
+
+
+_BOOTSTRAPPED_HOOKS_REGISTERED = False
+
+
+async def register_bootstrapped_plugin_hooks() -> List[str]:
+    """Register hooks for all plugins already loaded into the global plugin registry.
+
+    The HTTP agent server registers plugin hooks via
+    ``MCPIntegration._register_plugin_hooks``. CLI subprocesses (e.g.
+    ``writer_audio produce``) only call ``bootstrap_servers`` and never get
+    hooks wired up, so listeners like the message debugger silently miss
+    every LLM call made from the CLI.
+
+    Call this once after ``bootstrap_servers`` to mirror the HTTP-server
+    behaviour. Subsequent calls are no-ops.
+
+    Returns:
+        List of all registered hook names (full ``plugin.hook`` form).
+    """
+    global _BOOTSTRAPPED_HOOKS_REGISTERED
+    if _BOOTSTRAPPED_HOOKS_REGISTERED:
+        return []
+
+    from ..plugins.mcp_adapter import plugin_mcp_registry
+    from ..hooks import load_hooks_config
+
+    hooks_config = load_hooks_config()
+    all_registered: List[str] = []
+
+    for server_name in plugin_mcp_registry.list_servers():
+        server = plugin_mcp_registry.get_server(server_name)
+        if not server or not hasattr(server, 'plugin_schema') or not server.plugin_schema:
+            continue
+        plugin_schema = server.plugin_schema
+        if 'hooks' not in plugin_schema:
+            continue
+
+        plugin_instance = server.plugin_server if hasattr(server, 'plugin_server') else server
+        if hasattr(plugin_instance, 'hooks_plugin'):
+            plugin_instance = plugin_instance.hooks_plugin
+
+        try:
+            registered = await register_plugin_hooks(
+                plugin_name=server_name,
+                plugin_instance=plugin_instance,
+                metadata=plugin_schema,
+                hooks_config=hooks_config,
+            )
+            all_registered.extend(registered)
+        except Exception as e:
+            logger.warning(
+                f"register_bootstrapped_plugin_hooks: failed for '{server_name}': {e}"
+            )
+
+    _BOOTSTRAPPED_HOOKS_REGISTERED = True
+    if all_registered:
+        logger.info(
+            "register_bootstrapped_plugin_hooks: wired %d plugin hooks", len(all_registered)
+        )
+    return all_registered
