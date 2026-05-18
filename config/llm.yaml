@@ -919,6 +919,7 @@ llm_system:
     gemini-tts-flash:
       provider: gemini_tts
       model: gemini-3.1-flash-tts-preview
+      #model: gemini-2.5-flash-preview-tts
       api_key: "***REMOVED***"
       request_timeout: 300
       max_retries: 3
