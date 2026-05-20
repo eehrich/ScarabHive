@@ -684,12 +684,7 @@ plugins:
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
         max_messages: 150
-        # 2026-05-19: Lowered from 0.9 to 0.7. v5b beat channels pin ~20k tokens
-        # of context docs (system role, excluded from compaction). At 0.9 of a
-        # 128k window (e.g. deepseek) we'd hit compaction at 115k — too close
-        # to the hard cap when system is already ~20k. 0.7 → trigger at 90k
-        # (deepseek) / 70k (100k models), keeping safe headroom.
-        summarization_trigger_percentage: 0.7
+        summarization_trigger_percentage: 0.8
 
     context_optimizer:
       type: context_optimizer
@@ -720,16 +715,10 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction.
-        # 2026-05-19: Lowered all thresholds. v5b pins ~20k tokens as system
-        # (compaction skips system → keep_system_messages=true). With 128k
-        # context (deepseek), prior layer3=120k left only 8k headroom — risky.
-        # New limits: layer3 at 100k = 28k safety margin from 128k cap.
-        # Target 35k after compaction: lean for the typical v5b debate channel
-        # where forum-injection diff-based stays small.
-        layer1_threshold: 50000   # Start reversible compaction (tool refs, variables)
-        layer2_threshold: 75000   # Start semi-reversible compaction (archival with summaries)
+        layer1_threshold: 70000   # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 85000   # Start semi-reversible compaction (archival with summaries)
         layer3_threshold: 100000  # Start irreversible compaction (drop old messages)
-        target_tokens: 35000      # Target token count after compaction
+        target_tokens: 45000      # Target token count after compaction
 
         store_media_before_compaction: true  # Aktiviert MediaStore
         media_store_ttl_seconds: 604800      # 7 Tage
