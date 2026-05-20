@@ -546,6 +546,20 @@ async def register_plugin_hooks(
                 'after': after_list
             }
             
+            # Skip if hook already registered (e.g., HTTP server registered
+            # it via MCPIntegration AND CLI subprocess calls
+            # ``register_bootstrapped_plugin_hooks`` in the same process — or
+            # any other re-entry path). Without this guard the second pass
+            # raises ValueError per hook and floods the log with tracebacks.
+            existing_hooks = registry.list_hooks(hook_type).get(hook_type.value, [])
+            if full_hook_name in existing_hooks:
+                logger.debug(
+                    f"Hook '{full_hook_name}' already registered for "
+                    f"{hook_type.value} — skipping duplicate registration"
+                )
+                registered_hooks.append(full_hook_name)
+                continue
+
             # Register with HookRegistry (it expects a PluginHook instance)
             await registry.register_hook(
                 hook_type=hook_type,
@@ -560,7 +574,7 @@ async def register_plugin_hooks(
                 plugin=plugin_name,
                 source="plugin_discovery"
             )
-            
+
             registered_hooks.append(full_hook_name)  # Track full name
             logger.debug(
                 f"Registered hook '{full_hook_name}' from plugin '{plugin_name}' "
