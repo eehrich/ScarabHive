@@ -82,8 +82,9 @@ class BatchLLMClient(LLMClient):
             self.model = underlying_client.model
 
     def set_app_title(self, title: str) -> None:
-        """Pass through to underlying client."""
-        self.underlying_client.set_app_title(title)
+        """Pass through to underlying client (if it supports it)."""
+        if hasattr(self.underlying_client, "set_app_title"):
+            self.underlying_client.set_app_title(title)
     
     async def _report_status(
         self,

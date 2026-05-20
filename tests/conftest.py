@@ -144,6 +144,13 @@ try:
             """Return False to follow non-streaming code paths in tests."""
             return False
 
+        def set_app_title(self, title: str) -> None:
+            # No-op: real clients set the OpenRouter HTTP-Referer header;
+            # the fake doesn't open HTTP connections. Without this method,
+            # BatchLLMClient.set_app_title (forwards to underlying_client)
+            # crashes during bootstrap of *_batch plugin agents.
+            pass
+
         async def chat(self, messages, cancellation_token=None):
             # Record messages for future calls
             try:
