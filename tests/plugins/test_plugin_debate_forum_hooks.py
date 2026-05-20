@@ -363,6 +363,90 @@ class TestInjectDebateContext:
         user_count_2 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER_POSTS)
         assert user_count_2 == 1  # still just 1
 
+    @pytest.mark.asyncio
+    async def test_inherited_counter_from_parent_session_replays_history(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        """A sub-agent inheriting ``debate_last_injected_msg_id`` from its
+        parent must NOT skip history posted before its spawn.
+
+        Regression: sub_agent_manager copies parent context_vars into the
+        new sub-session at spawn time. Before the fix, the diff-based
+        injection hook treated the inherited counter as its own, so a
+        fresh sub-agent saw only messages posted AFTER the parent's last
+        read — symptom observed: Falk (Provocateur) sub-agent in channel
+        3088 saw only Autor-C's post because the moderator's counter was
+        already past Autor-A and Autor-B's msg_ids.
+        """
+        ch = db.create_channel(name="test", topic="Test")
+        cid = ch["channel_id"]
+        # Three posts: simulate Autor-A, Autor-B, Autor-C
+        db.post_message(cid, "Autor-A", "writer", 1, "Synopsis A content")
+        db.post_message(cid, "Autor-B", "writer", 1, "Synopsis B content")
+        db.post_message(cid, "Autor-C", "writer", 1, "Synopsis C content")
+
+        # Get the actual msg_ids posted into this channel
+        all_posts = db.get_messages(cid, limit=0)
+        autor_b_id = all_posts[1]["id"]
+
+        # Simulate sub-agent spawn: it inherits the parent's counter
+        # (parent had read up to Autor-B) via context_vars inheritance.
+        msgs = [_sys("You are Falk"), _user("Konvergenz-Check über A/B/C")]
+        ctx = _make_context(
+            msgs,
+            session_id="falk-session",
+            context_vars={
+                "debate_channel_id": cid,
+                "debate_last_injected_msg_id": autor_b_id,
+                "debate_counter_owner": "moderator-session",  # parent's id
+            },
+        )
+
+        result = await hooks.inject_debate_context(ctx)
+
+        assert result.modified
+        user_msgs = [
+            m for m in result.context.messages
+            if m.injected_by == INJECTION_MARKER_POSTS
+        ]
+        # All three synopses must be present — the inherited counter
+        # from "moderator-session" must NOT cause Falk to skip A and B.
+        assert len(user_msgs) == 1
+        content = user_msgs[0].content
+        assert "Synopsis A content" in content
+        assert "Synopsis B content" in content
+        assert "Synopsis C content" in content
+
+    @pytest.mark.asyncio
+    async def test_own_counter_diff_injection_still_works(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        """The ownership check must not break legitimate diff-injection
+        within the SAME session — counter set in call 1 is honored in call 2."""
+        ch = db.create_channel(name="test", topic="Test")
+        cid = ch["channel_id"]
+        db.post_message(cid, "Sven", "critic", 1, "Old content")
+
+        msgs = [_sys("system"), _user("go")]
+        ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
+
+        # Call 1: hook claims ownership and injects
+        await hooks.inject_debate_context(ctx)
+
+        # Add another message to the channel
+        db.post_message(cid, "Sven", "critic", 2, "New content")
+
+        # Call 2: same session — should ONLY inject the new message
+        await hooks.inject_debate_context(ctx)
+        user_msgs = [
+            m for m in ctx.messages
+            if m.injected_by == INJECTION_MARKER_POSTS
+        ]
+        assert len(user_msgs) == 2
+        latest = user_msgs[-1].content
+        assert "New content" in latest
+        assert "Old content" not in latest
+
 
 class TestDebateForumHooksSchema:
     """Tests for hook schema loading and configuration."""

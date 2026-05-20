@@ -101,10 +101,35 @@ class DebateForumHooks(SchemaBasedPluginHook):
                 modified = True
 
             # ── 2. New posts → user injection (permanent, diff-based) ─────
+            # The counter ``debate_last_injected_msg_id`` is a per-session
+            # diff marker. Sub-agents inherit ``context_vars`` from their
+            # parent at spawn time (sub_agent_manager.manager._create_sub_session),
+            # which means the parent's counter leaks into fresh sub-sessions
+            # and causes them to skip messages that were posted to the
+            # channel BEFORE the sub-agent was spawned. Symptom observed:
+            # Falk (Provocateur) sub-agent saw only the latest Autor-C
+            # synopsis post because the moderator's counter was already
+            # at Autor-B's msg_id when Falk was spawned.
+            #
+            # Fix: tag the counter with the owning session_id. If the
+            # counter belongs to a different session (i.e. inherited from
+            # parent), treat this as a fresh session and replay the full
+            # channel history.
             session_vars = context.agent._session_tracker.get_session_template_vars(
                 context.session_id
             )
-            last_injected_id = int(session_vars.get("debate_last_injected_msg_id", 0))
+            counter_owner = session_vars.get("debate_counter_owner")
+            if counter_owner == context.session_id:
+                last_injected_id = int(session_vars.get("debate_last_injected_msg_id", 0))
+            else:
+                # Inherited (or no) counter — replay full channel history
+                last_injected_id = 0
+                if counter_owner is not None:
+                    logger.debug(
+                        "[DebateForumHook] Counter inherited from session %s "
+                        "into %s — resetting to replay channel #%d",
+                        counter_owner, context.session_id, channel_id,
+                    )
 
             all_messages = self.db.get_messages(channel_id, limit=0)
             new_messages = [
@@ -126,12 +151,22 @@ class DebateForumHooks(SchemaBasedPluginHook):
                 max_id = max(m["id"] for m in new_messages)
                 context.agent._session_tracker.set_session_template_vars(
                     context.session_id,
-                    {"debate_last_injected_msg_id": max_id},
+                    {
+                        "debate_last_injected_msg_id": max_id,
+                        "debate_counter_owner": context.session_id,
+                    },
                 )
                 modified = True
                 logger.info(
                     f"[DebateForumHook] Injected {len(new_messages)} new posts "
                     f"(msg_id {last_injected_id + 1}..{max_id}) from channel #{channel_id}"
+                )
+            elif counter_owner != context.session_id:
+                # No new messages but we still need to claim ownership so
+                # the next call doesn't see a stale inherited counter.
+                context.agent._session_tracker.set_session_template_vars(
+                    context.session_id,
+                    {"debate_counter_owner": context.session_id},
                 )
 
             if pinned_messages:
