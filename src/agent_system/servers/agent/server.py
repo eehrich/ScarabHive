@@ -442,9 +442,14 @@ class Agent(MCPServer):
 
         Rules:
         - If the hook chain returned a NEW list (identity differs from
-          input), use it directly. This is both injection AND modern-
-          compaction safe — the hook is the authority on what the LLM
-          should see.
+          input), use it directly AND clear the compacted marker. This
+          is both injection AND modern-compaction safe — the hook is the
+          authority on what the LLM should see. The marker must be
+          cleared because the post-tool-execution code path interprets
+          a still-set ``compacted_messages`` as "a tool modified the
+          conversation mid-request, rebuild messages" and would drop
+          the just-appended assistant tool-call message — causing the
+          agent to lose its tool-call/tool-result history each step.
         - Else (same identity, no hook touched the list) and
           compacted_messages is set, fall back to legacy reconstruction
           from pre-hook leading systems + the explicit compacted list,
@@ -460,10 +465,11 @@ class Agent(MCPServer):
         )
 
         if hooks_modified_list:
-            # Modern path: hook output is the source of truth.
-            # ``compacted_messages`` (if set) remains for end-of-request
-            # persistence — the persistence step clears it itself.
-            return modified_messages, False
+            # Modern path: hook output is the source of truth. The
+            # auto_sync-set compacted_messages is redundant (the hook
+            # output already reflects its content) AND poisonous to the
+            # tool-execution rebuild path — clear it.
+            return modified_messages, True
 
         if compacted_messages is not None:
             # Legacy path: hook called ``set_compacted_messages`` without

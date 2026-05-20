@@ -66,7 +66,9 @@ class TestModernPath:
             compacted_messages=None,
         )
         assert selected is modified
-        assert clear is False
+        # No compacted marker was set → nothing to clear, but the contract
+        # is "modern path always returns clear=True" (caller is idempotent).
+        assert clear is True
         # Pinned system message survives → LLM sees it
         assert len(selected) == 3
         assert selected[1].role == "system"
@@ -106,7 +108,11 @@ class TestModernPath:
         )
         # Modern path wins — pinned must survive
         assert selected is modified
-        assert clear is False
+        # AND the auto_sync-set compacted marker must be cleared, else
+        # the post-tool reconstruction misreads it as "tool modified
+        # session" and drops the assistant tool-call message → store_fact
+        # loop regression.
+        assert clear is True
         # Verify the pinned message is in the selected list
         pinned_msgs = [m for m in selected if "Debate Forum" in (m.content or "")]
         assert len(pinned_msgs) == 1
@@ -127,6 +133,7 @@ class TestModernPath:
             compacted_messages=_msgs(("user", "Hello")),
         )
         assert selected is modified
+        assert clear is True
         # All injected systems present
         sys_msgs = [m for m in selected if m.role == "system"]
         assert len(sys_msgs) == 4
@@ -152,7 +159,7 @@ class TestModernPath:
             compacted_messages=compacted_view[1:],  # auto_sync version
         )
         assert selected is compacted_view
-        assert clear is False
+        assert clear is True
         # archived_ref preserved
         assert any('"archived_ref"' in (m.content or "") for m in selected)
 
@@ -254,13 +261,15 @@ class TestEdgeCases:
     """Misc safety checks."""
 
     def test_empty_pre_hook_messages(self):
+        # Two empty list literals have different identities → counts as
+        # "hook returned a new list" → modern path → clear=True.
         selected, clear = Agent._select_llm_messages(
             pre_hook_messages=[],
             modified_messages=[],
             compacted_messages=None,
         )
         assert selected == []
-        assert clear is False
+        assert clear is True
 
     def test_modified_messages_is_new_empty_list(self, base_messages):
         """Hook chain returned [] (different identity). Still modern path."""
@@ -272,7 +281,8 @@ class TestEdgeCases:
         )
         # Hook returned empty list — that's what gets passed through
         assert selected is modified
-        assert clear is False
+        # Modern path always clears (caller is idempotent if marker absent)
+        assert clear is True
 
     def test_legacy_skips_after_first_non_system(self):
         """Reconstruction stops at first non-system message in pre-hook list.
@@ -324,10 +334,25 @@ class TestEphemeralInjectionSemantics:
     by design. Persistence (next-turn pre-hook input) only stores the
     conversation, not the system messages."""
 
-    def test_modern_path_does_not_clear_compacted_marker(self, base_messages):
-        """The compacted_messages marker survives the LLM-call select step
-        when modern path used — it's still needed for end-of-request
-        persistence (separate code path)."""
+    def test_modern_path_clears_compacted_marker(self, base_messages):
+        """The compacted_messages marker MUST be cleared on the modern path.
+
+        Regression: leaving the auto_sync-set marker in place caused the
+        v5b synopsis moderator ``store_fact`` loop. After the LLM call,
+        ``messages.append(assistant_msg)`` appends the tool-call assistant
+        message. The post-tool-execution code path then checks the
+        session tracker for ``compacted_messages``; if it's still set, it
+        interprets that as "a tool modified the conversation mid-request,
+        rebuild messages" and replaces messages with
+        ``[system] + compacted_messages + tool_messages`` — DROPPING the
+        just-appended assistant tool-call message. Across step-loop
+        iterations the LLM never sees its own prior tool calls/results
+        and loops calling the same tool with identical args.
+
+        The auto_sync-set marker is redundant once modified_messages is
+        used as the LLM input — the hook output already reflects the
+        same content. Persistence is handled separately by post-LLM
+        ``set_session_messages`` calls in the step-loop."""
         modified = base_messages + _msgs(("system", "injected"))
         compacted = _msgs(("user", "from auto_sync"))
         _, clear = Agent._select_llm_messages(
@@ -335,7 +360,7 @@ class TestEphemeralInjectionSemantics:
             modified_messages=modified,
             compacted_messages=compacted,
         )
-        assert clear is False  # marker stays for persistence step
+        assert clear is True  # marker MUST be cleared to avoid tool-loop regression
 
     def test_legacy_path_clears_compacted_marker(self, base_messages):
         """Legacy path's compacted is one-shot — both current-turn list AND
