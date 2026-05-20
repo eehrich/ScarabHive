@@ -408,6 +408,84 @@ class Agent(MCPServer):
         return None
 
     # ------------------------------------------------------------------
+    # Pre-LLM Message Selection
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _select_llm_messages(
+        pre_hook_messages: List[ChatMessage],
+        modified_messages: Optional[List[ChatMessage]],
+        compacted_messages: Optional[List[ChatMessage]],
+    ) -> tuple[List[ChatMessage], bool]:
+        """Pick the final message list to send to the LLM.
+
+        Resolves the conflict between two parallel signals that the
+        pre_llm_call hook chain can emit:
+
+        1. ``modified_messages`` — the message list returned by the hook
+           chain. Contains all leading system messages (agent's base
+           system prompt + hook-injected ones like pinned forum context,
+           restoration hints, sub-agent context) and the conversation
+           history (compacted by an earlier hook if applicable).
+
+        2. ``compacted_messages`` — a persistence marker stored on the
+           session tracker via ``set_compacted_messages``. Set explicitly
+           by legacy compaction hooks AND by ``auto_sync_session_messages``
+           on every hook-touched turn (filtered: no ephemeral system
+           messages persisted). Used by end-of-request persistence.
+
+        The historical reconstruction (``[leading systems from pre-hook]
+        + compacted``) is wrong for the modern path: pre-hook messages
+        don't see hook-injected systems, so a rebuild silently drops
+        them. The original bug surfaced when the v5b synopsis moderator
+        looped 100× on ``context_engineer.recall()`` because the
+        debate_forum-pinned ``role=system`` block never reached the LLM.
+
+        Rules:
+        - If the hook chain returned a NEW list (identity differs from
+          input), use it directly. This is both injection AND modern-
+          compaction safe — the hook is the authority on what the LLM
+          should see.
+        - Else (same identity, no hook touched the list) and
+          compacted_messages is set, fall back to legacy reconstruction
+          from pre-hook leading systems + the explicit compacted list,
+          and clear the marker (legacy path's compacted is one-shot).
+        - Else: nothing to do, return pre_hook_messages as-is.
+
+        Returns:
+            (selected_messages, clear_compacted_marker)
+        """
+        hooks_modified_list = (
+            modified_messages is not None
+            and modified_messages is not pre_hook_messages
+        )
+
+        if hooks_modified_list:
+            # Modern path: hook output is the source of truth.
+            # ``compacted_messages`` (if set) remains for end-of-request
+            # persistence — the persistence step clears it itself.
+            return modified_messages, False
+
+        if compacted_messages is not None:
+            # Legacy path: hook called ``set_compacted_messages`` without
+            # modifying context.messages. Rebuild from pre-hook leading
+            # system block + the explicit compacted conversation.
+            reconstructed: List[ChatMessage] = []
+            for msg in pre_hook_messages:
+                role = (
+                    msg.get("role") if isinstance(msg, dict)
+                    else getattr(msg, "role", None)
+                )
+                if role == "system":
+                    reconstructed.append(msg)
+                else:
+                    break
+            reconstructed.extend(compacted_messages)
+            return reconstructed, True
+
+        # Nothing modified, no compaction marker.
+        return pre_hook_messages, False
+
+    # ------------------------------------------------------------------
     # Central prompt rendering utilities (using strategy pattern)
     # ------------------------------------------------------------------
     def _render_prompts(
@@ -1519,36 +1597,19 @@ class Agent(MCPServer):
                 for status_event in yield_pending_status_events():
                     yield status_event
 
-                # Check if hook set compacted_messages (e.g., context_summarizer)
+                # Select the message list that will go to the LLM. The
+                # selection logic is extracted to ``_select_llm_messages``
+                # so it can be unit-tested in isolation (the surrounding
+                # step-loop is generator-based and hard to test directly).
                 compacted_messages = self._session_tracker.get_compacted_messages(session_id)
-                
-                if compacted_messages is not None:
-                    # Hook used compaction mechanism - reconstruct message list
-                    logger.debug(f"Pre-LLM hook set compacted_messages with {len(compacted_messages)} messages")
-                    
-                    # Build: [all_leading_system_messages] + compacted
-                    reconstructed = []
-                    # Keep ALL leading system messages (agent prompt, tools, session hooks)
-                    # NOT just the first one - fixes bug where tools_msg was lost!
-                    for msg in messages:
-                        msg_role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
-                        if msg_role == "system":
-                            reconstructed.append(msg)
-                        else:
-                            break  # Stop at first non-system message
-                    
-                    reconstructed.extend(compacted_messages)
-                    
-                    messages = reconstructed
-                    context.messages = reconstructed
-                    
-                    # Clear compacted_messages for next iteration
+                messages, clear_compacted = self._select_llm_messages(
+                    pre_hook_messages=messages,
+                    modified_messages=modified_messages,
+                    compacted_messages=compacted_messages,
+                )
+                context.messages = messages
+                if clear_compacted:
                     self._session_tracker.clear_compacted_messages(session_id)
-                    
-                elif modified_messages is not None:
-                    # Hook returned modified messages directly (old mechanism)
-                    messages = modified_messages
-                    context.messages = modified_messages
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
 
