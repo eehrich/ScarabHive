@@ -385,31 +385,24 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Byte limit MUST be enforced to avoid API errors (Gemini 100MB limit)
             force = is_manual or bytes_exceeded or event_media_compaction_needed or always_compact_media_enabled
             
-            # Apply compaction with status updates
-            result = None
-            async with StatusScope(
-                status_bus,
-                "context_engineer",
-                session_id,
-                start_msg=f"Engineering context: {current_tokens} tokens (target: {self.target_tokens}){' [MANUAL]' if is_manual else ''}",
-                end_msg="Context engineering completed"
-            ):
-                import asyncio
-                await asyncio.sleep(0.01)  # Allow START message to be delivered
-                
-                result = await strategy.compact(
-                    messages_as_dicts, 
-                    current_tokens, 
-                    force=force,
-                    trigger_event=trigger_event,
-                    session_id=session_id
-                )
-            
+            # Apply compaction. Run it before emitting any status so we can
+            # decide afterwards whether anything actually changed - this hook
+            # fires on every LLM call (always_compact_media), and emitting
+            # START/END for no-op runs would flood the CLI with noise.
+            import asyncio
+            result = await strategy.compact(
+                messages_as_dicts,
+                current_tokens,
+                force=force,
+                trigger_event=trigger_event,
+                session_id=session_id
+            )
+
             # Update rate limit tracker
             self._last_compaction_time[session_id] = current_time
-            
-            # Track in history for web UI - ONLY if something was actually compacted
-            # Skip history entry if nothing happened to avoid noise
+
+            # Determine whether anything was actually compacted. Gates both the
+            # START/END status messages and the web UI history entry.
             something_compacted = (
                 result.tokens_saved > 0 or
                 result.tool_results_stored > 0 or
@@ -421,6 +414,18 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 result.media_compacted_after_event > 0 or
                 result.media_always_compacted > 0  # Always-compact media (Pre-Layer M)
             )
+
+            # Emit START/END status only when the run actually changed the
+            # context - suppress the noise for no-op runs.
+            if something_compacted:
+                async with StatusScope(
+                    status_bus,
+                    "context_engineer",
+                    session_id,
+                    start_msg=f"Engineering context: {current_tokens} tokens (target: {self.target_tokens}){' [MANUAL]' if is_manual else ''}",
+                    end_msg="Context engineering completed"
+                ):
+                    await asyncio.sleep(0.01)  # Allow START message to be delivered
             
             # Invalidate usage tracker data for this session if something was compacted
             # This prevents subsequent hooks (e.g., context_summarizer) from using stale

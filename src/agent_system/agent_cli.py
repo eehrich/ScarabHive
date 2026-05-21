@@ -1613,6 +1613,11 @@ def main() -> None:
             except Exception as e:
                 logger.warning(f"Failed to create SSE subscriber task: {e}", exc_info=True)
                 sse_task = None
+        # Track whether thinking/reasoning tokens were actually streamed this step.
+        # The terminating newline on thinking_complete must only print when content
+        # was streamed - non-streaming LLMs emit thinking_complete with no thinking_delta,
+        # which would otherwise produce a stray blank line per LLM call.
+        thinking_streamed = False
         try:
             async for ev in agent.run_events(task, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 t = ev.get("type")
@@ -1646,15 +1651,21 @@ def main() -> None:
                     # Show thinking/reasoning content as it streams (like WebUI)
                     delta = ev.get("delta", "")
                     if delta:
+                        thinking_streamed = True
                         # Print without newline for streaming effect
                         if _supports_color():
                             print(_colorize(delta, "90"), end="", flush=True)  # Dark gray
                         else:
                             print(delta, end="", flush=True)
                 elif t == "thinking_complete":
-                    # Thinking finished - add newline
-                    print()  # Newline after thinking content
+                    # Thinking finished - terminate the streamed line, but only if
+                    # thinking content was actually printed this step
+                    if thinking_streamed:
+                        print()  # Newline after thinking content
+                    thinking_streamed = False
                 elif t == "thinking":
+                    # New step starting - reset streamed-thinking tracker
+                    thinking_streamed = False
                     # Optionally show LLM progress when verbose (backward compatibility)
                     if args.verbose:
                         step = ev.get("step")
