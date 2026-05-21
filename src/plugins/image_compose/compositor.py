@@ -156,35 +156,75 @@ def _guess_format(path: Path) -> str | None:
     return suf if suf in {"png", "webp", "jpeg", "jpg"} else None
 
 
+def _coerce_num(val: Any, default: float,
+                warnings: list[str] | None = None, what: str = "") -> float:
+    """Coerce a layer-supplied value to a number; fall back to default for junk.
+
+    LLM specs frequently put numbers in odd shapes ("32", "32px", lists).
+    """
+    if isinstance(val, bool) or val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return val
+    if isinstance(val, str):
+        m = re.match(r"^\s*(-?\d+(?:\.\d+)?)", val)
+        if m:
+            return float(m.group(1))
+    if warnings is not None:
+        warnings.append(f"{what}: expected a number, got {val!r} — using {default}")
+    return default
+
+
 # ── Position / size resolvers ─────────────────────────────────────────────
 
 def _resolve_position(pos: Any, layer_size: tuple[int, int],
                       canvas_size: tuple[int, int]) -> tuple[int, int]:
-    """Return top-left (x, y) pixel coordinate for placing layer_size into canvas."""
+    """Return top-left (x, y) pixel coordinate for placing layer_size into canvas.
+
+    Lenient about caller sloppiness: a bare anchor string ("bottom_center")
+    is accepted as {"anchor": ...}; a bare [x, y] list works as pixels.
+    """
     cw, ch = canvas_size
     lw, lh = layer_size
     if pos is None:
         return (0, 0)
+    # Bare anchor string → treat as {"anchor": <str>}
+    if isinstance(pos, str):
+        if pos in ANCHORS:
+            pos = {"anchor": pos}
+        else:
+            raise CompositionError(
+                f"position string '{pos}' is not a valid anchor. "
+                f"Use [x, y] pixels, or {{\"anchor\": <a>}} with <a> one of "
+                f"{sorted(ANCHORS)}"
+            )
     if isinstance(pos, (list, tuple)) and len(pos) == 2:
         return (int(pos[0]), int(pos[1]))
     if isinstance(pos, dict):
         anchor = pos.get("anchor", "top_left")
         if anchor not in ANCHORS:
-            raise CompositionError(f"unknown anchor: {anchor}")
+            raise CompositionError(
+                f"unknown anchor '{anchor}'. Use one of {sorted(ANCHORS)}"
+            )
         ax, ay = ANCHORS[anchor]
-        if "offset_pct" in pos:
+        if "offset_pct" in pos and isinstance(pos["offset_pct"], (list, tuple)):
             dx_pct, dy_pct = pos["offset_pct"]
             dx, dy = int(cw * float(dx_pct) / 100.0), int(ch * float(dy_pct) / 100.0)
         else:
-            ox, oy = pos.get("offset", (0, 0))
-            dx, dy = int(ox), int(oy)
+            off = pos.get("offset", (0, 0))
+            if not isinstance(off, (list, tuple)) or len(off) != 2:
+                off = (0, 0)
+            dx, dy = int(off[0]), int(off[1])
         # Anchor on canvas
         cx, cy = int(cw * ax), int(ch * ay)
         # Place layer so its corresponding anchor lands on (cx+dx, cy+dy)
         x = cx + dx - int(lw * ax)
         y = cy + dy - int(lh * ay)
         return (x, y)
-    raise CompositionError(f"invalid position: {pos!r}")
+    raise CompositionError(
+        f"invalid position {pos!r}. Use [x, y] pixels, a bare anchor name, "
+        f"or {{\"anchor\": <a>, \"offset\": [dx, dy]}}"
+    )
 
 
 def _resolve_size_field(size: Any, canvas_size: tuple[int, int],
@@ -274,8 +314,22 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
     if not isinstance(layer, dict):
         raise CompositionError("layer must be an object")
     t = layer.get("type")
+    # Tolerate LLM sloppiness: a type like "text,uppercase:true" or "text "
+    # gets reduced to its leading bare word.
+    if isinstance(t, str) and t not in LAYER_TYPES:
+        cleaned = t.split(",")[0].split()[0].strip().lower() if t.strip() else t
+        if cleaned in LAYER_TYPES and cleaned != t:
+            warnings.append(
+                f"layer {layer_index}: type {t!r} had trailing junk — used {cleaned!r}. "
+                f"Layer attributes belong as separate keys, not inside 'type'."
+            )
+            t = cleaned
     if t not in LAYER_TYPES:
-        raise CompositionError(f"unknown layer type: {t!r} (allowed: {sorted(LAYER_TYPES)})")
+        raise CompositionError(
+            f"unknown layer type {t!r}. Allowed: {sorted(LAYER_TYPES)}. "
+            f"Each layer is an object like {{\"type\": \"text\", \"text\": \"...\"}} — "
+            f"put attributes as separate keys, never inside 'type'."
+        )
 
     if t == "image":
         layer_img, pos = _render_image_layer(layer, canvas_size, project_root)
@@ -352,14 +406,17 @@ def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
     if layer.get("uppercase"):
         text = text.upper()
 
-    size_pt = int(layer.get("size", 48))
+    size_pt = int(_coerce_num(layer.get("size"), 48, warnings, "text.size"))
+    size_pt = max(4, size_pt)
     font = _load_font(layer.get("font", "sans"), size_pt, fonts_dir, font_aliases, warnings)
     color = _parse_color(layer.get("color", "#ffffff"))
     align = layer.get("align", "left")
     if align not in ("left", "center", "right"):
-        raise CompositionError(f"text align must be left|center|right, got {align!r}")
-    line_height = float(layer.get("line_height", 1.1))
-    tracking = int(layer.get("tracking", 0))
+        raise CompositionError(
+            f"text align must be left|center|right, got {align!r}"
+        )
+    line_height = float(_coerce_num(layer.get("line_height"), 1.1))
+    tracking = int(_coerce_num(layer.get("tracking"), 0))
 
     # Wrapping. If the caller didn't set max_width we fall back to "canvas width
     # minus an 80 px safe margin on each side" so a too-wide title is wrapped
@@ -369,7 +426,7 @@ def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
     _DEFAULT_SAFE_MARGIN = 80
     if isinstance(max_w_field, dict) and "width_pct" in max_w_field:
         max_w: int | None = int(cw * float(max_w_field["width_pct"]) / 100.0)
-    elif max_w_field is not None:
+    elif isinstance(max_w_field, (int, float)):
         max_w = int(max_w_field)
     else:
         max_w = max(1, cw - 2 * _DEFAULT_SAFE_MARGIN)
@@ -388,12 +445,23 @@ def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
     line_h = int(line_metrics[0][2] * line_height)
     block_h = line_h * len(line_metrics)
 
-    # Padding for stroke / shadow bleed
-    stroke = layer.get("stroke") or {}
-    stroke_w = int(stroke.get("width", 0)) if stroke else 0
-    shadow = layer.get("shadow") or {}
-    shadow_offset = shadow.get("offset", (0, 0)) if shadow else (0, 0)
-    shadow_blur = int(shadow.get("blur", 0)) if shadow else 0
+    # Padding for stroke / shadow bleed. stroke/shadow must be objects —
+    # tolerate a non-dict (LLM passed a string/number) by ignoring it.
+    stroke = layer.get("stroke")
+    if not isinstance(stroke, dict):
+        if stroke is not None:
+            warnings.append("text.stroke must be an object {width, color} — ignored")
+        stroke = {}
+    stroke_w = int(_coerce_num(stroke.get("width"), 0))
+    shadow = layer.get("shadow")
+    if not isinstance(shadow, dict):
+        if shadow is not None:
+            warnings.append("text.shadow must be an object {offset, blur, color} — ignored")
+        shadow = {}
+    shadow_offset = shadow.get("offset", (0, 0))
+    if not isinstance(shadow_offset, (list, tuple)) or len(shadow_offset) != 2:
+        shadow_offset = (0, 0)
+    shadow_blur = int(_coerce_num(shadow.get("blur"), 0))
     pad = max(stroke_w, shadow_blur + max(abs(int(shadow_offset[0])), abs(int(shadow_offset[1])))) + 4
 
     layer_w = block_w + 2 * pad
@@ -517,9 +585,11 @@ def _render_rect_layer(layer: dict, canvas_size: tuple[int, int]) -> tuple[Image
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     fill = _parse_color(layer.get("fill", "#00000000")) if layer.get("fill") else None
-    radius = int(layer.get("radius", 0))
-    border = layer.get("border") or {}
-    border_w = int(border.get("width", 0)) if border else 0
+    radius = int(_coerce_num(layer.get("radius"), 0))
+    border = layer.get("border")
+    if not isinstance(border, dict):
+        border = {}
+    border_w = int(_coerce_num(border.get("width"), 0))
     border_color = _parse_color(border.get("color", "#000000")) if border_w else None
     if radius > 0:
         draw.rounded_rectangle((0, 0, w - 1, h - 1), radius=radius,
@@ -608,7 +678,7 @@ def _interpolate_gradient(colors: list[tuple[int, int, int, int]],
 
 
 def _render_vignette_layer(layer: dict, canvas_size: tuple[int, int]) -> tuple[Image.Image, tuple[int, int]]:
-    strength = float(layer.get("strength", 0.3))
+    strength = float(_coerce_num(layer.get("strength"), 0.3))
     color = _parse_color(layer.get("color", "#000000"))
     cw, ch = canvas_size
     img = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
@@ -655,17 +725,28 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
         drawing.width = int(drawing.width * scale)
         drawing.height = int(drawing.height * scale)
         drawing.scale(scale, scale)
-    png_bytes = renderPM.drawToString(drawing, fmt="PNG", bg=0xFFFFFF)
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    # renderPM forces a white background — derive an alpha mask so white becomes
-    # transparent (and anti-aliased edges fade). Pure ImageChops, no deprecated APIs.
-    r, g, b, _a = img.split()
-    inv_r = ImageChops.invert(r)
-    inv_g = ImageChops.invert(g)
-    inv_b = ImageChops.invert(b)
-    alpha = ImageChops.lighter(ImageChops.lighter(inv_r, inv_g), inv_b)
-    img.putalpha(alpha)
-    return img
+
+    # renderPM cannot render onto a transparent background — it always bakes in
+    # a solid bg colour. Render the SAME drawing twice (on black and on white)
+    # and reconstruct true alpha + un-premultiplied colour from the difference.
+    # This correctly keeps WHITE svg content (a naive "make white transparent"
+    # mask would erase white strokes/fills entirely).
+    import numpy as np
+
+    png_white = renderPM.drawToString(drawing, fmt="PNG", bg=0xFFFFFF)
+    png_black = renderPM.drawToString(drawing, fmt="PNG", bg=0x000000)
+    iw = np.asarray(Image.open(io.BytesIO(png_white)).convert("RGB"), dtype=np.int16)
+    ib = np.asarray(Image.open(io.BytesIO(png_black)).convert("RGB"), dtype=np.int16)
+
+    # On white bg a pixel reads  C*A + 255*(1-A); on black bg it reads C*A.
+    # diff = white - black = 255*(1-A)  ->  A = 1 - diff/255 (same per channel).
+    diff = np.clip(iw - ib, 0, 255)
+    alpha = np.clip(255 - diff.max(axis=2), 0, 255).astype(np.uint8)
+    # Un-premultiply colour: C = (C*A) / A = black_render / A.
+    a_norm = np.clip(alpha.astype(np.float32) / 255.0, 1e-6, 1.0)[:, :, None]
+    color = np.clip(ib.astype(np.float32) / a_norm, 0, 255).astype(np.uint8)
+    rgba = np.dstack([color, alpha])
+    return Image.fromarray(rgba, "RGBA")
 
 
 # ── Image loading + fitting ───────────────────────────────────────────────

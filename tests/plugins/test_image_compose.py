@@ -138,8 +138,19 @@ class TestResolvePosition:
             _resolve_position({"anchor": "middle_of_nowhere"}, (40, 40), (200, 300))
 
     def test_invalid_position(self):
+        # a non-anchor bare string is invalid
         with pytest.raises(CompositionError):
-            _resolve_position("center", (40, 40), (200, 300))
+            _resolve_position("somewhere", (40, 40), (200, 300))
+        # a bare int is invalid (ambiguous)
+        with pytest.raises(CompositionError):
+            _resolve_position(868, (40, 40), (200, 300))
+
+    def test_bare_anchor_string_accepted(self):
+        # a valid anchor name passed as a bare string works like {"anchor": ...}
+        assert _resolve_position("center", (40, 40), (200, 300)) == \
+            _resolve_position({"anchor": "center"}, (40, 40), (200, 300))
+        assert _resolve_position("bottom_center", (40, 40), (200, 300)) == \
+            _resolve_position({"anchor": "bottom_center"}, (40, 40), (200, 300))
 
     def test_all_anchors_resolve(self):
         for name in ANCHORS:
@@ -560,6 +571,68 @@ class TestCompose:
         assert Image.open(out).size == (40, 40)
 
 
+# ── LLM-sloppy spec tolerance ─────────────────────────────────────────────
+
+class TestSpecTolerance:
+    """The compositor must survive the malformed specs LLM agents produce
+    instead of hard-failing and forcing a re-compose loop."""
+
+    def test_type_with_trailing_junk(self, tmp_path, fonts_dir):
+        # agent jammed an attribute into the type string
+        out, meta = _render({
+            "size": [200, 80], "background": "#000000",
+            "layers": [{"type": "text,uppercase:true", "text": "Hi",
+                        "position": [10, 10], "color": "#ffffff"}],
+        }, tmp_path, fonts_dir)
+        assert meta["layers_rendered"] == 1
+        assert any("trailing junk" in w for w in meta["warnings"])
+
+    def test_position_bare_anchor_string(self, tmp_path, fonts_dir):
+        out, _ = _render({
+            "size": [200, 200], "background": "transparent",
+            "layers": [{"type": "rect", "position": "bottom_center",
+                        "size": [50, 50], "fill": "#ff0000"}],
+        }, tmp_path, fonts_dir)
+        img = Image.open(out).convert("RGBA")
+        # rect centered horizontally at the bottom
+        assert img.getpixel((100, 190))[:3] == (255, 0, 0)
+
+    def test_stroke_as_string_is_ignored(self, tmp_path, fonts_dir):
+        out, meta = _render({
+            "size": [200, 80], "background": "#000000",
+            "layers": [{"type": "text", "text": "Hi", "color": "#ffffff",
+                        "stroke": "2px black", "position": [10, 10]}],
+        }, tmp_path, fonts_dir)
+        assert meta["layers_rendered"] == 1
+        assert any("stroke must be an object" in w for w in meta["warnings"])
+
+    def test_shadow_as_number_is_ignored(self, tmp_path, fonts_dir):
+        out, meta = _render({
+            "size": [200, 80], "background": "#000000",
+            "layers": [{"type": "text", "text": "Hi", "color": "#ffffff",
+                        "shadow": 5, "position": [10, 10]}],
+        }, tmp_path, fonts_dir)
+        assert meta["layers_rendered"] == 1
+        assert any("shadow must be an object" in w for w in meta["warnings"])
+
+    def test_numeric_field_as_string(self, tmp_path, fonts_dir):
+        # "size": "48px" instead of 48
+        out, meta = _render({
+            "size": [300, 120], "background": "#000000",
+            "layers": [{"type": "text", "text": "Hi", "size": "48px",
+                        "color": "#ffffff", "position": [10, 10]}],
+        }, tmp_path, fonts_dir)
+        assert meta["layers_rendered"] == 1
+
+    def test_position_bare_int_still_errors(self, tmp_path, fonts_dir):
+        # an unrecoverable case must give a clear, prescriptive error
+        with pytest.raises(CompositionError, match="invalid position"):
+            _render({"size": [200, 200],
+                     "layers": [{"type": "rect", "position": 868,
+                                 "size": [20, 20], "fill": "#fff"}]},
+                    tmp_path, fonts_dir)
+
+
 # ── Spec validation errors ────────────────────────────────────────────────
 
 class TestSpecErrors:
@@ -656,6 +729,46 @@ class TestSvgLayer:
         with pytest.raises(CompositionError, match="svg"):
             _render({"size": [40, 40], "layers": [{"type": "svg"}]},
                     tmp_path, fonts_dir)
+
+    def test_white_svg_content_is_visible(self, tmp_path, fonts_dir):
+        """Regression: a WHITE svg stroke/fill must stay visible. The earlier
+        'make white transparent' alpha hack erased white svg content entirely
+        (renderPM bakes a white background, and white content collided with
+        it). Two-pass alpha recovery must keep the white line opaque."""
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="20" '
+            'viewBox="0 0 200 20"><line x1="5" y1="10" x2="195" y2="10" '
+            'stroke="#ffffff" stroke-width="4"/></svg>'
+        )
+        out, meta = _render({
+            "size": [220, 60], "background": "#102030",
+            "layers": [{"type": "svg", "svg": svg, "size": [200, 20],
+                        "position": {"anchor": "center"}}],
+        }, tmp_path, fonts_dir)
+        assert meta["layers_rendered"] == 1
+        img = Image.open(out).convert("RGBA")
+        # the white line runs across the vertical centre (y=30)
+        white_hits = sum(
+            1 for x in range(20, 200, 5)
+            if img.getpixel((x, 30))[:3] == (255, 255, 255)
+        )
+        assert white_hits > 10, f"white svg line not visible (hits={white_hits})"
+
+    def test_svg_keeps_non_white_color(self, tmp_path, fonts_dir):
+        """A coloured svg element keeps its colour through alpha recovery."""
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+            'viewBox="0 0 100 100"><rect x="10" y="10" width="80" height="80" '
+            'fill="#d4af37"/></svg>'
+        )
+        out, _ = _render({
+            "size": [120, 120], "background": "#000000",
+            "layers": [{"type": "svg", "svg": svg, "size": [100, 100],
+                        "position": [10, 10]}],
+        }, tmp_path, fonts_dir)
+        img = Image.open(out).convert("RGBA")
+        r, g, b, a = img.getpixel((60, 60))
+        assert a > 240 and abs(r - 212) < 12 and abs(g - 175) < 12 and abs(b - 55) < 12
 
 
 # ── Font fallback ─────────────────────────────────────────────────────────
