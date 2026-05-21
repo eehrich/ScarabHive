@@ -160,16 +160,21 @@ plugins:
 
     comfyui:
       type: comfyui
-      enabled: true  # ComfyUI server must be running on localhost:8188
+      enabled: true
       description: "Execute ComfyUI workflows for image, audio, and video generation"
-      host: "192.0.2.5"  # primary / fallback server
+      host: "192.0.2.5"  # primary / fallback
       port: 8188
-      servers:  # load-balanced pool; if set, overrides host/port for new jobs
+      strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"
+      timeout_seconds: 300
+      servers:  # 4 ComfyUI-Instanzen auf einem Server (2 GPUs), load-balanced
         - host: "192.0.2.5"
           port: 8188
-        - host: "192.0.2.6"
-          port: 8188      
-          strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"      timeout_seconds: 300
+        - host: "192.0.2.5"
+          port: 8189
+        - host: "192.0.2.5"
+          port: 8190
+        - host: "192.0.2.5"
+          port: 8191
 
       unknown_threshold_seconds: 60  # Fail early if job stays unknown for this many seconds (lost/dropped)
       output_dir: "data/comfyui/outputs"
@@ -267,6 +272,56 @@ plugins:
               type: float
               default: 7.0
               description: "Classifier-free guidance scale (5-10 recommended)"
+              node_id: "3"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "3"
+              field: inputs.seed
+
+        - id: juggernaut_xl
+          name: "Juggernaut XL v9 (High-Quality SDXL)"
+          description: "Single-stage SDXL generation with the Juggernaut XL v9 community checkpoint. Far better anatomy, faces, hands and composition than vanilla SDXL base. Default 1024x1536 (2:3 book cover). No separate refiner pass needed."
+          category: image_generation
+          workflow_file: juggernaut_xl.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the image to generate"
+              node_id: "6"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, deformed, bad anatomy, extra fingers, watermark, text, signature"
+              description: "Things to avoid in the image"
+              node_id: "7"
+              field: inputs.text
+            - name: width
+              type: integer
+              default: 1024
+              description: "Image width (divisible by 8; 1024 recommended)"
+              node_id: "5"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1536
+              description: "Image height (divisible by 8; 1536 = 2:3 book cover)"
+              node_id: "5"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 32
+              description: "Sampling steps (30-40 recommended for Juggernaut)"
+              node_id: "3"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 5.5
+              description: "Guidance scale (Juggernaut likes 3-7, lower than vanilla SDXL)"
               node_id: "3"
               field: inputs.cfg
             - name: seed
