@@ -282,8 +282,8 @@ plugins:
               field: inputs.seed
 
         - id: juggernaut_xl
-          name: "Juggernaut XL v9 (High-Quality SDXL)"
-          description: "Single-stage SDXL generation with the Juggernaut XL v9 community checkpoint. Far better anatomy, faces, hands and composition than vanilla SDXL base. Default 1024x1536 (2:3 book cover). No separate refiner pass needed."
+          name: "Juggernaut XL v9 + Hires-Fix (High-Quality SDXL)"
+          description: "Juggernaut XL v9 community checkpoint with a hires-fix pass: base render at width x height, 4x-UltraSharp model upscale, downscale to 1.5x, then a low-denoise refine pass. Far better anatomy, faces and detail than vanilla SDXL base. width/height set the BASE size (default 1024x1536); final output is 1.5x that (1536x2304)."
           category: image_generation
           workflow_file: juggernaut_xl.json
           parameters:
