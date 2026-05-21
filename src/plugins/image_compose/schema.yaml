@@ -91,6 +91,13 @@ tools:
             type: boolean
             default: true
             description: "Attach the rendered image to the response so the calling agent can visually QA it."
+          layers_dir:
+            type: string
+            description: >
+              Optional directory (relative to project root or absolute). When set,
+              each layer is also saved there as a standalone transparent PNG
+              (layer_00_image.png, layer_01_text.png, ...). The returned
+              `layer_files` lists the written paths.
         required: [spec, output_path]
         additionalProperties: false
 

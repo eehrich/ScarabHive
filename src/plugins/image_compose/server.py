@@ -53,6 +53,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
         spec = params.get("spec")
         output_path = params.get("output_path")
         include_content = params.get("include_content", True)
+        layers_dir_param = params.get("layers_dir")
 
         if not isinstance(spec, dict):
             return _error("spec is required and must be an object", "ValidationError")
@@ -65,12 +66,19 @@ class ImageComposeServer(SchemaBasedMCPServer):
                 out_full = (self.output_root / out_full).resolve()
             out_full.parent.mkdir(parents=True, exist_ok=True)
 
+            layers_dir: Path | None = None
+            if layers_dir_param:
+                layers_dir = Path(layers_dir_param)
+                if not layers_dir.is_absolute():
+                    layers_dir = (self.output_root / layers_dir).resolve()
+
             n_layers = len(spec.get("layers") or [])
             if status:
                 await status.progress(f"Rendering {n_layers} layer(s) → {out_full.name}")
 
             meta = await asyncio.to_thread(
-                compose, spec, out_full, self.fonts_dir, self.font_aliases, self.project_root,
+                compose, spec, out_full, self.fonts_dir, self.font_aliases,
+                self.project_root, layers_dir,
             )
 
             warnings_list = meta.get("warnings", []) or []
@@ -88,6 +96,8 @@ class ImageComposeServer(SchemaBasedMCPServer):
                 "layers_rendered": meta["layers_rendered"],
                 "warnings": warnings_list,
             }
+            if meta.get("layer_files"):
+                result["layer_files"] = meta["layer_files"]
             if warnings_list:
                 result["action_required"] = (
                     "Re-compose: address each item in `warnings` (e.g. reduce "

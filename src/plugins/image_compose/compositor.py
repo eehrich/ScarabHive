@@ -45,8 +45,14 @@ class CompositionError(Exception):
 # ── Top-level entry point ─────────────────────────────────────────────────
 
 def compose(spec: dict, output_path: Path, fonts_dir: Path,
-            font_aliases: dict[str, str], project_root: Path) -> dict:
-    """Render `spec` to `output_path`. Returns a small metadata dict."""
+            font_aliases: dict[str, str], project_root: Path,
+            layers_dir: Path | None = None) -> dict:
+    """Render `spec` to `output_path`. Returns a small metadata dict.
+
+    If `layers_dir` is given, each layer is additionally saved there as a
+    standalone transparent PNG (`layer_{NN}_{type}.png`) — useful for
+    re-editing or for series covers that reuse individual layers.
+    """
     if not isinstance(spec, dict):
         raise CompositionError("spec must be an object")
 
@@ -59,13 +65,18 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
     if not isinstance(layers, list):
         raise CompositionError("layers must be an array")
 
+    # Each entry: (placed_layer_image, top_left_pos, cleaned_type)
+    layer_exports: list[tuple[Image.Image, tuple[int, int], str]] | None = (
+        [] if layers_dir is not None else None
+    )
+
     rendered = 0
     for idx, layer in enumerate(layers):
         ltype = (layer or {}).get("type", "?") if isinstance(layer, dict) else "?"
         try:
             canvas = _render_layer(
                 canvas, layer, size, fonts_dir, font_aliases, project_root,
-                warnings, layer_index=idx,
+                warnings, layer_index=idx, layer_exports=layer_exports,
             )
             rendered += 1
         except CompositionError as e:
@@ -94,12 +105,34 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
         save_kwargs["optimize"] = True
 
     canvas.save(output_path, format=fmt.upper(), **save_kwargs)
+
+    # Per-layer PNG export
+    saved_layers: list[str] = []
+    if layers_dir is not None and layer_exports:
+        layers_dir.mkdir(parents=True, exist_ok=True)
+        # Clear stale layer_*.png from earlier (re-)composition runs so the
+        # directory always reflects exactly this composition — otherwise a
+        # dropped layer (e.g. a gradient removed on re-compose) leaves an
+        # orphan file behind and misrepresents the final cover.
+        for stale in layers_dir.glob("layer_*.png"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        for i, (limg, lpos, ltype) in enumerate(layer_exports):
+            standalone = Image.new("RGBA", size, (0, 0, 0, 0))
+            standalone.alpha_composite(limg, dest=lpos)
+            lpath = layers_dir / f"layer_{i:02d}_{ltype}.png"
+            standalone.save(lpath, format="PNG", optimize=True)
+            saved_layers.append(str(lpath))
+
     return {
         "size": list(size),
         "format": fmt,
         "bytes": output_path.stat().st_size,
         "layers_rendered": rendered,
         "warnings": warnings,
+        "layer_files": saved_layers,
     }
 
 
@@ -310,7 +343,8 @@ def _check_canvas_overflow(layer_index: int, layer_type: str,
 def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
                   fonts_dir: Path, font_aliases: dict[str, str],
                   project_root: Path, warnings: list[str],
-                  layer_index: int = 0) -> Image.Image:
+                  layer_index: int = 0,
+                  layer_exports: list | None = None) -> Image.Image:
     if not isinstance(layer, dict):
         raise CompositionError("layer must be an object")
     t = layer.get("type")
@@ -359,12 +393,16 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
     _check_canvas_overflow(layer_index, t, pos, layer_img.size, canvas_size, warnings)
 
     # Opacity
-    opacity = float(layer.get("opacity", 1.0))
+    opacity = float(_coerce_num(layer.get("opacity"), 1.0))
     if not 0.0 <= opacity <= 1.0:
         raise CompositionError(f"opacity out of [0,1]: {opacity}")
     if opacity < 1.0:
         alpha = layer_img.split()[3].point(lambda v: int(v * opacity))
         layer_img.putalpha(alpha)
+
+    # Capture the finished layer (post rotation+opacity) for per-layer export.
+    if layer_exports is not None:
+        layer_exports.append((layer_img.copy(), pos, t))
 
     # Blend
     blend = layer.get("blend_mode", "normal")

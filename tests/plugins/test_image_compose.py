@@ -54,6 +54,86 @@ def _render(spec, tmp_path, fonts_dir, ext="png"):
     return out, meta
 
 
+# ── Per-layer PNG export ──────────────────────────────────────────────────
+
+class TestLayerExport:
+    def test_layers_dir_writes_one_png_per_layer(self, tmp_path, fonts_dir):
+        layers_dir = tmp_path / "layers"
+        out = tmp_path / "out.png"
+        spec = {
+            "size": [200, 300], "background": "#222222",
+            "layers": [
+                {"type": "gradient", "rect": [0, 150, 200, 150],
+                 "colors": ["#00000000", "#000000cc"], "direction": "bottom"},
+                {"type": "text", "text": "Titel", "font": "serif_bold",
+                 "size": 32, "color": "#ffffff", "position": {"anchor": "center"}},
+            ],
+        }
+        meta = compose(spec, out, fonts_dir, {}, tmp_path, layers_dir=layers_dir)
+        assert len(meta["layer_files"]) == 2
+        names = sorted(Path(p).name for p in meta["layer_files"])
+        assert names == ["layer_00_gradient.png", "layer_01_text.png"]
+        for p in meta["layer_files"]:
+            img = Image.open(p)
+            assert img.size == (200, 300)
+            assert img.mode == "RGBA"
+
+    def test_no_layers_dir_means_no_export(self, tmp_path, fonts_dir):
+        _, meta = _render({
+            "size": [100, 100],
+            "layers": [{"type": "rect", "rect": [0, 0, 50, 50], "fill": "#ff0000"}],
+        }, tmp_path, fonts_dir)
+        assert meta["layer_files"] == []
+
+    def test_recompose_clears_stale_layer_files(self, tmp_path, fonts_dir):
+        """A re-composition with fewer/different layers must not leave orphan
+        layer PNGs from the previous run in layers_dir."""
+        layers_dir = tmp_path / "layers"
+        out = tmp_path / "out.png"
+        # First compose: 3 layers (image-ish rect, gradient, text)
+        compose({
+            "size": [200, 200], "background": "#111111",
+            "layers": [
+                {"type": "rect", "rect": [0, 0, 200, 200], "fill": "#222222"},
+                {"type": "gradient", "rect": [0, 100, 200, 100],
+                 "colors": ["#00000000", "#000000cc"], "direction": "bottom"},
+                {"type": "text", "text": "Hi", "color": "#ffffff",
+                 "position": [10, 10]},
+            ],
+        }, out, fonts_dir, {}, tmp_path, layers_dir=layers_dir)
+        assert (layers_dir / "layer_01_gradient.png").exists()
+
+        # Re-compose: gradient dropped, only 2 layers now
+        meta = compose({
+            "size": [200, 200], "background": "#111111",
+            "layers": [
+                {"type": "rect", "rect": [0, 0, 200, 200], "fill": "#222222"},
+                {"type": "text", "text": "Hi", "color": "#ffffff",
+                 "position": [10, 10]},
+            ],
+        }, out, fonts_dir, {}, tmp_path, layers_dir=layers_dir)
+        # The stale gradient PNG must be gone
+        assert not (layers_dir / "layer_01_gradient.png").exists()
+        remaining = sorted(p.name for p in layers_dir.glob("layer_*.png"))
+        assert remaining == ["layer_00_rect.png", "layer_01_text.png"]
+        assert len(meta["layer_files"]) == 2
+
+    def test_exported_layer_is_isolated(self, tmp_path, fonts_dir):
+        """Each exported layer PNG holds only that layer on transparency."""
+        layers_dir = tmp_path / "layers"
+        out = tmp_path / "out.png"
+        spec = {
+            "size": [100, 100], "background": "#0000ff",
+            "layers": [{"type": "rect", "rect": [10, 10, 30, 30], "fill": "#ff0000"}],
+        }
+        meta = compose(spec, out, fonts_dir, {}, tmp_path, layers_dir=layers_dir)
+        layer = Image.open(meta["layer_files"][0]).convert("RGBA")
+        # inside the rect: red, opaque
+        assert layer.getpixel((20, 20)) == (255, 0, 0, 255)
+        # outside: transparent (NOT the blue background)
+        assert layer.getpixel((80, 80)) == (0, 0, 0, 0)
+
+
 # ── Color parsing ─────────────────────────────────────────────────────────
 
 class TestParseColor:
