@@ -11,7 +11,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
