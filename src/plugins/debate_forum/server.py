@@ -228,6 +228,32 @@ class DebateForumServer(SchemaBasedMCPServer):
             "name": channel["name"],
         }
 
+    # ── Tool: rename_channel ────────────────────────────────
+
+    async def rename_channel(self, params: dict[str, Any]) -> dict[str, Any]:
+        channel_id = params.get("channel_id")
+        new_name = params.get("new_name")
+        if not channel_id:
+            return {"error": "channel_id is required"}
+        if not new_name or not isinstance(new_name, str) or not new_name.strip():
+            return {"error": "new_name (non-empty string) is required"}
+
+        channel = self.db.get_channel(channel_id)
+        if not channel:
+            return {"error": f"Channel {channel_id} not found"}
+
+        old_name = channel["name"]
+        ok = self.db.rename_channel(channel_id, new_name)
+        if not ok:
+            return {"error": f"Failed to rename channel {channel_id}"}
+
+        return {
+            "status": "renamed",
+            "channel_id": channel_id,
+            "old_name": old_name,
+            "new_name": new_name.strip(),
+        }
+
     # ── Tool: list_channels ───────────────────────────────────
 
     async def list_channels(self, params: dict[str, Any]) -> dict[str, Any]:

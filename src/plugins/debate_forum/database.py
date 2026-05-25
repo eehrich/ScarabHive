@@ -255,6 +255,21 @@ class DebateForumDB:
         conn.commit()
         return cur.rowcount > 0
 
+    def rename_channel(self, channel_id: int, new_name: str) -> bool:
+        """Update the channel name in place. Channel-id, messages, pins,
+        verdict and history stay intact — only the display name changes.
+        Returns True if a row was updated.
+        """
+        if not new_name or not new_name.strip():
+            return False
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE channels SET name = ?, updated_at = datetime('now') WHERE id = ?",
+            (new_name.strip(), channel_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
     # ── Messages ──────────────────────────────────────────────
 
     def post_message(

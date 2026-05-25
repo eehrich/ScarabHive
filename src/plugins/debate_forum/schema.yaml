@@ -152,6 +152,23 @@ tools:
 
   - type: function
     function:
+      name: "{{ name }}_rename_channel"
+      description: >
+        Rename a debate channel. Updates only the display name; channel_id,
+        messages, pins and history stay intact.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel to rename"
+          new_name:
+            type: string
+            description: "New display name for the channel"
+        required: [channel_id, new_name]
+
+  - type: function
+    function:
       name: "{{ name }}_list_channels"
       description: >
         List debate channels, optionally filtered by status or group.

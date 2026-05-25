@@ -141,6 +141,29 @@ class TestDebateForumDB:
         channel = db.get_channel(r["channel_id"])
         assert channel["status"] == "archived"
 
+    def test_rename_channel(self, db: DebateForumDB):
+        r = db.create_channel(name="revise-B05-story-152", topic="t")
+        ok = db.rename_channel(r["channel_id"], "revise-B04-story-152")
+        assert ok is True
+        channel = db.get_channel(r["channel_id"])
+        assert channel["name"] == "revise-B04-story-152"
+        # Channel-ID, topic, status unverändert
+        assert channel["id"] == r["channel_id"]
+        assert channel["topic"] == "t"
+        assert channel["status"] == "active"
+
+    def test_rename_channel_nonexistent(self, db: DebateForumDB):
+        ok = db.rename_channel(99999, "new-name")
+        assert ok is False
+
+    def test_rename_channel_empty_name_rejected(self, db: DebateForumDB):
+        r = db.create_channel(name="original", topic="t")
+        assert db.rename_channel(r["channel_id"], "") is False
+        assert db.rename_channel(r["channel_id"], "   ") is False
+        # Name unverändert
+        channel = db.get_channel(r["channel_id"])
+        assert channel["name"] == "original"
+
     def test_post_message(self, db: DebateForumDB):
         ch = db.create_channel(name="ch", topic="t")
         result = db.post_message(
