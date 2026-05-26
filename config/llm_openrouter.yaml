@@ -100,6 +100,40 @@ llm_system:
       # - Use for testing/budget-conscious large structured output tasks
       # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
 
+    openrouter-gemini-3.5-flash:
+      provider: openai_httpx
+      model: google/gemini-3.5-flash
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 200000  # 1M token native; capped here for context-budget perf
+      request_timeout: 600
+      thinking_level: medium      # defaults to medium per Google docs
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      max_tokens: 32768           # Big complex tool-calls (image_compose_render specs with multiple SVG strings)
+                                  # PLUS medium-level thinking PLUS function-call envelope easily exceed 16k —
+                                  # truncation mid-JSON causes MALFORMED_FUNCTION_CALL.
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true  # text/image/video/audio/PDF native
+
+      # Notes:
+      # - Gemini 3.5 Flash: newer than 3.0 Flash, ~Pro-quality at Flash price
+      # - Pricing (standard): $1.50 input / $9.00 output per 1M tokens
+      # - service_tier: "flex" routes to Google Flex Processing (cheaper,
+      #   significantly slower; ok for non-interactive batch agents like
+      #   cover_artist). Remove the field for standard-speed billing.
+      # - max_tokens 32k: thinking tokens are charged AGAINST the output
+      #   budget; complex compose-tool calls with embedded SVG strings can
+      #   easily blow past 16k. 32k gives headroom for both.
+
     openrouter-gemini-3-pro:
       provider: openai_httpx
       model: google/gemini-3.1-pro-preview
@@ -611,6 +645,11 @@ llm_system:
     or-gemini-flash-unlimited:
       model_ref: openrouter-gemini-3-flash-unlimited
       description: "OpenRouter Gemini 3 Flash - No output token limit (budget-friendly testing)"
+      max_steps: 500
+
+    or-gemini-3.5-flash:
+      model_ref: openrouter-gemini-3.5-flash
+      description: "OpenRouter Gemini 3.5 Flash - Newer Flash, ~Pro-quality at Flash price; uses Flex tier (cheaper, slower)"
       max_steps: 500
 
     or-gemini-pro:

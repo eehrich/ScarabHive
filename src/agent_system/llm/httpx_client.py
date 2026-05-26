@@ -84,6 +84,15 @@ class HTTPXOpenAIClient(LLMClient):
         self.thinking_level: str | None = self.extra_params.pop("thinking_level", None)
         self.thinking_budget: int | None = self.extra_params.pop("thinking_budget", None)
 
+        # Service tier (Google Flex etc.) — set via config, injected as a
+        # top-level field in the chat-completions payload. Common values:
+        #   - "flex":     Google Flex Processing (cheaper, slower)
+        #   - "standard": default speed/billing (often equivalent to omitting it)
+        #   - "priority": fast queue (where supported, usually more expensive)
+        # Popped out of extra_params so the field gets explicit per-call
+        # handling (and a clear log surface) instead of opaque passthrough.
+        self.service_tier: str | None = self.extra_params.pop("service_tier", None)
+
         # Store safety settings for Gemini content filtering (via OpenRouter)
         self.safety_settings = safety_settings
 
@@ -570,6 +579,10 @@ class HTTPXOpenAIClient(LLMClient):
         if reasoning:
             payload["reasoning"] = reasoning
 
+        # Service tier (e.g. Google Flex via OpenRouter)
+        if self.service_tier:
+            payload["service_tier"] = self.service_tier
+
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
@@ -815,6 +828,10 @@ class HTTPXOpenAIClient(LLMClient):
         reasoning = self._build_reasoning_param()
         if reasoning:
             payload["reasoning"] = reasoning
+
+        # Service tier (e.g. Google Flex via OpenRouter)
+        if self.service_tier:
+            payload["service_tier"] = self.service_tier
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1271,6 +1288,10 @@ class HTTPXOpenAIClient(LLMClient):
         reasoning = self._build_reasoning_param()
         if reasoning:
             payload["reasoning"] = reasoning
+
+        # Service tier (e.g. Google Flex via OpenRouter)
+        if self.service_tier:
+            payload["service_tier"] = self.service_tier
 
         if tools:
             if self._is_gemini_via_openrouter:

@@ -122,7 +122,8 @@ class LLMModelConfig(BaseModel):
     modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
     max_tokens: Optional[int] = None  # Maximum output tokens (limits response length, reduces costs)
     safety_settings: Optional[Dict[str, str]] = None  # Gemini safety settings: {HarmCategory: HarmBlockThreshold}
-    
+    service_tier: Optional[str] = None  # Service tier for OpenAI-compatible APIs (e.g. "flex" = Google Flex Processing via OpenRouter — cheaper, slower)
+
     # Batch provider (only for provider="batch")
     batch_provider: Optional[Literal["gemini", "openai", "anthropic"]] = None  # Which batch API to use
 

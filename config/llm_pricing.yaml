@@ -137,6 +137,14 @@ google/gemini-3-flash-preview:
   output: 3.00
   cached_input: 0.05
 
+# Standard tier; Flex tier (service_tier: flex) is typically ~50% off but
+# OpenRouter returns the actually-billed cost in usage_json.cost — these
+# values are only the fallback when no API cost comes back.
+google/gemini-3.5-flash:
+  input: 1.50
+  output: 9.00
+  cached_input: 0.15
+
 google/gemini-3.1-pro-preview:
   input: 2.00
   output: 12.00
