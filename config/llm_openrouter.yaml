@@ -33,6 +33,7 @@ llm_system:
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -54,6 +55,7 @@ llm_system:
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 600
       thinking_level: minimal
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -82,6 +84,7 @@ llm_system:
       context_window: 200000
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -148,6 +151,7 @@ llm_system:
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -176,6 +180,7 @@ llm_system:
       context_window: 200000
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
