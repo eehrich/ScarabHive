@@ -34,6 +34,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
+        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 16384
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -56,6 +58,8 @@ llm_system:
       request_timeout: 600
       thinking_level: minimal
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
+        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 16384
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -85,6 +89,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
+        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -118,6 +124,8 @@ llm_system:
                                   # available for retry decisions but cuts the per-turn
                                   # reasoning-token pressure that triggers the failure.
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
+        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 32768           # Big complex tool-calls (image_compose_render specs with multiple SVG strings)
                                   # PLUS thinking PLUS function-call envelope can exceed 16k —
                                   # truncation mid-JSON causes MALFORMED_FUNCTION_CALL.
@@ -152,6 +160,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
+        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 16384
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -181,6 +191,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
+        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
@@ -210,6 +222,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -230,6 +243,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true
@@ -248,6 +262,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -268,6 +283,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true
@@ -282,6 +298,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 256000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -302,6 +319,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 262000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -325,6 +343,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -346,10 +365,13 @@ llm_system:
     openrouter-gpt-5.4:
       provider: openai_httpx
       model: openai/gpt-5.4
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000  # 1.05M total, but >272K doubles pricing
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -367,10 +389,13 @@ llm_system:
     openrouter-gpt-5.4-unlimited:
       provider: openai_httpx
       model: openai/gpt-5.4
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true
@@ -382,10 +407,13 @@ llm_system:
     openrouter-gpt-5.4-mini:
       provider: openai_httpx
       model: openai/gpt-5.4-mini
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -402,10 +430,13 @@ llm_system:
     openrouter-gpt-5.4-mini-unlimited:
       provider: openai_httpx
       model: openai/gpt-5.4-mini
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true
@@ -417,10 +448,13 @@ llm_system:
     openrouter-gpt-5:
       provider: openai_httpx
       model: openai/gpt-5
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -438,10 +472,13 @@ llm_system:
     openrouter-gpt-5-unlimited:
       provider: openai_httpx
       model: openai/gpt-5
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true
@@ -457,6 +494,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 131072
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -478,6 +516,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 131072
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true
@@ -497,6 +536,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -516,6 +556,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0  # No limit - let provider decide
       capabilities:
         tools: true
@@ -542,6 +583,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -561,6 +603,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0  # No limit - let provider decide
       capabilities:
         tools: true
@@ -576,6 +619,7 @@ llm_system:
       context_window: 100000
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -596,6 +640,7 @@ llm_system:
       context_window: 100000
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true
@@ -611,6 +656,7 @@ llm_system:
       context_window: 100000
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
       capabilities:
         tools: true
@@ -631,6 +677,7 @@ llm_system:
       context_window: 100000
       request_timeout: 600
       thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
       capabilities:
         tools: true

@@ -123,6 +123,7 @@ class LLMModelConfig(BaseModel):
     max_tokens: Optional[int] = None  # Maximum output tokens (limits response length, reduces costs)
     safety_settings: Optional[Dict[str, str]] = None  # Gemini safety settings: {HarmCategory: HarmBlockThreshold}
     service_tier: Optional[str] = None  # Service tier for OpenAI-compatible APIs (e.g. "flex" = Google Flex Processing via OpenRouter — cheaper, slower)
+    provider_routing: Optional[Dict[str, Any]] = None  # OpenRouter "provider" object: {order: [slugs], allow_fallbacks: bool, ...}. Order-only is enough to bias toward a sticky backend (improves implicit cache hit rate); allow_fallbacks: false would hard-pin.
 
     # Batch provider (only for provider="batch")
     batch_provider: Optional[Literal["gemini", "openai", "anthropic"]] = None  # Which batch API to use

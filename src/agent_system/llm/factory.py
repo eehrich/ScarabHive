@@ -151,6 +151,9 @@ def create_llm_from_profile(
     if llm_kwargs.get("service_tier") is not None:
         make_kwargs["service_tier"] = llm_kwargs.get("service_tier")
 
+    if llm_kwargs.get("provider_routing") is not None:
+        make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
+
     # Create the underlying LLM client
     underlying_client = make_llm(
         llm_kwargs["provider"],
@@ -275,6 +278,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.service_tier is not None:
         llm_kwargs["service_tier"] = model_config.service_tier
 
+    if model_config.provider_routing is not None:
+        llm_kwargs["provider_routing"] = model_config.provider_routing
+
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)
     httpx_timeouts = None
     if model_config.httpx_timeouts:
@@ -361,6 +367,9 @@ class LLMFactory:
 
         if llm_kwargs.get("service_tier") is not None:
             make_kwargs["service_tier"] = llm_kwargs.get("service_tier")
+
+        if llm_kwargs.get("provider_routing") is not None:
+            make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
 
         # Create the underlying LLM client
         underlying_client = make_llm(

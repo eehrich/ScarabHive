@@ -93,6 +93,13 @@ class HTTPXOpenAIClient(LLMClient):
         # handling (and a clear log surface) instead of opaque passthrough.
         self.service_tier: str | None = self.extra_params.pop("service_tier", None)
 
+        # Provider routing (OpenRouter) — soft preference over the available backends.
+        # Example: {"order": ["google-vertex", "google-ai-studio"], "allow_fallbacks": true}
+        # Pinning to a sticky backend keeps OpenRouter's implicit prompt cache
+        # warm (cache is backend-local; cross-backend load-balancing breaks it).
+        # Popped from extra_params and injected as top-level "provider" field below.
+        self.provider_routing: dict | None = self.extra_params.pop("provider_routing", None)
+
         # Store safety settings for Gemini content filtering (via OpenRouter)
         self.safety_settings = safety_settings
 
@@ -586,6 +593,11 @@ class HTTPXOpenAIClient(LLMClient):
         if self.service_tier:
             payload["service_tier"] = self.service_tier
 
+        # Provider routing (OpenRouter): bias toward a sticky backend so the
+        # implicit prompt cache stays warm. Only honored by OpenRouter.
+        if self.provider_routing and self._is_openrouter:
+            payload["provider"] = self.provider_routing
+
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
@@ -835,6 +847,11 @@ class HTTPXOpenAIClient(LLMClient):
         # Service tier (e.g. Google Flex via OpenRouter)
         if self.service_tier:
             payload["service_tier"] = self.service_tier
+
+        # Provider routing (OpenRouter): bias toward a sticky backend so the
+        # implicit prompt cache stays warm. Only honored by OpenRouter.
+        if self.provider_routing and self._is_openrouter:
+            payload["provider"] = self.provider_routing
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1332,6 +1349,11 @@ class HTTPXOpenAIClient(LLMClient):
         # Service tier (e.g. Google Flex via OpenRouter)
         if self.service_tier:
             payload["service_tier"] = self.service_tier
+
+        # Provider routing (OpenRouter): bias toward a sticky backend so the
+        # implicit prompt cache stays warm. Only honored by OpenRouter.
+        if self.provider_routing and self._is_openrouter:
+            payload["provider"] = self.provider_routing
 
         if tools:
             if self._is_gemini_via_openrouter:

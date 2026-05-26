@@ -21,7 +21,7 @@ from .anthropic_client import AnthropicAsyncClient  # type: ignore
 from ..config.models import ModelCapabilitiesConfig
 
 
-def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None) -> LLMClient:
+def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None, provider_routing: Optional[dict] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -139,6 +139,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 thinking_budget=thinking_budget,
                 safety_settings=safety_settings,
                 service_tier=service_tier,
+                provider_routing=provider_routing,
             )
         else:
             # Build default_extra dict for additional parameters
