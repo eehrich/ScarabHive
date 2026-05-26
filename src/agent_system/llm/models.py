@@ -169,6 +169,11 @@ class ChatMessage(BaseModel):
     multimodal_content: Optional[List[MultimodalToolContent]] = None
     # Reasoning/thinking content from models like DeepSeek, OpenAI o-series
     reasoning_content: Optional[str] = None
+    # Provider-side encrypted thinking blocks that MUST round-trip to upstream.
+    # Specifically: Gemini 3.x thought_signature (carried in OpenRouter's
+    # reasoning_details list with format=google-gemini-v1). Dropping it causes
+    # MALFORMED_FUNCTION_CALL on the next turn (verified 2026-05-26).
+    reasoning_details: Optional[List[Dict[str, Any]]] = None
     # Hook injection tracking: identifies which plugin injected this message.
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.

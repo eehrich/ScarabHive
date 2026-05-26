@@ -240,7 +240,10 @@ class HTTPXOpenAIClient(LLMClient):
     # Fields accepted by the OpenAI Chat Completions API
     # Note: reasoning_content is NOT universally accepted — it's a DeepSeek extension.
     # It's handled separately in _postprocess_messages_for_provider().
-    _API_MESSAGE_FIELDS = {"role", "content", "name", "tool_call_id", "tool_calls"}
+    # reasoning_details is OpenRouter's pass-through of provider-side thinking blocks
+    # (e.g. Gemini 3.x thought_signature). Must round-trip to upstream or Gemini 3.x
+    # rejects subsequent turns with MALFORMED_FUNCTION_CALL (verified 2026-05-26).
+    _API_MESSAGE_FIELDS = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_details"}
 
     @staticmethod
     def _sanitize_tool_calls(tool_calls: list) -> list:
@@ -875,6 +878,11 @@ class HTTPXOpenAIClient(LLMClient):
         accumulated_content: list[str] = []
         accumulated_reasoning: list[str] = []  # For reasoning_content (DeepSeek, OpenAI o-series)
         accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
+        # OpenRouter delivers Gemini 3.x thought_signature inside reasoning_details
+        # blocks (format=google-gemini-v1). Must round-trip on next turn or upstream
+        # returns MALFORMED_FUNCTION_CALL. We keep blocks keyed by index so deltas
+        # from the same block accumulate cleanly.
+        accumulated_reasoning_details: dict[int, dict[str, Any]] = {}
         accumulated_usage = None  # usage information from final chunk
         _last_finish_reason: str | None = None  # Track finish_reason from chunks
 
@@ -1020,6 +1028,11 @@ class HTTPXOpenAIClient(LLMClient):
                                     if accumulated_tool_calls:
                                         tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                                         assistant["tool_calls"] = tool_calls_list
+                                    if accumulated_reasoning_details:
+                                        assistant["reasoning_details"] = [
+                                            accumulated_reasoning_details[idx]
+                                            for idx in sorted(accumulated_reasoning_details.keys())
+                                        ]
 
                                     final_result = {"assistant": assistant}
 
@@ -1073,6 +1086,23 @@ class HTTPXOpenAIClient(LLMClient):
                                         "delta": delta["reasoning_content"],
                                         "accumulated": "".join(accumulated_reasoning)
                                     }
+
+                                # Capture reasoning_details verbatim (Gemini 3.x thought_signature).
+                                # OpenRouter delivers the encrypted signature here keyed by index;
+                                # required on round-trip or upstream returns MALFORMED_FUNCTION_CALL.
+                                if "reasoning_details" in delta and delta["reasoning_details"]:
+                                    for rd in delta["reasoning_details"]:
+                                        rd_index = rd.get("index", 0)
+                                        if rd_index in accumulated_reasoning_details:
+                                            # Merge subsequent fragments — append `data` if both have it
+                                            existing = accumulated_reasoning_details[rd_index]
+                                            for k, v in rd.items():
+                                                if k == "data" and existing.get("data"):
+                                                    existing["data"] += v
+                                                else:
+                                                    existing[k] = v
+                                        else:
+                                            accumulated_reasoning_details[rd_index] = dict(rd)
 
                                 # Handle content delta
                                 if "content" in delta and delta["content"]:
@@ -1135,6 +1165,11 @@ class HTTPXOpenAIClient(LLMClient):
                                     if accumulated_tool_calls:
                                         tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                                         assistant["tool_calls"] = tool_calls_list
+                                    if accumulated_reasoning_details:
+                                        assistant["reasoning_details"] = [
+                                            accumulated_reasoning_details[idx]
+                                            for idx in sorted(accumulated_reasoning_details.keys())
+                                        ]
                                     final_result = {"assistant": assistant}
                                     if accumulated_usage:
                                         final_result["usage"] = accumulated_usage
@@ -1166,7 +1201,7 @@ class HTTPXOpenAIClient(LLMClient):
                         # Stream ended without [DONE] - yield final result anyway
                         # This can happen with some API implementations
                         logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
-                        assistant = {
+                        assistant: dict[str, Any] = {
                             "role": "assistant",
                             "content": "".join(accumulated_content) if accumulated_content else ""
                         }
@@ -1175,6 +1210,11 @@ class HTTPXOpenAIClient(LLMClient):
                         if accumulated_tool_calls:
                             tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                             assistant["tool_calls"] = tool_calls_list
+                        if accumulated_reasoning_details:
+                            assistant["reasoning_details"] = [
+                                accumulated_reasoning_details[idx]
+                                for idx in sorted(accumulated_reasoning_details.keys())
+                            ]
                         final_result = {"assistant": assistant}
                         if accumulated_usage:
                             final_result["usage"] = accumulated_usage
@@ -1531,6 +1571,13 @@ class HTTPXOpenAIClient(LLMClient):
             # Note: tool_calls was already extracted above for finish_reason handling.
             if tool_calls:
                 assistant["tool_calls"] = HTTPXOpenAIClient._sanitize_tool_calls(tool_calls)
+
+            # Capture reasoning_details verbatim. For Gemini 3.x via OpenRouter
+            # this carries the encrypted thought_signature that MUST be sent back
+            # on subsequent turns or Google returns MALFORMED_FUNCTION_CALL.
+            reasoning_details = message.get("reasoning_details")
+            if reasoning_details:
+                assistant["reasoning_details"] = reasoning_details
 
             # Track usage if available
             usage = response_data.get("usage", {})

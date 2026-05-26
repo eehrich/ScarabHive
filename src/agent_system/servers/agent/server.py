@@ -1833,6 +1833,10 @@ class Agent(MCPServer):
 
             content = assistant.get("content")
             tool_calls = assistant.get("tool_calls", [])
+            # Provider-side encrypted thinking blocks (Gemini 3.x thought_signature
+            # via OpenRouter's reasoning_details). MUST be carried through to the
+            # next request or upstream returns MALFORMED_FUNCTION_CALL.
+            reasoning_details = assistant.get("reasoning_details")
 
             # Create assistant message and add it BEFORE post_llm hooks
             # so message debugger can capture the complete conversation
@@ -1840,6 +1844,7 @@ class Agent(MCPServer):
                 role="assistant",
                 content=content or "",
                 tool_calls=tool_calls if tool_calls else None,
+                reasoning_details=reasoning_details,
                 timestamp=datetime.now(timezone.utc)
             )
             messages.append(assistant_msg)
