@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
-from .compositor import CompositionError, compose
+from .compositor import CompositionError, analyze_image, compose, find_text_region
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -55,8 +56,18 @@ class ImageComposeServer(SchemaBasedMCPServer):
         include_content = params.get("include_content", True)
         layers_dir_param = params.get("layers_dir")
 
+        # `spec` accepts either a dict (internal/test callers) or a JSON string
+        # (LLM callers). String is the schema-declared form because Gemini's
+        # constrained decoder collapses on freeform objects with
+        # `additionalProperties: true` — emitting JSON-as-string sidesteps that
+        # entirely (see MALFORMED_FUNCTION_CALL incidents 2026-05-26).
+        if isinstance(spec, str):
+            try:
+                spec = json.loads(spec)
+            except json.JSONDecodeError as e:
+                return _error(f"spec is not valid JSON: {e}", "ValidationError")
         if not isinstance(spec, dict):
-            return _error("spec is required and must be an object", "ValidationError")
+            return _error("spec is required and must be a JSON object or JSON string", "ValidationError")
         if not output_path or not isinstance(output_path, str):
             return _error("output_path is required (string)", "ValidationError")
 
@@ -66,11 +77,23 @@ class ImageComposeServer(SchemaBasedMCPServer):
                 out_full = (self.output_root / out_full).resolve()
             out_full.parent.mkdir(parents=True, exist_ok=True)
 
-            layers_dir: Path | None = None
-            if layers_dir_param:
+            # Per-layer PNG export:
+            #   layers_dir given (non-empty string)  → use it
+            #   layers_dir explicitly False / ""     → opt out
+            #   layers_dir omitted (None / missing)  → auto-derive
+            #       <output-parent>/<output-stem>_layers/
+            # Auto-default chosen because cover_artist callers were forgetting
+            # the param and silently losing the per-layer export.
+            layers_dir: Path | None
+            if layers_dir_param is False or layers_dir_param == "":
+                layers_dir = None  # explicit opt-out
+            elif layers_dir_param:
                 layers_dir = Path(layers_dir_param)
                 if not layers_dir.is_absolute():
                     layers_dir = (self.output_root / layers_dir).resolve()
+            else:
+                # Omitted → auto-derive next to the composite
+                layers_dir = out_full.parent / f"{out_full.stem}_layers"
 
             n_layers = len(spec.get("layers") or [])
             if status:
@@ -144,6 +167,110 @@ class ImageComposeServer(SchemaBasedMCPServer):
             logger.error("image_compose.render failed", exc_info=True)
             if status:
                 await status.error(f"Unexpected error: {e}")
+            return _error(str(e), type(e).__name__)
+
+    async def analyze(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Measure brightness/colour/edges of an image (optionally a region).
+
+        Lets agents pick contrasting text colours from real pixel data instead
+        of "looking at the background" with a VLM.
+        """
+        status = params.get("_status")
+        path = params.get("path")
+        region = params.get("region")
+
+        if not path or not isinstance(path, str):
+            return _error("path is required (string)", "ValidationError")
+        if region is not None and (
+            not isinstance(region, (list, tuple)) or len(region) != 4
+            or not all(isinstance(v, (int, float)) for v in region)
+        ):
+            return _error("region must be [x, y, w, h] (4 numbers)", "ValidationError")
+
+        full = Path(path)
+        if not full.is_absolute():
+            full = (self.project_root / full).resolve()
+        if not full.exists():
+            return _error(f"image not found: {full}", "FileNotFoundError")
+
+        try:
+            region_tuple: tuple[int, int, int, int] | None = (
+                (int(region[0]), int(region[1]), int(region[2]), int(region[3]))
+                if region else None
+            )
+            if status:
+                await status.progress(f"Analysing {full.name}")
+            result = await asyncio.to_thread(analyze_image, full, region_tuple)
+            payload = {"status": "success", "path": str(full), **result}
+            if status:
+                await status.end(
+                    f"brightness={result['brightness']:.2f} "
+                    f"std={result['brightness_std']:.2f} "
+                    f"→ {result['recommendation']}",
+                    meta={
+                        "brightness": result["brightness"],
+                        "recommendation": result["recommendation"],
+                    },
+                )
+            return payload
+        except Exception as e:
+            logger.error("image_compose.analyze failed", exc_info=True)
+            if status:
+                await status.error(f"Analyse failed: {e}")
+            return _error(str(e), type(e).__name__)
+
+    async def find_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Find the most homogeneous rectangle of a target size in an image.
+
+        Use BEFORE picking a text-layer position to let the agent place text
+        on the calmest area available, instead of guessing.
+        """
+        status = params.get("_status")
+        path = params.get("path")
+        region_size = params.get("region_size")
+        prefer = params.get("prefer", "any")
+        max_candidates = int(params.get("max_candidates", 3))
+
+        if not path or not isinstance(path, str):
+            return _error("path is required (string)", "ValidationError")
+        if (not isinstance(region_size, (list, tuple))
+                or len(region_size) != 2
+                or not all(isinstance(v, (int, float)) for v in region_size)):
+            return _error("region_size must be [w, h] (2 numbers)", "ValidationError")
+        if not isinstance(prefer, str):
+            return _error("prefer must be a string", "ValidationError")
+
+        full = Path(path)
+        if not full.is_absolute():
+            full = (self.project_root / full).resolve()
+        if not full.exists():
+            return _error(f"image not found: {full}", "FileNotFoundError")
+
+        try:
+            size_tuple: tuple[int, int] = (int(region_size[0]), int(region_size[1]))
+            if status:
+                await status.progress(f"Searching {full.name} for best {size_tuple[0]}x{size_tuple[1]} text region")
+            result = await asyncio.to_thread(
+                find_text_region, full, size_tuple, prefer, max_candidates,
+            )
+            payload = {"status": "success", "path": str(full), **result}
+            if status:
+                best = result["best"]
+                await status.end(
+                    f"best region [{best['region'][0]},{best['region'][1]}] "
+                    f"homogeneity={best['homogeneity']:.2f} "
+                    f"→ {best['recommendation']}",
+                    meta={"best_region": best["region"], "homogeneity": best["homogeneity"]},
+                )
+            return payload
+        except CompositionError as e:
+            if status:
+                await status.error(f"Find-region failed: {e}")
+            return _error(str(e), "CompositionError")
+        except Exception as e:
+            logger.error("image_compose.find_region failed", exc_info=True)
+            if status:
+                await status.error(f"Find-region failed: {e}")
             return _error(str(e), type(e).__name__)
 
 

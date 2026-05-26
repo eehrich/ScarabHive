@@ -14,7 +14,9 @@ from PIL import Image
 from plugins.image_compose.compositor import (
     ANCHORS,
     CompositionError,
+    analyze_image,
     compose,
+    find_text_region,
     _direction_to_angle,
     _fit_image,
     _interpolate_gradient,
@@ -849,6 +851,178 @@ class TestSvgLayer:
         img = Image.open(out).convert("RGBA")
         r, g, b, a = img.getpixel((60, 60))
         assert a > 240 and abs(r - 212) < 12 and abs(g - 175) < 12 and abs(b - 55) < 12
+
+
+# ── Image analysis (analyze_image) ────────────────────────────────────────
+
+class TestAnalyzeImage:
+    def test_solid_dark_recommends_light_text(self, tmp_path):
+        p = tmp_path / "dark.png"
+        Image.new("RGB", (100, 100), (20, 20, 20)).save(p)
+        r = analyze_image(p)
+        assert r["brightness"] < 0.15
+        assert r["recommendation"] == "light_text"
+        assert r["region"] == [0, 0, 100, 100]
+
+    def test_solid_light_recommends_dark_text(self, tmp_path):
+        p = tmp_path / "light.png"
+        Image.new("RGB", (100, 100), (240, 240, 240)).save(p)
+        r = analyze_image(p)
+        assert r["brightness"] > 0.85
+        assert r["recommendation"] == "dark_text"
+
+    def test_midtone_recommends_backdrop(self, tmp_path):
+        p = tmp_path / "mid.png"
+        Image.new("RGB", (100, 100), (128, 128, 128)).save(p)
+        r = analyze_image(p)
+        assert 0.40 <= r["brightness"] <= 0.60
+        assert r["recommendation"] == "midtone_uncertain_use_backdrop"
+
+    def test_region_clipping_to_bounds(self, tmp_path):
+        p = tmp_path / "im.png"
+        Image.new("RGB", (100, 100), (50, 50, 50)).save(p)
+        # request region partially outside the image
+        r = analyze_image(p, (90, 90, 200, 200))
+        assert r["region"] == [90, 90, 10, 10]
+        assert r["size"] == [10, 10]
+
+    def test_region_isolates_local_area(self, tmp_path):
+        """Left half dark, right half light — region must give the right answer."""
+        p = tmp_path / "split.png"
+        im = Image.new("RGB", (100, 100), (20, 20, 20))
+        im.paste((250, 250, 250), (50, 0, 100, 100))
+        im.save(p)
+        left = analyze_image(p, (0, 0, 50, 100))
+        right = analyze_image(p, (50, 0, 50, 100))
+        assert left["recommendation"] == "light_text"
+        assert right["recommendation"] == "dark_text"
+
+    def test_palette_and_dominant_color(self, tmp_path):
+        p = tmp_path / "im.png"
+        # 80% red, 20% blue
+        im = Image.new("RGB", (100, 100), (200, 32, 32))
+        im.paste((32, 32, 200), (80, 0, 100, 100))
+        im.save(p)
+        r = analyze_image(p)
+        # dominant should be ~red (quantised to 32-bin)
+        assert r["dominant_color"].startswith("#c0")  # 192 = 200 // 32 * 32
+        assert len(r["palette"]) <= 5
+        # palette fractions sum close to 1 (rounded)
+        assert sum(item[1] for item in r["palette"]) > 0.95
+
+    def test_edge_density_high_on_busy_image(self, tmp_path):
+        p_solid = tmp_path / "solid.png"
+        Image.new("RGB", (60, 60), (128, 128, 128)).save(p_solid)
+        edge_solid = analyze_image(p_solid)["edge_density"]
+        # alternating black/white pixels = max edges
+        p_noisy = tmp_path / "noisy.png"
+        im = Image.new("RGB", (60, 60))
+        for y in range(60):
+            for x in range(60):
+                v = 255 if (x + y) % 2 else 0
+                im.putpixel((x, y), (v, v, v))
+        im.save(p_noisy)
+        edge_noisy = analyze_image(p_noisy)["edge_density"]
+        assert edge_noisy > 0.3
+        assert edge_solid < 0.01
+
+    def test_homogeneity_solid_vs_noisy(self, tmp_path):
+        p_solid = tmp_path / "solid.png"
+        Image.new("RGB", (100, 100), (60, 60, 60)).save(p_solid)
+        p_noisy = tmp_path / "noisy.png"
+        im = Image.new("RGB", (100, 100))
+        for y in range(100):
+            for x in range(100):
+                v = 255 if (x + y) % 2 else 0
+                im.putpixel((x, y), (v, v, v))
+        im.save(p_noisy)
+        assert analyze_image(p_solid)["homogeneity"] > 0.95
+        assert analyze_image(p_noisy)["homogeneity"] < 0.10
+
+    def test_brightness_range_on_solid(self, tmp_path):
+        """Uniform area → brightness_range ~ 0."""
+        p = tmp_path / "solid.png"
+        Image.new("RGB", (100, 100), (128, 128, 128)).save(p)
+        r = analyze_image(p)
+        assert r["brightness_range"] < 0.01
+        assert abs(r["brightness_min"] - r["brightness_max"]) < 0.01
+
+    def test_brightness_range_detects_mixed_dark_and_light(self, tmp_path):
+        """Half dark + half light → range is large + recommendation 'mixed'."""
+        p = tmp_path / "mixed.png"
+        im = Image.new("RGB", (200, 100), (20, 20, 20))  # left dark
+        im.paste((240, 240, 240), (100, 0, 200, 100))    # right bright
+        im.save(p)
+        r = analyze_image(p)
+        # Aggregate brightness is ~midtone, but the sub-cells reveal the split
+        assert r["brightness_range"] > 0.50
+        assert r["brightness_min"] < 0.20
+        assert r["brightness_max"] > 0.80
+        assert r["recommendation"] == "mixed_use_stroke_or_pill"
+
+
+class TestFindTextRegion:
+    @pytest.fixture
+    def mixed_image(self, tmp_path):
+        """400×300 image: noisy everywhere EXCEPT a calm dark rect at [100,100,200,100]."""
+        p = tmp_path / "mixed.png"
+        im = Image.new("RGB", (400, 300))
+        for y in range(300):
+            for x in range(400):
+                if 100 <= x <= 300 and 100 <= y <= 200:
+                    v = 60
+                else:
+                    v = 255 if (x * 13 + y * 7) % 2 else 0
+                im.putpixel((x, y), (v, v, v))
+        im.save(p)
+        return p
+
+    def test_finds_calm_region(self, mixed_image):
+        r = find_text_region(mixed_image, region_size=(150, 80))
+        best = r["best"]
+        bx, by = best["region"][0], best["region"][1]
+        # Best window should sit inside or overlap the calm rect
+        assert 50 <= bx <= 200
+        assert 80 <= by <= 150
+        assert best["homogeneity"] > 0.5
+
+    def test_returns_top_n_candidates(self, mixed_image):
+        r = find_text_region(mixed_image, region_size=(100, 50), max_candidates=5)
+        assert len(r["candidates"]) == 5
+        # Sorted descending by homogeneity
+        hom = [c["homogeneity"] for c in r["candidates"]]
+        assert hom == sorted(hom, reverse=True)
+
+    def test_prefer_top_third(self, mixed_image):
+        r = find_text_region(mixed_image, (100, 50), prefer="top_third")
+        # 300 // 3 = 100 → y_max = 100 - 50 = 50; so y must be ≤ 50
+        assert r["best"]["region"][1] <= 50
+
+    def test_prefer_bottom_third(self, mixed_image):
+        r = find_text_region(mixed_image, (100, 50), prefer="bottom_third")
+        # bottom third starts at y = 200
+        assert r["best"]["region"][1] >= 200
+
+    def test_region_too_big_errors(self, mixed_image):
+        with pytest.raises(CompositionError, match="must fit"):
+            find_text_region(mixed_image, region_size=(500, 500))
+
+    def test_invalid_prefer_errors(self, mixed_image):
+        with pytest.raises(CompositionError, match="prefer"):
+            find_text_region(mixed_image, (50, 50), prefer="middle_third")
+
+    def test_result_includes_recommendation(self, mixed_image):
+        r = find_text_region(mixed_image, (100, 50))
+        for c in r["candidates"]:
+            assert c["recommendation"] in (
+                "light_text", "dark_text",
+                "midtone_uncertain_use_backdrop", "mixed_use_stroke_or_pill",
+            )
+            # Every candidate carries the new brightness_range fields
+            assert "brightness_min" in c
+            assert "brightness_max" in c
+            assert "brightness_range" in c
+            assert c["brightness_range"] >= 0.0
 
 
 # ── Font fallback ─────────────────────────────────────────────────────────

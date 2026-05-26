@@ -584,8 +584,23 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 await status.error(f"Failed to load workflow: {e}")
             return {"error": f"Failed to load workflow: {e}"}
         
-        # Inject parameters
+        # Inject parameters — accept JSON string (LLM callers, per schema)
+        # or dict (internal/test callers). String is schema-declared because
+        # Gemini's constrained decoder collapses on freeform objects
+        # (additionalProperties: true) — emitting JSON-as-string sidesteps
+        # MALFORMED_FUNCTION_CALL.
         user_params = params.get("parameters", {})
+        if isinstance(user_params, str):
+            try:
+                user_params = json.loads(user_params) if user_params.strip() else {}
+            except json.JSONDecodeError as e:
+                if status:
+                    await status.error(f"parameters is not valid JSON: {e}")
+                return {"error": f"parameters is not valid JSON: {e}"}
+        if not isinstance(user_params, dict):
+            if status:
+                await status.error("parameters must be a JSON object or JSON string")
+            return {"error": "parameters must be a JSON object or JSON string"}
         for param_def in wf_config.get("parameters", []):
             param_name = param_def["name"]
             node_id = param_def.get("node_id")

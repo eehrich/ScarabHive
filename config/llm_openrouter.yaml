@@ -107,10 +107,16 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token native; capped here for context-budget perf
       request_timeout: 600
-      thinking_level: medium      # defaults to medium per Google docs
+      thinking_level: low         # Reduced from medium 2026-05-26 — Flash 3.5's decoder
+                                  # collapses with MALFORMED_FUNCTION_CALL when long reasoning +
+                                  # structured tool-call output (sequential_thinking thought
+                                  # strings, image_compose spec JSON) land in the same turn
+                                  # after a multi-MB vision input. `low` keeps reasoning
+                                  # available for retry decisions but cuts the per-turn
+                                  # reasoning-token pressure that triggers the failure.
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 32768           # Big complex tool-calls (image_compose_render specs with multiple SVG strings)
-                                  # PLUS medium-level thinking PLUS function-call envelope easily exceed 16k —
+                                  # PLUS thinking PLUS function-call envelope can exceed 16k —
                                   # truncation mid-JSON causes MALFORMED_FUNCTION_CALL.
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE

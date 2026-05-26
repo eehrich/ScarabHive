@@ -46,12 +46,12 @@ tools:
               Use operation='list' to see available workflow IDs.
           
           parameters:
-            type: object
+            type: string
             description: >
-              Parameters to pass to the workflow.
-              Each workflow has different parameters.
-              Use operation='list' to see required parameters for each workflow.
-            additionalProperties: true
+              JSON-encoded parameters for the workflow (e.g.
+              '{"prompt":"a forest","negative_prompt":"blurry","width":1024,"height":1536,"seed":42}').
+              Each workflow has its own parameter names — call operation='list'
+              first if unsure which fields are required. Required for operation='execute'.
           
           prompt_id:
             type: string

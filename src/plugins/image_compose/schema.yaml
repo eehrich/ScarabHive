@@ -4,101 +4,116 @@ tools:
   - type: function
     function:
       name: "{{ name }}_render"
-      description: >
-        Compose a layered image from a JSON spec (PNG / WEBP / JPEG).
-        Layers render bottom-up in array order. Returns the saved file path
-        and (by default) attaches the rendered image for visual inspection.
-
-        SPEC:
-          {
-            "size":       [w, h],                       # default [1024, 1536] (2:3 book cover)
-            "background": "#rrggbb[aa]" | [r,g,b(,a)] | "transparent",   # default transparent
-            "format":     "png" | "webp" | "jpeg",      # default from output extension or "png"
-            "quality":    95,                           # webp/jpeg only (1..100)
-            "layers":     [ { layer }, ... ]
-          }
-
-        COMMON LAYER FIELDS:
-          type        — image | text | rect | gradient | svg | vignette
-          opacity     — 0.0 .. 1.0 (default 1.0)
-          rotation    — degrees, around layer center (default 0)
-          blend_mode  — normal | multiply | screen | overlay (default normal)
-          position    — [x, y]                                            (pixels from top-left)
-                        OR { "anchor": <a>, "offset": [dx, dy] }
-                        OR { "anchor": <a>, "offset_pct": [dx_pct, dy_pct] }
-                        anchor ∈ top_left|top_center|top_right|center_left|center|
-                                  center_right|bottom_left|bottom_center|bottom_right
-
-        LAYER: image
-          src   — project-relative path OR data URI (data:image/...;base64,...)
-          size  — [w, h] OR { "width_pct": N, "height_pct": N }  (default: native)
-          fit   — cover | contain | stretch (default cover, only with size)
-
-        LAYER: text
-          text        — string (\n for line breaks)
-          font        — alias (sans, sans_bold, serif, serif_bold, mono, display)
-                        or filename in fonts_dir or absolute path
-          size        — pt/px
-          color       — "#rrggbb" or "#rrggbbaa"
-          align       — left | center | right (default left)
-          max_width   — px OR { "width_pct": N } — enables word-wrap
-          line_height — multiplier (default 1.1)
-          tracking    — letter-spacing px (default 0)
-          uppercase   — bool
-          stroke      — { "width": px, "color": "#rrggbb" }                 (outline)
-          shadow      — { "offset": [dx, dy], "blur": px, "color": "#rrggbbaa" }
-
-        LAYER: rect
-          rect    — [x, y, w, h]   (overrides position+size)
-          fill    — color (omit for outline-only)
-          radius  — corner radius px (default 0)
-          border  — { "width": px, "color": "#rrggbb" }
-
-        LAYER: gradient
-          rect       — [x, y, w, h]   OR use position + size
-          colors     — list of colors (>=2). Use "#rrggbbaa" with alpha for fades.
-          stops      — optional list of 0..1 floats (length must match colors)
-          direction  — right|bottom_right|bottom|bottom_left|left|top_left|top|top_right
-                       OR angle in degrees (0°=right, 90°=down)
-          (legacy: "from" + "to" accepted as 2-color shortcut)
-
-        LAYER: svg
-          svg     — raw SVG string. Agents should generate the SVG directly here.
-          size    — [w, h] target render size (aspect preserved)
-
-        LAYER: vignette
-          strength — 0.0 .. 1.0 (default 0.3)
-          color    — "#rrggbb" (default "#000000")
-
-        BOOK-COVER COMPOSITION TIPS:
-          • Place a gradient (transparent → dark, direction=bottom) over the lower
-            third before drawing a light title — guarantees legibility on busy art.
-          • Use stroke (width 2-3, contrasting color) on titles over high-frequency
-            backgrounds; shadow (blur 6-12) for softer readability.
-          • Bundle the author name as a smaller all-caps text layer with tracking.
-
+      description: "Compose a layered image (PNG/WEBP/JPEG). Layers render bottom-up."
       parameters:
         type: object
         properties:
           spec:
             type: object
-            description: "Composition spec — see description for full structure."
-            additionalProperties: true
+            description: >
+              Composition spec. Inner layer structure is freeform — see prompt for full per-layer field reference.
+
+              LAYER COMMON: type(image|text|rect|gradient|svg|vignette), opacity(0-1), rotation(deg), blend_mode(normal|multiply|screen|overlay),
+                position: [x,y] OR {anchor, offset:[dx,dy]} OR {anchor, offset_pct:[%,%]}
+                anchor ∈ top_left|top_center|top_right|center_left|center|center_right|bottom_left|bottom_center|bottom_right
+
+              image: src(path|data-URI), size:[w,h]|{width_pct,height_pct}, fit(cover|contain|stretch)
+              text:  text, font(sans|sans_bold|serif|serif_bold|mono|display|filename), size, color("#rrggbb[aa]"),
+                     align(left|center|right), max_width(px|{width_pct}), line_height, tracking, uppercase,
+                     stroke:{width,color}, shadow:{offset:[dx,dy], blur, color}
+              rect:  rect:[x,y,w,h], fill, radius, border:{width,color}
+              gradient: rect:[x,y,w,h] OR position+size, colors:[≥2], stops:[0..1],
+                        direction = where gradient ENDS (colors[0] at opposite side, colors[-1] at direction side).
+                        Enum: right|bottom_right|bottom|bottom_left|left|top_left|top|top_right OR angle° (0=right, 90=down).
+              svg:   svg(raw SVG string), size:[w,h]
+              vignette: strength(0-1), color
+            properties:
+              size:
+                type: array
+                items: { type: integer }
+                description: "[w, h] — default [1024, 1536] (2:3 book cover)."
+              background:
+                type: string
+                description: '#rrggbb[aa] or "transparent" (default)'
+              format:
+                type: string
+                enum: [png, webp, jpeg]
+              quality:
+                type: integer
+                description: "1..100 (webp/jpeg only)."
+              layers:
+                type: array
+                description: "Layers rendered bottom-up. See per-type fields above."
+                items:
+                  type: object
           output_path:
             type: string
-            description: "Destination file path (relative to project root or absolute). Parent dirs are created."
+            description: "Relative to project root or absolute. Parent dirs created."
           include_content:
             type: boolean
             default: true
-            description: "Attach the rendered image to the response so the calling agent can visually QA it."
+            description: "Attach rendered image for visual QA."
           layers_dir:
             type: string
-            description: >
-              Optional directory (relative to project root or absolute). When set,
-              each layer is also saved there as a standalone transparent PNG
-              (layer_00_image.png, layer_01_text.png, ...). The returned
-              `layer_files` lists the written paths.
+            description: "Auto-derived from output_path (<stem>_layers/). Omit unless overriding."
         required: [spec, output_path]
+
+  - type: function
+    function:
+      name: "{{ name }}_analyze"
+      description: >
+        Measure brightness/colour/edges of an image (or region). Returns brightness(0-1), brightness_std(>0.20=busy),
+        brightness_min/max/range from a 4x4 sub-grid (range>0.30=mixed dark+light, flat colour won't work everywhere),
+        edge_density(>0.10=detail), homogeneity(0-1, 1=uniform), dominant_color, palette,
+        recommendation(light_text|dark_text|midtone_uncertain_use_backdrop|mixed_use_stroke_or_pill).
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "Image file path (project-relative or absolute)."
+          region:
+            type: array
+            description: "[x, y, w, h] in pixels. Omitted = whole image."
+            items:
+              type: integer
+            minItems: 4
+            maxItems: 4
+        required: [path]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_find_region"
+      description: >
+        Sliding-window search for the calmest rectangle of region_size in an image — use BEFORE picking text positions.
+        Returns top-N candidates sorted by homogeneity; each has region:[x,y,w,h], homogeneity, brightness,
+        brightness_std, brightness_min/max/range (4x4 sub-grid — range>0.30 means mixed dark+light), edge_density,
+        recommendation(includes "mixed_use_stroke_or_pill" when sub-cells span dark and light).
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "Image file path (project-relative or absolute)."
+          region_size:
+            type: array
+            description: "[w, h] of the rectangle to search for."
+            items:
+              type: integer
+            minItems: 2
+            maxItems: 2
+          prefer:
+            type: string
+            enum: ["any", "top_third", "bottom_third", "top_half", "bottom_half"]
+            default: "any"
+            description: "Restrict search to a vertical band."
+          max_candidates:
+            type: integer
+            default: 3
+            minimum: 1
+            maximum: 10
+        required: [path, region_size]
         additionalProperties: false
 
 config:

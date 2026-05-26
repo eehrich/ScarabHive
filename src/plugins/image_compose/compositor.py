@@ -11,7 +11,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
@@ -133,6 +133,273 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
         "layers_rendered": rendered,
         "warnings": warnings,
         "layer_files": saved_layers,
+    }
+
+
+# ── Image analysis (for agent-driven text placement decisions) ────────────
+
+def analyze_image(path: Path,
+                  region: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
+    """Measure brightness, color and edge-density of an image region.
+
+    Lets a calling agent pick a contrasting text colour deterministically
+    instead of "looking at the background" with a VLM and guessing.
+
+    Returns:
+        region           — actual region used (clipped to image bounds)
+        size             — [w, h] of the analysed area
+        brightness       — Rec. 709 luminance mean, 0.0..1.0
+        brightness_std   — luminance standard deviation, 0.0..1.0
+                           (>0.20 ≈ busy/uneven area)
+        edge_density     — mean gradient magnitude, 0.0..1.0
+                           (>0.10 ≈ many edges / fine detail)
+        dominant_color   — most-frequent quantised colour as #rrggbb
+        palette          — top-5 colours [["#rrggbb", fraction], ...]
+        recommendation   — "light_text" | "dark_text"
+                          | "midtone_uncertain_use_backdrop"
+    """
+    import numpy as np  # lazy — analyze is the only path that needs it
+
+    img = Image.open(path).convert("RGB")
+    iw, ih = img.size
+
+    if region is not None:
+        rx, ry, rw, rh = region
+        rx = max(0, min(int(rx), iw))
+        ry = max(0, min(int(ry), ih))
+        rw = max(1, min(int(rw), iw - rx))
+        rh = max(1, min(int(rh), ih - ry))
+        img = img.crop((rx, ry, rx + rw, ry + rh))
+        actual_region = [rx, ry, rw, rh]
+    else:
+        actual_region = [0, 0, iw, ih]
+
+    arr = np.asarray(img, dtype=np.float32)  # HxWx3
+    if arr.size == 0:
+        return {
+            "region": actual_region, "size": list(img.size),
+            "brightness": 0.0, "brightness_std": 0.0, "edge_density": 0.0,
+            "dominant_color": "#000000", "palette": [],
+            "recommendation": "midtone_uncertain_use_backdrop",
+        }
+
+    # Rec. 709 luminance, 0..1
+    lum = (arr[:, :, 0] * 0.2126
+           + arr[:, :, 1] * 0.7152
+           + arr[:, :, 2] * 0.0722) / 255.0
+    brightness = float(lum.mean())
+    brightness_std = float(lum.std())
+
+    # Edge density: |Δx| + |Δy| of luminance, mean (kept simple, ~Sobel-ish)
+    if lum.shape[0] > 1 and lum.shape[1] > 1:
+        gx = np.abs(np.diff(lum, axis=1, prepend=lum[:, :1]))
+        gy = np.abs(np.diff(lum, axis=0, prepend=lum[:1, :]))
+        edge_density = float(np.sqrt(gx * gx + gy * gy).mean())
+    else:
+        edge_density = 0.0
+
+    # Dominant colour: quantise to 32-step bins per channel, count buckets.
+    q = (arr.astype(np.uint16) // 32 * 32).astype(np.uint8)
+    flat = q.reshape(-1, 3)
+    # np.unique over rows
+    unique, counts = np.unique(flat, axis=0, return_counts=True)
+    order = np.argsort(counts)[::-1]
+    total = int(counts.sum()) or 1
+    palette: list[list[Any]] = []
+    for idx in order[:5]:
+        r, g, b = int(unique[idx][0]), int(unique[idx][1]), int(unique[idx][2])
+        palette.append([f"#{r:02x}{g:02x}{b:02x}", round(float(counts[idx]) / total, 3)])
+    dominant = palette[0][0] if palette else "#000000"
+
+    if brightness < 0.40:
+        recommendation = "light_text"
+    elif brightness > 0.60:
+        recommendation = "dark_text"
+    else:
+        recommendation = "midtone_uncertain_use_backdrop"
+
+    # Homogeneity: 1.0 = perfectly uniform, 0.0 = maximally busy.
+    # Derived from luminance std (smoothness) AND edge density (sharp detail)
+    # so a clean gradient (high std, low edges) still scores reasonably well,
+    # but a textured/noisy area (high std AND high edges) gets penalised.
+    # Caps each component at typical worst-case (0.30 for std, 0.20 for edges)
+    # so the score uses the full 0..1 range.
+    std_norm = min(brightness_std / 0.30, 1.0)
+    edge_norm = min(edge_density / 0.20, 1.0)
+    busy = max(std_norm, edge_norm)  # worst of the two dominates
+    homogeneity = round(1.0 - busy, 3)
+
+    # Per-cell brightness (4x4 grid) — surfaces local dark/light patches
+    # that the global mean hides. brightness_range > ~0.30 means a single
+    # text colour will be unreadable in some sub-area regardless of the
+    # aggregate recommendation; caller should add stroke/pill/gradient.
+    lh, lw = lum.shape
+    if lh >= 4 and lw >= 4:
+        cell_h, cell_w = lh // 4, lw // 4
+        cell_means: list[float] = []
+        for cy in range(4):
+            y0 = cy * cell_h
+            y1 = lh if cy == 3 else (cy + 1) * cell_h
+            for cx in range(4):
+                x0 = cx * cell_w
+                x1 = lw if cx == 3 else (cx + 1) * cell_w
+                cell_means.append(float(lum[y0:y1, x0:x1].mean()))
+        brightness_min = min(cell_means)
+        brightness_max = max(cell_means)
+    else:
+        brightness_min = brightness
+        brightness_max = brightness
+    brightness_range = brightness_max - brightness_min
+
+    # Sharpen recommendation when the area is mixed: if some cells need
+    # light text and others need dark text, no flat colour works alone.
+    if brightness_range > 0.30 and brightness_min < 0.40 and brightness_max > 0.60:
+        recommendation = "mixed_use_stroke_or_pill"
+
+    return {
+        "region": actual_region,
+        "size": [img.size[0], img.size[1]],
+        "brightness": round(brightness, 3),
+        "brightness_std": round(brightness_std, 3),
+        "brightness_min": round(brightness_min, 3),
+        "brightness_max": round(brightness_max, 3),
+        "brightness_range": round(brightness_range, 3),
+        "edge_density": round(edge_density, 3),
+        "homogeneity": homogeneity,
+        "dominant_color": dominant,
+        "palette": palette,
+        "recommendation": recommendation,
+    }
+
+
+def find_text_region(path: Path,
+                     region_size: tuple[int, int],
+                     prefer: str = "any",
+                     max_candidates: int = 3) -> dict[str, Any]:
+    """Find the most homogeneous rectangle of `region_size` to place text.
+
+    Sliding-window search: scans the image with a coarse stride, computes
+    homogeneity at each window, returns the top-N candidates sorted by
+    homogeneity score. Each candidate includes its position, score, and
+    a text-colour recommendation.
+
+    `prefer`:
+      - "any"          — search the whole image
+      - "top_third"    — restrict to top 1/3 of the image
+      - "bottom_third" — restrict to bottom 1/3 of the image
+      - "top_half"     — restrict to top 1/2
+      - "bottom_half"  — restrict to bottom 1/2
+    """
+    import numpy as np  # lazy
+
+    img = Image.open(path).convert("RGB")
+    iw, ih = img.size
+    rw, rh = region_size
+    if rw <= 0 or rh <= 0 or rw > iw or rh > ih:
+        raise CompositionError(
+            f"region_size {region_size} must fit inside image {iw}x{ih}"
+        )
+
+    # Search bounds based on prefer
+    y_min, y_max = 0, ih - rh
+    if prefer == "top_third":
+        y_max = max(0, ih // 3 - rh)
+    elif prefer == "bottom_third":
+        y_min = (ih * 2) // 3
+        y_max = ih - rh
+    elif prefer == "top_half":
+        y_max = max(0, ih // 2 - rh)
+    elif prefer == "bottom_half":
+        y_min = ih // 2
+        y_max = ih - rh
+    elif prefer != "any":
+        raise CompositionError(
+            f"prefer must be one of any|top_third|bottom_third|top_half|bottom_half, got {prefer!r}"
+        )
+    y_min = min(y_min, max(0, ih - rh))
+    y_max = max(y_max, y_min)
+
+    # Coarse grid — ~16 candidates wide × ~16 tall maximum to keep cost down
+    x_max = iw - rw
+    stride_x = max(1, x_max // 16) if x_max > 0 else 1
+    stride_y = max(1, (y_max - y_min) // 16) if (y_max - y_min) > 0 else 1
+
+    # Precompute luminance once for fast region eval
+    arr = np.asarray(img, dtype=np.float32)
+    lum = (arr[:, :, 0] * 0.2126
+           + arr[:, :, 1] * 0.7152
+           + arr[:, :, 2] * 0.0722) / 255.0
+    # Edge map once
+    if lum.shape[0] > 1 and lum.shape[1] > 1:
+        gx = np.abs(np.diff(lum, axis=1, prepend=lum[:, :1]))
+        gy = np.abs(np.diff(lum, axis=0, prepend=lum[:1, :]))
+        edges = np.sqrt(gx * gx + gy * gy)
+    else:
+        edges = np.zeros_like(lum)
+
+    candidates: list[tuple[float, int, int, float, float, float, float, float]] = []
+    for y in range(y_min, y_max + 1, stride_y):
+        for x in range(0, x_max + 1, stride_x):
+            crop_lum = lum[y:y + rh, x:x + rw]
+            crop_edges = edges[y:y + rh, x:x + rw]
+            br = float(crop_lum.mean())
+            std = float(crop_lum.std())
+            ed = float(crop_edges.mean())
+            std_norm = min(std / 0.30, 1.0)
+            edge_norm = min(ed / 0.20, 1.0)
+            homogeneity = 1.0 - max(std_norm, edge_norm)
+            # Per-cell brightness range (4x4) on the crop — flags mixed
+            # dark/light areas a flat text colour can't survive.
+            ch, cw = crop_lum.shape
+            if ch >= 4 and cw >= 4:
+                cy_step, cx_step = ch // 4, cw // 4
+                cell_vals = [
+                    float(crop_lum[
+                        cy * cy_step: (ch if cy == 3 else (cy + 1) * cy_step),
+                        cx * cx_step: (cw if cx == 3 else (cx + 1) * cx_step),
+                    ].mean())
+                    for cy in range(4) for cx in range(4)
+                ]
+                br_min = min(cell_vals)
+                br_max = max(cell_vals)
+            else:
+                br_min = br_max = br
+            candidates.append((homogeneity, x, y, br, std, ed, br_min, br_max))
+
+    if not candidates:
+        raise CompositionError("no candidate positions could be scanned")
+
+    candidates.sort(reverse=True, key=lambda t: t[0])
+    top: list[dict[str, Any]] = []
+    for homogeneity, x, y, br, std, ed, br_min, br_max in candidates[:max_candidates]:
+        br_range = br_max - br_min
+        if br_range > 0.30 and br_min < 0.40 and br_max > 0.60:
+            rec = "mixed_use_stroke_or_pill"
+        elif br < 0.40:
+            rec = "light_text"
+        elif br > 0.60:
+            rec = "dark_text"
+        else:
+            rec = "midtone_uncertain_use_backdrop"
+        top.append({
+            "region": [x, y, rw, rh],
+            "homogeneity": round(homogeneity, 3),
+            "brightness": round(br, 3),
+            "brightness_std": round(std, 3),
+            "brightness_min": round(br_min, 3),
+            "brightness_max": round(br_max, 3),
+            "brightness_range": round(br_range, 3),
+            "edge_density": round(ed, 3),
+            "recommendation": rec,
+        })
+
+    return {
+        "image_size": [iw, ih],
+        "search_size": [rw, rh],
+        "prefer": prefer,
+        "scanned": len(candidates),
+        "best": top[0],
+        "candidates": top,
     }
 
 
@@ -384,7 +651,7 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
     rotation = float(layer.get("rotation", 0))
     if rotation:
         before_w, before_h = layer_img.size
-        layer_img = layer_img.rotate(-rotation, resample=Image.BICUBIC, expand=True)
+        layer_img = layer_img.rotate(-rotation, resample=Image.Resampling.BICUBIC, expand=True)
         after_w, after_h = layer_img.size
         pos = (pos[0] - (after_w - before_w) // 2, pos[1] - (after_h - before_h) // 2)
 
@@ -668,6 +935,7 @@ def _render_gradient_layer(layer: dict, canvas_size: tuple[int, int]) -> tuple[I
     # Project each pixel along (dx, dy); normalize to [0, 1]
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     pixels = img.load()
+    assert pixels is not None  # `Image.new("RGBA", ...).load()` always returns a buffer
 
     # Compute projection range over the rect corners
     corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
@@ -721,6 +989,7 @@ def _render_vignette_layer(layer: dict, canvas_size: tuple[int, int]) -> tuple[I
     cw, ch = canvas_size
     img = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
     pixels = img.load()
+    assert pixels is not None  # `Image.new("RGBA", ...).load()` always returns a buffer
     cx, cy = cw / 2, ch / 2
     max_d = math.hypot(cx, cy)
     for y in range(ch):
@@ -751,7 +1020,9 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
             "SVG rendering requires 'svglib' and 'reportlab' (pip install svglib reportlab). "
             f"Import failed: {e}"
         )
-    drawing = svg2rlg(io.StringIO(svg_str))
+    # svglib accepts a file-like object at runtime even though its type
+    # stubs only mention str/PathLike.
+    drawing = svg2rlg(io.StringIO(svg_str))  # type: ignore[arg-type]
     if drawing is None:
         raise CompositionError("SVG could not be parsed (invalid SVG)")
     if target_size:
@@ -812,7 +1083,7 @@ def _load_image_src(src: str, project_root: Path) -> Image.Image:
 def _fit_image(img: Image.Image, target: tuple[int, int], fit: str) -> Image.Image:
     tw, th = target
     if fit == "stretch":
-        return img.resize((tw, th), Image.LANCZOS)
+        return img.resize((tw, th), Image.Resampling.LANCZOS)
     sw, sh = img.size
     src_aspect = sw / sh if sh else 1.0
     dst_aspect = tw / th if th else 1.0
@@ -821,7 +1092,7 @@ def _fit_image(img: Image.Image, target: tuple[int, int], fit: str) -> Image.Ima
             new_w, new_h = tw, max(1, int(tw / src_aspect))
         else:
             new_w, new_h = max(1, int(th * src_aspect)), th
-        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         canvas = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
         canvas.paste(resized, ((tw - new_w) // 2, (th - new_h) // 2), resized)
         return canvas
@@ -832,7 +1103,7 @@ def _fit_image(img: Image.Image, target: tuple[int, int], fit: str) -> Image.Ima
     else:
         new_w = tw
         new_h = max(1, int(tw / src_aspect))
-    resized = img.resize((new_w, new_h), Image.LANCZOS)
+    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
     left = (new_w - tw) // 2
     top = (new_h - th) // 2
     return resized.crop((left, top, left + tw, top + th))
@@ -871,8 +1142,10 @@ def _load_font(font_spec: str, size: int, fonts_dir: Path,
         except OSError:
             pass
     warnings.append(f"font '{font_spec}' not found — falling back to PIL default")
-    # PIL default is a bitmap font; scale poorly but keeps render running
-    return ImageFont.load_default()
+    # PIL default is a bitmap font; scale poorly but keeps render running.
+    # cast: the bitmap fallback duck-types as FreeTypeFont for our usage
+    # (we only call getlength / getmetrics, both supported).
+    return cast(ImageFont.FreeTypeFont, ImageFont.load_default())
 
 
 # ── Blending ──────────────────────────────────────────────────────────────
