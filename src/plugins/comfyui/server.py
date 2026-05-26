@@ -724,14 +724,26 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Get history from ComfyUI (use the server that handled this job)
         job_client = await self._client_for_job(prompt_id, effective_output_dir)
         history = await job_client.get_history(prompt_id)
-        
+
         if prompt_id not in history:
+            # History only contains *completed* jobs. Distinguish "still running"
+            # (job exists in queue, just not done yet — agent called result too
+            # early) from genuinely "not found" (never queued or already cleared).
+            live = await job_client.check_status(prompt_id)
+            live_state = live.get("status", "unknown")
+            if live_state in ("pending", "running"):
+                msg = f"Job {prompt_id} is still {live_state}, result not available yet"
+                hint = "Use operation='wait_for_completion' (with include_content=true) instead of polling result manually."
+            else:
+                msg = f"Job {prompt_id} not found in queue or history"
+                hint = "The job was never queued, was cleared, or the prompt_id is wrong."
             if status:
-                await status.error(f"Job {prompt_id} not found or not completed")
+                await status.error(msg)
             return {
-                "error": "Job not found or not completed",
+                "error": msg,
                 "prompt_id": prompt_id,
-                "hint": "Use operation='status' to check job state"
+                "live_status": live_state,
+                "hint": hint,
             }
         
         job_data = history[prompt_id]
