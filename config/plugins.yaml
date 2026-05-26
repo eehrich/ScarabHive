@@ -604,6 +604,49 @@ plugins:
               node_id: "41"
               field: inputs.noise_seed
 
+        - id: qwenvl_caption
+          name: "Qwen3-VL 8B caption / verification"
+          description: "Vision-language model — describes a given image. Use BEFORE accepting a generated image to verify what is actually depicted (people count, gender, visible objects). Returns a free-form text caption."
+          category: image_describe
+          workflow_file: qwenvl_caption.json
+          parameters:
+            - name: image
+              type: string
+              required: true
+              description: "Filename of an image previously uploaded via operation='upload_image' (relative to ComfyUI input dir)."
+              node_id: "1"
+              field: inputs.image
+            - name: prompt
+              type: string
+              required: false
+              default: |
+                Describe what is actually depicted in this image. Cover the following on separate lines:
+
+                PEOPLE: For each person, list gender (girl/boy/woman/man/etc), approximate age, hair (colour + style), clothing (colours + items), and any distinctive accessories. End with "total person count: N". If there are no people, write "no people".
+
+                OBJECTS: List the prominent objects and props visible (e.g. backpack, teapot, bench, sword, book) with their colour/material.
+
+                SETTING: One short sentence describing the location (forest, kitchen, beach, dungeon, etc.) and time of day / lighting mood.
+
+                NOTABLE: Anything else that stands out (text, watermarks, logos, blood, deformed body parts, weird artifacts). If none, write "none".
+
+                Be concise but specific. Do not invent details that aren't visible.
+              description: "Custom question for the VLM. Default asks for people + objects + setting + notable artifacts — suitable for full cover verification."
+              node_id: "2"
+              field: inputs.custom_prompt
+            - name: max_tokens
+              type: integer
+              default: 512
+              description: "Max tokens in the caption (64–2048)."
+              node_id: "2"
+              field: inputs.max_tokens
+            - name: seed
+              type: integer
+              default: 1
+              description: "Sampling seed (reuse to reproduce). 1 = default."
+              node_id: "2"
+              field: inputs.seed
+
     twitter_search:
       type: twitter_search
       enabled: false
