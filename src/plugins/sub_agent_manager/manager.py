@@ -294,10 +294,40 @@ class SubAgentManager:
         if "sub_agents" not in session_data["metadata"]:
             session_data["metadata"]["sub_agents"] = {}
 
-        # Inherit context_vars from parent (can be overridden by sub-agent's set_context)
-        parent_context_vars = parent_data.get("context_vars", {})
+        # Inherit context_vars from parent (can be overridden by sub-agent's set_context).
+        #
+        # Two sources are merged, with in-memory taking precedence on conflict:
+        #
+        # 1. DISK: parent_data.get("context_vars", {}) — last checkpointed snapshot.
+        # 2. IN-MEMORY: parent_agent._session_tracker.get_session_template_vars(parent_session_id)
+        #    — live state that set_session_template_vars writes to first. The
+        #    periodic checkpoint loop eventually flushes this to disk, but its
+        #    interval (default ~10s) can lag when the parent agent is blocked
+        #    inside a long-running tool — the first sub-agent of such a tool
+        #    would otherwise inherit a stale disk snapshot (often empty for
+        #    fresh sessions, missing late-set vars on resume). Symptom on v4:
+        #    scene_planner gets ``book_id`` missing → batch_scene validator
+        #    rejects ("book_id context not set"). See Fix #510.
+        parent_context_vars = dict(parent_data.get("context_vars") or {})
+        parent_agent = params.get("_agent") if params else None
+        if parent_agent is not None and hasattr(parent_agent, "_session_tracker"):
+            try:
+                live_vars = parent_agent._session_tracker.get_session_template_vars(
+                    parent_session_id,
+                )
+                if live_vars:
+                    # In-memory wins on key collision — the tracker is the
+                    # write-side source of truth; disk is its derivative.
+                    parent_context_vars.update(live_vars)
+            except Exception as e:
+                logger.debug(
+                    "Could not read parent in-memory tracker vars for "
+                    "sub-session inheritance (%s): %s",
+                    parent_session_id, e,
+                )
+
         if parent_context_vars:
-            session_data["context_vars"] = parent_context_vars.copy()
+            session_data["context_vars"] = parent_context_vars
             logger.debug(
                 f"Inherited context_vars from parent: {list(parent_context_vars.keys())}"
             )
