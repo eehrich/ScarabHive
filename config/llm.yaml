@@ -412,25 +412,6 @@ llm_system:
     # ---------------------------------------------------------------------------
     # OPENAI MODELS (Sync/Streaming)
     # ---------------------------------------------------------------------------
-    gpt-4.1:
-      provider: openai_httpx
-      model: gpt-4.1
-      api_key: ***REMOVED***
-      context_window: 1000000
-      request_timeout: 240
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: false
-        video_input: false
-        streaming: true
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
-        max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
-        image_detail_control: true
 
     gpt-5-nano:
       provider: openai_httpx
@@ -663,7 +644,7 @@ llm_system:
         streaming: true
         json_mode: true
 
-    deepseek-reasoner:
+    deepseek-chat-nostream:
       provider: openai_httpx
       model: deepseek-v4-flash
       api_key: "***REMOVED***"
@@ -673,10 +654,8 @@ llm_system:
       capabilities:
         tools: true
         function_calling: true
-        streaming: true
+        streaming: false
         json_mode: true
-
-
     deepseek-pro:
       provider: openai_httpx
       model: deepseek-v4-pro
@@ -690,9 +669,9 @@ llm_system:
         streaming: true
         json_mode: true
 
-    deepseek-chat-nostream:
+    deepseek-pro-nostream:
       provider: openai_httpx
-      model: deepseek-v4-flash
+      model: deepseek-v4-pro
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 300000
@@ -703,18 +682,7 @@ llm_system:
         streaming: false
         json_mode: true
 
-    deepseek-reasoner-nostream:
-      provider: openai_httpx
-      model: deepseek-v4-flash
-      api_key: "***REMOVED***"
-      base_url: https://api.deepseek.com/v1
-      context_window: 100000
-      request_timeout: 240
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true        
+
 
   # =============================================================================
   # PROFILES
@@ -752,11 +720,7 @@ llm_system:
       description: "Advanced model for complex reasoning (streaming)"
       max_steps: 500
       
-    big:
-      model_ref: gpt-4.1
-      description: "Expensive model with big context window"
-      max_steps: 500
-      
+    
     chat:
       model_ref: deepseek-chat
       description: "Cheap and fast model for medium tasks"
@@ -895,15 +859,27 @@ llm_system:
       description: "Cheap and fast model for medium tasks (no streaming)"
       max_steps: 500  
 
+    # now same as chat = flash model
     deepseek-reasoner:
-       model_ref: deepseek-reasoner
+       model_ref: deepseek-chat
        description: "Powerful model optimized for reasoning tasks"
        max_steps: 500
-      
+
+    # now same as chat = flash model      
     deepseek-reasoner-nostream:
-      model_ref: deepseek-reasoner-nostream
+      model_ref: deepseek-chat-nostream
       description: "Powerful model optimized for reasoning tasks (no streaming)"
       max_steps: 500  
+
+    deepseek-pro:
+      model_ref: deepseek-pro
+      description: "Powerful model optimized for reasoning tasks (no streaming)"
+      max_steps: 500        
+
+    deepseek-pro-nostream:
+      model_ref: deepseek-pro-nostream
+      description: "Powerful model optimized for reasoning tasks (no streaming)"
+      max_steps: 500        
 
     local:
       model_ref: ollama-gpt-oss-20b
