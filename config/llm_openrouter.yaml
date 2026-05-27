@@ -584,6 +584,8 @@ llm_system:
       context_window: 100000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache (cache ist backend-local). Reihenfolge per B196-Empirie (3 größte mit 31/111 Calls). Soft preference, falls Backend down → fallback.
+        order: ["deepinfra", "baidu", "gmicloud"]
       max_tokens: 16384
       capabilities:
         tools: true
@@ -604,6 +606,8 @@ llm_system:
       context_window: 100000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
+        order: ["deepinfra", "baidu", "gmicloud"]
       max_tokens: 0  # No limit - let provider decide
       capabilities:
         tools: true
@@ -620,6 +624,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
+        order: ["deepinfra", "baidu", "gmicloud"]
       max_tokens: 16384
       capabilities:
         tools: true
@@ -641,6 +647,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
+        order: ["deepinfra", "baidu", "gmicloud"]
       max_tokens: 0
       capabilities:
         tools: true
@@ -657,6 +665,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
+        order: ["deepinfra", "baidu", "gmicloud"]
       max_tokens: 16384
       capabilities:
         tools: true
@@ -678,6 +688,8 @@ llm_system:
       request_timeout: 600
       thinking_level: high
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
+        order: ["deepinfra", "baidu", "gmicloud"]
       max_tokens: 0
       capabilities:
         tools: true
