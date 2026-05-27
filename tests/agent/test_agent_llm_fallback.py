@@ -120,14 +120,20 @@ def test_agent_create_fallback_llm(system_config_with_profiles, agent_config_wit
     with patch('agent_system.llm.factory.create_llm_from_profile') as mock_factory:
         mock_fallback_llm = MagicMock()
         mock_factory.return_value = mock_fallback_llm
-        
-        result = agent._create_fallback_llm("openai")
-        
-        assert result == mock_fallback_llm
-        mock_factory.assert_called_once()
-        # Verify the profile was passed
-        call_kwargs = mock_factory.call_args
-        assert call_kwargs.kwargs["llm_profile"] == "openai"
+
+        # Spy on hook wiring — fallback LLM must have hooks wired so that
+        # debugger + cost-tracking capture pre_llm_request / post_llm_response.
+        # Without this, every fallback round-trip is silently unrecorded.
+        with patch.object(agent._hook_manager, 'wire_llm_hooks') as mock_wire:
+            result = agent._create_fallback_llm("openai")
+
+            assert result == mock_fallback_llm
+            mock_factory.assert_called_once()
+            # Verify the profile was passed
+            call_kwargs = mock_factory.call_args
+            assert call_kwargs.kwargs["llm_profile"] == "openai"
+            # Regression guard: hooks must be wired to the fallback LLM
+            mock_wire.assert_called_once_with(mock_fallback_llm)
 
 
 def test_agent_create_fallback_llm_failure(system_config_with_profiles, agent_config_with_fallbacks):

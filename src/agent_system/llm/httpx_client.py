@@ -720,6 +720,38 @@ class HTTPXOpenAIClient(LLMClient):
                     # Parse successful response
                     response_data = response.json()
 
+                    # Body-level upstream 429 (e.g. OpenRouter proxying upstream
+                    # rate-limit from OpenAI/Gemini Flex). Same backoff schedule
+                    # as HTTP-status 429. On the 2nd body-429 attempt, drop
+                    # service_tier from the *local* payload (flex → standard)
+                    # without mutating self — keeps singleton clean for parallel
+                    # requests on the same client instance.
+                    _body_429_msg = self._detect_body_429(response_data)
+                    if _body_429_msg and attempt < self.rate_limit_max_retries:
+                        base = self.rate_limit_backoff * (1.5 ** attempt)
+                        jitter = base * random.uniform(0.0, 0.5)
+                        backoff_time = base + jitter
+                        tier_note = ""
+                        if attempt >= 1 and payload.get("service_tier"):
+                            dropped = payload.pop("service_tier")
+                            tier_note = f", dropping service_tier={dropped!r}"
+                        logger.warning(
+                            f"Upstream 429 in response body ({_body_429_msg[:80]}), "
+                            f"retrying in {backoff_time:.0f}s "
+                            f"(attempt {attempt + 1}/{self.rate_limit_max_retries}){tier_note}"
+                        )
+                        await self._report_status(
+                            status_scope,
+                            f"Upstream 429, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)"
+                        )
+                        await self._notify_retry(
+                            "openai_httpx", self.model, url, False,
+                            f"Upstream 429 body-error{tier_note}",
+                            attempt, self.rate_limit_max_retries + 1,
+                        )
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
+                        continue
+
                     # Detect Gemini MALFORMED_FUNCTION_CALL — a transient model error
                     # where identical payloads can succeed or fail non-deterministically.
                     # Retry instead of returning an empty response to the agent.
@@ -912,6 +944,11 @@ class HTTPXOpenAIClient(LLMClient):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled by user")
 
+            # Body-level 429 retry signal — set inside chunk parsing when the
+            # upstream wraps a rate-limit in a normal HTTP 200 SSE chunk.
+            # Picked up after the async with block exits.
+            _body_429_retry_msg: Optional[str] = None
+
             try:
                 # Create fresh client for each request to avoid connection issues
                 # Enable TCP keep-alive to prevent connection drops during long "thinking" pauses
@@ -1077,6 +1114,15 @@ class HTTPXOpenAIClient(LLMClient):
                                     logger.debug(f"Failed to parse chunk data: {data[:100]}")
                                     continue
 
+                                # Upstream-error chunk (e.g. OpenRouter wrapping a
+                                # provider 429 as a body-error inside SSE). Signal
+                                # the outer attempt loop to retry and break out of
+                                # the chunk parser cleanly.
+                                _body_err_msg = self._detect_body_429(chunk_data)
+                                if _body_err_msg:
+                                    _body_429_retry_msg = _body_err_msg
+                                    break  # exit "while '\n' in line_buffer"
+
                                 # Track usage if available in chunk
                                 if "usage" in chunk_data:
                                     accumulated_usage = chunk_data["usage"]
@@ -1161,7 +1207,13 @@ class HTTPXOpenAIClient(LLMClient):
                                             "delta": tc_delta,
                                             "accumulated": accumulated_tool_calls[index]
                                         }
-                        
+
+                            # Body-429 signaled from inside chunk parser — abort
+                            # the chunk-fetching loop so the outer attempt loop
+                            # can apply backoff and retry the whole request.
+                            if _body_429_retry_msg:
+                                break  # exits the outer "while True" chunk fetcher
+
                         # After stream ends, process any remaining data in buffer
                         # This handles the case where the last chunk doesn't end with \n
                         # or where [DONE] is in the buffer but wasn't processed yet
@@ -1260,6 +1312,36 @@ class HTTPXOpenAIClient(LLMClient):
                     except Exception as close_err:
                         logger.debug(f"Error during client close (ignored): {close_err}")
 
+                # Body-level upstream 429 retry for streaming (mirrors the
+                # non-streaming path). The flag was set inside the SSE chunk
+                # parser; here we apply backoff and on the 2nd attempt drop
+                # service_tier from the *local* payload (flex → standard)
+                # without mutating self.service_tier (singleton-safe).
+                if _body_429_retry_msg and attempt < self.rate_limit_max_retries:
+                    base = self.rate_limit_backoff * (1.5 ** attempt)
+                    jitter = base * random.uniform(0.0, 0.5)
+                    backoff_time = base + jitter
+                    tier_note = ""
+                    if attempt >= 1 and payload.get("service_tier"):
+                        dropped = payload.pop("service_tier")
+                        tier_note = f", dropping service_tier={dropped!r}"
+                    logger.warning(
+                        f"Upstream 429 in stream chunk ({_body_429_retry_msg[:80]}), "
+                        f"retrying in {backoff_time:.0f}s "
+                        f"(attempt {attempt + 1}/{self.rate_limit_max_retries}){tier_note}"
+                    )
+                    await self._report_status(
+                        status_scope,
+                        f"Upstream 429, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)"
+                    )
+                    await self._notify_retry(
+                        "openai_httpx", self.model, url, True,
+                        f"Upstream 429 body-error{tier_note}",
+                        attempt, self.rate_limit_max_retries + 1,
+                    )
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
+                    continue
+
             except asyncio.CancelledError:
                 # Re-raise cancellation without wrapping
                 logger.info("HTTPX streaming request cancelled by user")
@@ -1310,163 +1392,6 @@ class HTTPXOpenAIClient(LLMClient):
                     logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
                     await self._report_status(status_scope, f"Network error after retries: {self.model}")
                     raise Exception(f"Network/protocol error: {e}") from e
-
-        # Should never reach here, but just in case
-        raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
-
-    async def _make_request_old_nonstreaming(
-        self,
-        messages: list,
-        tools: list,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> dict:
-        """OLD non-streaming version - kept for reference, will be removed."""
-
-        # Build request payload - convert ChatMessage objects to dicts
-        message_dicts = []
-        for msg in messages:
-            if hasattr(msg, 'model_dump'):
-                # ChatMessage object - convert to dict, exclude None values for API compatibility
-                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
-            elif isinstance(msg, dict):
-                # Already a dict
-                message_dicts.append(msg)
-            else:
-                # Fallback - try to convert to dict
-                message_dicts.append(dict(msg))
-
-        payload = {
-            "model": self.model,
-            "messages": message_dicts,
-            **self.extra_params
-        }
-
-        # Thinking/reasoning config for thinking models (OpenRouter, DeepSeek, etc.)
-        reasoning = self._build_reasoning_param()
-        if reasoning:
-            payload["reasoning"] = reasoning
-
-        # Service tier (e.g. Google Flex via OpenRouter)
-        if self.service_tier:
-            payload["service_tier"] = self.service_tier
-
-        # Provider routing (OpenRouter): bias toward a sticky backend so the
-        # implicit prompt cache stays warm. Only honored by OpenRouter.
-        if self.provider_routing and self._is_openrouter:
-            payload["provider"] = self.provider_routing
-
-        if tools:
-            if self._is_gemini_via_openrouter:
-                payload["tools"] = self._sanitize_tools_for_gemini(tools)
-                logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (non-streaming-fallback, model={self.model})")
-            else:
-                payload["tools"] = tools
-            # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
-            if self._is_anthropic_via_openrouter:
-                self._apply_anthropic_tool_cache_control(payload["tools"])
-            payload["tool_choice"] = "auto"
-            # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
-            if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
-                payload["parallel_tool_calls"] = True
-
-        # Gemini via OpenRouter: inject safety settings for content filtering
-        if self._is_gemini_via_openrouter and self.safety_settings:
-            payload["safety_settings"] = [
-                {"category": category, "threshold": threshold}
-                for category, threshold in self.safety_settings.items()
-            ]
-
-        url = f"{self.base_url}/chat/completions"
-
-        # Retry logic with exponential backoff
-        last_exception = None
-        for attempt in range(self.max_retries + 1):
-            # Check cancellation before each attempt
-            if cancellation_token and cancellation_token.is_cancelled:
-                raise asyncio.CancelledError("Request cancelled by user")
-
-            try:
-                # Create fresh client for each request to avoid connection issues
-                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
-                # Only include verify if explicitly configured (None means use httpx default)
-                if getattr(self, "_verify", None) is not None:
-                    client_kwargs["verify"] = self._verify
-                async with httpx.AsyncClient(**client_kwargs) as client:
-                    logger.debug(f"HTTPX request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
-
-                    # Make request - this will raise CancelledError naturally if cancelled
-                    response = await client.post(
-                        url=url,
-                        headers=self._headers,
-                        json=payload
-                    )
-
-                    # Check for HTTP errors
-                    if response.status_code == 429:
-                        retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                        if attempt < self.max_retries:
-                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
-                            await self._cancellable_sleep(backoff_time, cancellation_token)
-                            continue
-                        # Retries exhausted - raise for fallback
-                        error_text = response.text[:200] if response.text else ""
-                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
-                            raise LLMQuotaExhaustedError(
-                                f"Quota exhausted: {error_text}",
-                                provider="httpx", model=self.model, retry_after=retry_after
-                            )
-                        raise LLMRateLimitError(
-                            f"Rate limit exceeded: {error_text}",
-                            provider="httpx", model=self.model, retry_after=retry_after
-                        )
-
-                    response.raise_for_status()
-
-                    # Parse response
-                    response_data = response.json()
-                    return self._format_response(response_data)
-
-            except asyncio.CancelledError:
-                # Re-raise cancellation without wrapping
-                logger.info("HTTPX request cancelled by user")
-                raise
-
-            except httpx.TimeoutException as e:
-                last_exception = e
-                if attempt < self.max_retries:
-                    backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                    continue
-                else:
-                    logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
-                    raise Exception(f"Request timed out: {e}") from e
-
-            except httpx.HTTPStatusError as e:
-                last_exception = e
-                if e.response.status_code >= 500 and attempt < self.max_retries:
-                    # Server error - retry
-                    backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                    continue
-                else:
-                    # Client error or max retries exceeded
-                    error_detail = self._parse_error_response(e.response)
-                    logger.error(f"HTTP error {e.response.status_code}: {error_detail}")
-                    raise Exception(f"HTTP {e.response.status_code}: {error_detail}") from e
-
-            except (httpx.NetworkError, httpx.ConnectError) as e:
-                last_exception = e
-                if attempt < self.max_retries:
-                    backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Network error, retrying in {backoff_time}s: {e}")
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                    continue
-                else:
-                    logger.error(f"Network error after {self.max_retries + 1} attempts: {e}")
-                    raise Exception(f"Network error: {e}") from e
 
         # Should never reach here, but just in case
         raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
@@ -1527,6 +1452,33 @@ class HTTPXOpenAIClient(LLMClient):
             return False
 
         return True
+
+    @staticmethod
+    def _detect_body_429(response_data: dict) -> Optional[str]:
+        """Detect upstream-429 returned as body-error in an HTTP 200 response.
+
+        OpenRouter (and similar proxies) frequently wrap upstream provider
+        rate-limits in a normal-looking HTTP 200 response with payload shape:
+            {"error": {"code": 429, "message": "...too many requests..."}}
+
+        Returns the upstream error message when detected (truthy for callers),
+        or None otherwise. Treated separately from HTTP-status 429 because
+        httpx's status-based retry path doesn't see body-level errors.
+        """
+        if not isinstance(response_data, dict):
+            return None
+        err = response_data.get("error")
+        if not isinstance(err, dict):
+            return None
+        code = str(err.get("code", ""))
+        msg = str(err.get("message", ""))
+        is_429 = (
+            code == "429"
+            or "429" in code
+            or "rate" in msg.lower()
+            or "too many requests" in msg.lower()
+        )
+        return msg if is_429 else None
 
     def _format_response(self, response_data: dict) -> dict:
         """Format OpenAI API response to our standard format."""

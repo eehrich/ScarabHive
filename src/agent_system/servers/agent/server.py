@@ -333,6 +333,11 @@ class Agent(MCPServer):
                 ssl_verify=ssl_verify,
             )
             fallback_llm.set_app_title(self.name)
+            # Mirror init/llm_override: wire hooks so debugger + cost tracking
+            # capture pre_llm_request / post_llm_response on fallback calls too.
+            # Without this, every fallback round-trip is silently unrecorded.
+            if self._hook_manager:
+                self._hook_manager.wire_llm_hooks(fallback_llm)
             logger.info(f"[{self.name}] Created fallback LLM for profile: {fallback_profile}")
             return fallback_llm
         except Exception as e:
