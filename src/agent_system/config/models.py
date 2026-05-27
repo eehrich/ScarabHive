@@ -237,8 +237,8 @@ class LoopDetectionConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
-    llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, first is default, others are available options
-    llm_profile_fallbacks: Optional[List[str]] = None  # Fallback profiles on rate limit/errors (tried in order)
+    llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, position 0 = standard, position 1 = advanced (used via use_advanced_model=True)
+    llm_profile_fallbacks: Optional[List[str]] = None  # Fallback profiles on rate limit/errors. Same convention as llm_profile: position 0 = standard fallback, position 1 = advanced fallback (auto-picked when use_advanced_model=True)
     fallback_recovery_seconds: int = 3600  # Seconds before trying original LLM again after rate limit (default: 1 hour)
     fallback_recovery_jitter_percent: float = 20.0  # Random jitter ±X% to prevent thundering herd when multiple agents recover
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning (default: 20, used if not set in config)

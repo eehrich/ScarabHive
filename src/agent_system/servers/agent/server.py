@@ -990,7 +990,8 @@ class Agent(MCPServer):
                 initial_message=initial_message,
                 llm_override=llm_override,
                 llm_profile_info_override=llm_profile_info_override,
-                status_forwarder=status_forwarder
+                status_forwarder=status_forwarder,
+                use_advanced_model=use_advanced_model,
             ):
                 yield event
         except GeneratorExit:
@@ -1454,7 +1455,8 @@ class Agent(MCPServer):
         status_coordinator: StatusScope,
         status_worker: StatusScope,
         llm_override: Optional[object] = None,
-        llm_profile_info_override: Optional[str] = None
+        llm_profile_info_override: Optional[str] = None,
+        use_advanced_model: bool = False,
     ):
         """Execute the main LLM conversation loop with tool execution.
 
@@ -1635,6 +1637,22 @@ class Agent(MCPServer):
                 current_llm = active_llm
                 fallback_index = 0
                 fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
+                # Bug-Fix: fallback_profiles folgt derselben Convention wie
+                # llm_profile — Position 0 = Standard, Position 1 = Advanced.
+                # Wenn use_advanced_model=True, soll der Fallback ebenfalls
+                # auf den Advanced-Slot greifen, sonst fällt der Agent von
+                # gpt-5.4 (advanced primary) direkt auf gemini-flash (standard
+                # fallback) statt auf gemini-pro (advanced fallback).
+                if use_advanced_model and len(fallback_profiles) >= 2:
+                    fallback_profiles = [
+                        fallback_profiles[1],
+                        fallback_profiles[0],
+                        *fallback_profiles[2:],
+                    ]
+                    logger.info(
+                        f"[{self.name}] use_advanced_model=True — fallback "
+                        f"order swapped: advanced-slot first ({fallback_profiles[0]})"
+                    )
             
             while True:  # Retry loop for fallbacks (rate limits + upstream errors)
                 pending_thinking_complete = None
@@ -2337,7 +2355,8 @@ class Agent(MCPServer):
         initial_message: Optional[ChatMessage] = None,
         llm_override: Optional[object] = None,
         llm_profile_info_override: Optional[str] = None,
-        status_forwarder: Optional[StatusEventForwarder] = None
+        status_forwarder: Optional[StatusEventForwarder] = None,
+        use_advanced_model: bool = False,
     ):
         """
         Core agent execution loop - orchestrates LLM conversation with tool usage.
@@ -2450,7 +2469,8 @@ class Agent(MCPServer):
                     status_coordinator=status_coordinator,
                     status_worker=status_worker,
                     llm_override=llm_override,
-                    llm_profile_info_override=llm_profile_info_override
+                    llm_profile_info_override=llm_profile_info_override,
+                    use_advanced_model=use_advanced_model,
                 )
 
                 async for event in loop_generator:
