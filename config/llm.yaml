@@ -662,7 +662,7 @@ llm_system:
       api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 300000
-      request_timeout: 240
+      request_timeout: 480
       capabilities:
         tools: true
         function_calling: true
