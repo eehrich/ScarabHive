@@ -445,6 +445,28 @@ llm_system:
         json_mode: true
         multimodal: true
 
+    openrouter-gpt-5-mini-unlimited:
+      provider: openai_httpx
+      model: openai/gpt-5-mini
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000
+      request_timeout: 600
+      service_tier: flex
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+      # Notes:
+      # - GPT-5 mini (older, cheaper variant of gpt-5.4-mini)
+      # - 400K context, text + image input
+
     openrouter-gpt-5:
       provider: openai_httpx
       model: openai/gpt-5
@@ -795,6 +817,11 @@ llm_system:
     or-gpt-mini-unlimited:
       model_ref: openrouter-gpt-5.4-mini-unlimited
       description: "OpenRouter GPT-5.4 Mini - No output token limit"
+      max_steps: 500
+
+    or-gpt-5-mini-unlimited:
+      model_ref: openrouter-gpt-5-mini-unlimited
+      description: "OpenRouter GPT-5 Mini (older, cheaper than 5.4-mini)"
       max_steps: 500
 
     or-gpt-5:
