@@ -74,7 +74,7 @@ class GeminiSDKClient(LLMClient):
         ssl_verify: bool | str = True,  # Ignored by SDK, kept for compatibility
         httpx_timeouts: dict | None = None,  # Ignored by SDK, kept for compatibility
         max_retries: int = 3,
-        rate_limit_max_retries: int = 6,
+        rate_limit_max_retries: int = 2,
         parallel_tool_calls: bool = True,  # Ignored, kept for compatibility
         include_thoughts: bool | None = None,
         thinking_budget: int | None = None,

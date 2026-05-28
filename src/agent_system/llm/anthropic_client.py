@@ -64,7 +64,7 @@ class AnthropicAsyncClient(LLMClient):
         context_window: int = 200000,
         request_timeout: int = 180,
         max_retries: int = 3,
-        rate_limit_max_retries: int = 6,
+        rate_limit_max_retries: int = 2,
         max_tokens: int = 8192,
         include_thinking: bool = False,
         thinking_budget: Optional[int] = None,

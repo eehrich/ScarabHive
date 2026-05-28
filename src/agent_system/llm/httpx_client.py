@@ -55,7 +55,7 @@ class HTTPXOpenAIClient(LLMClient):
         max_retries: int = 3,
         retry_backoff: float = 1.0,
         rate_limit_backoff: float = 60.0,
-        rate_limit_max_retries: int = 6,
+        rate_limit_max_retries: int = 2,
         verify: Optional[bool] = None,
         context_window: Optional[int] = None,
         capabilities: Optional[dict] = None,
@@ -722,17 +722,17 @@ class HTTPXOpenAIClient(LLMClient):
 
                     # Body-level upstream 429 (e.g. OpenRouter proxying upstream
                     # rate-limit from OpenAI/Gemini Flex). Same backoff schedule
-                    # as HTTP-status 429. On the 2nd body-429 attempt, drop
-                    # service_tier from the *local* payload (flex → standard)
-                    # without mutating self — keeps singleton clean for parallel
-                    # requests on the same client instance.
+                    # as HTTP-status 429. Drop service_tier from the *local*
+                    # payload (flex -> standard) on the first 429 so the retry
+                    # tries the standard tier - without mutating self, which
+                    # keeps the singleton clean for parallel requests.
                     _body_429_msg = self._detect_body_429(response_data)
                     if _body_429_msg and attempt < self.rate_limit_max_retries:
                         base = self.rate_limit_backoff * (1.5 ** attempt)
                         jitter = base * random.uniform(0.0, 0.5)
                         backoff_time = base + jitter
                         tier_note = ""
-                        if attempt >= 1 and payload.get("service_tier"):
+                        if payload.get("service_tier"):
                             dropped = payload.pop("service_tier")
                             tier_note = f", dropping service_tier={dropped!r}"
                         logger.warning(
@@ -1314,15 +1314,16 @@ class HTTPXOpenAIClient(LLMClient):
 
                 # Body-level upstream 429 retry for streaming (mirrors the
                 # non-streaming path). The flag was set inside the SSE chunk
-                # parser; here we apply backoff and on the 2nd attempt drop
-                # service_tier from the *local* payload (flex → standard)
-                # without mutating self.service_tier (singleton-safe).
+                # parser; here we apply backoff and drop service_tier from the
+                # *local* payload (flex -> standard) on the first 429 so the
+                # retry tries the standard tier - without mutating
+                # self.service_tier (singleton-safe).
                 if _body_429_retry_msg and attempt < self.rate_limit_max_retries:
                     base = self.rate_limit_backoff * (1.5 ** attempt)
                     jitter = base * random.uniform(0.0, 0.5)
                     backoff_time = base + jitter
                     tier_note = ""
-                    if attempt >= 1 and payload.get("service_tier"):
+                    if payload.get("service_tier"):
                         dropped = payload.pop("service_tier")
                         tier_note = f", dropping service_tier={dropped!r}"
                     logger.warning(
