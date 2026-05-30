@@ -986,6 +986,43 @@ class TestAnthropicViaOpenRouterCaching:
         # Content should stay as plain string
         assert msgs[0]["content"] == "You are a helpful assistant."
 
+    def test_reasoning_details_stripped_from_all_but_last_assistant(self, non_anthropic_or_client):
+        """Historical reasoning_details (Gemini thought signatures) are dropped from
+        every assistant message except the most recent one. Google validates only
+        the current turn, and stale/malformed blocks (e.g. OpenRouter UUID
+        placeholders) cause 'Corrupted thought signature' 400 errors.
+        """
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "a", "type": "function", "function": {"name": "f"}}], "reasoning_details": [{"type": "reasoning.encrypted", "data": "OLD1", "id": "a"}]},
+            {"role": "tool", "name": "f", "tool_call_id": "a", "content": "r1"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "b", "type": "function", "function": {"name": "f"}}], "reasoning_details": [{"type": "reasoning.encrypted", "data": "OLD2", "id": "b"}]},
+            {"role": "tool", "name": "f", "tool_call_id": "b", "content": "r2"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "f"}}], "reasoning_details": [{"type": "reasoning.encrypted", "data": "CURRENT", "id": "c"}]},
+            {"role": "tool", "name": "f", "tool_call_id": "c", "content": "r3"},
+        ]
+        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
+        # First two assistants: reasoning_details removed
+        assert "reasoning_details" not in msgs[2]
+        assert "reasoning_details" not in msgs[4]
+        # Last assistant: reasoning_details preserved verbatim
+        assert msgs[6]["reasoning_details"] == [{"type": "reasoning.encrypted", "data": "CURRENT", "id": "c"}]
+        # tool_calls untouched everywhere
+        assert msgs[2]["tool_calls"][0]["id"] == "a"
+        assert msgs[6]["tool_calls"][0]["id"] == "c"
+
+    def test_reasoning_details_kept_when_only_one_assistant(self, non_anthropic_or_client):
+        """Single assistant message keeps its reasoning_details (it IS the current turn)."""
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "a", "type": "function", "function": {"name": "f"}}], "reasoning_details": [{"type": "reasoning.encrypted", "data": "X"}]},
+            {"role": "tool", "name": "f", "tool_call_id": "a", "content": "r"},
+        ]
+        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
+        assert msgs[2]["reasoning_details"] == [{"type": "reasoning.encrypted", "data": "X"}]
+
     def test_openrouter_has_default_app_headers(self, anthropic_or_client):
         """OpenRouter clients get default X-Title and HTTP-Referer at init."""
         assert anthropic_or_client._headers["X-Title"] == "ScarabHive"

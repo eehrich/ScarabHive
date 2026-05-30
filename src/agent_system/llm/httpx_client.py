@@ -356,18 +356,18 @@ class HTTPXOpenAIClient(LLMClient):
 
     def _postprocess_messages_for_provider(self, message_dicts: list) -> None:
         """Post-process serialized messages for provider-specific requirements.
-        
+
         DeepSeek thinking mode requires `reasoning_content` on ALL assistant messages
         (even empty string ""), otherwise returns HTTP 400:
           "Missing reasoning_content field in the assistant message"
         See: https://api-docs.deepseek.com/guides/thinking_mode#tool-call
-        
+
         For non-DeepSeek providers, `reasoning_content` is stripped since it's not
         a standard OpenAI Chat Completions API field.
-        
+
         Anthropic via OpenRouter: inject cache_control on system messages for
         prompt caching (70-80% cost savings).
-        
+
         Modifies message_dicts in-place.
         """
         if self._is_anthropic_via_openrouter:
@@ -382,6 +382,22 @@ class HTTPXOpenAIClient(LLMClient):
             # Other providers: strip reasoning_content (non-standard field)
             for msg in message_dicts:
                 msg.pop("reasoning_content", None)
+
+        # Strip reasoning_details from all but the most recent assistant
+        # message. Google's spec: thought signatures are only validated for
+        # the CURRENT turn (see gemini_utils.py:548-552). Echoing historical
+        # signatures buys nothing and breaks the request if any single block
+        # is malformed - e.g. OpenRouter ships placeholder UUID blobs for
+        # some Gemini tool calls that fail validation with "Corrupted thought
+        # signature" once round-tripped. Also saves significant tokens
+        # (encrypted blocks are routinely 4-8 KB each).
+        last_assistant_idx = -1
+        for i, msg in enumerate(message_dicts):
+            if msg.get("role") == "assistant":
+                last_assistant_idx = i
+        for i, msg in enumerate(message_dicts):
+            if i != last_assistant_idx and msg.get("role") == "assistant":
+                msg.pop("reasoning_details", None)
 
     def _build_reasoning_param(self) -> dict | None:
         """Build the ``reasoning`` parameter for providers that support it.
