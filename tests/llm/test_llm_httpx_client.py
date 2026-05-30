@@ -1012,6 +1012,66 @@ class TestAnthropicViaOpenRouterCaching:
         assert msgs[2]["tool_calls"][0]["id"] == "a"
         assert msgs[6]["tool_calls"][0]["id"] == "c"
 
+    def test_reasoning_details_stripped_on_synthetic_tool_ids(self, non_anthropic_or_client):
+        """OpenRouter sometimes wraps Gemini tool_calls with synthetic IDs
+        (prefix 'tool_<name>_<random>'). Reasoning_details attached to such
+        turns fail with 'Corrupted thought signature' on round-trip - even
+        when the encrypted blob looks legitimate (1KB+). Drop RD for these
+        turns regardless of position or blob size.
+        """
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            # Last assistant with a synthetic-id tool_call AND a real-sized signature
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tool_comfyui_workflow_zn7IVZfM", "type": "function", "function": {"name": "comfyui_workflow"}},
+            ], "reasoning_details": [
+                {"type": "reasoning.encrypted", "data": "X" * 1072, "id": "tool_comfyui_workflow_zn7IVZfM"},
+            ]},
+            {"role": "tool", "name": "comfyui_workflow", "tool_call_id": "tool_comfyui_workflow_zn7IVZfM", "content": "r"},
+        ]
+        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
+        # Real-sized blob got dropped because the tool_call id is synthetic
+        assert "reasoning_details" not in msgs[2]
+        # tool_calls untouched
+        assert msgs[2]["tool_calls"][0]["id"] == "tool_comfyui_workflow_zn7IVZfM"
+
+    def test_reasoning_details_preserved_on_native_tool_ids(self, non_anthropic_or_client):
+        """Native short Gemini tool_call IDs (no 'tool_' prefix) keep their
+        reasoning_details intact - those round-trip cleanly."""
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "sfhzj5f7", "type": "function", "function": {"name": "writer_workflow_set_context"}},
+            ], "reasoning_details": [
+                {"type": "reasoning.encrypted", "data": "REAL_SIG", "id": "sfhzj5f7"},
+            ]},
+            {"role": "tool", "name": "writer_workflow_set_context", "tool_call_id": "sfhzj5f7", "content": "r"},
+        ]
+        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
+        assert msgs[2]["reasoning_details"] == [
+            {"type": "reasoning.encrypted", "data": "REAL_SIG", "id": "sfhzj5f7"},
+        ]
+
+    def test_reasoning_details_stripped_when_any_tool_id_synthetic(self, non_anthropic_or_client):
+        """Mixed native+synthetic IDs on the same assistant: drop RD because
+        even one synthetic ID corrupts the round-trip pairing."""
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "native123", "type": "function", "function": {"name": "writer_content_book"}},
+                {"id": "tool_sequential_thinking_abc", "type": "function", "function": {"name": "sequential_thinking"}},
+            ], "reasoning_details": [
+                {"type": "reasoning.encrypted", "data": "Y" * 600, "id": "native123"},
+            ]},
+            {"role": "tool", "name": "writer_content_book", "tool_call_id": "native123", "content": "r1"},
+            {"role": "tool", "name": "sequential_thinking", "tool_call_id": "tool_sequential_thinking_abc", "content": "r2"},
+        ]
+        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
+        assert "reasoning_details" not in msgs[2]
+
     def test_reasoning_details_kept_when_only_one_assistant(self, non_anthropic_or_client):
         """Single assistant message keeps its reasoning_details (it IS the current turn)."""
         msgs = [

@@ -383,14 +383,62 @@ class HTTPXOpenAIClient(LLMClient):
             for msg in message_dicts:
                 msg.pop("reasoning_content", None)
 
-        # Strip reasoning_details from all but the most recent assistant
-        # message. Google's spec: thought signatures are only validated for
-        # the CURRENT turn (see gemini_utils.py:548-552). Echoing historical
-        # signatures buys nothing and breaks the request if any single block
-        # is malformed - e.g. OpenRouter ships placeholder UUID blobs for
-        # some Gemini tool calls that fail validation with "Corrupted thought
-        # signature" once round-tripped. Also saves significant tokens
-        # (encrypted blocks are routinely 4-8 KB each).
+        # ------------------------------------------------------------------
+        # Gemini 3.x thought-signature round-trip — two-stage defense.
+        #
+        # Background: For Gemini 3.x via OpenRouter, each assistant turn
+        # comes back with a `reasoning_details` array. The `format` is
+        # `google-gemini-v1`. Two block types appear:
+        #   - `reasoning.text`     — human-readable chain of thought
+        #   - `reasoning.encrypted` — Google's encrypted thought signature,
+        #                             keyed to a specific tool_call.id
+        #
+        # The agent system stores these verbatim on the ChatMessage and
+        # echoes them back on the next request (see _API_MESSAGE_FIELDS
+        # whitelisting `reasoning_details` and the streaming/non-streaming
+        # accumulators that capture it). On round-trip, Google validates
+        # each encrypted block. If validation fails for ANY block in the
+        # payload, Google rejects the whole request with HTTP 400
+        # "Corrupted thought signature" (sometimes surfaced via OpenRouter
+        # as a HTTP-200 body-level "Provider returned error", code 400).
+        #
+        # We saw this break runs reliably for cover_artist with Gemini 3.1
+        # Pro on 2026-05-31 (5/5 body-400 failures in one session).
+        #
+        # Two distinct failure modes were observed in the same run:
+        #
+        # (1) Stale historical signatures
+        #     Google only validates signatures for the CURRENT turn (see
+        #     gemini_utils.py:548-552, sourced from Google's docs). We were
+        #     echoing every historical assistant turn's reasoning_details,
+        #     so even if just one old block was malformed (see (2) below)
+        #     the whole request blew up. Fix: keep RD only on the most
+        #     recent assistant message. Also a meaningful token saving —
+        #     real encrypted blocks are routinely 4-8 KB each.
+        #
+        # (2) OpenRouter-synthetic tool_call IDs
+        #     OpenRouter sometimes wraps a Gemini tool_call with a synthetic
+        #     ID of the form `tool_<funcname>_<random>` instead of preserving
+        #     Gemini's native short ID (e.g. `sfhzj5f7`). The accompanying
+        #     `reasoning.encrypted` block is then unroutable back to Google:
+        #     in 3/5 observed failures the `data` payload was a 48-byte
+        #     UUID placeholder; in 2/5 it was a real-sized 372-1072 byte
+        #     blob that still failed to decrypt. Size-based detection is
+        #     therefore unreliable; the discriminator is the ID prefix.
+        #     Fix: drop RD on any assistant turn whose tool_calls include
+        #     a `tool_*` ID. Native-ID turns are unaffected and continue to
+        #     round-trip their real signatures cleanly. Gemini 3.x accepts
+        #     function calls without a signature, so this is safe.
+        #
+        # This is a workaround for the upstream OpenRouter <-> Google
+        # integration, not a bug in our serialization. If OpenRouter stops
+        # generating synthetic IDs / stops shipping placeholder signatures,
+        # the second pass becomes a no-op (no harm, no extra cost) and the
+        # whole block can be removed.
+        # ------------------------------------------------------------------
+
+        # Stage 1: strip reasoning_details from all but the most recent
+        # assistant message.
         last_assistant_idx = -1
         for i, msg in enumerate(message_dicts):
             if msg.get("role") == "assistant":
@@ -398,6 +446,41 @@ class HTTPXOpenAIClient(LLMClient):
         for i, msg in enumerate(message_dicts):
             if i != last_assistant_idx and msg.get("role") == "assistant":
                 msg.pop("reasoning_details", None)
+
+        # Stage 2: drop reasoning_details on assistant turns with any
+        # OpenRouter-synthetic tool_call ID. Logs at WARNING when actually
+        # dropping something so the workaround stays visible in operation.
+        for msg in message_dicts:
+            if msg.get("role") != "assistant":
+                continue
+            if not self._has_synthetic_tool_ids(msg):
+                continue
+            dropped = msg.pop("reasoning_details", None)
+            if dropped:
+                synthetic_ids = [
+                    tc.get("id", "") for tc in (msg.get("tool_calls") or [])
+                    if isinstance(tc.get("id"), str) and tc["id"].startswith("tool_")
+                ]
+                logger.warning(
+                    "Stripped reasoning_details from assistant turn with "
+                    "OpenRouter-synthetic tool_call IDs (round-trip would "
+                    "trigger 'Corrupted thought signature' 400). model=%s "
+                    "synthetic_ids=%s dropped_blocks=%d",
+                    self.model, synthetic_ids, len(dropped),
+                )
+
+    @staticmethod
+    def _has_synthetic_tool_ids(msg: dict) -> bool:
+        """True if any tool_call on `msg` has an OpenRouter-synthetic ID
+        (prefix `tool_`). These IDs replace Gemini's native short IDs in
+        some OpenRouter responses and their attached reasoning.encrypted
+        blocks fail to round-trip to Google. See
+        _postprocess_messages_for_provider for the full failure analysis."""
+        for tc in msg.get("tool_calls") or []:
+            tid = tc.get("id")
+            if isinstance(tid, str) and tid.startswith("tool_"):
+                return True
+        return False
 
     def _build_reasoning_param(self) -> dict | None:
         """Build the ``reasoning`` parameter for providers that support it.
