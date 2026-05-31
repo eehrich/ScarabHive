@@ -43,10 +43,25 @@ class ImageComposeServer(SchemaBasedMCPServer):
         aliases_cfg = getattr(mcp_config, "font_aliases", {}) or {}
         self.font_aliases: dict[str, str] = dict(aliases_cfg) if isinstance(aliases_cfg, dict) else {}
 
+        # Inter-layer overlap check (text/svg pairs only). Defaults match the
+        # cover_artist prompt's HARTE REGEL #7. Plugin users with different
+        # composition policies can disable or retune via plugin config.
+        overlap_enabled = getattr(mcp_config, "overlap_check_enabled", True)
+        self.overlap_check_enabled: bool = (
+            bool(overlap_enabled) if overlap_enabled is not None else True
+        )
+        overlap_gap = getattr(mcp_config, "overlap_min_gap_px", 30)
+        try:
+            self.overlap_min_gap_px: int = max(0, int(overlap_gap))
+        except (TypeError, ValueError):
+            self.overlap_min_gap_px = 30
+
         self.fonts_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "ImageComposeServer initialized — fonts_dir=%s, output_root=%s, aliases=%d",
+            "ImageComposeServer initialized — fonts_dir=%s, output_root=%s, aliases=%d, "
+            "overlap_check=%s (min_gap=%dpx)",
             self.fonts_dir, self.output_root, len(self.font_aliases),
+            self.overlap_check_enabled, self.overlap_min_gap_px,
         )
 
     async def render(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,6 +117,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
             meta = await asyncio.to_thread(
                 compose, spec, out_full, self.fonts_dir, self.font_aliases,
                 self.project_root, layers_dir,
+                self.overlap_check_enabled, self.overlap_min_gap_px,
             )
 
             warnings_list = meta.get("warnings", []) or []

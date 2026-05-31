@@ -157,6 +157,8 @@ plugins:
       fonts_dir: "data/fonts"
       output_root: "."
       # font_aliases: { serif_bold: "CrimsonPro-Bold.ttf", sans: "Inter-Regular.ttf" }
+      overlap_check_enabled: true   # warn on text/svg BBox overlap pairs after render
+      overlap_min_gap_px: 30        # required clearance between text/svg layers (px)
 
     comfyui:
       type: comfyui

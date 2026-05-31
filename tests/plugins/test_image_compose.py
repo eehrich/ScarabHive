@@ -504,6 +504,134 @@ class TestCompose:
         assert any("layer 0 (text) extends beyond canvas" in w for w in meta["warnings"]), \
             f"expected canvas-overflow warning, got: {meta['warnings']}"
 
+    def test_overlap_warning_text_on_svg(self, tmp_path, fonts_dir):
+        """Title text dropped on top of an SVG decoration (same vertical band)
+        must produce a hard-overlap warning — this is the most common
+        composition bug from cover_artist runs."""
+        svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='400' height='40' "
+               "viewBox='0 0 400 40'><line x1='0' y1='20' x2='400' y2='20' "
+               "stroke='#fff' stroke-width='4'/></svg>")
+        _, meta = _render({
+            "size": [600, 400], "background": "#000000",
+            "layers": [
+                {"type": "svg", "svg": svg, "size": [400, 40],
+                 "position": [100, 180]},
+                # Title sits right on top of the svg's vertical band
+                {"type": "text", "text": "TITLE", "font": "sans_bold",
+                 "size": 60, "color": "#fff", "position": [120, 170]},
+            ],
+        }, tmp_path, fonts_dir)
+        assert any("overlap by" in w and "text" in w and "svg" in w
+                   for w in meta["warnings"]), \
+            f"expected hard-overlap warning, got: {meta['warnings']}"
+
+    def test_overlap_warning_text_stacked_too_close(self, tmp_path, fonts_dir):
+        """Two text layers stacked with < 30 px vertical gap should warn."""
+        _, meta = _render({
+            "size": [600, 400], "background": "#000000",
+            "layers": [
+                {"type": "text", "text": "TOP", "font": "sans_bold",
+                 "size": 40, "color": "#fff", "position": [100, 100]},
+                # Second text 15 px below the first — well under the 30 px rule
+                {"type": "text", "text": "BOTTOM", "font": "sans_bold",
+                 "size": 40, "color": "#fff", "position": [100, 165]},
+            ],
+        }, tmp_path, fonts_dir)
+        assert any("stacked too close vertically" in w for w in meta["warnings"]), \
+            f"expected stacked-too-close warning, got: {meta['warnings']}"
+
+    def test_no_overlap_warning_for_well_separated_layers(self, tmp_path, fonts_dir):
+        """Title and SVG in distinct vertical zones with > 30 px gap → no overlap warning."""
+        svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='30' "
+               "viewBox='0 0 200 30'><line x1='0' y1='15' x2='200' y2='15' "
+               "stroke='#fff' stroke-width='2'/></svg>")
+        _, meta = _render({
+            "size": [600, 800], "background": "#000000",
+            "layers": [
+                {"type": "text", "text": "TITLE", "font": "sans_bold",
+                 "size": 60, "color": "#fff", "position": [150, 100]},
+                # SVG well below the title (gap > 30 px)
+                {"type": "svg", "svg": svg, "size": [200, 30],
+                 "position": [200, 400]},
+            ],
+        }, tmp_path, fonts_dir)
+        overlap_warnings = [w for w in meta["warnings"]
+                            if "overlap" in w or "too close" in w]
+        assert overlap_warnings == [], \
+            f"unexpected overlap warnings: {overlap_warnings}"
+
+    def test_no_overlap_warning_for_background_text(self, tmp_path, fonts_dir):
+        """Image / gradient / vignette layers are background-style and are
+        intentionally rendered under text+svg. Overlap with them must NOT warn."""
+        _, meta = _render({
+            "size": [600, 400], "background": "#202020",
+            "layers": [
+                {"type": "gradient", "rect": [0, 0, 600, 400],
+                 "colors": ["#00000000", "#000000ff"], "direction": "bottom"},
+                # Text sits over the gradient — that's the whole point
+                {"type": "text", "text": "ON GRADIENT", "font": "sans_bold",
+                 "size": 50, "color": "#fff", "position": [100, 150]},
+            ],
+        }, tmp_path, fonts_dir)
+        overlap_warnings = [w for w in meta["warnings"]
+                            if "overlap" in w or "too close" in w]
+        assert overlap_warnings == [], \
+            f"background+text should not warn, got: {overlap_warnings}"
+
+    def test_overlap_check_can_be_disabled(self, tmp_path, fonts_dir):
+        """Plugin config can switch the overlap check off entirely — overlapping
+        text+svg then produces no overlap warning (still renders fine)."""
+        out_path = tmp_path / "out.png"
+        svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='400' height='40' "
+               "viewBox='0 0 400 40'><line x1='0' y1='20' x2='400' y2='20' "
+               "stroke='#fff' stroke-width='4'/></svg>")
+        meta = compose(
+            {
+                "size": [600, 400], "background": "#000000",
+                "layers": [
+                    {"type": "svg", "svg": svg, "size": [400, 40],
+                     "position": [100, 180]},
+                    {"type": "text", "text": "TITLE", "font": "sans_bold",
+                     "size": 60, "color": "#fff", "position": [120, 170]},
+                ],
+            },
+            out_path, fonts_dir, {}, Path.cwd(),
+            overlap_check_enabled=False,
+        )
+        overlap_warnings = [w for w in meta["warnings"]
+                            if "overlap" in w or "too close" in w]
+        assert overlap_warnings == [], \
+            f"check disabled but still got: {overlap_warnings}"
+
+    def test_overlap_min_gap_is_configurable(self, tmp_path, fonts_dir):
+        """A stricter min_gap_px catches what the default 30 would let pass."""
+        out_path = tmp_path / "out.png"
+        spec = {
+            "size": [600, 400], "background": "#000000",
+            "layers": [
+                # Two text layers with a 45-pixel vertical gap → passes
+                # default rule (gap >= 30) but fails a strict rule (gap < 60).
+                {"type": "text", "text": "A", "font": "sans_bold",
+                 "size": 40, "color": "#fff", "position": [100, 100]},
+                {"type": "text", "text": "B", "font": "sans_bold",
+                 "size": 40, "color": "#fff", "position": [100, 195]},
+            ],
+        }
+        # Default (30 px) — no warning expected
+        meta_loose = compose(spec, out_path, fonts_dir, {}, Path.cwd())
+        loose_warnings = [w for w in meta_loose["warnings"]
+                          if "too close" in w or "overlap" in w]
+        assert loose_warnings == [], \
+            f"default gap=30 should not warn here, got: {loose_warnings}"
+
+        # Stricter (60 px) — warning expected
+        meta_strict = compose(spec, out_path, fonts_dir, {}, Path.cwd(),
+                              overlap_min_gap_px=60)
+        strict_warnings = [w for w in meta_strict["warnings"]
+                           if "too close" in w]
+        assert any("required: 60px" in w for w in strict_warnings), \
+            f"strict gap=60 should warn here, got: {meta_strict['warnings']}"
+
     def test_gradient_layer(self, tmp_path, fonts_dir):
         out, _ = _render({
             "size": [50, 50], "background": "transparent",

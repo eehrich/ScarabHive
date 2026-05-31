@@ -134,3 +134,20 @@ config:
       type: string
       default: "."
       description: "Base directory for resolving relative output paths."
+    overlap_check_enabled:
+      type: boolean
+      default: true
+      description: >
+        After rendering, check for BBox overlap between foreground text/svg
+        layers. Emits a warning per offending pair (hard overlap, vertically
+        stacked too close, or horizontally placed too close). Set to false to
+        disable the check entirely.
+    overlap_min_gap_px:
+      type: integer
+      default: 30
+      minimum: 0
+      description: >
+        Required clearance in pixels between any two text/svg layer BBoxes.
+        Pairs closer than this (in the overlapping axis) emit a warning.
+        Mirrors the cover_artist prompt's "min 30 px gap" rule — adjust if a
+        plugin user needs a stricter or looser composition policy.

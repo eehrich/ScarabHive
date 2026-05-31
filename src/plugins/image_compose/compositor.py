@@ -46,7 +46,9 @@ class CompositionError(Exception):
 
 def compose(spec: dict, output_path: Path, fonts_dir: Path,
             font_aliases: dict[str, str], project_root: Path,
-            layers_dir: Path | None = None) -> dict:
+            layers_dir: Path | None = None,
+            overlap_check_enabled: bool = True,
+            overlap_min_gap_px: int = 30) -> dict:
     """Render `spec` to `output_path`. Returns a small metadata dict.
 
     If `layers_dir` is given, each layer is additionally saved there as a
@@ -69,6 +71,10 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
     layer_exports: list[tuple[Image.Image, tuple[int, int], str]] | None = (
         [] if layers_dir is not None else None
     )
+    # Placed BBoxes (idx, type, x, y, w, h) — used for inter-layer overlap
+    # detection after the render loop. We track ALL layers and filter at
+    # check-time so the check can target text/svg pairs without recomputing.
+    placed_bboxes: list[tuple[int, str, int, int, int, int]] = []
 
     rendered = 0
     for idx, layer in enumerate(layers):
@@ -77,12 +83,16 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
             canvas = _render_layer(
                 canvas, layer, size, fonts_dir, font_aliases, project_root,
                 warnings, layer_index=idx, layer_exports=layer_exports,
+                placed_bboxes=placed_bboxes,
             )
             rendered += 1
         except CompositionError as e:
             raise CompositionError(f"layer {idx} ({ltype}): {e}") from e
         except Exception as e:
             raise CompositionError(f"layer {idx} ({ltype}): {e}") from e
+
+    if overlap_check_enabled:
+        _check_layer_overlaps(placed_bboxes, warnings, overlap_min_gap_px)
 
     fmt = (spec.get("format") or _guess_format(output_path) or "png").lower()
     if fmt not in {"png", "webp", "jpeg", "jpg"}:
@@ -576,6 +586,58 @@ def _resolve_rect(rect: Any, position: Any, size: Any,
 _FULL_CANVAS_TYPES = frozenset({"vignette"})
 
 
+# Layer types that are eligible for the inter-layer overlap check.
+# We care about text and SVG specifically because cover_artist's 30-px-gap
+# rule targets these (they are the foreground decorations a reader needs to
+# parse separately). Image / gradient / vignette / rect are background-style
+# and intentionally overlap text+SVG.
+_OVERLAP_CHECKED_TYPES = {"text", "svg"}
+
+
+def _check_layer_overlaps(placed_bboxes: list[tuple[int, str, int, int, int, int]],
+                          warnings: list[str],
+                          min_gap_px: int = 30) -> None:
+    """Warn about text/SVG layer pairs that overlap or sit closer than `min_gap_px`.
+
+    Distinguishes three failure modes per pair:
+      - hard overlap: both X and Y ranges intersect → the layers physically
+        cover each other in the composite
+      - vertically stacked too close: Y-overlap, X-gap < min_gap_px
+      - horizontally placed too close: X-overlap, Y-gap < min_gap_px
+
+    Diagonally separated pairs (both gaps positive) never warn — corner
+    proximity is normal for adjacent layout zones.
+    """
+    relevant = [b for b in placed_bboxes if b[1] in _OVERLAP_CHECKED_TYPES]
+    for i in range(len(relevant)):
+        a_idx, a_type, ax, ay, aw, ah = relevant[i]
+        for j in range(i + 1, len(relevant)):
+            b_idx, b_type, bx, by, bw, bh = relevant[j]
+            # Negative gap = ranges overlap; positive = clearance between BBoxes.
+            gap_x = max(ax, bx) - min(ax + aw, bx + bw)
+            gap_y = max(ay, by) - min(ay + ah, by + bh)
+            if gap_x < 0 and gap_y < 0:
+                # Hard overlap — intersection has positive area.
+                overlap_w, overlap_h = -gap_x, -gap_y
+                warnings.append(
+                    f"layers {a_idx} ({a_type}) and {b_idx} ({b_type}) overlap by "
+                    f"{overlap_w}x{overlap_h}px. BBoxes: ({ax},{ay},{aw}x{ah}) vs "
+                    f"({bx},{by},{bw}x{bh}). Required gap: {min_gap_px}px."
+                )
+            elif gap_x < 0 and 0 <= gap_y < min_gap_px:
+                warnings.append(
+                    f"layers {a_idx} ({a_type}) and {b_idx} ({b_type}) stacked too "
+                    f"close vertically: gap {gap_y}px (required: {min_gap_px}px). "
+                    f"BBoxes: ({ax},{ay},{aw}x{ah}) vs ({bx},{by},{bw}x{bh})."
+                )
+            elif gap_y < 0 and 0 <= gap_x < min_gap_px:
+                warnings.append(
+                    f"layers {a_idx} ({a_type}) and {b_idx} ({b_type}) placed too "
+                    f"close horizontally: gap {gap_x}px (required: {min_gap_px}px). "
+                    f"BBoxes: ({ax},{ay},{aw}x{ah}) vs ({bx},{by},{bw}x{bh})."
+                )
+
+
 def _check_canvas_overflow(layer_index: int, layer_type: str,
                             pos: tuple[int, int], layer_size: tuple[int, int],
                             canvas_size: tuple[int, int],
@@ -611,7 +673,8 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
                   fonts_dir: Path, font_aliases: dict[str, str],
                   project_root: Path, warnings: list[str],
                   layer_index: int = 0,
-                  layer_exports: list | None = None) -> Image.Image:
+                  layer_exports: list | None = None,
+                  placed_bboxes: list | None = None) -> Image.Image:
     if not isinstance(layer, dict):
         raise CompositionError("layer must be an object")
     t = layer.get("type")
@@ -670,6 +733,11 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
     # Capture the finished layer (post rotation+opacity) for per-layer export.
     if layer_exports is not None:
         layer_exports.append((layer_img.copy(), pos, t))
+
+    # Record placed BBox for inter-layer overlap detection (after the loop).
+    if placed_bboxes is not None:
+        placed_bboxes.append((layer_index, t, pos[0], pos[1],
+                              layer_img.size[0], layer_img.size[1]))
 
     # Blend
     blend = layer.get("blend_mode", "normal")
