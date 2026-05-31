@@ -816,8 +816,44 @@ class HTTPXOpenAIClient(LLMClient):
                             )
                         raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                    # Parse successful response
-                    response_data = response.json()
+                    # Parse successful response.
+                    # If JSON parsing fails (occasional truncated bodies seen
+                    # from OpenRouter on large multi-MB requests), log enough
+                    # diagnostics to discriminate between truncation, wrong
+                    # content-type, and silent gateway errors before the
+                    # outer except re-raises and triggers the retry.
+                    try:
+                        response_data = response.json()
+                    except json.JSONDecodeError as _json_err:
+                        body_bytes = response.content or b""
+                        content_length_hdr = response.headers.get("content-length")
+                        try:
+                            cl_int = int(content_length_hdr) if content_length_hdr else None
+                        except ValueError:
+                            cl_int = None
+                        truncated = cl_int is not None and len(body_bytes) < cl_int
+                        # Sample body endpoints; encrypt-safe slicing on bytes
+                        head = body_bytes[:300].decode("utf-8", errors="replace")
+                        tail = body_bytes[-300:].decode("utf-8", errors="replace")
+                        logger.warning(
+                            "JSON decode failed on LLM response (likely truncated body). "
+                            "model=%s status=%s content_type=%r content_length_hdr=%s "
+                            "received_bytes=%d truncated=%s transfer_encoding=%r "
+                            "cf_ray=%r server=%r error=%s",
+                            self.model,
+                            response.status_code,
+                            response.headers.get("content-type"),
+                            content_length_hdr,
+                            len(body_bytes),
+                            truncated,
+                            response.headers.get("transfer-encoding"),
+                            response.headers.get("cf-ray"),
+                            response.headers.get("server"),
+                            _json_err,
+                        )
+                        logger.warning("  body head[0:300]: %r", head)
+                        logger.warning("  body tail[-300:]: %r", tail)
+                        raise
 
                     # Body-level upstream 429 (e.g. OpenRouter proxying upstream
                     # rate-limit from OpenAI/Gemini Flex). Same backoff schedule
