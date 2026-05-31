@@ -383,62 +383,24 @@ class HTTPXOpenAIClient(LLMClient):
             for msg in message_dicts:
                 msg.pop("reasoning_content", None)
 
-        # ------------------------------------------------------------------
-        # Gemini 3.x thought-signature round-trip — two-stage defense.
+        # Strip reasoning_details from all but the most recent assistant
+        # message. Per Google's docs (and the long-standing note in
+        # gemini_utils.py:548-552), thought signatures are validated for the
+        # CURRENT turn; historical signatures don't help and accumulated
+        # malformed blocks raise the surface area for 400s. Also a meaningful
+        # token saving - encrypted blocks are routinely 4-8 KB each.
         #
-        # Background: For Gemini 3.x via OpenRouter, each assistant turn
-        # comes back with a `reasoning_details` array. The `format` is
-        # `google-gemini-v1`. Two block types appear:
-        #   - `reasoning.text`     — human-readable chain of thought
-        #   - `reasoning.encrypted` — Google's encrypted thought signature,
-        #                             keyed to a specific tool_call.id
-        #
-        # The agent system stores these verbatim on the ChatMessage and
-        # echoes them back on the next request (see _API_MESSAGE_FIELDS
-        # whitelisting `reasoning_details` and the streaming/non-streaming
-        # accumulators that capture it). On round-trip, Google validates
-        # each encrypted block. If validation fails for ANY block in the
-        # payload, Google rejects the whole request with HTTP 400
-        # "Corrupted thought signature" (sometimes surfaced via OpenRouter
-        # as a HTTP-200 body-level "Provider returned error", code 400).
-        #
-        # We saw this break runs reliably for cover_artist with Gemini 3.1
-        # Pro on 2026-05-31 (5/5 body-400 failures in one session).
-        #
-        # Two distinct failure modes were observed in the same run:
-        #
-        # (1) Stale historical signatures
-        #     Google only validates signatures for the CURRENT turn (see
-        #     gemini_utils.py:548-552, sourced from Google's docs). We were
-        #     echoing every historical assistant turn's reasoning_details,
-        #     so even if just one old block was malformed (see (2) below)
-        #     the whole request blew up. Fix: keep RD only on the most
-        #     recent assistant message. Also a meaningful token saving —
-        #     real encrypted blocks are routinely 4-8 KB each.
-        #
-        # (2) OpenRouter-synthetic tool_call IDs
-        #     OpenRouter sometimes wraps a Gemini tool_call with a synthetic
-        #     ID of the form `tool_<funcname>_<random>` instead of preserving
-        #     Gemini's native short ID (e.g. `sfhzj5f7`). The accompanying
-        #     `reasoning.encrypted` block is then unroutable back to Google:
-        #     in 3/5 observed failures the `data` payload was a 48-byte
-        #     UUID placeholder; in 2/5 it was a real-sized 372-1072 byte
-        #     blob that still failed to decrypt. Size-based detection is
-        #     therefore unreliable; the discriminator is the ID prefix.
-        #     Fix: drop RD on any assistant turn whose tool_calls include
-        #     a `tool_*` ID. Native-ID turns are unaffected and continue to
-        #     round-trip their real signatures cleanly. Gemini 3.x accepts
-        #     function calls without a signature, so this is safe.
-        #
-        # This is a workaround for the upstream OpenRouter <-> Google
-        # integration, not a bug in our serialization. If OpenRouter stops
-        # generating synthetic IDs / stops shipping placeholder signatures,
-        # the second pass becomes a no-op (no harm, no extra cost) and the
-        # whole block can be removed.
-        # ------------------------------------------------------------------
-
-        # Stage 1: strip reasoning_details from all but the most recent
-        # assistant message.
+        # NOT a fix for "Corrupted thought signature" 400s on its own. Those
+        # are a known Gemini 3.x bug with parallel function call signatures
+        # (Google's own forum acknowledges it, position-based and
+        # non-deterministic). Workarounds documented elsewhere - cline's
+        # approach of dropping tool_calls without reasoning_details, or
+        # disabling parallel_tool_calls for Gemini 3.x - are alternatives
+        # we have NOT implemented here.
+        # See:
+        #   https://ai.google.dev/gemini-api/docs/thought-signatures
+        #   https://discuss.ai.google.dev/t/.../118936  (parallel-call bug)
+        #   https://github.com/cline/cline/commit/a39f3cb  (drop-on-missing-RD)
         last_assistant_idx = -1
         for i, msg in enumerate(message_dicts):
             if msg.get("role") == "assistant":
@@ -446,41 +408,6 @@ class HTTPXOpenAIClient(LLMClient):
         for i, msg in enumerate(message_dicts):
             if i != last_assistant_idx and msg.get("role") == "assistant":
                 msg.pop("reasoning_details", None)
-
-        # Stage 2: drop reasoning_details on assistant turns with any
-        # OpenRouter-synthetic tool_call ID. Logs at WARNING when actually
-        # dropping something so the workaround stays visible in operation.
-        for msg in message_dicts:
-            if msg.get("role") != "assistant":
-                continue
-            if not self._has_synthetic_tool_ids(msg):
-                continue
-            dropped = msg.pop("reasoning_details", None)
-            if dropped:
-                synthetic_ids = [
-                    tc.get("id", "") for tc in (msg.get("tool_calls") or [])
-                    if isinstance(tc.get("id"), str) and tc["id"].startswith("tool_")
-                ]
-                logger.warning(
-                    "Stripped reasoning_details from assistant turn with "
-                    "OpenRouter-synthetic tool_call IDs (round-trip would "
-                    "trigger 'Corrupted thought signature' 400). model=%s "
-                    "synthetic_ids=%s dropped_blocks=%d",
-                    self.model, synthetic_ids, len(dropped),
-                )
-
-    @staticmethod
-    def _has_synthetic_tool_ids(msg: dict) -> bool:
-        """True if any tool_call on `msg` has an OpenRouter-synthetic ID
-        (prefix `tool_`). These IDs replace Gemini's native short IDs in
-        some OpenRouter responses and their attached reasoning.encrypted
-        blocks fail to round-trip to Google. See
-        _postprocess_messages_for_provider for the full failure analysis."""
-        for tc in msg.get("tool_calls") or []:
-            tid = tc.get("id")
-            if isinstance(tid, str) and tid.startswith("tool_"):
-                return True
-        return False
 
     def _build_reasoning_param(self) -> dict | None:
         """Build the ``reasoning`` parameter for providers that support it.
@@ -740,6 +667,9 @@ class HTTPXOpenAIClient(LLMClient):
         _request_start = _time.time()
         last_exception = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        # One-shot self-healing retry for cross-backend thought-signature mismatch.
+        # See _detect_body_400_signature_issue for the failure mode.
+        _sig_retried = False
         for attempt in range(_effective_max + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
@@ -886,6 +816,51 @@ class HTTPXOpenAIClient(LLMClient):
                         )
                         await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
+
+                    # Body-level 400: probable Gemini cross-backend thought-signature
+                    # mismatch. OpenRouter routes Gemini requests between Vertex
+                    # and AI Studio (per provider_routing.order + allow_fallbacks).
+                    # Thought signatures are encrypted blobs keyed to the signing
+                    # backend - the OTHER backend rejects them with "Corrupted
+                    # thought signature". Vertex is strict and requires a valid
+                    # signature; AI Studio is lenient but OR's translation layer
+                    # can also mangle the signature mid-route.
+                    #
+                    # Recovery: replace `data` in every reasoning.encrypted block
+                    # with Google's documented bypass token
+                    # ("skip_thought_signature_validator"). Both Vertex and AI
+                    # Studio recognize this string as a signal to skip signature
+                    # validation. Structure (type, format, id, index) is left
+                    # intact so OR's translation to Google's native format still
+                    # works. One-shot: if the retry still 400s, fall through to
+                    # the agent-level fallback chain.
+                    _sig_issue = (
+                        self._detect_body_400_signature_issue(response_data)
+                        if not _sig_retried else None
+                    )
+                    if _sig_issue is not None:
+                        n_patched = self._inject_signature_bypass(payload)
+                        if n_patched > 0:
+                            _sig_retried = True
+                            response_backend = response_data.get("provider")
+                            logger.warning(
+                                "Body-400 retry: injecting signature bypass token "
+                                "into reasoning_details (likely cross-backend "
+                                "Vertex<->AI Studio routing mismatch). model=%s "
+                                "response_backend=%r patched_blocks=%d detail=%r",
+                                self.model, response_backend, n_patched,
+                                _sig_issue[:200],
+                            )
+                            await self._report_status(
+                                status_scope,
+                                f"Signature bypass retry: {self.model}",
+                            )
+                            await self._notify_retry(
+                                "openai_httpx", self.model, url, False,
+                                "body-400 signature bypass",
+                                attempt, self.max_retries + 1,
+                            )
+                            continue
 
                     # Detect Gemini MALFORMED_FUNCTION_CALL — a transient model error
                     # where identical payloads can succeed or fail non-deterministically.
@@ -1074,6 +1049,10 @@ class HTTPXOpenAIClient(LLMClient):
         _streaming_request_start = _time.time()
         last_exception: Exception | None = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        # One-shot self-healing retry for cross-backend thought-signature
+        # mismatch (mirrors the non-streaming path). See
+        # _detect_body_400_signature_issue + _inject_signature_bypass.
+        _sig_retried = False
         for attempt in range(_effective_max + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
@@ -1083,6 +1062,9 @@ class HTTPXOpenAIClient(LLMClient):
             # upstream wraps a rate-limit in a normal HTTP 200 SSE chunk.
             # Picked up after the async with block exits.
             _body_429_retry_msg: Optional[str] = None
+            # Body-level 400 signature-bypass retry signal — same pattern as
+            # _body_429_retry_msg, but for cross-backend signature mismatch.
+            _body_400_sig_retry_msg: Optional[str] = None
 
             try:
                 # Create fresh client for each request to avoid connection issues
@@ -1258,6 +1240,14 @@ class HTTPXOpenAIClient(LLMClient):
                                     _body_429_retry_msg = _body_err_msg
                                     break  # exit "while '\n' in line_buffer"
 
+                                # Body-level 400 (Gemini cross-backend signature
+                                # mismatch) - mirror of the non-streaming path.
+                                if not _sig_retried:
+                                    _sig_err = self._detect_body_400_signature_issue(chunk_data)
+                                    if _sig_err:
+                                        _body_400_sig_retry_msg = _sig_err
+                                        break
+
                                 # Track usage if available in chunk
                                 if "usage" in chunk_data:
                                     accumulated_usage = chunk_data["usage"]
@@ -1348,6 +1338,9 @@ class HTTPXOpenAIClient(LLMClient):
                             # can apply backoff and retry the whole request.
                             if _body_429_retry_msg:
                                 break  # exits the outer "while True" chunk fetcher
+                            # Body-400 signature-bypass signaled — same pattern.
+                            if _body_400_sig_retry_msg:
+                                break
 
                         # After stream ends, process any remaining data in buffer
                         # This handles the case where the last chunk doesn't end with \n
@@ -1446,6 +1439,32 @@ class HTTPXOpenAIClient(LLMClient):
                             pass
                     except Exception as close_err:
                         logger.debug(f"Error during client close (ignored): {close_err}")
+
+                # Body-level 400 signature-bypass retry for streaming (mirrors
+                # the non-streaming path). Flag was set inside the SSE chunk
+                # parser; inject the bypass token here and retry the same
+                # attempt slot. One-shot per request via _sig_retried.
+                if _body_400_sig_retry_msg and not _sig_retried:
+                    n_patched = self._inject_signature_bypass(payload)
+                    if n_patched > 0:
+                        _sig_retried = True
+                        logger.warning(
+                            "Body-400 stream retry: injecting signature bypass "
+                            "token into reasoning_details (likely cross-backend "
+                            "Vertex<->AI Studio routing mismatch). model=%s "
+                            "patched_blocks=%d detail=%r",
+                            self.model, n_patched, _body_400_sig_retry_msg[:200],
+                        )
+                        await self._report_status(
+                            status_scope,
+                            f"Signature bypass retry: {self.model}",
+                        )
+                        await self._notify_retry(
+                            "openai_httpx", self.model, url, True,
+                            "body-400 signature bypass (stream)",
+                            attempt, self.max_retries + 1,
+                        )
+                        continue
 
                 # Body-level upstream 429 retry for streaming (mirrors the
                 # non-streaming path). The flag was set inside the SSE chunk
@@ -1615,6 +1634,87 @@ class HTTPXOpenAIClient(LLMClient):
             or "too many requests" in msg.lower()
         )
         return msg if is_429 else None
+
+    @staticmethod
+    def _detect_body_400_signature_issue(response_data: dict) -> Optional[str]:
+        """Detect a body-level 400 that LIKELY indicates a Gemini thought-signature
+        cross-backend mismatch.
+
+        Background: For Gemini via OpenRouter, OR routes requests between Vertex
+        and AI Studio backends (per provider_routing.order with allow_fallbacks=true).
+        Thought signatures are encrypted blobs keyed to the signing backend - Vertex
+        cannot decrypt AI Studio's signatures and vice versa. When OR routes a
+        follow-up request to a different backend than the one that signed the last
+        assistant turn, Google rejects with "Corrupted thought signature" 400.
+        Vertex is strict; AI Studio is lenient and tolerates absence.
+
+        Detection is permissive on purpose: OR often masks the underlying Google
+        error to a generic "Provider returned error". We therefore treat ANY
+        body-level 400 as a candidate for the signature-strip retry, gated by the
+        actual presence of reasoning_details in the payload (otherwise stripping
+        does nothing).
+
+        Returns the underlying error string (truthy) for any body-level 400, or
+        None for non-400 bodies. The caller decides whether to retry based on
+        whether the payload still has reasoning_details to strip.
+        """
+        if not isinstance(response_data, dict):
+            return None
+        err = response_data.get("error")
+        if not isinstance(err, dict):
+            return None
+        code = str(err.get("code", ""))
+        if code != "400" and "400" not in code:
+            return None
+        msg = err.get("message", "")
+        meta = err.get("metadata") if isinstance(err.get("metadata"), dict) else {}
+        raw = meta.get("raw") if isinstance(meta, dict) else None
+        # Compose a useful description for logging
+        if raw:
+            return f"{msg} | raw={raw[:300]}"
+        return msg or "Provider returned 400"
+
+    # Google-documented bypass token. Recognized by both Vertex AI (strict)
+    # and AI Studio (lenient) as a signal to skip thought_signature validation.
+    # Used in reactive recovery when OpenRouter's translation layer or its
+    # backend-routing switch (Vertex <-> AI Studio) has produced a signature
+    # the target backend can't validate. AI Studio also accepts
+    # "context_engineering_is_the_way_to_go" but Vertex does not - so we use
+    # the universal one.
+    _GEMINI_SIGNATURE_BYPASS = "skip_thought_signature_validator"
+
+    @classmethod
+    def _inject_signature_bypass(cls, payload: dict) -> int:
+        """Replace the `data` field of every `reasoning.encrypted` block in the
+        payload's assistant messages with Google's documented bypass token.
+
+        Returns the number of blocks that were patched. Used by the reactive
+        retry on body-level 400 - the structural shape of reasoning_details is
+        preserved (type, format, id, index untouched) so OpenRouter still
+        translates each block into a Google `thoughtSignature` part, but the
+        target backend now sees the bypass token instead of a cross-backend
+        signature it can't decrypt.
+
+        Note: only `reasoning.encrypted` blocks carry signatures. `reasoning.text`
+        blocks are left alone - they're descriptive text, not signed material.
+        """
+        patched = 0
+        for msg in payload.get("messages") or []:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            rds = msg.get("reasoning_details")
+            if not rds:
+                continue
+            for block in rds:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "reasoning.encrypted":
+                    continue
+                if block.get("data") == cls._GEMINI_SIGNATURE_BYPASS:
+                    continue  # already patched
+                block["data"] = cls._GEMINI_SIGNATURE_BYPASS
+                patched += 1
+        return patched
 
     def _format_response(self, response_data: dict) -> dict:
         """Format OpenAI API response to our standard format."""

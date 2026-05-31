@@ -1012,65 +1012,75 @@ class TestAnthropicViaOpenRouterCaching:
         assert msgs[2]["tool_calls"][0]["id"] == "a"
         assert msgs[6]["tool_calls"][0]["id"] == "c"
 
-    def test_reasoning_details_stripped_on_synthetic_tool_ids(self, non_anthropic_or_client):
-        """OpenRouter sometimes wraps Gemini tool_calls with synthetic IDs
-        (prefix 'tool_<name>_<random>'). Reasoning_details attached to such
-        turns fail with 'Corrupted thought signature' on round-trip - even
-        when the encrypted blob looks legitimate (1KB+). Drop RD for these
-        turns regardless of position or blob size.
-        """
-        msgs = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "hi"},
-            # Last assistant with a synthetic-id tool_call AND a real-sized signature
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "tool_comfyui_workflow_zn7IVZfM", "type": "function", "function": {"name": "comfyui_workflow"}},
-            ], "reasoning_details": [
-                {"type": "reasoning.encrypted", "data": "X" * 1072, "id": "tool_comfyui_workflow_zn7IVZfM"},
-            ]},
-            {"role": "tool", "name": "comfyui_workflow", "tool_call_id": "tool_comfyui_workflow_zn7IVZfM", "content": "r"},
-        ]
-        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
-        # Real-sized blob got dropped because the tool_call id is synthetic
-        assert "reasoning_details" not in msgs[2]
-        # tool_calls untouched
-        assert msgs[2]["tool_calls"][0]["id"] == "tool_comfyui_workflow_zn7IVZfM"
+    def test_detect_body_400_signature_issue(self, non_anthropic_or_client):
+        """Body-level error code 400 is detected regardless of message detail.
+        OpenRouter often strips the underlying Google error to a generic
+        'Provider returned error', so the detector must trigger on the 400
+        alone - the caller gates on whether RD exists to strip/bypass."""
+        client = non_anthropic_or_client
+        # Generic 400 (no metadata.raw) - still detected
+        assert client._detect_body_400_signature_issue(
+            {"error": {"code": 400, "message": "Provider returned error"}}
+        ) is not None
+        # 400 with metadata.raw - detected, message includes raw
+        result = client._detect_body_400_signature_issue({
+            "error": {
+                "code": 400,
+                "message": "Provider returned error",
+                "metadata": {"raw": "{\"error\":{\"message\":\"Corrupted thought signature.\"}}"},
+            }
+        })
+        assert result is not None
+        assert "Corrupted thought signature" in result
+        # 429 not detected as 400
+        assert client._detect_body_400_signature_issue(
+            {"error": {"code": 429, "message": "Too many requests"}}
+        ) is None
+        # No error key
+        assert client._detect_body_400_signature_issue({"choices": []}) is None
 
-    def test_reasoning_details_preserved_on_native_tool_ids(self, non_anthropic_or_client):
-        """Native short Gemini tool_call IDs (no 'tool_' prefix) keep their
-        reasoning_details intact - those round-trip cleanly."""
-        msgs = [
+    def test_inject_signature_bypass_replaces_data_in_encrypted_blocks(self, non_anthropic_or_client):
+        """Bypass injection replaces `data` in every `reasoning.encrypted`
+        block across all assistant messages. Structure (type, format, id, index)
+        stays intact so OpenRouter still translates to Google's native format."""
+        client = non_anthropic_or_client
+        payload = {"messages": [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "sfhzj5f7", "type": "function", "function": {"name": "writer_workflow_set_context"}},
-            ], "reasoning_details": [
-                {"type": "reasoning.encrypted", "data": "REAL_SIG", "id": "sfhzj5f7"},
+            {"role": "assistant", "tool_calls": [{"id": "a"}], "reasoning_details": [
+                {"type": "reasoning.encrypted", "data": "REAL_SIG_A", "format": "google-gemini-v1", "id": "a", "index": 0},
             ]},
-            {"role": "tool", "name": "writer_workflow_set_context", "tool_call_id": "sfhzj5f7", "content": "r"},
-        ]
-        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
-        assert msgs[2]["reasoning_details"] == [
-            {"type": "reasoning.encrypted", "data": "REAL_SIG", "id": "sfhzj5f7"},
-        ]
+            {"role": "tool", "tool_call_id": "a", "content": "r1"},
+            {"role": "assistant", "tool_calls": [{"id": "b"}], "reasoning_details": [
+                {"type": "reasoning.text", "text": "internal thinking", "format": "google-gemini-v1"},
+                {"type": "reasoning.encrypted", "data": "REAL_SIG_B", "format": "google-gemini-v1", "id": "b", "index": 1},
+            ]},
+            {"role": "tool", "tool_call_id": "b", "content": "r2"},
+        ]}
+        n = client._inject_signature_bypass(payload)
+        assert n == 2
+        # Encrypted blocks now carry the bypass token
+        rd_a = payload["messages"][2]["reasoning_details"][0]
+        assert rd_a["data"] == "skip_thought_signature_validator"
+        assert rd_a["id"] == "a"
+        assert rd_a["type"] == "reasoning.encrypted"
+        assert rd_a["index"] == 0
+        # text block left alone
+        assert payload["messages"][4]["reasoning_details"][0]["text"] == "internal thinking"
+        assert "data" not in payload["messages"][4]["reasoning_details"][0]
+        # Encrypted block on second assistant also patched
+        assert payload["messages"][4]["reasoning_details"][1]["data"] == "skip_thought_signature_validator"
+        # Idempotent: running again patches nothing more
+        assert client._inject_signature_bypass(payload) == 0
 
-    def test_reasoning_details_stripped_when_any_tool_id_synthetic(self, non_anthropic_or_client):
-        """Mixed native+synthetic IDs on the same assistant: drop RD because
-        even one synthetic ID corrupts the round-trip pairing."""
-        msgs = [
+    def test_inject_signature_bypass_handles_missing_rd(self, non_anthropic_or_client):
+        """No-op on payloads with no reasoning_details."""
+        payload = {"messages": [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "native123", "type": "function", "function": {"name": "writer_content_book"}},
-                {"id": "tool_sequential_thinking_abc", "type": "function", "function": {"name": "sequential_thinking"}},
-            ], "reasoning_details": [
-                {"type": "reasoning.encrypted", "data": "Y" * 600, "id": "native123"},
-            ]},
-            {"role": "tool", "name": "writer_content_book", "tool_call_id": "native123", "content": "r1"},
-            {"role": "tool", "name": "sequential_thinking", "tool_call_id": "tool_sequential_thinking_abc", "content": "r2"},
-        ]
-        non_anthropic_or_client._postprocess_messages_for_provider(msgs)
-        assert "reasoning_details" not in msgs[2]
+            {"role": "assistant", "content": "answer"},
+        ]}
+        assert non_anthropic_or_client._inject_signature_bypass(payload) == 0
 
     def test_reasoning_details_kept_when_only_one_assistant(self, non_anthropic_or_client):
         """Single assistant message keeps its reasoning_details (it IS the current turn)."""
