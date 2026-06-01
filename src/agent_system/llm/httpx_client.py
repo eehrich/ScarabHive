@@ -1766,6 +1766,27 @@ class HTTPXOpenAIClient(LLMClient):
                     except Exception:
                         logger.warning(f"Error response choice (raw): {choice}")
 
+                    # Content-filter block (Gemini PROHIBITED_CONTENT etc.) — surface
+                    # as upstream-body-error so the server-side fallback-profile
+                    # mechanism switches to llm_profile_fallbacks. Retrying the same
+                    # model is pointless: the filter is deterministic per content,
+                    # not transient like MALFORMED_FUNCTION_CALL.
+                    if finish_reason == "content_filter":
+                        native = native_reason or "content_filter"
+                        return {
+                            "assistant": {
+                                "role": "assistant",
+                                "content": "",
+                                "error": {
+                                    "message": (
+                                        f"Provider content filter blocked response "
+                                        f"({native}, model={self.model})"
+                                    ),
+                                    "type": f"content_filter_{native.lower()}",
+                                },
+                            }
+                        }
+
             # Build assistant response
             assistant = {
                 "role": "assistant",

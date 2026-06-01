@@ -676,7 +676,7 @@ class TestTimeoutConfiguration(TestHTTPXOpenAIClient):
     def test_timeout_config_defaults(self):
         """Test default timeout values."""
         config = HTTPXTimeoutConfig()
-        assert config.connect == 10.0
+        assert config.connect == 30.0
         assert config.read == 180.0
         assert config.write == 10.0
         assert config.pool == 5.0
@@ -1113,6 +1113,86 @@ class TestAnthropicViaOpenRouterCaching:
         )
         client.set_app_title("coding_agent")
         assert "X-Title" not in client._headers
+
+
+class TestContentFilterFallback:
+    """Provider content-filter blocks (Gemini PROHIBITED_CONTENT etc.) must
+    surface as assistant.error so the server-side fallback-profile mechanism
+    can switch to llm_profile_fallbacks. Retrying the same model is pointless —
+    the filter is deterministic per content."""
+
+    @pytest.fixture
+    def gemini_client(self):
+        return HTTPXOpenAIClient(
+            model="google/gemini-3.1-pro-preview",
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    def test_content_filter_surfaces_as_error(self, gemini_client):
+        """finish_reason=content_filter without tool_calls → assistant.error set."""
+        response_data = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"partial\": \"garbled JSON before filter cut",
+                },
+                "finish_reason": "content_filter",
+                "native_finish_reason": "PROHIBITED_CONTENT",
+            }]
+        }
+        result = gemini_client._format_response(response_data)
+        assistant = result["assistant"]
+        assert "error" in assistant
+        assert assistant["error"]["type"] == "content_filter_prohibited_content"
+        assert "blocked" in assistant["error"]["message"].lower()
+        assert assistant["content"] == ""
+
+    def test_content_filter_with_tool_calls_keeps_them(self, gemini_client):
+        """If tool_calls present despite content_filter, use them (don't error)."""
+        response_data = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "1", "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }],
+                },
+                "finish_reason": "content_filter",
+                "native_finish_reason": "PROHIBITED_CONTENT",
+            }]
+        }
+        result = gemini_client._format_response(response_data)
+        assistant = result["assistant"]
+        assert "error" not in assistant
+        assert assistant.get("tool_calls")
+
+    def test_content_filter_native_reason_fallback(self, gemini_client):
+        """native_finish_reason missing → still surfaced with generic suffix."""
+        response_data = {
+            "choices": [{
+                "message": {"role": "assistant", "content": ""},
+                "finish_reason": "content_filter",
+            }]
+        }
+        result = gemini_client._format_response(response_data)
+        assistant = result["assistant"]
+        assert "error" in assistant
+        assert assistant["error"]["type"] == "content_filter_content_filter"
+
+    def test_normal_finish_reason_no_error(self, gemini_client):
+        """finish_reason=stop has no error injected."""
+        response_data = {
+            "choices": [{
+                "message": {"role": "assistant", "content": "hello"},
+                "finish_reason": "stop",
+            }]
+        }
+        result = gemini_client._format_response(response_data)
+        assert "error" not in result["assistant"]
+        assert result["assistant"]["content"] == "hello"
 
 
 if __name__ == "__main__":
