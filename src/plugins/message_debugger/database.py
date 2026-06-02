@@ -110,6 +110,14 @@ class MessageDebuggerDB:
                 ON llm_requests(direction, duration_ms);
             CREATE INDEX IF NOT EXISTS idx_llm_requests_error
                 ON llm_requests(error) WHERE error IS NOT NULL AND error != '';
+
+            -- request_id index — drives writer-costs queries that walk the
+            -- request tree of a root_request_id via equality + prefix LIKE
+            -- (`request_id LIKE 'root_%'`). Without this index a single
+            -- writer-costs call full-scans every 'response' row in the DB,
+            -- which on a multi-GB store takes minutes per story.
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_request_id
+                ON llm_requests(request_id);
         """)
         conn.commit()
     
