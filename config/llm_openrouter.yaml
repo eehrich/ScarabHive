@@ -312,6 +312,44 @@ llm_system:
       # - Good for cross-scene analysis: whole book fits in context
       # - Cheaper than Flash, good multilingual support
 
+    openrouter-minimax-m3:
+      provider: openai_httpx
+      model: minimax/minimax-m3
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000
+      request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true  # Text + image + video input per OpenRouter listing
+
+      # Notes:
+      # - MiniMax M3: built on MiniMax Sparse Attention (MSA), 1M native context
+      # - Tuned for multi-step agentic work and coding tasks (not single-turn)
+      # - Pricing (with current 50% promo): $0.30 input / $1.20 output / $0.06 cache read per 1M tokens
+      # - https://openrouter.ai/minimax/minimax-m3
+
+    openrouter-minimax-m3-unlimited:
+      provider: openai_httpx
+      model: minimax/minimax-m3
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000
+      request_timeout: 600
+      service_tier: flex
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
     openrouter-qwen3.5-full:
       provider: openai_httpx
       model: qwen/qwen3.5-397b-a17b
@@ -792,6 +830,16 @@ llm_system:
     or-qwen-full:
       model_ref: openrouter-qwen3.5-full
       description: "OpenRouter Qwen3.5 397B Full - Flagship model, state-of-the-art performance"
+      max_steps: 500
+
+    or-minimax-m3:
+      model_ref: openrouter-minimax-m3
+      description: "OpenRouter MiniMax M3 - 1M context MoE with sparse attention, agentic / coding focus"
+      max_steps: 500
+
+    or-minimax-m3-unlimited:
+      model_ref: openrouter-minimax-m3-unlimited
+      description: "OpenRouter MiniMax M3 - No output token limit"
       max_steps: 500
 
     or-llama-maverick:
