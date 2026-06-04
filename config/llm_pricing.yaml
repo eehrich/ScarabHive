@@ -223,8 +223,8 @@ qwen/qwen3.5-397b-a17b:
   cached_input: 0.039
 
 # MiniMax via OpenRouter — cache read = 0.2x of input price.
-# Source: https://openrouter.ai/minimax/minimax-m3 (prices reflect a 50% promo at the time of entry).
+# Source: https://openrouter.ai/minimax/minimax-m3
 minimax/minimax-m3:
-  input: 0.30
-  output: 1.20
-  cached_input: 0.06
+  input: 0.60
+  output: 2.40
+  cached_input: 0.12
