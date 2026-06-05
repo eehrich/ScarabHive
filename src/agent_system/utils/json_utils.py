@@ -1,12 +1,77 @@
 import json
 import logging
+import re
 from typing import Any, Optional
 
 import json_repair as _json_repair_lib
 
-__all__ = ["safe_serialize", "repair_json"]
+__all__ = ["safe_serialize", "repair_json", "strip_markdown_fences"]
 
 logger = logging.getLogger(__name__)
+
+
+# Matches a single fenced block: ```json\n...\n``` or ``` \n...\n```
+# Non-greedy body so multiple fences in one text don't merge.
+_MARKDOWN_FENCE_RE = re.compile(
+    r"```(?:[a-zA-Z0-9_+-]*)\s*\n?(.*?)\n?```",
+    re.DOTALL,
+)
+
+
+def strip_markdown_fences(text: str) -> str:
+    """Strip Markdown code fences from LLM output and return inner content.
+
+    Handles the three patterns that appear across the codebase:
+    - Single fenced block with language tag: ``` ```json\\n{...}\\n``` ```
+    - Single fenced block without language: ``` ```\\n{...}\\n``` ```
+    - Text where the entire output is wrapped in fences (head + tail)
+
+    Idempotent: text without fences is returned unchanged (stripped of
+    surrounding whitespace). Multiple fence blocks: returns the FIRST
+    inner block (matches existing call-site semantics — LLM-output rarely
+    has multiple JSON fences, and earlier code took the first).
+
+    Args:
+        text: Raw LLM output, possibly with markdown fences around JSON.
+
+    Returns:
+        The text inside the first fence block, or the input text stripped
+        of leading/trailing whitespace if no fence is detected.
+    """
+    if not text:
+        return text or ""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+
+    # Fast path: leading + trailing fences (most common case for LLM JSON
+    # output that's fully wrapped). Mirrors the existing line-based strippers
+    # in pipeline_agent._parse_json_result and polish_pipeline.extract_json_from_text.
+    if stripped.startswith("```"):
+        # Skip the first line (e.g. "```json" or "```")
+        nl = stripped.find("\n")
+        if nl >= 0:
+            body = stripped[nl + 1:]
+        else:
+            body = stripped[3:]
+        # Drop trailing fence if present
+        body = body.rstrip()
+        if body.endswith("```"):
+            body = body[:-3].rstrip()
+        body = body.strip()
+        if body:
+            return body
+        # Fall through: empty body, try regex below
+
+    # General path: find a fence anywhere in the text (e.g. ``` ```json…``` ```
+    # embedded inside surrounding prose). Returns first match's inner content.
+    match = _MARKDOWN_FENCE_RE.search(stripped)
+    if match:
+        inner = match.group(1).strip()
+        if inner:
+            return inner
+
+    return stripped
 
 
 def repair_json(

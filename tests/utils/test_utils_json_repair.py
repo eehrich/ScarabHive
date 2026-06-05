@@ -200,3 +200,103 @@ class TestRepairJsonColonValuePattern:
         result = repair_json(raw)
         assert result is not None
         assert result["name"] == "test"
+
+
+# ---------------------------------------------------------------------------
+# strip_markdown_fences — Konsolidierung aus 3 historischen Implementierungen
+# (pipeline_agent._parse_json_result, polish_pipeline.extract_json_from_text,
+# metadata_enrichment._extract_json — 2026-06-06).
+# ---------------------------------------------------------------------------
+
+from agent_system.utils.json_utils import strip_markdown_fences
+
+
+class TestStripMarkdownFences:
+    """Wraps three legacy patterns:
+
+    1. Line-based: split-by-newline, drop first + last (pipeline_agent)
+    2. Regex with optional ``json``-language tag (metadata_enrichment)
+    3. Embedded fence in surrounding prose
+    """
+
+    def test_fully_wrapped_with_json_tag(self):
+        text = "```json\n{\"a\": 1}\n```"
+        assert strip_markdown_fences(text) == '{"a": 1}'
+
+    def test_fully_wrapped_without_language_tag(self):
+        text = "```\n{\"b\": 2}\n```"
+        assert strip_markdown_fences(text) == '{"b": 2}'
+
+    def test_no_fences_passes_through(self):
+        text = '{"c": 3}'
+        assert strip_markdown_fences(text) == '{"c": 3}'
+
+    def test_empty_string(self):
+        assert strip_markdown_fences("") == ""
+
+    def test_whitespace_only(self):
+        assert strip_markdown_fences("   \n  ") == ""
+
+    def test_none_input_safe(self):
+        # Defensive — doesn't crash, returns empty
+        assert strip_markdown_fences(None) == ""  # type: ignore[arg-type]
+
+    def test_fence_embedded_in_prose(self):
+        """LLM output: 'Here is the answer: ```json\n{...}\n``` And done.'"""
+        text = (
+            "Here is the answer:\n"
+            "```json\n"
+            "{\"d\": 4}\n"
+            "```\n"
+            "And done."
+        )
+        assert strip_markdown_fences(text) == '{"d": 4}'
+
+    def test_surrounding_whitespace(self):
+        text = "   ```json\n{\"e\": 5}\n```   "
+        assert strip_markdown_fences(text) == '{"e": 5}'
+
+    def test_multiline_content_preserved(self):
+        text = "```json\n{\n  \"f\": [\n    1, 2, 3\n  ]\n}\n```"
+        result = strip_markdown_fences(text)
+        # Inner newlines preserved
+        assert result.startswith("{")
+        assert result.endswith("}")
+        assert "\"f\"" in result
+        assert "[\n" in result
+
+    def test_python_language_tag_works(self):
+        """Non-JSON language tag — strip still works (we don't care about
+        the language)."""
+        text = "```python\nprint(1)\n```"
+        assert strip_markdown_fences(text) == "print(1)"
+
+    def test_no_trailing_fence_treated_as_starting_fence_only(self):
+        """Missing closing fence — defensive: strip what's after the open."""
+        text = "```json\n{\"x\": 1}"
+        result = strip_markdown_fences(text)
+        # Best-effort: returns content after opening fence
+        assert '"x"' in result
+
+    def test_inline_fence_short(self):
+        """Inline ``` `` short form (no newline) — falls through to regex."""
+        # Mirror existing behavior: single-line fence
+        text = "Here: ```{\"a\": 1}```"
+        result = strip_markdown_fences(text)
+        # Should extract inner content or return stripped
+        assert "1" in result
+
+    def test_idempotent(self):
+        """Apply twice → same result. Important for defensive pipelines
+        that might call it multiple times."""
+        text = "```json\n{\"a\": 1}\n```"
+        once = strip_markdown_fences(text)
+        twice = strip_markdown_fences(once)
+        assert once == twice
+
+    def test_parses_as_valid_json_after_strip(self):
+        """Integration: result of strip is parseable as JSON."""
+        text = "```json\n{\"a\": [1, 2, 3], \"b\": \"hello\"}\n```"
+        stripped = strip_markdown_fences(text)
+        parsed = json.loads(stripped)
+        assert parsed == {"a": [1, 2, 3], "b": "hello"}
