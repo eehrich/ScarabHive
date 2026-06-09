@@ -272,8 +272,9 @@ class ImageComposeServer(SchemaBasedMCPServer):
             payload = {"status": "success", "path": str(full), **result}
             if status:
                 best = result["best"]
+                r = best["region"]
                 await status.end(
-                    f"best region [{best['region'][0]},{best['region'][1]}] "
+                    f"best region x={r[0]},y={r[1]},w={r[2]},h={r[3]} "
                     f"homogeneity={best['homogeneity']:.2f} "
                     f"→ {best['recommendation']}",
                     meta={"best_region": best["region"], "homogeneity": best["homogeneity"]},
