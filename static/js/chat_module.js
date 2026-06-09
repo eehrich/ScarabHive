@@ -26,7 +26,23 @@
     return formatTextWithLineBreaks(content);
   }
 
-  function scrollBottom() {
+  // Threshold (px) below the document end within which we still consider the
+  // user "at the bottom" and therefore follow new content. Above this, the
+  // user has scrolled up to read older content and we leave them alone.
+  const NEAR_BOTTOM_THRESHOLD_PX = 150;
+
+  function isNearBottom() {
+    const scrolled = window.innerHeight + window.scrollY;
+    return scrolled >= document.body.scrollHeight - NEAR_BOTTOM_THRESHOLD_PX;
+  }
+
+  // force=true: scroll regardless of current position (e.g. user just sent a
+  // message, session just loaded - they expect to see the bottom).
+  // force=false (default): only scroll if already near the bottom. This keeps
+  // status events and streaming content from yanking the viewport away when
+  // the user has scrolled up.
+  function scrollBottom(force = false) {
+    if (!force && !isNearBottom()) return;
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
 
@@ -167,7 +183,8 @@
     
     row.appendChild(msgDiv);
     chatContainer.appendChild(row);
-    scrollBottom();
+    // User just sent a message - always scroll so they see what they sent.
+    scrollBottom(true);
   }
 
   function addAssistantBlock(chatContainer) {
@@ -1942,9 +1959,9 @@
         }
       });
       
-      // Scroll to bottom
-      scrollBottom();
-      
+      // Session just loaded - always scroll to the latest content.
+      scrollBottom(true);
+
       // Set current session ID for continuation
       currentSessionId = session.session_id;
       
