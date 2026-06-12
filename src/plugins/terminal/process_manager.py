@@ -26,12 +26,26 @@ class ProcessManager:
         """Generate unique process ID."""
         return f"bg_proc_{uuid.uuid4().hex[:8]}"
 
+    @staticmethod
+    def _owner_mismatch(proc_info: Dict, requester_session: Optional[str]) -> bool:
+        """True if the requester is not allowed to touch this process.
+
+        Deny only when the process has a known owner AND the requester is a
+        different session. A None owner (legacy entry) or a None requester
+        (internal/CLI call, never LLM-reachable) is allowed - the framework
+        injects _session_id on every LLM tool call, so the cross-user case
+        (both present, different) is the one that matters.
+        """
+        owner = proc_info.get("owner_session")
+        return bool(owner and requester_session and owner != requester_session)
+
     async def register_process(
         self,
         process: asyncio.subprocess.Process,
         command: str,
         cwd: Optional[str] = None,
-        process_id: Optional[str] = None
+        process_id: Optional[str] = None,
+        owner_session: Optional[str] = None
     ) -> str:
         """
         Register a background process.
@@ -41,6 +55,7 @@ class ProcessManager:
             command: Command being executed
             cwd: Working directory
             process_id: Optional custom process ID
+            owner_session: Session that owns this process (for isolation)
 
         Returns:
             str: Process ID
@@ -52,6 +67,7 @@ class ProcessManager:
             "process": process,
             "command": command,
             "cwd": cwd,
+            "owner_session": owner_session,
             "started_at": datetime.now().isoformat(),
             "stdout_buffer": [],
             "stderr_buffer": [],
@@ -111,7 +127,8 @@ class ProcessManager:
         self,
         process_id: str,
         stream: str = "both",
-        clear_buffer: bool = False
+        clear_buffer: bool = False,
+        requester_session: Optional[str] = None
     ) -> Dict:
         """
         Get output from a background process.
@@ -120,18 +137,21 @@ class ProcessManager:
             process_id: Process ID
             stream: Which stream to get ("stdout", "stderr", "both")
             clear_buffer: Clear buffer after reading
+            requester_session: Calling session (for ownership check)
 
         Returns:
             dict: Output data with status, stdout, stderr, is_running, exit_code
         """
-        if process_id not in self.processes:
+        proc_info = self.processes.get(process_id)
+        # Treat a foreign-owned process as not-found: don't leak its existence
+        # or its captured stdout/stderr to another session.
+        if proc_info is None or self._owner_mismatch(proc_info, requester_session):
             return {
                 "status": "error",
                 "error": f"Process {process_id} not found",
                 "error_type": "ProcessNotFound"
             }
 
-        proc_info = self.processes[process_id]
         process = proc_info["process"]
 
         # Get output based on stream parameter
@@ -162,7 +182,8 @@ class ProcessManager:
     async def kill_process(
         self,
         process_id: str,
-        force: bool = False
+        force: bool = False,
+        requester_session: Optional[str] = None
     ) -> Dict:
         """
         Kill a background process.
@@ -170,18 +191,21 @@ class ProcessManager:
         Args:
             process_id: Process ID to kill
             force: Use SIGKILL instead of SIGTERM
+            requester_session: Calling session (for ownership check)
 
         Returns:
             dict: Status with killed flag and signal used
         """
-        if process_id not in self.processes:
+        proc_info = self.processes.get(process_id)
+        # Foreign-owned process -> not-found: a session must not be able to kill
+        # another session's process (cross-user control / DoS).
+        if proc_info is None or self._owner_mismatch(proc_info, requester_session):
             return {
                 "status": "error",
                 "error": f"Process {process_id} not found",
                 "error_type": "ProcessNotFound"
             }
 
-        proc_info = self.processes[process_id]
         process = proc_info["process"]
 
         if process.returncode is not None:
@@ -227,15 +251,22 @@ class ProcessManager:
                 "error_type": type(e).__name__
             }
 
-    def list_processes(self) -> List[Dict]:
+    def list_processes(self, requester_session: Optional[str] = None) -> List[Dict]:
         """
-        List all registered background processes.
+        List registered background processes.
+
+        Args:
+            requester_session: If given, only processes owned by this session
+                (plus legacy ownerless ones) are returned. None lists all
+                (internal/CLI use).
 
         Returns:
             list: List of process information dicts
         """
         result = []
         for process_id, proc_info in self.processes.items():
+            if self._owner_mismatch(proc_info, requester_session):
+                continue
             result.append({
                 "process_id": process_id,
                 "command": proc_info["command"],

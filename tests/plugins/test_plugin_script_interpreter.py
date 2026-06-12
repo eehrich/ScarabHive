@@ -187,10 +187,87 @@ class TestScriptInterpreterBasic:
         assert "result" in result
 
     @pytest.mark.asyncio
+    async def test_session_sandbox_isolation(self, mock_system_config, mock_mcp_config):
+        """Variables set by one session must NOT be visible to another session.
+
+        Regression test for the cross-session sandbox leak: the server is a
+        process-wide singleton, so a shared executor would expose session A's
+        variables (e.g. secrets) to session B.
+        """
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
+        mock_status = AsyncMock()
+
+        # Session A assigns a secret
+        await server.call("script_interpreter_execute", {
+            "code": "api_secret = 'sk-USER-A-PRIVATE'",
+            "_status": mock_status,
+            "_session_id": "session_a",
+        })
+
+        # Session B tries to read it -> must fail (NameError), not leak
+        result_b = await server.call("script_interpreter_execute", {
+            "code": "print(api_secret)",
+            "_status": mock_status,
+            "_session_id": "session_b",
+        })
+        assert "sk-USER-A-PRIVATE" not in str(result_b), "secret leaked across sessions"
+        assert "error" in result_b or "NameError" in str(result_b)
+
+        # Same session A still sees its own variable (persistence within session)
+        result_a = await server.call("script_interpreter_execute", {
+            "code": "print(api_secret)",
+            "_status": mock_status,
+            "_session_id": "session_a",
+        })
+        assert "sk-USER-A-PRIVATE" in str(result_a)
+
+    @pytest.mark.asyncio
+    async def test_active_session_survives_lru_eviction(self, mock_system_config, mock_mcp_config):
+        """The session being accessed is never LRU-evicted out from under itself.
+
+        Regression: if the requested session was the oldest at the cap, the LRU
+        pass could evict it right before use, silently resetting its sandbox.
+        """
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
+        server._max_tracked_sessions = 3  # tiny cap to force eviction
+        mock_status = AsyncMock()
+
+        # "keep" assigns a variable first, becoming the OLDEST session
+        await server.call("script_interpreter_execute", {
+            "code": "keepvar = 'survivor'", "_status": mock_status, "_session_id": "keep",
+        })
+        # Fill exactly to the cap (keep + 2 others = 3). "keep" is the oldest.
+        for i in range(2):
+            await server.call("script_interpreter_execute", {
+                "code": f"x = {i}", "_status": mock_status, "_session_id": f"other_{i}",
+            })
+        # Re-access "keep" while AT the cap: without the self-eviction guard the
+        # LRU pass would evict "keep" (the oldest) right before use and recreate
+        # an empty sandbox. With the guard it survives with its variable.
+        result = await server.call("script_interpreter_execute", {
+            "code": "print(keepvar)", "_status": mock_status, "_session_id": "keep",
+        })
+        assert "survivor" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_session_reset_is_scoped(self, mock_system_config, mock_mcp_config):
+        """reset() clears only the calling session, not other sessions."""
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
+        mock_status = AsyncMock()
+        await server.call("script_interpreter_execute", {"code": "x = 1", "_status": mock_status, "_session_id": "a"})
+        await server.call("script_interpreter_execute", {"code": "y = 2", "_status": mock_status, "_session_id": "b"})
+        # Reset only session a
+        await server.call("script_interpreter_reset", {"_status": mock_status, "_session_id": "a"})
+        res_a = await server.call("script_interpreter_execute", {"code": "print(x)", "_status": mock_status, "_session_id": "a"})
+        res_b = await server.call("script_interpreter_execute", {"code": "print(y)", "_status": mock_status, "_session_id": "b"})
+        assert "error" in res_a or "NameError" in str(res_a)  # a was reset
+        assert "2" in str(res_b)  # b survives
+
+    @pytest.mark.asyncio
     async def test_server_error_handling(self, mock_system_config, mock_mcp_config):
         """Test server error handling for invalid tools."""
         server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
-        
+
         mock_status = AsyncMock()
         with pytest.raises(ValueError, match="Tool 'unknown_tool' not found"):
             await server.call("unknown_tool", {"_status": mock_status})

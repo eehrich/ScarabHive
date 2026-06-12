@@ -2098,6 +2098,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         else:
             return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}
 
+    async def _verify_session_owner(sid: str, current_user: Any) -> None:
+        """Raise 403 if the authenticated user does not own the session.
+
+        These legacy endpoints act on the shared in-memory session tracker keyed
+        only by session_id, so without this any authenticated user could
+        read/mutate another user's session (IDOR). No-op when auth is disabled
+        (current_user is None -> single-user mode) or no owner is recorded.
+        """
+        from fastapi import HTTPException
+        if current_user is None:
+            return
+        owner = None
+        # In-memory session metadata first (covers sessions not yet persisted),
+        # then the persisted owner on disk.
+        try:
+            meta = agent._session_tracker.get_session_metadata(sid)
+            if meta:
+                owner = meta.get("user_id")
+        except Exception:
+            owner = None
+        if owner is None and _session_service and getattr(_session_service, "session_manager", None):
+            try:
+                owner = await _session_service.session_manager._find_session_owner_async(sid)
+            except Exception:
+                owner = None
+        if owner is not None and owner != current_user.username:
+            raise HTTPException(status_code=403, detail="You do not have access to this session")
+
     @app.post("/events/{request_id}/append")
     async def append_event(request_id: str, request: Request, session_id: Optional[str] = Query(default=None)):
         """Append a user message to an existing active request or session.
@@ -2144,6 +2172,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.debug("Session %s persisted to disk after append", sid)
 
         if session_id:
+            # Ownership check before mutating someone else's session (IDOR).
+            await _verify_session_owner(session_id, current_user)
             # Append directly to persisted session using agent method
             logger.debug("Appending to session %s: %.120s", session_id, content)
             success = await agent.append_to_session(session_id, content)
@@ -2209,7 +2239,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
             logger.debug("Session append request for session_id=%s: %.120s", session_id, content)
-            
+
+            # Ownership check before mutating someone else's session (IDOR).
+            await _verify_session_owner(session_id, current_user)
+
             # First, append to in-memory session
             success = await agent.append_to_session(session_id, content)
             if not success:
@@ -2240,13 +2273,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/sessions/{session_id}/force_optimize")
-    async def force_optimize_session(session_id: str):
+    async def force_optimize_session(session_id: str, request: Request):
         """Trigger the token optimizer / summarizer for a persisted session immediately."""
         logger = logging.getLogger(__name__)
+        from fastapi import HTTPException
+        # This endpoint had NO auth and rewrote the session's message list.
+        # Enforce authentication + ownership.
+        current_user = await _enforce_endpoint_security(request)
+        await _verify_session_owner(session_id, current_user)
         try:
             # Ensure session exists
             if not agent._session_tracker.has_session(session_id):
-                from fastapi import HTTPException
                 raise HTTPException(status_code=404, detail="Session not found")
 
             # Run optimizer and summarizer
@@ -2276,9 +2313,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/sessions/force_optimize")
-    async def force_optimize_all_sessions():
-        """Trigger optimizer/summarizer for all persisted sessions."""
+    async def force_optimize_all_sessions(request: Request):
+        """Trigger optimizer/summarizer for all persisted sessions (admin only)."""
         logger = logging.getLogger(__name__)
+        from fastapi import HTTPException
+        from .auth.models import UserRole
+        # This endpoint rewrites the message list of EVERY user's session, so it
+        # must be admin-only. Previously it required no auth at all.
+        current_user = await _enforce_endpoint_security(request)
+        if current_user is not None and getattr(current_user, "role", None) != UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Admin role required")
         try:
             results = {}
             sids = agent._session_tracker.get_all_session_ids()

@@ -33,7 +33,8 @@ class TestMCPClientFactoryStreaming:
                 ssl_verify=True,
                 use_sse=True,
                 connection_limit=10,
-                connection_limit_per_host=5
+                connection_limit_per_host=5,
+                auth_headers=None
             )
 
             # Should create and connect client successfully

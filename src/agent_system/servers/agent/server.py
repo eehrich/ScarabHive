@@ -223,9 +223,20 @@ class Agent(MCPServer):
         # Cache for list_tools() to avoid creating new MCPTool objects on every call
         self._list_tools_cache: list | None = None
 
-        # Track current conversation messages for debugging
+        # Per-session live conversation state (request-scoped). This agent is a
+        # process-wide singleton shared by concurrent requests for DIFFERENT
+        # sessions, so a single shared "current messages/tools" attribute is a
+        # cross-session race: request B overwrites it while a compaction tool
+        # for session A reads it, persisting B's conversation into A. Key the
+        # live state by session_id instead. Readers (context_engineer /
+        # context_summarizer compaction tools, token-estimating hooks) resolve
+        # by their own session_id. Bounded by LRU eviction.
+        self._live_state_by_session: dict[str, dict[str, Any]] = {}
+        self._live_state_max_sessions: int = 200
+        # Deprecated shared attributes - kept as a last-resort fallback for any
+        # reader not yet migrated to get_live_messages/get_live_tools_schema.
+        # They reflect the most recent request and are NOT session-correct.
         self._current_messages: List[ChatMessage] = []
-        # Track current tool schemas for token estimation (set during conversation init)
         self._current_tools_schema: List[Dict[str, Any]] = []
 
         # Initialize component managers for better code organization
@@ -684,6 +695,58 @@ class Agent(MCPServer):
         Returns True if appended, False if session not found.
         """
         return await self._session_tracker.append_to_session(session_id, content)
+
+    # --- Per-session live conversation state (see __init__ for rationale) ----
+
+    def _set_live_messages(self, session_id: Optional[str], messages: List[ChatMessage]) -> None:
+        """Record the live message list for a session (request-scoped)."""
+        # Keep the deprecated shared attr in sync for any unmigrated reader.
+        self._current_messages = messages
+        if not session_id:
+            return
+        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry["messages"] = messages
+        self._evict_live_state(session_id)
+
+    def _set_live_tools_schema(self, session_id: Optional[str], tools_schema: List[Dict[str, Any]]) -> None:
+        """Record the live tool schema for a session (request-scoped)."""
+        self._current_tools_schema = tools_schema
+        if not session_id:
+            return
+        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry["tools_schema"] = tools_schema
+        self._evict_live_state(session_id)
+
+    def _evict_live_state(self, keep_session: str) -> None:
+        """Bound the per-session live-state dict (simple FIFO eviction)."""
+        if len(self._live_state_by_session) <= self._live_state_max_sessions:
+            return
+        for sid in list(self._live_state_by_session.keys()):
+            if len(self._live_state_by_session) <= self._live_state_max_sessions:
+                break
+            if sid != keep_session:
+                self._live_state_by_session.pop(sid, None)
+
+    def get_live_messages(self, session_id: Optional[str]) -> Optional[List[ChatMessage]]:
+        """Live (current-turn) messages for a session, or None if not tracked.
+
+        Session-correct replacement for reading agent._current_messages. The
+        caller should fall back to the persisted session tracker when this is
+        None (e.g. a tool invoked outside an active step loop).
+        """
+        if session_id:
+            entry = self._live_state_by_session.get(session_id)
+            if entry and entry.get("messages") is not None:
+                return entry["messages"]
+        return None
+
+    def get_live_tools_schema(self, session_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+        """Live tool schema for a session, or None if not tracked."""
+        if session_id:
+            entry = self._live_state_by_session.get(session_id)
+            if entry and entry.get("tools_schema") is not None:
+                return entry["tools_schema"]
+        return None
 
     async def _drain_appended_messages(self, request_id: str, messages: List[ChatMessage]) -> List[ChatMessage]:
         """
@@ -1144,8 +1207,8 @@ class Agent(MCPServer):
         # Also include any appended messages already queued for this request
         messages = await self._session_tracker.drain_appended_messages(request_id, messages)
 
-        # Track messages for debugging
-        self._current_messages = messages.copy()
+        # Track live messages for this session (request-scoped)
+        self._set_live_messages(session_id, messages.copy())
 
         # Build tool schemas using ToolSchemaBuilder
         # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
@@ -1161,8 +1224,8 @@ class Agent(MCPServer):
             blocked_patterns=blocked_patterns
         )
 
-        # Track current tool schemas for token estimation by hooks
-        self._current_tools_schema = tools_schema
+        # Track current tool schemas per-session for token estimation by hooks
+        self._set_live_tools_schema(session_id, tools_schema)
 
         # Return initialized context
         return ConversationContext(
@@ -1233,6 +1296,20 @@ class Agent(MCPServer):
         # Note: unregister_request also releases the lock, but we do it explicitly here
         # for clarity and to ensure it happens before session persistence
         sid = self._session_tracker.get_session_for_request(request_id)
+
+        # Stop the background checkpoint loop BEFORE the final save. The loop
+        # does its own load-modify-save every ~30s; if it overlaps the final
+        # save it can resume after we persist and write its older, trimmed
+        # snapshot over the newer one (silent message loss). Cancelling and
+        # awaiting the task here guarantees any in-flight checkpoint write has
+        # completed, so the final save below writes last and wins. Idempotent:
+        # the outer run_events finally also calls stop_checkpoint_loop.
+        if sid and self._session_service:
+            try:
+                await self._session_service.stop_checkpoint_loop(sid)
+            except Exception as e:
+                logger.debug(f"Failed to stop checkpoint loop for {sid} before final save: {e}")
+
         if sid:
             await self._session_tracker.release_session_lock(sid, request_id)
             logger.debug("Released session lock for %s (request %s)", sid, request_id)
@@ -2066,7 +2143,7 @@ class Agent(MCPServer):
                 # Assistant message with tool calls was already added above before post_llm hooks
 
                 # Update tracked messages
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
 
                 # Execute all tools using streaming to get real-time status events from sub-agents
                 tool_messages = []
@@ -2156,7 +2233,7 @@ class Agent(MCPServer):
                 context.messages = messages
 
                 # Update tracked messages after tool execution
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
 
                 # Persist session after complete turn (tool calls + results processed)
                 # This avoids orphaned tool calls that would occur if we saved after each tool execution
@@ -2243,7 +2320,7 @@ class Agent(MCPServer):
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
 
                 # Use the already formatted content from above
                 final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
@@ -2259,15 +2336,15 @@ class Agent(MCPServer):
                 logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls (empty or no content)")
                 # Treat whatever content we have as final (even if empty)
                 results["summary"] = content or ""
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
                 final_event = {"type": "final", "summary": formatted_content or "", "content_format": content_format}
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
                 yield final_event
                 return
 
-            # Update tracked messages at end of each step
-            self._current_messages = messages.copy()
+            # Update tracked messages at end of each step (per-session)
+            self._set_live_messages(session_id, messages.copy())
 
             # Drain any final appended messages before next step
             messages = await self._drain_appended_messages(request_id, messages)
@@ -2320,7 +2397,7 @@ class Agent(MCPServer):
                 context.messages.append(assistant_msg)  # Also append to context.messages
                 results["summary"] = final_content
                 # Update tracked messages and emit final event
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
 
                 # Format content for display
                 formatted_final = final_content

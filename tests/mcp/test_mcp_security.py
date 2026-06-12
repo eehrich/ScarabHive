@@ -306,3 +306,32 @@ async def test_security_integration():
 
     headers = manager.get_auth_headers("integration_server")
     assert headers["Authorization"] == "Bearer integration_token"
+
+
+def test_build_auth_headers_variants():
+    """build_auth_headers maps every auth type; 'none'/missing -> empty."""
+    from agent_system.mcp.security import build_auth_headers
+
+    assert build_auth_headers(None) == {}
+    assert build_auth_headers(MCPAuthConfig(type="none")) == {}
+    assert build_auth_headers(MCPAuthConfig(type="bearer", bearer_token="t"))["Authorization"] == "Bearer t"
+    api = build_auth_headers(MCPAuthConfig(type="api_key", api_key="k", api_key_header="X-API-Key"))
+    assert api["X-API-Key"] == "k"
+    basic = build_auth_headers(MCPAuthConfig(type="basic", username="u", password="p"))
+    assert basic["Authorization"].startswith("Basic ")
+
+
+def test_transports_apply_auth_headers():
+    """Auth headers reach the transports' actual request headers (regression:
+    they were built but never applied -> unauthenticated MCP connections)."""
+    from agent_system.mcp.http_transport import HTTPTransport
+    from agent_system.mcp.streaming_transport import HTTPStreamingTransport
+
+    auth = {"Authorization": "Bearer secret-token"}
+
+    streaming = HTTPStreamingTransport(base_url="http://example.com", auth_headers=auth)
+    headers = streaming._build_headers()
+    assert headers["Authorization"] == "Bearer secret-token"
+
+    http = HTTPTransport(base_url="http://example.com", auth_headers=auth)
+    assert http.auth_headers["Authorization"] == "Bearer secret-token"

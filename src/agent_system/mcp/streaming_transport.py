@@ -56,7 +56,8 @@ class HTTPStreamingTransport(MCPTransport):
     """
 
     def __init__(self, url: Optional[str] = None, base_url: Optional[str] = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True,
-                 connection_limit: int = 10, connection_limit_per_host: int = 5):
+                 connection_limit: int = 10, connection_limit_per_host: int = 5,
+                 auth_headers: Optional[Dict[str, str]] = None):
         """
         Initialize Streamable HTTP transport.
         
@@ -77,6 +78,9 @@ class HTTPStreamingTransport(MCPTransport):
         self.ssl_verify = ssl_verify
         self.connection_limit = connection_limit
         self.connection_limit_per_host = connection_limit_per_host
+        # Auth headers (bearer/api_key/basic) merged into every request - see
+        # _build_headers. Previously configured credentials were never applied.
+        self.auth_headers = auth_headers or {}
         self.session_id: Optional[str] = None
         self._request_counter = 0
         self._standalone_sse_task: Optional[asyncio.Task] = None
@@ -334,10 +338,12 @@ class HTTPStreamingTransport(MCPTransport):
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/event-stream'
         }
-        
+        # Apply configured auth (bearer/api_key/basic)
+        headers.update(self.auth_headers)
+
         if include_session and self.session_id:
             headers['Mcp-Session-Id'] = self.session_id
-        
+
         return headers
 
     def _message_to_dict(self, message: MCPMessage) -> Dict[str, Any]:

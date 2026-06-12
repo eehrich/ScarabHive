@@ -246,13 +246,15 @@ class TerminalServer(SchemaBasedMCPServer):
             await status.error(f"Failed to start background process: {result.get('error')}")
             return result
 
-        # Register with process manager
+        # Register with process manager, tagging the owning session so other
+        # sessions can't read/kill this process (cross-user isolation).
         process = result["process"]
         process_id = await self.process_manager.register_process(
             process=process,
             command=command,
             cwd=cwd,
-            process_id=custom_process_id
+            process_id=custom_process_id,
+            owner_session=params.get("_session_id")
         )
 
         # Include command and process_id in end message for WebUI
@@ -289,7 +291,8 @@ class TerminalServer(SchemaBasedMCPServer):
         result = await self.process_manager.get_output(
             process_id=process_id,
             stream=stream,
-            clear_buffer=clear_buffer
+            clear_buffer=clear_buffer,
+            requester_session=params.get("_session_id")
         )
 
         if result["status"] == "success":
@@ -328,7 +331,8 @@ class TerminalServer(SchemaBasedMCPServer):
 
         result = await self.process_manager.kill_process(
             process_id=process_id,
-            force=force
+            force=force,
+            requester_session=params.get("_session_id")
         )
 
         if result["status"] == "success":

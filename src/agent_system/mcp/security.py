@@ -15,6 +15,33 @@ from ..config.models import AgentSystemConfig, MCPAuthConfig
 logger = logging.getLogger(__name__)
 
 
+def build_auth_headers(auth_config: Optional[MCPAuthConfig]) -> Dict[str, str]:
+    """Build HTTP auth headers from an MCPAuthConfig (bearer/api_key/basic).
+
+    Returns an empty dict when there is no auth config or type 'none'. Shared by
+    MCPSecurityManager.get_auth_headers and MCPClientFactory.create_client_from_config
+    so outbound MCP connections actually carry the configured credentials.
+    """
+    if not auth_config:
+        return {}
+
+    headers: Dict[str, str] = {}
+
+    if auth_config.type == "bearer" and auth_config.bearer_token:
+        headers["Authorization"] = f"Bearer {auth_config.bearer_token}"
+
+    elif auth_config.type == "api_key" and auth_config.api_key:
+        headers[auth_config.api_key_header] = auth_config.api_key
+
+    elif auth_config.type == "basic" and auth_config.username and auth_config.password:
+        import base64
+        credentials = f"{auth_config.username}:{auth_config.password}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        headers["Authorization"] = f"Basic {encoded_credentials}"
+
+    return headers
+
+
 class MCPSecurityManager:
     """Manages security settings and authentication for MCP connections"""
 
@@ -32,25 +59,7 @@ class MCPSecurityManager:
 
     def get_auth_headers(self, server_name: str) -> Dict[str, str]:
         """Get authentication headers for a server"""
-        auth_config = self.get_auth_config(server_name)
-        if not auth_config:
-            return {}
-
-        headers = {}
-
-        if auth_config.type == "bearer" and auth_config.bearer_token:
-            headers["Authorization"] = f"Bearer {auth_config.bearer_token}"
-
-        elif auth_config.type == "api_key" and auth_config.api_key:
-            headers[auth_config.api_key_header] = auth_config.api_key
-
-        elif auth_config.type == "basic" and auth_config.username and auth_config.password:
-            import base64
-            credentials = f"{auth_config.username}:{auth_config.password}"
-            encoded_credentials = base64.b64encode(credentials.encode()).decode()
-            headers["Authorization"] = f"Basic {encoded_credentials}"
-
-        return headers
+        return build_auth_headers(self.get_auth_config(server_name))
 
     @staticmethod
     def resolve_env_vars(value: str) -> str:

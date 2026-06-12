@@ -77,6 +77,7 @@ class HookContext:
     agent: Optional[Agent] = None
     agent_name: str = ""
     messages: Optional[List[ChatMessage]] = None
+    tools_schema: Optional[List[Dict[str, Any]]] = None  # per-request tool schema (token estimation)
     llm_response: Optional[Dict[str, Any]] = None
     tool_call: Optional[Dict[str, Any]] = None
     tool_result: Optional[Dict[str, Any]] = None

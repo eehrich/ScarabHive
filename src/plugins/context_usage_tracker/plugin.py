@@ -93,16 +93,18 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             agent_name = context.agent_name or "unknown"
             session_id = context.session_id or "unknown"
 
-            # Estimate tool definition tokens from agent's current tool schemas
+            # Estimate tool definition tokens. Prefer the per-request
+            # context.tools_schema (session-correct) over the agent's shared attr.
             tool_definition_tokens = 0
-            if context.agent and hasattr(context.agent, '_current_tools_schema'):
-                tools_schema = context.agent._current_tools_schema
-                if tools_schema and isinstance(tools_schema, list):
-                    tool_definition_tokens = estimate_tools_token_count(tools_schema)
-                    logger.debug(
-                        f"Estimated tool definition tokens: {tool_definition_tokens} "
-                        f"({len(tools_schema)} tools)"
-                    )
+            tools_schema = getattr(context, 'tools_schema', None)
+            if tools_schema is None and context.agent:
+                tools_schema = getattr(context.agent, '_current_tools_schema', None)
+            if tools_schema and isinstance(tools_schema, list):
+                tool_definition_tokens = estimate_tools_token_count(tools_schema)
+                logger.debug(
+                    f"Estimated tool definition tokens: {tool_definition_tokens} "
+                    f"({len(tools_schema)} tools)"
+                )
 
             # Record usage in tracker
             self.tracker.record_usage(

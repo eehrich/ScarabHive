@@ -425,7 +425,8 @@ class MCPClientFactory:
         ssl_verify: bool = True,
         initialization_options: Optional[Dict[str, Any]] = None,
         connection_limit: int = 10,
-        connection_limit_per_host: int = 5
+        connection_limit_per_host: int = 5,
+        auth_headers: Optional[Dict[str, str]] = None
     ) -> StandardMCPClient:
         """Create an HTTP-based MCP client"""
         transport = HTTPTransport(
@@ -433,7 +434,8 @@ class MCPClientFactory:
             timeout=timeout,
             ssl_verify=ssl_verify,
             connection_limit=connection_limit,
-            connection_limit_per_host=connection_limit_per_host
+            connection_limit_per_host=connection_limit_per_host,
+            auth_headers=auth_headers
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)
@@ -457,7 +459,8 @@ class MCPClientFactory:
         ssl_verify: bool = True,
         initialization_options: Optional[Dict[str, Any]] = None,
         connection_limit: int = 10,
-        connection_limit_per_host: int = 5
+        connection_limit_per_host: int = 5,
+        auth_headers: Optional[Dict[str, str]] = None
     ) -> StandardMCPClient:
         """Create a streaming MCP client using SSE transport
 
@@ -469,6 +472,7 @@ class MCPClientFactory:
             initialization_options: MCP initialization options
             connection_limit: Total HTTP connection limit
             connection_limit_per_host: HTTP connection limit per host
+            auth_headers: Authentication headers (bearer/api_key/basic)
         """
         transport = HTTPStreamingTransport(
             base_url=base_url,
@@ -476,7 +480,8 @@ class MCPClientFactory:
             ssl_verify=ssl_verify,
             use_sse=True,  # Streaming transport always uses SSE
             connection_limit=connection_limit,
-            connection_limit_per_host=connection_limit_per_host
+            connection_limit_per_host=connection_limit_per_host,
+            auth_headers=auth_headers
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)
@@ -512,6 +517,13 @@ class MCPClientFactory:
         """
         transport_type = config.transport
 
+        # Build auth headers from the server's auth config so the outbound
+        # connection actually carries the configured credentials. Previously
+        # these headers were built but never applied (get_auth_headers had no
+        # callers), so every external MCP connection was unauthenticated.
+        from .security import build_auth_headers
+        auth_headers = build_auth_headers(getattr(config, "auth", None))
+
         # Handle deprecated transport type names
         if transport_type == "smithery":
             transport_type = "streaming"
@@ -525,7 +537,8 @@ class MCPClientFactory:
                 ssl_verify=ssl_verify,
                 initialization_options=config.initialization_options,
                 connection_limit=connection_limit,
-                connection_limit_per_host=connection_limit_per_host
+                connection_limit_per_host=connection_limit_per_host,
+                auth_headers=auth_headers
             )
         elif transport_type == "streaming":
             return await MCPClientFactory.create_streaming_client(
@@ -535,7 +548,8 @@ class MCPClientFactory:
                 ssl_verify=ssl_verify,
                 initialization_options=config.initialization_options,
                 connection_limit=connection_limit,
-                connection_limit_per_host=connection_limit_per_host
+                connection_limit_per_host=connection_limit_per_host,
+                auth_headers=auth_headers
             )
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")

@@ -158,10 +158,18 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             # Get current messages from the agent's LIVE messages list, not persisted session
             # This ensures we include the current assistant message (with tool_calls) that
             # triggered this summarize() call. Without this, orphaned tool responses occur.
+            # Session-correct live messages (keyed by session_id), falling back
+            # to the persisted session tracker. Replaces the shared-singleton
+            # agent._current_messages read which could return another session's
+            # messages under concurrency.
             messages = None
-            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+            if hasattr(agent, 'get_live_messages'):
+                live = agent.get_live_messages(session_id)
+                if isinstance(live, list):
+                    messages = live.copy()
+            elif hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
                 messages = agent._current_messages.copy()
-            
+
             # Fallback to session tracker if live messages not available
             if not messages:
                 messages = agent._session_tracker.get_session_messages(session_id)
@@ -300,10 +308,18 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             # Get current messages from the agent's LIVE messages list
             # This ensures we include the current assistant message (with tool_calls)
+            # Session-correct live messages (keyed by session_id), falling back
+            # to the persisted session tracker. Replaces the shared-singleton
+            # agent._current_messages read which could return another session's
+            # messages under concurrency.
             messages = None
-            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+            if hasattr(agent, 'get_live_messages'):
+                live = agent.get_live_messages(session_id)
+                if isinstance(live, list):
+                    messages = live.copy()
+            elif hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
                 messages = agent._current_messages.copy()
-            
+
             # Fallback to session tracker if live messages not available
             if not messages:
                 messages = agent._session_tracker.get_session_messages(session_id)
@@ -326,14 +342,19 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             # Calculate tokens - try to get actual tokens from context_usage_tracker first
             estimated_tokens = estimate_token_count(messages)
 
-            # Include tool definition tokens in estimation (they consume context window)
+            # Include tool definition tokens in estimation (session-correct).
             tool_definition_tokens = 0
-            if hasattr(agent, '_current_tools_schema') and isinstance(agent._current_tools_schema, list) and agent._current_tools_schema:
-                tool_definition_tokens = estimate_tools_token_count(agent._current_tools_schema)
+            tools_schema = None
+            if hasattr(agent, 'get_live_tools_schema'):
+                tools_schema = agent.get_live_tools_schema(session_id)
+            if tools_schema is None:
+                tools_schema = getattr(agent, '_current_tools_schema', None)
+            if isinstance(tools_schema, list) and tools_schema:
+                tool_definition_tokens = estimate_tools_token_count(tools_schema)
                 estimated_tokens += tool_definition_tokens
                 logger.debug(
                     f"[check_stats] Added {tool_definition_tokens} tool definition tokens "
-                    f"({len(agent._current_tools_schema)} tools)"
+                    f"({len(tools_schema)} tools)"
                 )
 
             actual_tokens = 0

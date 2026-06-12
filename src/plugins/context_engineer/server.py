@@ -604,14 +604,22 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             # This ensures we include the current assistant message (with tool_calls) that
             # triggered this compact() call. Without this, the compacted messages would not
             # include the current turn, causing orphaned tool responses.
+            # Session-correct live messages (keyed by session_id). The prior
+            # agent._current_messages was a shared singleton attr that could
+            # return ANOTHER session's messages under concurrency, persisting
+            # them into this session.
             messages = None
-            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+            if hasattr(agent, 'get_live_messages'):
+                live = agent.get_live_messages(session_id)
+                if isinstance(live, list):
+                    messages = live.copy()
+            elif hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
                 messages = agent._current_messages.copy()
-            
+
             # Fallback to session tracker if live messages not available
             if not messages:
                 messages = agent._session_tracker.get_session_messages(session_id)
-            
+
             # Filter out system messages - we compact conversation only
             messages = [m for m in messages if getattr(m, 'role', m.get('role') if isinstance(m, dict) else None) != 'system']
             if not messages:

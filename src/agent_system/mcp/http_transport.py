@@ -20,12 +20,17 @@ class HTTPTransport(MCPTransport):
     """HTTP transport implementation for MCP"""
 
     def __init__(self, base_url: str, timeout: float = 30.0, ssl_verify: bool = True,
-                 connection_limit: int = 10, connection_limit_per_host: int = 5):
+                 connection_limit: int = 10, connection_limit_per_host: int = 5,
+                 auth_headers: Optional[Dict[str, str]] = None):
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self.ssl_verify = ssl_verify
         self.connection_limit = connection_limit
         self.connection_limit_per_host = connection_limit_per_host
+        # Auth headers (bearer/api_key/basic) applied to every request. Without
+        # this, configured credentials were silently dropped and outbound MCP
+        # connections were always unauthenticated.
+        self.auth_headers = auth_headers or {}
         self.session: Optional[aiohttp.ClientSession] = None
 
     async def connect(self) -> None:
@@ -40,7 +45,7 @@ class HTTPTransport(MCPTransport):
             self.session = aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json", **self.auth_headers}
             )
 
     async def disconnect(self) -> None:

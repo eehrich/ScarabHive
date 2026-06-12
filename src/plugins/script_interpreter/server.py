@@ -1,6 +1,7 @@
 """MCP Server for Script Interpreter Plugin."""
 
 import logging
+import time
 from typing import Any, TYPE_CHECKING
 
 import sys
@@ -34,7 +35,7 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
             mcp_config: Plugin-specific configuration (script_interpreter settings)
         """
         super().__init__(name, system_config, mcp_config)
-        
+
         # Extract script-specific config from mcp_config
         script_config_dict = getattr(mcp_config, 'script_interpreter', {})
         if script_config_dict:
@@ -42,7 +43,52 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         else:
             script_config = ScriptInterpreterConfig()
         self.script_config = script_config
-        self.executor = ScriptExecutor(script_config)
+
+        # SECURITY / ISOLATION: this server is a process-wide singleton shared
+        # by every session and user. A single shared ScriptExecutor would let
+        # its SafeExecutor.variables dict persist across sessions, so session B
+        # could read variables (e.g. secrets) assigned by session A's code -
+        # and execute() returns ALL variables to the caller. Keep one executor
+        # PER SESSION instead, with TTL + LRU eviction to bound memory.
+        # Documented scope is "persist within session", which this restores.
+        self._executors: dict[str, tuple[ScriptExecutor, float]] = {}
+        self._session_ttl_seconds: float = float(
+            getattr(script_config, "session_ttl_seconds", 3600)
+        )
+        self._max_tracked_sessions: int = int(
+            getattr(script_config, "max_tracked_sessions", 100)
+        )
+
+    def _get_executor(self, session_id: str) -> ScriptExecutor:
+        """Return the per-session executor, creating it on first use.
+
+        No await points inside, so the dict bookkeeping is atomic under CPython
+        and needs no lock. Callers hold the returned reference, so a concurrent
+        eviction of the dict entry does not invalidate an in-flight execution.
+        """
+        now = time.monotonic()
+        # Evict expired sessions (never the one being requested)
+        if self._session_ttl_seconds > 0:
+            expired = [
+                sid for sid, (_, last) in self._executors.items()
+                if sid != session_id and now - last > self._session_ttl_seconds
+            ]
+            for sid in expired:
+                self._executors.pop(sid, None)
+        # LRU-evict if over the cap (oldest last-access first). MUST exclude the
+        # session being requested - otherwise, if it is the oldest, it would be
+        # evicted right before use and silently lose its sandbox variables.
+        if len(self._executors) >= self._max_tracked_sessions:
+            candidates = sorted(
+                (kv for kv in self._executors.items() if kv[0] != session_id),
+                key=lambda kv: kv[1][1],
+            )
+            for sid, _ in candidates[: len(self._executors) - self._max_tracked_sessions + 1]:
+                self._executors.pop(sid, None)
+        entry = self._executors.get(session_id)
+        executor = entry[0] if entry else ScriptExecutor(self.script_config)
+        self._executors[session_id] = (executor, now)
+        return executor
 
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -66,8 +112,13 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         await status.progress("Python execution started")
         await status.progress("Executing code")
 
+        # Per-session sandbox (see _get_executor). Hold a local reference so a
+        # concurrent eviction can't affect this in-flight call.
+        session_id = params.get("_session_id") or "default"
+        executor = self._get_executor(session_id)
+
         try:
-            result = self.executor.execute(code, reset_sandbox=False)
+            result = executor.execute(code, reset_sandbox=False)
 
             if not result.get("success", False) or result.get("error"):
                 # Publish error status
@@ -125,10 +176,14 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         Method called after dispatcher strips prefix → 'reset'
         """
         status = params["_status"]  # Status is mandatory from framework
-        
+
         await status.progress("Resetting Python sandbox")
+        # Reset only the calling session's sandbox, not a shared global one.
+        session_id = params.get("_session_id") or "default"
         try:
-            self.executor.reset_sandbox()
+            entry = self._executors.get(session_id)
+            if entry:
+                entry[0].reset_sandbox()
             await status.end("Sandbox reset completed")
             return {"result": "🔄 Python sandbox reset - all variables and state cleared"}
         except Exception as e:

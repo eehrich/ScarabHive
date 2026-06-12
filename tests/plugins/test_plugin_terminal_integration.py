@@ -113,6 +113,48 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
+    async def test_background_process_cross_session_isolation(self, mock_system_config, mock_mcp_config, mock_status):
+        """A process started by session A must be invisible/unkillable to session B.
+
+        Regression test for the shared background-process registry: the server
+        is a singleton, so without owner tagging session B could read the
+        output of or kill session A's process by guessing its process_id.
+        """
+        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        try:
+            start = await server.execute_background({
+                "command": f'{PYTHON} -u -c "import time; print(\'A-OUTPUT\', flush=True); time.sleep(3)"',
+                "_status": mock_status,
+                "_session_id": "session_a",
+            })
+            assert start["status"] == "success"
+            pid = start["process_id"]
+            await asyncio.sleep(0.4)
+
+            # Session B tries to read A's output -> not found (no leak)
+            out_b = await server.get_output({
+                "process_id": pid, "_status": mock_status, "_session_id": "session_b",
+            })
+            assert out_b["status"] == "error"
+            assert out_b.get("error_type") == "ProcessNotFound"
+            assert "A-OUTPUT" not in str(out_b)
+
+            # Session B tries to kill A's process -> not found (no control)
+            kill_b = await server.kill_process({
+                "process_id": pid, "_status": mock_status, "_session_id": "session_b",
+            })
+            assert kill_b["status"] == "error"
+            assert kill_b.get("error_type") == "ProcessNotFound"
+
+            # Owner (session A) still has full access
+            out_a = await server.get_output({
+                "process_id": pid, "_status": mock_status, "_session_id": "session_a",
+            })
+            assert out_a["status"] == "success"
+        finally:
+            await server.cleanup()
+
+    @pytest.mark.asyncio
     async def test_background_process_kill(self, mock_system_config, mock_mcp_config, mock_status):
         """Test killing a background process."""
         server = TerminalServer("test", mock_system_config, mock_mcp_config)

@@ -543,17 +543,20 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         """
         estimated_tokens = self._estimate_tokens(messages)
 
-        # Include tool definition tokens in estimation (they consume context window)
-        if context.agent and hasattr(context.agent, '_current_tools_schema'):
-            tools_schema = context.agent._current_tools_schema
-            if tools_schema and isinstance(tools_schema, list):
-                from agent_system.llm.token_utils import estimate_tools_token_count
-                tool_tokens = estimate_tools_token_count(tools_schema)
-                estimated_tokens += tool_tokens
-                logger.debug(
-                    f"[ContextSummarizer] Added {tool_tokens} tool definition tokens "
-                    f"({len(tools_schema)} tools)"
-                )
+        # Include tool definition tokens in estimation (they consume context window).
+        # Prefer the per-request context.tools_schema (session-correct); fall back
+        # to the agent's deprecated shared attr only if the context lacks it.
+        tools_schema = getattr(context, 'tools_schema', None)
+        if tools_schema is None and context.agent:
+            tools_schema = getattr(context.agent, '_current_tools_schema', None)
+        if tools_schema and isinstance(tools_schema, list):
+            from agent_system.llm.token_utils import estimate_tools_token_count
+            tool_tokens = estimate_tools_token_count(tools_schema)
+            estimated_tokens += tool_tokens
+            logger.debug(
+                f"[ContextSummarizer] Added {tool_tokens} tool definition tokens "
+                f"({len(tools_schema)} tools)"
+            )
 
         actual_tokens = 0
 

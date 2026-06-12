@@ -180,6 +180,12 @@ class HookIntegrationManager:
         if not self.is_enabled():
             return messages
         
+        # Provide the per-session tool schema via the context so token-estimating
+        # hooks don't have to read the agent's (shared, racy) _current_tools_schema.
+        tools_schema = None
+        if hasattr(self.agent, "get_live_tools_schema"):
+            tools_schema = self.agent.get_live_tools_schema(session_id)
+
         context = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id=request_id,
@@ -187,13 +193,14 @@ class HookIntegrationManager:
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,
+            tools_schema=tools_schema,
             step=step,
             llm=llm,
             cancellation_token=cancellation_token,
         )
-        
+
         modified_context = await self.registry.execute_hooks(
-            HookType.PRE_LLM_CALL, 
+            HookType.PRE_LLM_CALL,
             context,
             hook_filter=self.is_hook_enabled
         )
