@@ -20,7 +20,7 @@ async def test_main_page_has_status_integration():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get('/')
         assert r.status_code == 200
-        assert '<title>Agent System (MCP)</title>' in r.text
+        assert '<title>ScarabHive</title>' in r.text
         # Check for status toggle elements (replaced inline status events)
         assert 'statusToggleBtn' in r.text
         # Button now shows emoji + System text

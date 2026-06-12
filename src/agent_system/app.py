@@ -32,6 +32,7 @@ from .services import ConfigService, MCPService, ToolService, AgentService
 from .services.session_manager import SessionManager, SessionPermissionError
 from .services.background_job_manager import (
     BackgroundJob,
+    BackgroundJobManager,
     JobStatus,
     get_background_job_manager,
 )
@@ -57,6 +58,40 @@ _request_user_map: dict[str, str] = {}  # request_id -> user_id
 
 # Shutdown event for graceful stream termination
 _shutdown_event: Optional[asyncio.Event] = None
+
+
+async def resolve_agent_for_request(
+    request_id: str,
+    job_manager: BackgroundJobManager,
+    registry: Optional[MCPRegistry],
+    default_agent: Any,
+) -> Any:
+    """Resolve the agent instance that owns an active/recent request.
+
+    Runs started with an agent_name execute on that registered agent; their
+    per-request state (mid-run append queue, request→session mapping) lives on
+    that instance, not on the global default agent. Falls back to the default
+    agent when the job is unknown, names the default placeholder, or its agent
+    cannot be resolved.
+    """
+    try:
+        job = await job_manager.get_job(request_id)
+    except Exception:
+        job = None
+    agent_name = getattr(job, "agent_name", None)
+    if registry is not None and agent_name and agent_name not in ("default", default_agent.name):
+        try:
+            candidate = registry.get(agent_name)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Could not resolve agent '%s' for request %s, using default agent",
+                agent_name, request_id,
+            )
+            return default_agent
+        from .servers.agent.server import Agent as _Agent
+        if isinstance(candidate, _Agent):
+            return candidate
+    return default_agent
 
 
 @asynccontextmanager
@@ -2127,12 +2162,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="You do not have access to this session")
 
     @app.post("/events/{request_id}/append")
-    async def append_event(request_id: str, request: Request, session_id: Optional[str] = Query(default=None)):
+    async def append_event(
+        request_id: str,
+        request: Request,
+        session_id: Optional[str] = Query(default=None),
+        fallback: str = Query(default="session"),
+    ):
         """Append a user message to an existing active request or session.
 
         If `session_id` query parameter is provided, append directly to session.
         Body: { "content": "the user message" }
-        
+
+        `fallback` controls what happens when the request is not active anymore:
+        - "session" (default): append to the request's persisted session (the
+          message is stored but only answered by the next run).
+        - "none": return 404 so the caller can start a new request instead.
+
         Note: When appending to a session (not an active request), the session is
         persisted to disk automatically.
         """
@@ -2155,14 +2200,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
-        async def _persist_session(sid: str) -> None:
+        async def _persist_session(sid: str, owner_agent: Any) -> None:
             """Helper to persist session to disk after append."""
             if _session_service:
-                metadata = agent._session_tracker.get_session_metadata(sid)
-                agent_name_for_session = metadata.get("agent_name", agent.name) if metadata else agent.name
-                llm_profile_for_session = metadata.get("llm_profile", agent.agent_config.default_llm_profile) if metadata else agent.agent_config.default_llm_profile
+                metadata = owner_agent._session_tracker.get_session_metadata(sid)
+                agent_name_for_session = metadata.get("agent_name", owner_agent.name) if metadata else owner_agent.name
+                llm_profile_for_session = metadata.get("llm_profile", owner_agent.agent_config.default_llm_profile) if metadata else owner_agent.agent_config.default_llm_profile
                 await _session_service.save_session(
-                    agent,
+                    owner_agent,
                     user_id,
                     sid,
                     agent_name_for_session,
@@ -2180,12 +2225,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if not success:
                 raise HTTPException(status_code=404, detail="Session not found")
             # Persist to disk
-            await _persist_session(session_id)
+            await _persist_session(session_id, agent)
             return {"status": "appended", "session_id": session_id}
 
-        logger.debug("Append request received for request_id=%s: %.120s", request_id, content)
+        # Mid-run appends must reach the agent instance that owns the run:
+        # runs started with agent_name execute on that agent, not on the
+        # default agent this endpoint is bound to.
+        target_agent = await resolve_agent_for_request(
+            request_id, get_background_job_manager(), _app_registry, agent
+        )
+
+        logger.debug("Append request received for request_id=%s (agent=%s): %.120s",
+                     request_id, target_agent.name, content)
         try:
-            appended = await agent.append_user_message(request_id, content)
+            appended = await target_agent.append_user_message(request_id, content)
         except HTTPException:
             # Let agent-level HTTPExceptions bubble up
             raise
@@ -2197,14 +2250,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Active request - will be persisted when request completes
             return {"status": "appended", "request_id": request_id}
 
+        if fallback == "none":
+            # Caller handles the finished-run case itself (e.g. starts a new
+            # request) instead of parking the message in the session unanswered.
+            raise HTTPException(status_code=404, detail="Request not active")
+
         # If request not found/finished, try to append into the persisted session for this request
-        sid = agent._session_tracker.get_session_for_request(request_id)
+        sid = target_agent._session_tracker.get_session_for_request(request_id)
         if sid:
             logger.debug("Request %s already finished; appending to session %s", request_id, sid)
-            success = await agent.append_to_session(sid, content)
+            success = await target_agent.append_to_session(sid, content)
             if success:
                 # Persist to disk
-                await _persist_session(sid)
+                await _persist_session(sid, target_agent)
                 return {"status": "appended", "session_id": sid}
 
         raise HTTPException(status_code=404, detail="Request not found or already completed")

@@ -24,6 +24,7 @@ ScarabHive is designed for developers who need:
 - **Context Management**: Intelligent token budget handling with summarization strategies
 - **Vision/Audio Support**: Multimodal image and audio input via WebUI and API endpoints
 - **Streaming Architecture**: Zero-overhead SSE streams for real-time updates
+- **Mid-Run Steering**: Inject user messages into a running agent — it picks them up at the next step and reacts (see `docs/mid_run_message_injection.md`)
 - **Security**: Tool access control with allow/deny patterns, authentication, rate limiting
 - **MCP Server Mode**: Expose agents and tools as an MCP server for external clients
 - **CLI App**: use agent-cli or agent-run to run Agents from CLI instead of WebUI

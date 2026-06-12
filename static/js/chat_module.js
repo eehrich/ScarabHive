@@ -673,6 +673,10 @@
   // hasActiveRequest(), the session:loaded clobber guard, and the
   // append-to-running-request branch.
   let streamActive = false;
+  // Block object the live stream consumer renders into (same object identity
+  // as the blk passed to handleSSEEvent). Mid-run appends rebind its fields to
+  // a fresh block so the agent's reaction renders below the injected message.
+  let activeStreamBlk = null;
   let closeEventSourceTimer = null; // Timer to delay closing EventSource after final/end
   
   // SSE Reconnection state for long-running requests
@@ -1241,40 +1245,61 @@
       // Note: Multimodal append not yet supported, only text append
       // (streamActive, not currentEventSource: fetch streams never set the latter)
       if (currentRequestId && streamActive && !hasFiles) {
+        let appended = false;
         try {
-          // immediate UX feedback: show thinking block if none
-          const blk = addAssistantBlock(chatContainer);
+          const appendHeaders = { 'Content-Type': 'application/json' };
+          const appendToken = localStorage.getItem('token');
+          if (appendToken) {
+            appendHeaders['Authorization'] = `Bearer ${appendToken}`;
+          }
+          // fallback=none: if the run just finished, start a new request below
+          // instead of parking the message unanswered in the session.
+          const resp = await fetch(`/events/${encodeURIComponent(currentRequestId)}/append?fallback=none`, {
+            method: 'POST',
+            headers: appendHeaders,
+            body: JSON.stringify({ content: task })
+          });
+          appended = resp.ok;
+          if (!appended) {
+            console.warn(`Append rejected (${resp.status}), starting a new request instead`);
+          }
+        } catch (err) {
+          console.error('Failed to append to active request:', err);
+          // fall through to starting a new request
+        }
+
+        if (appended) {
+          // The running agent picks the message up at its next step. Rebind the
+          // live stream's block in-place to a fresh one below the injected user
+          // message so the agent's reaction renders after it (same pattern as
+          // the 'continuation' event handler).
+          if (activeStreamBlk) {
+            const newBlk = addAssistantBlock(chatContainer);
+            activeStreamBlk.row = newBlk.row;
+            activeStreamBlk.box = newBlk.box;
+            activeStreamBlk.t = newBlk.t;
+            activeStreamBlk.think = newBlk.think;
+            activeStreamBlk.status = newBlk.status;
+            activeStreamBlk.thinkingSection = newBlk.thinkingSection;
+            activeStreamBlk.statusSection = newBlk.statusSection;
+            activeStreamBlk.responseSection = newBlk.responseSection;
+            scrollBottom();
+          }
           runBtn.style.display = 'none';
           stopBtn.style.display = 'block';
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           stopBtn.disabled = false;
           stopBtn.setAttribute('title', 'Stop');
           stopBtn.setAttribute('aria-label', 'Stop');
-
-          const resp = await fetch(`/events/${encodeURIComponent(currentRequestId)}/append`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: task })
-          });
-
-          if (!resp.ok) {
-            const txt = await resp.text();
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Failed to append message: ' + txt)}</div>`;
-            return;
-          }
-
-          // appended successfully; the running agent will pick it up and continue
           return;
-
-        } catch (err) {
-          console.error('Failed to append to active request:', err);
-          // fall through to starting a new request
         }
+        // Run no longer active: fall through to starting a new request with
+        // this message as the task (the message was NOT stored server-side).
       }
 
       // No active request or has files: start a new request
       const blk = addAssistantBlock(chatContainer);
+      activeStreamBlk = blk;
       runBtn.style.display = 'none'; // Hide run button
       stopBtn.style.display = 'block'; // Show stop button
       stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
@@ -1657,6 +1682,7 @@
         if (status.status === 'running') {
           // Use the SAME setup as normal request - addAssistantBlock, etc.
           const blk = addAssistantBlock(chatContainer);
+          activeStreamBlk = blk;
           
           runBtn.style.display = 'none';
           stopBtn.style.display = 'block';

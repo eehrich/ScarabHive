@@ -1276,6 +1276,16 @@ class Agent(MCPServer):
             results: Execution results dictionary
             step: Final step number
         """
+        # Flush injected user messages that arrived too late to be processed
+        # (e.g. during the very last LLM call) into the conversation so they
+        # persist with the final save instead of being dropped with the request
+        # entry. They are answered by the next run on this session.
+        if messages is not None:
+            try:
+                messages = await self._session_tracker.drain_appended_messages(request_id, messages)
+            except Exception as e:
+                logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+
         # Execute session end hooks
         try:
             await self._hook_manager.execute_session_end_hooks(
@@ -2314,7 +2324,19 @@ class Agent(MCPServer):
                 }
                 consecutive_no_tool_calls = 0  # Reset — hook evaluated this
                 continue
-            
+
+            # A user message may have been injected while the LLM produced this
+            # response (mid-run append). Never finalize past fresh user input —
+            # continue the loop so the next LLM call reacts to it. The interim
+            # content was already surfaced via the thinking events above.
+            pre_drain_count = len(messages)
+            messages = await self._drain_appended_messages(request_id, messages)
+            if len(messages) > pre_drain_count:
+                context.messages = messages
+                self._set_live_messages(session_id, messages.copy())
+                consecutive_no_tool_calls = 0
+                continue
+
             # If we have content AND it's not just whitespace, treat as final answer
             if content and content.strip():
                 # Assistant message was already added above before post_llm hooks
