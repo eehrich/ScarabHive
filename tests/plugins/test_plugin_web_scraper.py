@@ -55,6 +55,54 @@ class TestWebScraperServer:
         assert "url" in result["error"].lower()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_url", [
+        "http://169.254.169.254/latest/meta-data/",   # AWS IMDS
+        "http://metadata.google.internal/",           # GCP metadata
+        "http://localhost:8000/",                     # loopback
+        "http://127.0.0.1/",                          # loopback
+        "http://10.0.0.5/",                           # RFC1918
+        "http://192.168.1.1/",                        # RFC1918
+        "file:///etc/passwd",                         # non-http scheme
+        "gopher://internal/",                         # non-http scheme
+    ])
+    async def test_ssrf_blocks_internal_and_nonhttp(self, mock_system_config, mock_mcp_config, bad_url):
+        """SSRF guard rejects internal/metadata/non-http targets without fetching."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        mock_status = AsyncMock()
+        result = await server.call("web_scraper_page", {"url": bad_url, "_status": mock_status})
+        assert "error" in result
+        assert "ssrf" in result["error"].lower() or "blocked" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_ssrf_blocks_redirect_to_internal(self, mock_system_config, mock_mcp_config):
+        """A public URL that 302s to the metadata IP is blocked on the redirect hop."""
+        import httpx
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        mock_status = AsyncMock()
+
+        # First fetch (public host) returns a redirect to the metadata IP.
+        redirect_resp = MagicMock()
+        redirect_resp.is_redirect = True
+        redirect_resp.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+        redirect_resp.status_code = 302
+
+        async def fake_get(url, *a, **k):
+            return redirect_resp
+
+        with patch.object(httpx, "AsyncClient") as mock_client_cls:
+            client = AsyncMock()
+            client.get = fake_get
+            client.__aenter__.return_value = client
+            client.__aexit__.return_value = None
+            mock_client_cls.return_value = client
+            result = await server.call(
+                "web_scraper_page",
+                {"url": "https://example.com/redirector", "_status": mock_status},
+            )
+        assert "error" in result
+        assert "blocked" in result["error"].lower()
+
+    @pytest.mark.asyncio
     async def test_scraper_server_invalid_tool(self, mock_system_config, mock_mcp_config):
         server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 

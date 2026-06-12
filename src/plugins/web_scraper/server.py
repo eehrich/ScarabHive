@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 import re
+import ipaddress
+import socket
 import urllib.parse
 import asyncio
 import random
@@ -14,6 +16,24 @@ if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
+
+# Hostnames that resolve to cloud metadata services. Blocked by name as a
+# belt-and-suspenders measure on top of the IP-range check (they resolve to
+# link-local 169.254.169.254, which is already non-global, but an explicit
+# name block is clearer and survives odd resolver behavior).
+_BLOCKED_METADATA_HOSTS = {
+    "metadata.google.internal", "metadata.goog", "metadata",
+}
+
+
+class WebScraperSSRFError(Exception):
+    """Raised when a URL targets a blocked host (internal / metadata / non-http).
+
+    SSRF guard: the scraper fetches LLM-controlled URLs and returns the body to
+    the model, so without this an LLM (e.g. via prompt-injection in a scraped
+    page) could read cloud metadata (169.254.169.254 -> IAM credentials),
+    localhost admin ports, or internal RFC1918 services and exfiltrate them.
+    """
 
 
 class WebScraperServer(SchemaBasedMCPServer):
@@ -270,6 +290,55 @@ class WebScraperServer(SchemaBasedMCPServer):
         
         return False, ""
 
+    async def _assert_url_safe(self, url: str) -> None:
+        """Raise WebScraperSSRFError if `url` targets a non-public/internal host.
+
+        Validates the scheme (http/https only), then resolves the hostname and
+        rejects any address that is not globally routable (loopback, private,
+        link-local incl. the 169.254.169.254 metadata IP, reserved, multicast,
+        etc.). Must be called for the initial URL AND every redirect hop, since
+        a public host can 302 to an internal target.
+
+        Note: this does not pin the resolved IP for the actual connection, so a
+        determined DNS-rebinding attacker could still race the resolver. That is
+        a far more sophisticated attack than the direct/redirect-to-internal
+        vector this closes; IP-pinning would require a custom httpx transport.
+        """
+        parsed = urllib.parse.urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            raise WebScraperSSRFError(f"Blocked URL scheme {scheme or '(none)'!r} (only http/https allowed)")
+        host = parsed.hostname
+        if not host:
+            raise WebScraperSSRFError("URL has no host")
+        if host.lower() in _BLOCKED_METADATA_HOSTS:
+            raise WebScraperSSRFError(f"Blocked cloud-metadata host: {host}")
+
+        port = parsed.port or (443 if scheme == "https" else 80)
+        try:
+            # Async resolver (does not block the event loop)
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                host, port, proto=socket.IPPROTO_TCP
+            )
+        except socket.gaierror as e:
+            raise WebScraperSSRFError(f"Cannot resolve host {host!r}: {e}")
+
+        for info in infos:
+            addr = info[4][0]
+            # Strip IPv6 scope id (e.g. 'fe80::1%eth0')
+            addr = addr.split("%", 1)[0]
+            try:
+                ip = ipaddress.ip_address(addr)
+            except ValueError:
+                raise WebScraperSSRFError(f"Unparseable address {addr!r} for host {host!r}")
+            # is_global is True only for publicly routable addresses; everything
+            # else (private/loopback/link-local/reserved/multicast/unspecified)
+            # is a potential SSRF target and is rejected.
+            if not ip.is_global:
+                raise WebScraperSSRFError(
+                    f"Blocked non-public address {ip} for host {host!r}"
+                )
+
     async def _fetch_with_retry(self, target_url: str, user_agent: str, timeout: float, max_retries: int = 3, params: dict = None) -> tuple[str, int, str, str]:
         """Fetch URL with retry logic for rate limiting and temporary failures."""
         last_exception = None
@@ -301,7 +370,10 @@ class WebScraperServer(SchemaBasedMCPServer):
                     continue
                 
                 return html, status_code, final_url, content_type
-                
+
+            except WebScraperSSRFError:
+                # Security rejection - do NOT retry, propagate to the caller.
+                raise
             except Exception as e:
                 last_exception = e
                 if attempt < max_retries:
@@ -344,19 +416,33 @@ class WebScraperServer(SchemaBasedMCPServer):
             proxy_url = self._proxies[proxy_index]
         
         try:
-            # Note: httpx uses 'proxy' (singular), not 'proxies' (plural)
+            # SSRF guard: follow redirects MANUALLY so every hop is validated.
+            # follow_redirects=True would let a public host 302 straight to an
+            # internal target (e.g. the cloud-metadata IP) without a check.
             client_kwargs = {
-                "follow_redirects": True,
+                "follow_redirects": False,
                 "verify": self.ssl_verify,
                 "headers": headers,
                 "cookies": self._sessions[domain],
                 "timeout": timeout,
             }
             if proxy_url:
-                client_kwargs["proxy"] = proxy_url
-            
+                client_kwargs["proxy"] = proxy_url  # httpx uses 'proxy' (singular)
+
+            max_hops = 10
+            current_url = target_url
             async with httpx.AsyncClient(**client_kwargs) as client:
-                resp = await client.get(target_url)
+                resp = None
+                for hop in range(max_hops + 1):
+                    # Validate BEFORE each request (initial URL + every redirect)
+                    await self._assert_url_safe(current_url)
+                    resp = await client.get(current_url)
+                    if resp.is_redirect and resp.headers.get("location") and hop < max_hops:
+                        # Resolve Location relative to the current URL and loop
+                        current_url = urllib.parse.urljoin(current_url, resp.headers["location"])
+                        continue
+                    break
+
                 status_code = resp.status_code
                 final_url = str(resp.url)
                 content_type = resp.headers.get("content-type", "").lower()
@@ -367,6 +453,9 @@ class WebScraperServer(SchemaBasedMCPServer):
                 else:
                     # Non-HTML content detected
                     html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
+        except WebScraperSSRFError:
+            # Security rejection (initial URL or a redirect hop) - propagate.
+            raise
         except ReadTimeout:
             logger.warning(f"ReadTimeout fetching {target_url}")
             return "", 0, target_url, ""
@@ -422,6 +511,18 @@ class WebScraperServer(SchemaBasedMCPServer):
         # Get status object (mandatory from framework)
         status = params["_status"]
 
+        # SSRF guard: reject internal/metadata/non-http targets before any
+        # network access (redirect hops are validated inside the fetch).
+        try:
+            await self._assert_url_safe(url)
+        except WebScraperSSRFError as e:
+            logger.warning("web_scraper blocked SSRF target %r: %s", url, e)
+            try:
+                await status.error(f"Blocked URL: {e}")
+            except Exception:
+                pass
+            return {"error": f"Blocked URL (SSRF protection): {e}"}
+
         timeout = float(params.get("timeout", 20))
         user_agent = params.get("user_agent", self._get_random_user_agent())
 
@@ -468,7 +569,16 @@ class WebScraperServer(SchemaBasedMCPServer):
             # status publishing must not break functionality
             pass
 
-        html, status_code, final_url, content_type = await self._fetch_with_retry(url, user_agent, timeout, params=params)
+        try:
+            html, status_code, final_url, content_type = await self._fetch_with_retry(url, user_agent, timeout, params=params)
+        except WebScraperSSRFError as e:
+            # A redirect hop pointed at an internal/metadata target.
+            logger.warning("web_scraper blocked SSRF redirect for %r: %s", url, e)
+            try:
+                await status.error(f"Blocked redirect: {e}")
+            except Exception:
+                pass
+            return {"error": f"Blocked URL (SSRF protection): {e}"}
 
         # Sanitize HTML before processing to remove problematic characters
         html = self._sanitize_html(html)
