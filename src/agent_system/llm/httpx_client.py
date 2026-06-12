@@ -900,6 +900,15 @@ class HTTPXOpenAIClient(LLMClient):
                 raise  # Re-raise HTTP errors immediately
             except asyncio.CancelledError:
                 raise  # Re-raise cancellation
+            except (LLMRateLimitError, LLMServerError):
+                # Typed fallback errors (incl. LLMQuotaExhaustedError, a
+                # subclass of LLMRateLimitError) are raised intentionally above
+                # for the agent server's LLM-fallback mechanism. They must NOT
+                # be caught by the generic handler below (which would re-wrap
+                # them in a plain Exception and break fallback detection). The
+                # streaming path does not catch them either - this keeps both
+                # paths consistent.
+                raise
             except Exception as e:
                 last_exception = e
                 err_label = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
@@ -1033,18 +1042,6 @@ class HTTPXOpenAIClient(LLMClient):
             "timestamp_ms": _time.time() * 1000,
         })
 
-        # Accumulators for building complete response
-        accumulated_content: list[str] = []
-        accumulated_reasoning: list[str] = []  # For reasoning_content (DeepSeek, OpenAI o-series)
-        accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
-        # OpenRouter delivers Gemini 3.x thought_signature inside reasoning_details
-        # blocks (format=google-gemini-v1). Must round-trip on next turn or upstream
-        # returns MALFORMED_FUNCTION_CALL. We keep blocks keyed by index so deltas
-        # from the same block accumulate cleanly.
-        accumulated_reasoning_details: dict[int, dict[str, Any]] = {}
-        accumulated_usage = None  # usage information from final chunk
-        _last_finish_reason: str | None = None  # Track finish_reason from chunks
-
         # Retry logic with exponential backoff
         _streaming_request_start = _time.time()
         last_exception: Exception | None = None
@@ -1054,6 +1051,24 @@ class HTTPXOpenAIClient(LLMClient):
         # _detect_body_400_signature_issue + _inject_signature_bypass.
         _sig_retried = False
         for attempt in range(_effective_max + 1):
+            # Accumulators for building the complete response. MUST be reset at
+            # the start of every attempt: a stream that drops mid-response
+            # (RemoteProtocolError on a stalled stream is common during long
+            # thinking pauses) retries the whole request - keeping the partial
+            # chunks from the failed attempt would concatenate them with the
+            # retry's output, duplicating text and corrupting tool-call argument
+            # JSON. The other clients (anthropic/gemini) reset on retry too.
+            accumulated_content: list[str] = []
+            accumulated_reasoning: list[str] = []  # reasoning_content (DeepSeek, OpenAI o-series)
+            accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
+            # OpenRouter delivers Gemini 3.x thought_signature inside reasoning_details
+            # blocks (format=google-gemini-v1). Must round-trip on next turn or upstream
+            # returns MALFORMED_FUNCTION_CALL. We keep blocks keyed by index so deltas
+            # from the same block accumulate cleanly.
+            accumulated_reasoning_details: dict[int, dict[str, Any]] = {}
+            accumulated_usage = None  # usage information from final chunk
+            _last_finish_reason: str | None = None  # finish_reason from chunks
+
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled by user")

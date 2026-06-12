@@ -19,6 +19,12 @@ class LLMRouterServer(SchemaBasedMCPServer):
         # Store the full system config for LLM routing
         self.llm_config = system_config.llm_system
         self.agent_config = system_config
+        # _make_client passes self.ssl_verify to make_llm(), but the base
+        # class never sets it - without this every chat() call raised
+        # AttributeError (swallowed by the broad except, so the tool was
+        # silently non-functional). Mirror basic_agent/server.py.
+        network_cfg = getattr(system_config, 'network', None)
+        self.ssl_verify = getattr(network_cfg, 'ssl_verify', True) if network_cfg else True
 
 
 

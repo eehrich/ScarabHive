@@ -423,13 +423,17 @@ class MCPClientFactory:
         client_name: str = "AgentSystem",
         timeout: float = 30.0,
         ssl_verify: bool = True,
-        initialization_options: Optional[Dict[str, Any]] = None
+        initialization_options: Optional[Dict[str, Any]] = None,
+        connection_limit: int = 10,
+        connection_limit_per_host: int = 5
     ) -> StandardMCPClient:
         """Create an HTTP-based MCP client"""
         transport = HTTPTransport(
             base_url=base_url,
             timeout=timeout,
-            ssl_verify=ssl_verify
+            ssl_verify=ssl_verify,
+            connection_limit=connection_limit,
+            connection_limit_per_host=connection_limit_per_host
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)

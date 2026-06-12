@@ -545,8 +545,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                         f"({session.actual_thoughts}), adjusted to {session.actual_thoughts}"
                     )
                     total_thoughts = session.actual_thoughts
+                    # Use the already-parsed local (old_estimate), NOT
+                    # params['total_thoughts']: callers may send camelCase
+                    # 'totalThoughts', so the subscript raised KeyError here -
+                    # AFTER the thought was already persisted and the counter
+                    # advanced, leaving the caller told 'error' while the state
+                    # had actually changed.
                     logger.info(
-                        f"Auto-clamped total_thoughts from {params['total_thoughts']} "
+                        f"Auto-clamped total_thoughts from {old_estimate} "
                         f"to {total_thoughts} for session {session.session_id}"
                     )
 

@@ -1508,8 +1508,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             temp_dir = Path(tempfile.mkdtemp())
 
+            temp_dir_resolved = temp_dir.resolve()
             for upload_file in upload_files:
-                temp_path = temp_dir / upload_file.filename
+                # SECURITY: the client-supplied filename must NOT be trusted.
+                # Path's `/` drops the left side if the right is absolute and
+                # honors '../' segments, so a raw join allows arbitrary-path
+                # writes (RCE / config overwrite). Take only the basename and
+                # verify the result stays inside temp_dir.
+                safe_name = Path(upload_file.filename or "").name
+                if not safe_name:
+                    logger.warning("Skipping upload with empty/unsafe filename: %r", upload_file.filename)
+                    continue
+                temp_path = temp_dir / safe_name
+                if not temp_path.resolve().is_relative_to(temp_dir_resolved):
+                    logger.warning("Skipping upload that escapes temp dir: %r", upload_file.filename)
+                    continue
                 with open(temp_path, 'wb') as f:
                     content = await upload_file.read()
                     f.write(content)

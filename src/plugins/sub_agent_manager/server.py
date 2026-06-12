@@ -1489,14 +1489,25 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             async with self._async_jobs_lock:
                 if instance_id in self._async_jobs:
                     job = self._async_jobs[instance_id].copy()
+                    # Ownership check: _async_jobs is a process-wide singleton dict
+                    # keyed by guessable instance_id. Without this guard any
+                    # session could poll another user's in-flight sub-agent and
+                    # read its full result. Mirrors the DB-path check at the
+                    # parent_link comparison used by continue/info/delete.
+                    caller_session = params.get("_session_id")
+                    job_parent = job.get("parent_session_id")
+                    if caller_session and job_parent and job_parent != caller_session:
+                        if status:
+                            await status.error(f"Poll: {instance_id} not found")
+                        return {"status": "error", "error": "Instance not found"}
                     job_status = job.get("status")
-                    
+
                     # If job is completed/failed/cancelled, remove from memory after returning
                     # Subsequent polls will load from DB (which is fine)
                     if job_status in ("completed", "failed", "cancelled"):
                         self._async_jobs.pop(instance_id, None)
                         logger.debug(f"Removed completed job {instance_id} from memory after poll")
-                    
+
                     # Remove task_handle from response (not serializable)
                     job.pop("task_handle", None)
                     job.pop("_awaiting_poll", None)
@@ -1619,18 +1630,27 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         return {"status": "error", "error": f"Instance '{instance_id}' disappeared during wait"}
 
                     job = self._async_jobs[instance_id]
+                    # Ownership check (see _handle_poll): the shared singleton
+                    # _async_jobs is keyed by guessable instance_id; without this
+                    # a session could wait on and read another user's sub-agent.
+                    caller_session = params.get("_session_id")
+                    job_parent = job.get("parent_session_id")
+                    if caller_session and job_parent and job_parent != caller_session:
+                        if status_ctx:
+                            await status_ctx.error(f"Instance {instance_id} not found")
+                        return {"status": "error", "error": "Instance not found"}
                     job_status = job["status"]
 
                     if job_status in ["completed", "failed", "cancelled"]:
                         result = job.copy()
                         result.pop("task_handle", None)
-                        
+
                         if status_ctx:
                             if job_status == "completed":
                                 await status_ctx.end(f"Instance {instance_id} completed")
                             else:
                                 await status_ctx.error(f"Instance {instance_id} {job_status}")
-                        
+
                         return result
 
                 # Check timeout
@@ -1752,6 +1772,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 job = self._async_jobs[instance_id]
                 task_handle = job.get("task_handle")
                 parent_session_id = job.get("parent_session_id")
+
+                # Ownership check (see _handle_poll): cancel is a control/write
+                # operation on the shared singleton _async_jobs - without this a
+                # session could kill (DoS) another user's in-flight sub-agent.
+                caller_session = params.get("_session_id")
+                if caller_session and parent_session_id and parent_session_id != caller_session:
+                    if status_ctx:
+                        await status_ctx.error(f"Cancel: {instance_id} not found")
+                    return {"status": "error", "error": "Instance not found"}
 
                 if job["status"] not in ["pending", "running"]:
                     if status_ctx:

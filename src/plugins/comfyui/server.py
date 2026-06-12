@@ -1104,9 +1104,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         else:
             # Determine path
             if file_path:
-                path_obj = Path(file_path)
-                if not path_obj.is_absolute():
-                    path_obj = effective_output_dir / path_obj
+                path_obj = effective_output_dir / file_path
             else:
                 # Search by filename
                 path_obj = effective_output_dir / filename
@@ -1115,7 +1113,22 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     matches = list(effective_output_dir.rglob(filename))
                     if matches:
                         path_obj = matches[0]
-            
+
+            # SECURITY: contain the resolved path inside the output dir. The
+            # file_path/filename are LLM-controlled; an absolute path or '..'
+            # segments would otherwise escape effective_output_dir and read
+            # arbitrary host files into the model context.
+            try:
+                path_obj = path_obj.resolve()
+                path_obj.relative_to(effective_output_dir.resolve())
+            except ValueError:
+                if status:
+                    await status.error("File path escapes the output directory")
+                return {
+                    "error": "Invalid file path (outside the allowed output directory)",
+                    "searched_in": str(effective_output_dir),
+                }
+
             if not path_obj.exists():
                 if status:
                     await status.error(f"File not found: {file_path or filename}")
@@ -1223,7 +1236,13 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Timeout only from plugin config, not from tool params
         timeout = self.timeout
-        poll_interval = params.get("poll_interval", 2)  # Default 2 seconds
+        # Clamp poll_interval to a sane lower bound: it is LLM-controlled and
+        # unbounded in the schema, so poll_interval=0 would busy-loop two HTTP
+        # round-trips per iteration against ComfyUI for the full timeout window.
+        try:
+            poll_interval = max(1, int(params.get("poll_interval", 2)))
+        except (TypeError, ValueError):
+            poll_interval = 2
         include_content = params.get("include_content", False)
         
         # Unknown status threshold - if job stays unknown for this long, fail early

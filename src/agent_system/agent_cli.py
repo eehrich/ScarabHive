@@ -1439,9 +1439,13 @@ def main() -> None:
                     logger.info(f"Session '{session_id}' not found, creating new session with this ID")
                     print(f"Creating new session '{session_id}'")
                     was_new_session = True  # Will be saved at end
-                # Initialize session in agent if it doesn't exist
-                if hasattr(agent, '_session_tracker'):
-                    agent._session_tracker.set_session_messages(actual_session_id, [])
+                    # Initialize empty session in agent ONLY when it doesn't exist.
+                    # MUST stay inside the else: when the session WAS restored,
+                    # load_and_restore_session already populated the tracker -
+                    # clearing it here wipes the restored history and the
+                    # subsequent save permanently destroys it on disk.
+                    if hasattr(agent, '_session_tracker'):
+                        agent._session_tracker.set_session_messages(actual_session_id, [])
             except SessionPermissionError as e:
                 # User trying to access session they don't own
                 logger.error(f"Permission denied for session {session_id}: {e}")

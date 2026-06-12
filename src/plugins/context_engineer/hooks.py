@@ -1200,6 +1200,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "warning": "Full content returned - consider using preview/chunk/search to save tokens"
             }
     
+    @staticmethod
+    def _is_within(path: "Path", root: "Path") -> bool:
+        """True if `path` (already resolved) is inside `root` (already resolved)."""
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
     async def _handle_restore_multimodal(
         self,
         path: str,
@@ -1219,9 +1228,32 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             Status and file info, or error if file not found
         """
         from pathlib import Path
-        
+
         file_path = Path(path)
-        
+
+        # SECURITY: `path` comes straight from LLM tool args (recall(query=
+        # "/path/to/file")). Without containment this is an arbitrary file read
+        # primitive: the file is base64-injected into the model context. Restrict
+        # to the project data roots where all plugin media legitimately lives
+        # (context_engineer media store, comfyui outputs, audio, covers - all
+        # under data/). Reject anything outside, including symlink escapes.
+        allowed_roots = []
+        for root in (self._storage_base, Path("data")):
+            try:
+                allowed_roots.append(root.resolve())
+            except Exception:
+                pass
+        try:
+            resolved = file_path.resolve()
+        except Exception:
+            resolved = file_path
+        if not any(self._is_within(resolved, r) for r in allowed_roots):
+            logger.warning("restore_multimodal rejected out-of-root path: %r", path)
+            return {
+                "status": "error",
+                "error": "Path is outside the allowed media directories.",
+            }
+
         # Validate file exists
         if not file_path.exists():
             return {

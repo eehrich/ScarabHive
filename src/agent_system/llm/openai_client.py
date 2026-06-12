@@ -580,7 +580,21 @@ class OpenAIAsyncClient(LLMClient):
             })
 
             return result
+        except (LLMRateLimitError, LLMQuotaExhaustedError):
+            # Typed errors are raised intentionally for the agent server's
+            # LLM-fallback mechanism. Downgrading them to an error dict here
+            # would route them through the generic upstream-error branch and
+            # lose the rate-limit / retry_after / persistent-fallback semantics.
+            raise
+        except asyncio.CancelledError:
+            raise  # User cancellation must propagate, not become an error dict
         except Exception as e:
+            # Cancellation is also raised above as a plain Exception sentinel
+            # ("Request cancelled by user"). Propagate it cleanly instead of
+            # reporting it as an upstream LLM error (which makes the server
+            # retry the cancelled request through every fallback profile).
+            if "cancelled by user" in str(e).lower():
+                raise
             status = None
             resp_obj = getattr(e, "response", None)
             if resp_obj is not None:

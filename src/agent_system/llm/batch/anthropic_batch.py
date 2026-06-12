@@ -359,12 +359,14 @@ class AnthropicBatchClient(BatchProviderClient):
             raise RuntimeError(f"No batch ID in response: {data}")
         
         logger.info(f"Created Anthropic batch: {batch_id} with {len(batch_requests)} requests")
-        
-        # Track this job
-        tracker = get_job_tracker()
-        if tracker:
-            await tracker.add_job("anthropic", batch_id, job.job_id)
-        
+
+        # NOTE: job tracking is done by BatchQueueManager._submit_batch, which
+        # calls tracker.add_job(provider, provider_job_id) right after this
+        # method returns. The previous in-client call passed 3 args to a 2-arg
+        # add_job(provider, job_id) signature, raising TypeError on every
+        # Anthropic batch submission (after the batch was already created at the
+        # provider). Removed - it was both buggy and redundant double-tracking.
+
         return batch_id
     
     async def get_batch_status(self, batch_id: str) -> Dict[str, Any]:

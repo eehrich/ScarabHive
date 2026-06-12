@@ -350,8 +350,21 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                     "cleared_frames": frame_count,
                     "message": f"Cleared {frame_count} frames from stack"
                 }
+            elif params.get("_session_id"):
+                # A per-session caller (the framework injects _session_id on
+                # every LLM tool call) resolved no stack. The server is a
+                # singleton shared across all sessions/users, so falling through
+                # to a global wipe here would destroy every OTHER session's
+                # stacks (cross-session data loss reachable from LLM output).
+                # Refuse and tell the caller to pass an explicit stack_id.
+                error_msg = "No active stack for this session (provide an explicit stack_id to clear a specific stack)"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
             else:
-                # Clear all stacks
+                # No session context at all - a maintenance/CLI call. Allow the
+                # global clear-all (not reachable from an LLM tool call, which
+                # always carries _session_id).
                 total_frames = sum(len(s.frames) for s in self._stacks.values())
                 stack_count = len(self._stacks)
 

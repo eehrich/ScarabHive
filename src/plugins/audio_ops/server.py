@@ -1731,24 +1731,38 @@ class AudioOpsServer(SchemaBasedMCPServer):
         
         status = params.get("_status")
         source_file = params.get("source_file")
-        threshold_db = params.get("threshold_db", -40)
-        min_duration = params.get("min_duration", 0.3)
-        
+
         # Session ID for path resolution
         session_id = params.get("_session_id")
-        
+
         try:
+            # SECURITY: these values are interpolated into the ffmpeg '-af'
+            # filter string. ffmpeg filtergraph syntax uses commas/semicolons
+            # to chain filters (e.g. amovie=/etc/passwd reads arbitrary files),
+            # so a non-numeric value would inject filters. Coerce to numbers -
+            # the MCP arg schema is not enforced at this boundary. Raised inside
+            # the try so the handler's except AudioOpsError returns a clean
+            # error response.
+            try:
+                threshold_db = float(params.get("threshold_db", -40))
+                min_duration = float(params.get("min_duration", 0.3))
+            except (TypeError, ValueError):
+                raise AudioOpsError(
+                    "threshold_db and min_duration must be numeric",
+                    error_type="ValueError"
+                )
+
             await status.progress("Detecting silence...")
-            
+
             # Validate and resolve path
             source_path = self._validate_path(source_file, session_id)
-            
+
             if not source_path.exists():
                 raise AudioOpsError(
                     f"Source file not found: {source_file}",
                     error_type="FileNotFoundError"
                 )
-            
+
             # Run ffmpeg silencedetect
             detect_cmd = [
                 "ffmpeg", "-i", str(source_path),
@@ -1836,14 +1850,26 @@ class AudioOpsServer(SchemaBasedMCPServer):
         status = params.get("_status")
         source_file = params.get("source_file")
         dest_file = params.get("dest_file")
-        max_silence = params.get("max_silence", 1.0)
-        threshold_db = params.get("threshold_db", -40)
-        mp3_bitrate = params.get("mp3_bitrate", 192)
-        
+
         # Session ID for path resolution
         session_id = params.get("_session_id")
-        
+
         try:
+            # SECURITY: threshold_db and mp3_bitrate are interpolated into
+            # ffmpeg filter/codec arguments; coerce to numbers to prevent
+            # filtergraph injection (see detect_silence). max_silence is only
+            # used in numeric comparisons but coerce it too. Raised inside the
+            # try so the handler's except AudioOpsError returns a clean error.
+            try:
+                max_silence = float(params.get("max_silence", 1.0))
+                threshold_db = float(params.get("threshold_db", -40))
+                mp3_bitrate = int(params.get("mp3_bitrate", 192))
+            except (TypeError, ValueError):
+                raise AudioOpsError(
+                    "max_silence, threshold_db and mp3_bitrate must be numeric",
+                    error_type="ValueError"
+                )
+
             await status.progress("Analyzing silence...")
             
             # Validate and resolve paths

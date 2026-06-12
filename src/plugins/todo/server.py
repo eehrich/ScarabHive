@@ -17,6 +17,7 @@ Key features:
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, UTC
 from difflib import SequenceMatcher
 from enum import Enum
@@ -415,8 +416,20 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             await asyncio.to_thread(self._save_session, session_id)
 
     def _get_storage_path(self, session_id: str) -> Path:
-        """Get file path for session storage"""
-        return self._storage_path / f"{session_id}.json"
+        """Get file path for session storage.
+
+        SECURITY: session_id can reach this from the web router unvalidated
+        (web_endpoints.py accepts session_id as a query param with no auth/IDOR
+        check). Without sanitization a value like '../../tmp/evil' or an
+        absolute path escapes the storage dir -> arbitrary JSON read/write.
+        Allow only a safe charset and assert containment.
+        """
+        if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", session_id):
+            raise StorageError(f"Invalid session_id: {session_id!r}")
+        path = (self._storage_path / f"{session_id}.json").resolve()
+        if not path.is_relative_to(self._storage_path.resolve()):
+            raise StorageError(f"session_id escapes storage directory: {session_id!r}")
+        return path
 
     def _generate_task_id(self, session_id: str) -> str:
         """

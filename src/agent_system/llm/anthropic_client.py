@@ -173,8 +173,12 @@ class AnthropicAsyncClient(LLMClient):
                         create_anthropic_multimodal_injection,
                         check_vision_support
                     )
-                    # Anthropic Claude models generally support vision
-                    supports_vision = check_vision_support(self.capabilities) if self.capabilities else True
+                    # Anthropic Claude models generally support vision.
+                    # capabilities is not set on this client (never wired through
+                    # __init__), so guard with getattr to avoid AttributeError
+                    # on the first multimodal tool result.
+                    _caps = getattr(self, "capabilities", None)
+                    supports_vision = check_vision_support(_caps) if _caps else True
                     injection = create_anthropic_multimodal_injection(
                         msg, supports_vision=supports_vision, model_name=self.model
                     )

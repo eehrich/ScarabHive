@@ -666,6 +666,13 @@
   // Event source tracking (shared across init calls and cleanup)
   let currentEventSource = null;
   let currentStatusEventSource = null;
+  // True while a fetch()-based SSE stream (POST /events or POST /run) is live.
+  // currentEventSource is ONLY set on the page-refresh EventSource reconnect
+  // path, never for the normal fetch+getReader() streams - so it cannot be
+  // used to detect an active request. This flag closes that gap: it gates
+  // hasActiveRequest(), the session:loaded clobber guard, and the
+  // append-to-running-request branch.
+  let streamActive = false;
   let closeEventSourceTimer = null; // Timer to delay closing EventSource after final/end
   
   // SSE Reconnection state for long-running requests
@@ -1232,7 +1239,8 @@
 
       // If there's an active request, append the user message to it
       // Note: Multimodal append not yet supported, only text append
-      if (currentRequestId && currentEventSource && !hasFiles) {
+      // (streamActive, not currentEventSource: fetch streams never set the latter)
+      if (currentRequestId && streamActive && !hasFiles) {
         try {
           // immediate UX feedback: show thinking block if none
           const blk = addAssistantBlock(chatContainer);
@@ -1313,6 +1321,10 @@
           }
           
           // Status events now come through /events SSE stream - no separate connection needed
+
+          // Mark a live stream so hasActiveRequest()/guards work (fetch streams
+          // never set currentEventSource).
+          streamActive = true;
 
           // Stream SSE response from /run endpoint
           const response = await fetch('/run', {
@@ -1413,6 +1425,7 @@
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           currentRequestId = null;
           currentEventSource = null;
+          streamActive = false;
         }
         return;
       }
@@ -1454,6 +1467,9 @@
       }
 
       try {
+        // Mark a live stream so hasActiveRequest()/guards work (fetch streams
+        // never set currentEventSource).
+        streamActive = true;
         const response = await fetch('/events', {
           method: 'POST',
           headers: postHeaders,
@@ -1614,6 +1630,7 @@
         stopBtn.disabled = false;
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
         currentEventSource = null;
+        streamActive = false;
         // Clear stale request ID unless actively reconnecting
         // Without this, currentRequestId stays set after a completed request,
         // which can interfere with subsequent submissions
@@ -1708,6 +1725,7 @@
       currentStatusEventSource.close();
       currentStatusEventSource = null;
     }
+    streamActive = false;
   }
   
   // Expose functions for testing
@@ -1744,7 +1762,8 @@
     
     // CRITICAL: Don't override chat if an SSE request is currently streaming!
     // This prevents race condition where session restore overwrites live streaming output.
-    if (currentEventSource) {
+    // streamActive covers fetch streams; currentEventSource covers the refresh-reconnect path.
+    if (streamActive || currentEventSource) {
       console.warn('[session:loaded] Ignoring session load - SSE stream is active');
       return;
     }
@@ -2070,7 +2089,9 @@
 
   // Public method to check if a request is active
   chatModule.hasActiveRequest = function() {
-    return currentEventSource !== null || currentStatusEventSource !== null;
+    // streamActive covers the normal fetch-based streams; the EventSource refs
+    // cover the page-refresh reconnect path.
+    return streamActive || currentEventSource !== null || currentStatusEventSource !== null;
   };
 
   // Export chatModule to window

@@ -1003,6 +1003,19 @@ class Agent(MCPServer):
             # Generator is being closed early - clean exit without error
             raise
         finally:
+            # Always remove the status_forwarder's handler from the global
+            # status_bus. _finalize_request only does this when a context was
+            # built (context.status_forwarder), so failure paths that return
+            # before context assignment - session-lock failure, 'No LLM
+            # available', any exception in _initialize_request_and_conversation
+            # - would otherwise leak the handler permanently (it accumulates on
+            # the shared bus and every future publish() invokes the dead
+            # handler). stop_forwarding() is idempotent, so the normal-path
+            # call inside _finalize_request remains harmless.
+            try:
+                await status_forwarder.stop_forwarding()
+            except Exception as e:
+                logger.debug(f"Failed to stop status_forwarder for {request_id}: {e}")
             if checkpoint_session_id and self._session_service:
                 try:
                     await self._session_service.stop_checkpoint_loop(checkpoint_session_id)

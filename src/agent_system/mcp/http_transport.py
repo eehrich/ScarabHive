@@ -19,16 +19,23 @@ logger = logging.getLogger(__name__)
 class HTTPTransport(MCPTransport):
     """HTTP transport implementation for MCP"""
 
-    def __init__(self, base_url: str, timeout: float = 30.0, ssl_verify: bool = True):
+    def __init__(self, base_url: str, timeout: float = 30.0, ssl_verify: bool = True,
+                 connection_limit: int = 10, connection_limit_per_host: int = 5):
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self.ssl_verify = ssl_verify
+        self.connection_limit = connection_limit
+        self.connection_limit_per_host = connection_limit_per_host
         self.session: Optional[aiohttp.ClientSession] = None
 
     async def connect(self) -> None:
         """Establish HTTP session"""
         if self.session is None:
-            connector = aiohttp.TCPConnector(ssl=self.ssl_verify)
+            connector = aiohttp.TCPConnector(
+                ssl=self.ssl_verify,
+                limit=self.connection_limit,
+                limit_per_host=self.connection_limit_per_host,
+            )
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             self.session = aiohttp.ClientSession(
                 connector=connector,
