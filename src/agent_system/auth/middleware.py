@@ -755,22 +755,45 @@ def configure_cors(
 ) -> None:
     """
     Configure CORS middleware.
-    
+
     Args:
         app: FastAPI application
         allow_origins: Allowed origins (default: ["*"])
         allow_credentials: Allow credentials
         allow_methods: Allowed methods (default: ["*"])
         allow_headers: Allowed headers (default: ["*"])
+
+    Security: credentials are never combined with a wildcard origin. Starlette's
+    CORSMiddleware does NOT answer wildcard+credentials with a literal "*"; it
+    reflects the *request* Origin and emits Access-Control-Allow-Credentials:true
+    whenever a cookie is present. So allow_origins=["*"] + allow_credentials=True
+    lets any cross-origin page (e.g. another port/subdomain that still receives
+    the SameSite=Lax auth cookie) read authenticated responses. When that
+    combination is requested we drop credentials and warn; to use credentialed
+    CORS, configure an explicit cors_origins allowlist (no "*").
     """
+    resolved_origins = allow_origins or ["*"]
+    if allow_credentials and "*" in resolved_origins:
+        logger.warning(
+            "CORS: allow_credentials=True is incompatible with wildcard origin "
+            "'*' (Starlette reflects arbitrary origins with credentials). "
+            "Disabling credentials for CORS. Set an explicit cors_origins "
+            "allowlist to enable credentialed cross-origin requests."
+        )
+        allow_credentials = False
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins or ["*"],
+        allow_origins=resolved_origins,
         allow_credentials=allow_credentials,
         allow_methods=allow_methods or ["*"],
         allow_headers=allow_headers or ["*"],
     )
-    logger.info("CORS middleware configured")
+    logger.info(
+        "CORS middleware configured (origins=%s, credentials=%s)",
+        resolved_origins,
+        allow_credentials,
+    )
 
 
 def configure_security_middleware(
