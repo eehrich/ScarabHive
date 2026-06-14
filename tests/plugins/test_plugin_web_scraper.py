@@ -102,6 +102,137 @@ class TestWebScraperServer:
         assert "error" in result
         assert "blocked" in result["error"].lower()
 
+    # --- Session-isolation helpers (cookies / proxy / cache) ----------------
+
+    @staticmethod
+    def _mock_httpx(captured: dict | None = None, html: str = "<html>ok</html>"):
+        """Patch httpx so _fetch_html_once does NO real network/DNS I/O.
+
+        Returns a context manager. When `captured` is given, every
+        httpx.AsyncClient(**kwargs) call records its kwargs into it (so a test
+        can assert which proxy/cookies the client was built with).
+        """
+        import contextlib
+        import httpx
+
+        resp = MagicMock()
+        resp.is_redirect = False
+        resp.headers = {"content-type": "text/html"}
+        resp.status_code = 200
+        resp.text = html
+        resp.url = "https://example.com/"
+
+        async def fake_get(url, *a, **k):
+            return resp
+
+        client = AsyncMock()
+        client.get = fake_get
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+
+        def make_client(*a, **k):
+            if captured is not None:
+                captured.clear()
+                captured.update(k)
+            return client
+
+        @contextlib.contextmanager
+        def _ctx():
+            with patch.object(WebScraperServer, "_assert_url_safe", new=AsyncMock()), \
+                 patch.object(httpx, "AsyncClient", side_effect=make_client):
+                yield
+        return _ctx()
+
+    @pytest.mark.asyncio
+    async def test_cookie_jar_is_session_scoped(self, mock_system_config, mock_mcp_config):
+        """Two sessions must NOT share a cookie jar for the same domain.
+
+        Regression: keying jars by domain alone leaked one user's authenticated
+        cookies to every other user scraping the same site.
+        """
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        with self._mock_httpx():
+            await server._fetch_html_once("https://example.com/", "UA", 10, session_id="a")
+            await server._fetch_html_once("https://example.com/", "UA", 10, session_id="b")
+        assert ("a", "example.com") in server._sessions
+        assert ("b", "example.com") in server._sessions
+        assert server._sessions[("a", "example.com")] is not server._sessions[("b", "example.com")]
+
+    @pytest.mark.asyncio
+    async def test_cookie_jar_reused_within_session(self, mock_system_config, mock_mcp_config):
+        """Same session + domain reuses one jar (cookies persist within a session)."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        with self._mock_httpx():
+            await server._fetch_html_once("https://example.com/p1", "UA", 10, session_id="a")
+            jar = server._sessions[("a", "example.com")]
+            await server._fetch_html_once("https://example.com/p2", "UA", 10, session_id="a")
+        assert server._sessions[("a", "example.com")] is jar
+
+    @pytest.mark.asyncio
+    async def test_cookie_jar_none_session_uses_shared_sentinel(self, mock_system_config, mock_mcp_config):
+        """A None session_id (internal/CLI) falls back to the '_shared' jar."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        with self._mock_httpx():
+            await server._fetch_html_once("https://example.com/", "UA", 10, session_id=None)
+        assert ("_shared", "example.com") in server._sessions
+
+    @pytest.mark.asyncio
+    async def test_cookie_jar_is_fifo_bounded(self, mock_system_config, mock_mcp_config):
+        """The cookie dict is bounded; the requested key always survives."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        server._max_cookie_jars = 5
+        with self._mock_httpx():
+            for i in range(20):
+                await server._fetch_html_once(f"https://d{i}.example.com/", "UA", 10, session_id=f"s{i}")
+        assert len(server._sessions) <= 5
+        # The most recent jar is present (never evicted out from under itself)
+        assert ("s19", "d19.example.com") in server._sessions
+
+    @pytest.mark.asyncio
+    async def test_request_proxy_used_and_does_not_mutate_shared(self, mock_system_config, mock_mcp_config):
+        """A per-request proxy is used for that request only and never mutates
+        the shared self._proxies (which raced across concurrent requests)."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        server._proxies = ["http://configured:8080"]
+        before = list(server._proxies)
+        captured: dict = {}
+        with self._mock_httpx(captured):
+            await server._fetch_html_once("https://example.com/", "UA", 10, request_proxy="http://per-request:3128")
+        assert server._proxies == before              # shared config untouched
+        assert captured.get("proxy") == "http://per-request:3128"
+
+    @pytest.mark.asyncio
+    async def test_configured_proxy_pool_used_when_no_request_proxy(self, mock_system_config, mock_mcp_config):
+        """With no per-request proxy, the configured pool is used (rotation)."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        server._proxies = ["http://pool:9999"]
+        captured: dict = {}
+        with self._mock_httpx(captured):
+            await server._fetch_html_once("https://example.com/", "UA", 10, request_proxy=None)
+        assert captured.get("proxy") == "http://pool:9999"
+
+    @pytest.mark.asyncio
+    async def test_no_proxy_when_none_configured(self, mock_system_config, mock_mcp_config):
+        """No proxy key is set on the client when neither request nor pool proxy exists."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        server._proxies = []
+        captured: dict = {}
+        with self._mock_httpx(captured):
+            await server._fetch_html_once("https://example.com/", "UA", 10)
+        assert "proxy" not in captured
+
+    def test_cache_key_is_session_scoped(self, mock_system_config, mock_mcp_config):
+        """Cache keys differ per session so cached page bodies don't cross users."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        args = ("https://example.com/dash", "content", 8000, False, False, False, False)
+        key_a = server._create_cache_key(*args, session_id="a")
+        key_b = server._create_cache_key(*args, session_id="b")
+        key_none = server._create_cache_key(*args)
+        assert key_a != key_b
+        assert key_a != key_none
+        # Stable for identical inputs -> still cacheable within a session
+        assert key_a == server._create_cache_key(*args, session_id="a")
+
     @pytest.mark.asyncio
     async def test_scraper_server_invalid_tool(self, mock_system_config, mock_mcp_config):
         server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)

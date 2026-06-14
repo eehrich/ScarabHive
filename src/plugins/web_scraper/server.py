@@ -91,9 +91,12 @@ class WebScraperServer(SchemaBasedMCPServer):
             "Cache-Control": "max-age=0",
         }
         
-        # Session management for cookie persistence
-        self._sessions = {}  # domain -> httpx.Cookies
-        
+        # Session management for cookie persistence, keyed by (session_id,
+        # domain) for per-user isolation. Bounded by FIFO eviction since the
+        # session dimension multiplies the number of jars.
+        self._sessions = {}  # (session_id, domain) -> httpx.Cookies
+        self._max_cookie_jars = 2000
+
         # Proxy configuration from mcp_config
         self._proxies = getattr(mcp_config, 'proxies', [])
         
@@ -121,10 +124,19 @@ class WebScraperServer(SchemaBasedMCPServer):
         if proxy_url not in self._proxies:
             self._proxies.append(proxy_url)
     
-    def _create_cache_key(self, url: str, operation: str, max_chars: int, 
-                         extract_tables: bool, extract_forms: bool, 
-                         extract_lists: bool, include_html: bool) -> str:
-        """Create a cache key from request parameters."""
+    def _create_cache_key(self, url: str, operation: str, max_chars: int,
+                         extract_tables: bool, extract_forms: bool,
+                         extract_lists: bool, include_html: bool,
+                         session_id: str | None = None) -> str:
+        """Create a cache key from request parameters.
+
+        Scoped by session_id: the cache stores the FETCHED page body, so a
+        shared (session-less) key would serve one user's authenticated/
+        personalized content to another from cache - the same cross-user leak
+        the per-session cookie jars close on the fetch path. Trade-off: public
+        pages are no longer shared across sessions (re-fetched per session),
+        which is acceptable for a scraper where correctness beats cache reuse.
+        """
         # Normalize URL (remove fragment, sort query params)
         try:
             from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -143,6 +155,7 @@ class WebScraperServer(SchemaBasedMCPServer):
         
         # Create cache key from normalized URL and options
         cache_data = {
+            "session": session_id or "_shared",
             "url": normalized_url,
             "operation": operation,
             "max_chars": max_chars,
@@ -342,7 +355,13 @@ class WebScraperServer(SchemaBasedMCPServer):
     async def _fetch_with_retry(self, target_url: str, user_agent: str, timeout: float, max_retries: int = 3, params: dict = None) -> tuple[str, int, str, str]:
         """Fetch URL with retry logic for rate limiting and temporary failures."""
         last_exception = None
-        
+
+        # Per-request context (threaded into the fetch instead of mutating
+        # shared singleton state): the caller's session_id scopes the cookie
+        # jar, and a per-request proxy overrides the configured rotation.
+        session_id = params.get("_session_id") if params else None
+        request_proxy = params.get("proxy") if params else None
+
         for attempt in range(max_retries + 1):
             # Check for cancellation before each retry attempt
             cancellation_token = params.get("_cancellation_token") if params else None
@@ -352,9 +371,12 @@ class WebScraperServer(SchemaBasedMCPServer):
             if attempt > 0:
                 delay = random.uniform(1.0, 3.0)  # 1-3 second random delay
                 await asyncio.sleep(delay)
-            
+
             try:
-                html, status_code, final_url, content_type = await self._fetch_html_once(target_url, user_agent, timeout)
+                html, status_code, final_url, content_type = await self._fetch_html_once(
+                    target_url, user_agent, timeout,
+                    session_id=session_id, request_proxy=request_proxy,
+                )
                 
                 # If we got a rate limit response, wait and retry
                 if status_code == 429 and attempt < max_retries:
@@ -387,34 +409,48 @@ class WebScraperServer(SchemaBasedMCPServer):
             raise last_exception
         return "", 0, target_url, ""
 
-    async def _fetch_html_once(self, target_url: str, user_agent: str, timeout: float) -> tuple[str, int, str, str]:
+    async def _fetch_html_once(self, target_url: str, user_agent: str, timeout: float,
+                               session_id: str | None = None,
+                               request_proxy: str | None = None) -> tuple[str, int, str, str]:
         """Fetch HTML once without retry logic."""
         html: str = ""
         status_code: int = 0
         final_url: str = target_url
         content_type: str = ""
-        
+
         import httpx  # type: ignore
         from httpx import ReadTimeout, RequestError
-        
+
         # Get browser-like headers
         headers = self._get_browser_headers(user_agent)
-        
+
         # Extract domain for session management
         from urllib.parse import urlparse
         domain = urlparse(target_url).netloc
-        
-        # Get or create session cookies for this domain
-        if domain not in self._sessions:
-            self._sessions[domain] = httpx.Cookies()
-        
-        # Configure proxy if available
-        proxy_url = None
-        if self._proxies:
-            # Rotate through available proxies
+
+        # Cookie jar scoped to (session, domain). Keying by domain ALONE leaked
+        # one user's authenticated cookies to every other user scraping the same
+        # site. The session_id isolates jars per caller; None ("_shared") keeps
+        # the legacy behavior for internal/CLI calls without a session.
+        cookie_key = (session_id or "_shared", domain)
+        if cookie_key not in self._sessions:
+            # FIFO-evict oldest jars when over the cap (dicts keep insertion
+            # order). Evicting a jar just drops cached cookies for that
+            # (session, domain) - the next request re-establishes them.
+            while len(self._sessions) >= self._max_cookie_jars:
+                oldest = next(iter(self._sessions))
+                self._sessions.pop(oldest, None)
+            self._sessions[cookie_key] = httpx.Cookies()
+        cookie_jar = self._sessions[cookie_key]
+
+        # Resolve proxy: an explicit per-request proxy wins; otherwise rotate
+        # through the configured pool. NEVER mutate self._proxies (that raced
+        # across concurrent requests and leaked on early return).
+        proxy_url = request_proxy
+        if not proxy_url and self._proxies:
             proxy_index = hash(domain) % len(self._proxies)
             proxy_url = self._proxies[proxy_index]
-        
+
         try:
             # SSRF guard: follow redirects MANUALLY so every hop is validated.
             # follow_redirects=True would let a public host 302 straight to an
@@ -423,7 +459,7 @@ class WebScraperServer(SchemaBasedMCPServer):
                 "follow_redirects": False,
                 "verify": self.ssl_verify,
                 "headers": headers,
-                "cookies": self._sessions[domain],
+                "cookies": cookie_jar,
                 "timeout": timeout,
             }
             if proxy_url:
@@ -536,9 +572,12 @@ class WebScraperServer(SchemaBasedMCPServer):
         ignore_cache = bool(params.get("ignore_cache", False))
         custom_cache_ttl = params.get("cache_ttl")  # Optional custom TTL
         
-        # Create cache key from relevant parameters
-        cache_key = self._create_cache_key(url, operation, max_chars, extract_tables, 
-                                         extract_forms, extract_lists, include_html)
+        # Create cache key from relevant parameters, scoped by session so one
+        # user's cached (possibly authenticated) page body can't be served to
+        # another user.
+        cache_key = self._create_cache_key(url, operation, max_chars, extract_tables,
+                                         extract_forms, extract_lists, include_html,
+                                         session_id=params.get("_session_id"))
         
         # Try to get from cache first (unless ignore_cache is True)
         if self.cache_enabled and not ignore_cache:
@@ -553,13 +592,9 @@ class WebScraperServer(SchemaBasedMCPServer):
         only_same_domain = bool(params.get("only_same_domain", False))
         max_links = int(params.get("max_links", 0))
 
-        # Proxy configuration
-        proxy_url = params.get("proxy")
-        original_proxies = None
-        if proxy_url:
-            # Temporarily set proxy for this request
-            original_proxies = self._proxies.copy()
-            self._proxies = [proxy_url]
+        # Per-request proxy (if any) is threaded through params into the fetch;
+        # we no longer mutate the shared self._proxies singleton (that raced
+        # across concurrent requests and leaked on early return).
 
         # fetch HTML (async) and parse according to requested action
         # notify start of fetch
@@ -815,11 +850,7 @@ class WebScraperServer(SchemaBasedMCPServer):
         if self.cache_enabled:
             await self.cache.set(cache_key, result, ttl=custom_cache_ttl)
             logger.debug(f"Cached content for URL: {url[:80]}...")
-        
-        # Restore original proxy configuration if it was temporarily changed
-        if original_proxies is not None:
-            self._proxies = original_proxies
-            
+
         return result
 
     def _extract_tables(self, soup) -> list[dict[str, Any]]:
