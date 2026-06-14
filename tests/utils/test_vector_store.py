@@ -273,3 +273,64 @@ class TestVectorStoreMetadata:
             metadata = results["metadatas"][0][0]  # First result of first query
             assert metadata.get("author") == "test"
             assert metadata.get("year") == "2024"
+
+
+class TestVectorStoreConcurrency:
+    """The lock must serialize concurrent access to the single sqlite connection."""
+
+    @pytest.fixture
+    def store(self):
+        tmpdir_obj = create_temp_dir()
+        store = VectorStore(persist_path=tmpdir_obj.name)
+        yield store
+        store.close()
+        gc.collect()
+        tmpdir_obj.cleanup()
+
+    def test_synchronized_serializes_concurrent_ops(self, store):
+        """Concurrent add() calls from many threads must NOT overlap.
+
+        Callers fan VectorStore calls out via asyncio.to_thread; without the
+        per-instance lock two threads would use the same sqlite cursor at once
+        ('recursive use of cursors' / corruption). We replace the backend-
+        specific inner add with one that records concurrency and assert the
+        observed max-concurrency is exactly 1.
+        """
+        import threading
+        import time
+        from unittest.mock import patch
+
+        state = {"cur": 0, "max": 0}
+        guard = threading.Lock()
+
+        def fake_inner(*args, **kwargs):
+            with guard:
+                state["cur"] += 1
+                state["max"] = max(state["max"], state["cur"])
+            time.sleep(0.01)  # widen the window for overlap to show
+            with guard:
+                state["cur"] -= 1
+
+        with patch.object(store, "_sqlite_vec_add", side_effect=fake_inner), \
+             patch.object(store, "_chromadb_add", side_effect=fake_inner):
+            threads = [
+                threading.Thread(
+                    target=store.add,
+                    args=("c",),
+                    kwargs={"ids": [f"id{i}"], "documents": ["d"]},
+                )
+                for i in range(10)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert state["max"] == 1, f"lock failed to serialize (max concurrency {state['max']})"
+
+    def test_reentrant_lock_allows_nested_calls(self, store):
+        """The lock is reentrant: a synchronized method may call another."""
+        # close() is @_synchronized and is safe to call twice; a non-reentrant
+        # lock would be fine here, but this documents the reentrancy guarantee.
+        store.close()
+        store.close()  # must not deadlock

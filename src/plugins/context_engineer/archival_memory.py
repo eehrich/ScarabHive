@@ -13,17 +13,34 @@ Key features:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from agent_system.llm.token_utils import estimate_content_tokens
 
 logger = logging.getLogger(__name__)
+
+
+def _synchronized(method):
+    """Serialize a store method on the instance's reentrant lock.
+
+    ArchivalMemory's single sqlite3.Connection (check_same_thread=False) is hit
+    both synchronously from the event loop (handler search/get_stats) and from
+    worker threads via asyncio.to_thread (compaction store), so concurrent
+    access must be serialized to avoid recursive-cursor errors / corruption.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 @dataclass
@@ -117,7 +134,10 @@ class ArchivalMemory:
         self._db: sqlite3.Connection | None = None
         self._vector_store = None
         self._vector_collection = "archival_memory"
-        
+        # Serializes connection access across event-loop + to_thread threads
+        # (see _synchronized). Reentrant for nested synchronized calls.
+        self._lock = threading.RLock()
+
         self._init_db()
         
         if enable_semantic_search:
@@ -184,6 +204,7 @@ class ArchivalMemory:
             self.enable_semantic_search = False
             self._vector_store = None
     
+    @_synchronized
     def store(
         self,
         message: dict[str, Any],
@@ -285,26 +306,7 @@ class ArchivalMemory:
         
         return entry_id
     
-    def store_batch(
-        self,
-        messages: Sequence[dict[str, Any]],
-        session_id: str | None = None
-    ) -> list[str]:
-        """Store multiple messages efficiently.
-        
-        Args:
-            messages: List of message dicts
-            session_id: Session ID for isolation
-            
-        Returns:
-            List of archive entry IDs
-        """
-        ids = []
-        for msg in messages:
-            entry_id = self.store(msg, session_id=session_id)
-            ids.append(entry_id)
-        return ids
-    
+    @_synchronized
     def search(
         self,
         query: str,
@@ -479,6 +481,7 @@ class ArchivalMemory:
             logger.error(f"Semantic search failed, falling back to text: {e}")
             return self._search_text(query, session_id, limit)
     
+    @_synchronized
     def get_session_messages(
         self,
         session_id: str | None = None,
@@ -518,6 +521,7 @@ class ArchivalMemory:
         cursor = self._db.execute(query, params)
         return [ArchivedMessage.from_row(row) for row in cursor.fetchall()]
     
+    @_synchronized
     def get_stats(self, session_id: str | None = None) -> dict[str, Any]:
         """Get statistics about archived messages.
         
@@ -600,6 +604,7 @@ class ArchivalMemory:
         
         return f"{role.title()} message (empty)"
     
+    @_synchronized
     def cleanup_old(
         self,
         max_age_days: int = 7,
@@ -659,6 +664,7 @@ class ArchivalMemory:
         logger.info(f"Cleaned up {len(ids_to_delete)} old archived messages")
         return len(ids_to_delete)
     
+    @_synchronized
     def close(self) -> None:
         """Close database connections."""
         if self._db:

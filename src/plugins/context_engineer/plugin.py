@@ -90,15 +90,6 @@ class ContextEngineerHybridPlugin:
     def get_web_router(self) -> APIRouter | None:
         """Get FastAPI router for web endpoints."""
         return self.web_factory.get_web_router()
-    
-    # =========================================================================
-    # Cleanup
-    # =========================================================================
-    
-    def cleanup_session(self, session_id: str) -> None:
-        """Clean up session resources."""
-        if hasattr(self.server, "_hooks_impl"):
-            self.server._hooks_impl.cleanup_session(session_id)
 
 
 def PLUGIN_FACTORY(

@@ -2229,3 +2229,57 @@ class TestDetectRecallType:
         assert hooks._detect_recall_type("book_id phase blocker") == "archive"
         assert hooks._detect_recall_type("what happened with scene 5") == "archive"
         assert hooks._detect_recall_type("review feedback") == "archive"
+
+
+class TestSessionEvictionSkipsActiveCompactions:
+    """Eviction must not close stores of a session with an in-flight compaction."""
+
+    @staticmethod
+    def _make_hooks():
+        from unittest.mock import MagicMock
+        from plugins.context_engineer.hooks import ContextEngineerPlugin
+
+        hooks = ContextEngineerPlugin.__new__(ContextEngineerPlugin)
+        hooks._session_components = {}
+        hooks._active_compactions = set()
+        hooks._last_compaction_time = {}
+        hooks._session_ttl_seconds = 0.0  # everything is "expired" by TTL
+        hooks._max_tracked_sessions = 1   # force LRU pressure too
+        return hooks, MagicMock
+
+    def _add_session(self, hooks, MagicMock, sid, last_accessed=0.0):
+        store = MagicMock()
+        hooks._session_components[sid] = {
+            "archival_memory": store, "tool_store": store,
+            "last_accessed": last_accessed,
+        }
+        return store
+
+    def test_active_session_not_ttl_evicted(self):
+        hooks, MagicMock = self._make_hooks()
+        active_store = self._add_session(hooks, MagicMock, "active")
+        idle_store = self._add_session(hooks, MagicMock, "idle")
+        hooks._active_compactions.add("active")
+
+        hooks._cleanup_expired_sessions()
+
+        # Active session survived; its stores were never closed
+        assert "active" in hooks._session_components
+        active_store.close.assert_not_called()
+        # Idle session was evicted and closed
+        assert "idle" not in hooks._session_components
+        idle_store.close.assert_called()
+
+    def test_active_session_not_lru_evicted(self):
+        hooks, MagicMock = self._make_hooks()
+        hooks._session_ttl_seconds = 10_000.0   # TTL disabled; only LRU applies
+        hooks._max_tracked_sessions = 1
+        active_store = self._add_session(hooks, MagicMock, "active", last_accessed=1.0)  # oldest
+        self._add_session(hooks, MagicMock, "newer", last_accessed=2.0)
+        hooks._active_compactions.add("active")
+
+        hooks._cleanup_expired_sessions()
+
+        # Even though "active" is the LRU candidate, it is not evicted
+        assert "active" in hooks._session_components
+        active_store.close.assert_not_called()

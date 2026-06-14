@@ -60,6 +60,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # Session tracking (with TTL to prevent memory leak)
         self._last_compaction_time: dict[str, float] = {}
         self._session_components: dict[str, dict[str, Any]] = {}
+        # Sessions with an in-flight compaction. Their stores (tool_store /
+        # archival_memory) must NOT be closed by eviction while a compaction
+        # holds references and is mid-flight on a worker thread (use-after-close).
+        self._active_compactions: set[str] = set()
         
         # Load config from schema (will be overridden by server.py sync)
         config = self.get_config()
@@ -129,19 +133,21 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         """Remove expired session components based on TTL and max count."""
         current_time = time.time()
         
-        # First: TTL-based cleanup
+        # First: TTL-based cleanup. Never evict a session with an in-flight
+        # compaction - closing its stores mid-operation is a use-after-close.
         expired = [
             sid for sid, components in self._session_components.items()
-            if (current_time - components.get("last_accessed", 0)) > self._session_ttl_seconds
+            if sid not in self._active_compactions
+            and (current_time - components.get("last_accessed", 0)) > self._session_ttl_seconds
         ]
         for sid in expired:
             self.cleanup_session(sid)
-        
-        # Second: LRU eviction if still over limit
+
+        # Second: LRU eviction if still over limit (also skips active sessions)
         if len(self._session_components) > self._max_tracked_sessions:
-            # Sort by last_accessed, evict oldest
+            # Sort by last_accessed, evict oldest non-active sessions
             sorted_sessions = sorted(
-                self._session_components.items(),
+                (kv for kv in self._session_components.items() if kv[0] not in self._active_compactions),
                 key=lambda x: x[1].get("last_accessed", 0)
             )
             evict_count = len(self._session_components) - self._max_tracked_sessions
@@ -389,14 +395,23 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # decide afterwards whether anything actually changed - this hook
             # fires on every LLM call (always_compact_media), and emitting
             # START/END for no-op runs would flood the CLI with noise.
+            #
+            # Mark the session active for the duration so a concurrent
+            # _get_session_components (for another session) can't evict and
+            # close this session's stores while the compaction is mid-flight
+            # on a worker thread (use-after-close).
             import asyncio
-            result = await strategy.compact(
-                messages_as_dicts,
-                current_tokens,
-                force=force,
-                trigger_event=trigger_event,
-                session_id=session_id
-            )
+            self._active_compactions.add(session_id)
+            try:
+                result = await strategy.compact(
+                    messages_as_dicts,
+                    current_tokens,
+                    force=force,
+                    trigger_event=trigger_event,
+                    session_id=session_id
+                )
+            finally:
+                self._active_compactions.discard(session_id)
 
             # Update rate limit tracker
             self._last_compaction_time[session_id] = current_time

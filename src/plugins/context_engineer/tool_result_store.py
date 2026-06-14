@@ -13,9 +13,11 @@ Key features:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +26,22 @@ from typing import Any
 from agent_system.llm.token_utils import estimate_content_tokens
 
 logger = logging.getLogger(__name__)
+
+
+def _synchronized(method):
+    """Serialize a store method on the instance's reentrant lock.
+
+    The single sqlite3.Connection (check_same_thread=False) is hit both
+    synchronously from the event loop (handler reads) and from worker threads
+    via asyncio.to_thread (compaction writes). Without serialization a
+    loop-thread read and a worker-thread write race the same connection ->
+    'recursive use of cursors', interleaved writes, corrupted reads.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 # Length of the hash portion (in hex chars) of a short_id.
 # 10 hex chars = 40 bits → ~1M IDs before 50% birthday-collision chance.
@@ -116,7 +134,11 @@ class ToolResultStore:
         self.storage_path = storage_path
         self.session_id = session_id
         self._db: sqlite3.Connection | None = None
-        
+        # Serializes access to the shared connection across event-loop and
+        # to_thread worker threads (see _synchronized). Reentrant so a
+        # synchronized method can call another without deadlocking.
+        self._lock = threading.RLock()
+
         self._init_db()
     
     def _init_db(self) -> None:
@@ -165,6 +187,7 @@ class ToolResultStore:
         """)
         self._db.commit()
     
+    @_synchronized
     def store_and_reference(
         self,
         tool_call_id: str,
@@ -241,6 +264,7 @@ class ToolResultStore:
             "token_count": token_count
         })
     
+    @_synchronized
     def retrieve(self, reference_id: str) -> ToolResultEntry | None:
         """Retrieve full tool result by reference ID.
 
@@ -287,6 +311,7 @@ class ToolResultStore:
 
         return None
     
+    @_synchronized
     def retrieve_by_hash(self, content_hash: str) -> ToolResultEntry | None:
         """Retrieve tool result by content hash.
         
@@ -305,25 +330,7 @@ class ToolResultStore:
         
         return ToolResultEntry.from_row(row) if row else None
     
-    def get_session_entries(self, session_id: str | None = None) -> list[ToolResultEntry]:
-        """Get all tool results for a session.
-        
-        Args:
-            session_id: Session ID (uses default if not provided)
-            
-        Returns:
-            List of tool result entries
-        """
-        session_id = session_id or self.session_id or "default"
-        
-        cursor = self._db.execute(
-            "SELECT id, tool_name, content, content_hash, token_count, timestamp, session_id, summary "
-            "FROM tool_results WHERE session_id = ? ORDER BY timestamp DESC",
-            (session_id,)
-        )
-        
-        return [ToolResultEntry.from_row(row) for row in cursor.fetchall()]
-    
+    @_synchronized
     def get_stats(self, session_id: str | None = None) -> dict[str, Any]:
         """Get statistics about stored tool results.
         
@@ -373,6 +380,7 @@ class ToolResultStore:
             "by_tool": by_tool
         }
     
+    @_synchronized
     def cleanup_old(self, max_age_hours: int = 24, session_id: str | None = None) -> int:
         """Remove old entries to save storage space.
         
@@ -408,6 +416,7 @@ class ToolResultStore:
         
         return deleted
     
+    @_synchronized
     def close(self) -> None:
         """Close database connection."""
         if self._db:

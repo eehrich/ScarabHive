@@ -21,11 +21,13 @@ Usage:
     store.delete("collection_name", ids=["doc1"])
 """
 
+import functools
 import logging
 import math
 import platform
 import struct
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -195,6 +197,20 @@ def texts_are_duplicate(
     return sim >= threshold, sim
 
 
+def _synchronized(method):
+    """Serialize a VectorStore method on the instance's reentrant lock.
+
+    The bug this guards against: callers fan operations out via
+    asyncio.to_thread, so the single sqlite3.Connection / shared chroma dict
+    would be used from multiple threads concurrently. See VectorStore.__init__.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class VectorStore:
     """Unified vector store interface supporting multiple backends.
     
@@ -233,9 +249,21 @@ class VectorStore:
         self._sqlite_conn: Optional[sqlite3.Connection] = None
         self._sqlite_vec_initialized = False
         self._sentence_transformer = None
-        
+
+        # CONCURRENCY: callers (memory / lessons_learned / context_engineer)
+        # fan VectorStore calls out via asyncio.to_thread, so two operations can
+        # hit the SINGLE sqlite3.Connection (check_same_thread=False) and the
+        # shared chroma-collection dict from different threads at once -> "recursive
+        # use of cursors", interleaved writes, corrupted reads. A reentrant lock
+        # serializes every public operation per instance (reentrant so methods
+        # that call other locked methods don't deadlock). Held for the whole op
+        # incl. embedding, since the embedding model isn't guaranteed thread-safe
+        # either - correctness over parallel embedding.
+        self._lock = threading.RLock()
+
         logger.info(f"VectorStore initialized: path={persist_path}, backend={self._backend}")
     
+    @_synchronized
     def close(self) -> None:
         """Close connections and release resources."""
         if self._sqlite_conn is not None:
@@ -264,6 +292,7 @@ class VectorStore:
     
     # ===== Public API =====
     
+    @_synchronized
     def add(
         self,
         collection: str,
@@ -286,6 +315,7 @@ class VectorStore:
         else:
             self._sqlite_vec_add(collection, ids, documents, embeddings, metadatas)
     
+    @_synchronized
     def query(
         self,
         collection: str,
@@ -313,6 +343,7 @@ class VectorStore:
         else:
             return self._sqlite_vec_query(collection, query_text, query_embedding, n_results)
     
+    @_synchronized
     def delete(
         self,
         collection: str,
@@ -331,6 +362,7 @@ class VectorStore:
         else:
             self._sqlite_vec_delete(collection, ids)
     
+    @_synchronized
     def get_or_create_collection(self, name: str) -> Any:
         """Get or create a collection by name.
         
@@ -343,6 +375,7 @@ class VectorStore:
             self._ensure_sqlite_vec_table(name)
             return None
     
+    @_synchronized
     def count(self, collection: str) -> int:
         """Get the number of documents in a collection."""
         if self._backend == "chromadb":
@@ -355,6 +388,7 @@ class VectorStore:
             )
             return cursor.fetchone()[0]
     
+    @_synchronized
     def delete_collection(self, name: str) -> None:
         """Delete an entire collection."""
         if self._backend == "chromadb":
@@ -374,6 +408,7 @@ class VectorStore:
             except Exception as e:
                 logger.warning(f"Failed to delete sqlite-vec table vec_{name}: {e}")
     
+    @_synchronized
     def reset(self) -> None:
         """Reset/clear all data (for testing)."""
         if self._backend == "chromadb":
