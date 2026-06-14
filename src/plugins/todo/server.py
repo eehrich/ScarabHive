@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from datetime import datetime, UTC
 from difflib import SequenceMatcher
 from enum import Enum
@@ -196,8 +197,18 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         # Task ID counter per session
         self._task_counters: Dict[str, int] = {}
 
-        # Session locks to prevent concurrent access issues
+        # Per-session asyncio locks (event-loop only) to serialize load/save of
+        # the SAME session. NOTE: these are never evicted (see
+        # _evict_cache_if_needed) so that mutual exclusion can never be broken.
         self._session_locks: Dict[str, asyncio.Lock] = {}
+
+        # Guards all structural access to _sessions / _task_counters. These dicts
+        # are mutated from worker threads (load/save/evict run via
+        # asyncio.to_thread) AND read on the event loop, so a plain threading
+        # lock is required — an asyncio.Lock would not serialize the threads.
+        # RLock because _load_session holds it and calls _evict_cache_if_needed.
+        # Only ever held around fast dict ops, never around disk I/O.
+        self._cache_lock = threading.RLock()
 
         # Create storage directory
         self._storage_path.mkdir(parents=True, exist_ok=True)
@@ -259,28 +270,46 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
     def _evict_cache_if_needed(self) -> None:
         """Evict oldest sessions from cache if over limit.
-        
+
         Sessions are persisted to disk, so eviction only removes from memory.
         They will be reloaded on next access.
+
+        Concurrency: acquires self._cache_lock (RLock) so the snapshot+delete
+        cannot race other threads mutating the dicts; re-entrant, so it is also
+        safe when called from _load_session which already holds the lock.
+        Sessions whose per-session lock is currently held are SKIPPED — they have
+        an in-flight load/save and evicting them would drop state another
+        coroutine is using. The per-session asyncio.Lock objects are
+        intentionally NOT evicted: popping a lock that another coroutine holds
+        (or is about to acquire) would let a fresh Lock be created and break
+        mutual exclusion.
         """
-        if len(self._sessions) < self._max_cache_size:
-            return
-        
-        # Find sessions to evict (oldest by updated_at)
-        sessions_by_time = sorted(
-            self._sessions.items(),
-            key=lambda x: x[1].updated_at or datetime.min.replace(tzinfo=UTC)
-        )
-        
-        # Evict oldest half when over limit
-        evict_count = len(self._sessions) - (self._max_cache_size // 2)
-        for session_id, _ in sessions_by_time[:evict_count]:
-            del self._sessions[session_id]
-            self._task_counters.pop(session_id, None)
-            self._session_locks.pop(session_id, None)
-            logger.debug(f"Evicted session {session_id} from cache (LRU)")
-        
-        logger.info(f"TodoServer: Evicted {evict_count} sessions from cache")
+        with self._cache_lock:
+            if len(self._sessions) < self._max_cache_size:
+                return
+
+            # Oldest first; skip sessions with an in-flight (locked) lock.
+            sessions_by_time = sorted(
+                self._sessions.items(),
+                key=lambda x: x[1].updated_at or datetime.min.replace(tzinfo=UTC)
+            )
+
+            target = len(self._sessions) - (self._max_cache_size // 2)
+            evicted = 0
+            for session_id, _ in sessions_by_time:
+                if evicted >= target:
+                    break
+                lock = self._session_locks.get(session_id)
+                if lock is not None and lock.locked():
+                    continue  # in-flight load/save — do not evict
+                del self._sessions[session_id]
+                self._task_counters.pop(session_id, None)
+                # NOTE: do not pop self._session_locks[session_id] (see docstring)
+                evicted += 1
+                logger.debug(f"Evicted session {session_id} from cache (LRU)")
+
+        if evicted:
+            logger.info(f"TodoServer: Evicted {evicted} sessions from cache")
 
     def _load_session(self, session_id: str) -> TaskCollection:
         """
@@ -295,14 +324,19 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Raises:
             StorageError: If file parsing fails
         """
-        # Check cache first
-        if session_id in self._sessions:
-            return self._sessions[session_id]
+        # Check cache + evict under the cache lock (fast dict ops only). Same-
+        # session concurrency is already serialized by the per-session asyncio
+        # lock held in _load_session_async, so the cache miss below cannot be
+        # raced by another load of the SAME session; the lock only guards
+        # cross-session mutation and eviction.
+        with self._cache_lock:
+            if session_id in self._sessions:
+                return self._sessions[session_id]
+            # Evict old entries before adding new one
+            self._evict_cache_if_needed()
 
-        # Evict old entries before adding new one
-        self._evict_cache_if_needed()
-
-        # Load from disk
+        # Load from disk (I/O OUTSIDE the cache lock so the event loop is never
+        # blocked on file reads held by a worker thread).
         file_path = self._get_storage_path(session_id)
 
         if file_path.exists():
@@ -311,7 +345,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     data = json.load(f)
 
                 collection = TaskCollection(**data)
-                self._sessions[session_id] = collection
+                with self._cache_lock:
+                    self._sessions[session_id] = collection
 
                 logger.debug(
                     f"Loaded session {session_id}: {len(collection.tasks)} tasks"
@@ -325,8 +360,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         # Create new session
         collection = TaskCollection(session_id=session_id)
-        self._sessions[session_id] = collection
-        self._task_counters[session_id] = 0
+        with self._cache_lock:
+            self._sessions[session_id] = collection
+            self._task_counters[session_id] = 0
 
         logger.debug(f"Created new session {session_id}")
         return collection
@@ -341,11 +377,14 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Raises:
             StorageError: If file write fails
         """
-        if session_id not in self._sessions:
+        # Resolve the collection atomically (membership check + fetch) so a
+        # concurrent eviction cannot delete it between the two statements.
+        with self._cache_lock:
+            collection = self._sessions.get(session_id)
+        if collection is None:
             logger.warning(f"Cannot save non-existent session {session_id}")
             return
 
-        collection = self._sessions[session_id]
         collection.updated_at = datetime.now(UTC)
 
         file_path = self._get_storage_path(session_id)
@@ -441,24 +480,27 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Returns:
             Task ID (e.g., "task_042")
         """
-        # Initialize counter from existing tasks if not set
-        if session_id not in self._task_counters and session_id in self._sessions:
-            collection = self._sessions[session_id]
-            if collection.tasks:
-                # Find highest task number
-                max_num = 0
-                for task_id in collection.tasks.keys():
-                    if task_id.startswith("task_"):
-                        try:
-                            num = int(task_id.split("_")[1])
-                            max_num = max(max_num, num)
-                        except (IndexError, ValueError):
-                            pass
-                self._task_counters[session_id] = max_num
+        # Counter init + increment under the cache lock so the read-modify-write
+        # cannot race a concurrent eviction/load mutating the same dicts.
+        with self._cache_lock:
+            # Initialize counter from existing tasks if not set
+            if session_id not in self._task_counters and session_id in self._sessions:
+                collection = self._sessions[session_id]
+                if collection.tasks:
+                    # Find highest task number
+                    max_num = 0
+                    for task_id in collection.tasks.keys():
+                        if task_id.startswith("task_"):
+                            try:
+                                num = int(task_id.split("_")[1])
+                                max_num = max(max_num, num)
+                            except (IndexError, ValueError):
+                                pass
+                    self._task_counters[session_id] = max_num
 
-        counter = self._task_counters.get(session_id, 0)
-        counter += 1
-        self._task_counters[session_id] = counter
+            counter = self._task_counters.get(session_id, 0)
+            counter += 1
+            self._task_counters[session_id] = counter
 
         return f"task_{counter:03d}"
 
