@@ -177,24 +177,3 @@ class MCPStatusNotificationHandler:
 
         except Exception as e:
             logger.error(f"Error processing status notification: {e}")
-
-
-# Example usage for MCP server implementing status streaming
-async def create_status_streaming_server(base_url: str, server_filter: Optional[str] = None) -> MCPStatusStreamingTransport:
-    """Create an MCP transport with status event streaming enabled."""
-    transport = MCPStatusStreamingTransport(base_url, server_filter=server_filter)
-    await transport.connect()
-    return transport
-
-
-# Example usage for MCP client consuming status events
-async def setup_status_client_handler() -> MCPStatusNotificationHandler:
-    """Set up a client-side handler for status notifications."""
-    handler = MCPStatusNotificationHandler()
-
-    # Example status handler
-    async def log_status(server, request_id, message, timestamp, phase, level, meta):
-        print(f"[{timestamp}] {server}: {message} (phase={phase}, level={level})")
-
-    handler.add_status_handler(log_status)
-    return handler

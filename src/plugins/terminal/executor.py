@@ -224,17 +224,6 @@ class CommandExecutor:
         self.max_output_kb = max_output_kb
         self.default_terminal: Optional[PersistentTerminal] = None
 
-    async def _get_terminal(self) -> PersistentTerminal:
-        """Get or create default persistent terminal."""
-        if self.default_terminal is None:
-            self.default_terminal = PersistentTerminal(
-                bash_path=self.bash_path,
-                initial_cwd=self.initial_cwd,
-                max_output_kb=self.max_output_kb
-            )
-            await self.default_terminal.start()
-        return self.default_terminal
-
     async def execute(
         self,
         command: str,

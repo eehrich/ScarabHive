@@ -138,42 +138,6 @@ class ToolDiscoveryService:
         
         return available_tools
     
-    async def _expand_plugin_tools(self, server_names: List[str]) -> List[str]:
-        """
-        Expand plugin server names into individual tool names.
-        
-        Converts: ["web_scraper", "duckduckgo_search"]
-        Into: ["web_scraper/scrape_webpage", "duckduckgo_search/search", ...]
-        
-        Args:
-            server_names: List of plugin server names
-            
-        Returns:
-            List of expanded tool names in servername/toolname format
-        """
-        expanded = []
-        
-        if not (self.mcp_integration_manager.mcp_integration and
-                self.mcp_integration_manager.mcp_integration.initialized):
-            logger.warning(f"Agent {self.agent_name}: Cannot expand tools - MCP not initialized")
-            return expanded
-        
-        try:
-            all_tools_dict = await self.mcp_integration_manager.mcp_integration.list_all_tools()
-            logger.debug(f"Agent {self.agent_name}: Available plugin servers for expansion: {list(all_tools_dict.get('plugins', {}).keys())}")
-            
-            for server_name, tools in all_tools_dict.get("plugins", {}).items():
-                for tool in tools:
-                    tool_name = f"{server_name}/{tool['name']}"  # tool is a dict, not object
-                    expanded.append(tool_name)
-                    logger.debug(f"Agent {self.agent_name}: Expanded {server_name} -> {tool_name}")
-                    
-            logger.info(f"Agent {self.agent_name}: Expanded {len(expanded)} tools from {len(all_tools_dict.get('plugins', {}))} plugin servers")
-        except Exception as e:
-            logger.error(f"Agent {self.agent_name}: Failed to expand plugin tools: {e}", exc_info=True)
-        
-        return expanded
-    
     def _get_plugin_tools(self) -> List[str]:
         """Get list of plugin-provided tool servers."""
         if not (self.mcp_integration_manager.mcp_integration and
@@ -258,36 +222,6 @@ class ToolDiscoveryService:
                 "Agent %s allow list patterns produced an empty tool set",
                 self.agent_name
             )
-        
-        return filtered_tools
-    
-    def _apply_block_list(self, tools: List[str], patterns: List[str]) -> List[str]:
-        """
-        Remove blocked tools from list.
-        
-        Args:
-            tools: List of tool names
-            patterns: List of blocked patterns
-            
-        Returns:
-            Filtered list with blocked tools removed
-        """
-        before_block = list(tools)
-        filtered_tools = [
-            t for t in tools 
-            if not self._matches_any_pattern(t, patterns)
-        ]
-        
-        removed = set(before_block) - set(filtered_tools)
-        if removed:
-            logger.debug(
-                "Agent %s blocked_tools removed: %s",
-                self.agent_name,
-                sorted(removed)
-            )
-        
-        if not filtered_tools:
-            logger.warning("Agent %s blocked_tools removed all tools", self.agent_name)
         
         return filtered_tools
     

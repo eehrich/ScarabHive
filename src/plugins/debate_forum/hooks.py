@@ -258,15 +258,6 @@ class DebateForumHooks(SchemaBasedPluginHook):
         return "\n".join(parts)
 
     @staticmethod
-    def _find_insert_position(messages: list) -> int:
-        """Find position after the first system message."""
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, "role") else msg.get("role", "")
-            if role != "system":
-                return i
-        return len(messages)
-
-    @staticmethod
     def _find_pinned_insert_position(messages: list) -> int:
         """Find position for pinned context: after system messages but before
         the first user task message, so the agent always sees pinned context

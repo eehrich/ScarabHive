@@ -1,7 +1,6 @@
 """Hook implementations for sub-agent context injection."""
 import logging
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.llm.models import ChatMessage
@@ -282,41 +281,6 @@ class SubAgentContextInjector:
         lines.append("Use manage_sub_agent tool with operation='continue' to resume conversations.")
 
         return "\n".join(lines)
-
-    def _format_time_ago(self, timestamp_str: Optional[str]) -> str:
-        """Format timestamp as human-readable 'X time ago' string.
-
-        Args:
-            timestamp_str: ISO format timestamp string
-
-        Returns:
-            Human-readable time string (e.g., '2 minutes ago', '1 hour ago')
-        """
-        if not timestamp_str:
-            return "Never"
-
-        try:
-            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            now = datetime.now(timezone.utc)
-            delta = now - timestamp
-
-            seconds = delta.total_seconds()
-
-            if seconds < 60:
-                return "just now"
-            elif seconds < 3600:
-                minutes = int(seconds / 60)
-                return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-            elif seconds < 86400:
-                hours = int(seconds / 3600)
-                return f"{hours} hour{'s' if hours != 1 else ''} ago"
-            else:
-                days = int(seconds / 86400)
-                return f"{days} day{'s' if days != 1 else ''} ago"
-
-        except Exception as e:
-            logger.debug(f"Failed to parse timestamp {timestamp_str}: {e}")
-            return "recently"
 
     def _find_system_message_position(self, messages: list) -> int:
         """Find position to insert system message (after all consecutive system messages at start)."""

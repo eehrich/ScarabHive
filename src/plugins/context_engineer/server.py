@@ -12,7 +12,6 @@ Also implements pre_llm_call hook for automatic context engineering.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -181,10 +180,6 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 
         except Exception as e:
             logger.warning(f"Failed to save history to {self._history_file}: {e}")
-    
-    async def _save_history_async(self) -> None:
-        """Save compaction history - async wrapper for thread pool."""
-        await asyncio.to_thread(self._save_history_sync)
     
     # =========================================================================
     # MCP Tools Interface

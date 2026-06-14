@@ -388,44 +388,6 @@ class ComfyUIJobTracker:
             
             return db_active_ids - live_prompt_ids
     
-    def sync_with_queue(self, queue_data: dict[str, Any]) -> int:
-        """Sync database state with live ComfyUI queue.
-        
-        Updates stale "queued" or "running" jobs that are no longer
-        in the ComfyUI queue (e.g., after server restart).
-        
-        DEPRECATED: Use get_stale_job_ids() + mark_job_failed() instead
-        to properly check history before marking as failed.
-        
-        Args:
-            queue_data: Queue data from ComfyUI API containing queue_pending and queue_running
-            
-        Returns:
-            Number of jobs updated
-        """
-        stale_ids = self.get_stale_job_ids(queue_data)
-        
-        if stale_ids:
-            # Mark stale jobs as failed (server was restarted or job lost)
-            with sqlite3.connect(self.db_path) as conn:
-                placeholders = ",".join("?" * len(stale_ids))
-                conn.execute(
-                    f"""
-                    UPDATE jobs 
-                    SET status = 'failed', 
-                        error_message = 'Job lost (server restart or queue cleared)',
-                        completed_at = ?
-                    WHERE prompt_id IN ({placeholders})
-                    """,
-                    (datetime.now(timezone.utc).isoformat(), *stale_ids)
-                )
-                conn.commit()
-            
-            logger.info("Marked %d stale jobs as failed", len(stale_ids))
-            return len(stale_ids)
-        
-        return 0
-    
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Convert database row to dict with parsed JSON fields.
         
