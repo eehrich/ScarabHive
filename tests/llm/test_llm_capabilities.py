@@ -242,7 +242,7 @@ class TestGetCompatibleModels:
         init_capabilities_registry()
         models = get_compatible_models(ModelCapability.IMAGE_INPUT)
         assert "gpt-5" in models
-        assert "gpt-4.1" in models
+        assert "gpt-5-mini" in models
         assert "gpt-5-nano" not in models  # Nano doesn't support vision
 
     def test_audio_input_compatible_models(self):
@@ -274,7 +274,7 @@ class TestGetCompatibleModels:
         init_capabilities_registry()
         models = get_compatible_models("image_input")
         assert "gpt-5" in models
-        assert "gpt-4.1" in models
+        assert "gpt-5-mini" in models
 
 
 class TestCapabilityIntegration:
