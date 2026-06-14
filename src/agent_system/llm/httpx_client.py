@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import socket
 from typing import Any, Optional
 from dataclasses import dataclass
@@ -879,6 +880,32 @@ class HTTPXOpenAIClient(LLMClient):
                         await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
 
+                    # Detect Gemini's internal-format-leak — same family as MALFORMED
+                    # but without the error signal: the model emits its function call
+                    # as plain text (`call:default_api:NAME{…}`) instead of structured
+                    # tool_calls, and finish_reason is just "stop". Without this the
+                    # agent loop accepts the response as a final answer and the task
+                    # silently ends mid-workflow.
+                    if self._is_gemini_internal_format_leak(response_data) and attempt < self.max_retries:
+                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        leaked = response_data["choices"][0]["message"].get("content", "")[:120]
+                        logger.warning(
+                            f"Gemini internal-format leak in content (no tool_calls), "
+                            f"retrying in {backoff_time}s (attempt {attempt + 1}/{self.max_retries + 1}). "
+                            f"Leaked head: {leaked!r}"
+                        )
+                        await self._report_status(
+                            status_scope,
+                            f"Gemini internal-format leak, retry {attempt + 1}/{self.max_retries}: {self.model}"
+                        )
+                        await self._notify_retry(
+                            "openai_httpx", self.model, url, False,
+                            "GEMINI_INTERNAL_FORMAT_LEAK",
+                            attempt, self.max_retries + 1, response_data=response_data,
+                        )
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
+                        continue
+
                     # Notify post-response hook with successful response
                     _duration_ms = (_time.time() - _request_start) * 1000
                     _usage = response_data.get("usage")
@@ -1622,6 +1649,45 @@ class HTTPXOpenAIClient(LLMClient):
             return False
 
         return True
+
+    # Pattern Gemini emits when its function-call decoder leaks its internal
+    # representation into the text channel instead of the structured tool_calls
+    # field. Looks like  `call:default_api:NAME{key:value,key:value}` —
+    # unquoted keys/values, curly-brace block. Captured 2026-06-14 in
+    # cover_artist session mncq6pm209 where the response had finish_reason=stop
+    # (NOT MALFORMED), no tool_calls, and the would-be call as content. The
+    # agent loop then treated the response as a final text answer and stopped.
+    _GEMINI_INTERNAL_CALL_RE = re.compile(r"^\s*call:default_api:\w+\s*\{")
+
+    def _is_gemini_internal_format_leak(self, response_data: dict) -> bool:
+        """True when Gemini emitted a function call as plain-text content.
+
+        Detection criteria:
+          - provider routed via OpenRouter and we're on a Gemini model
+          - response has no tool_calls (otherwise the call worked)
+          - message content starts with the `call:default_api:NAME{` marker
+
+        Unlike the MALFORMED case the finish_reason here is usually "stop" —
+        Gemini sees its own text as a valid completion. Without this detection
+        the agent loop accepts an empty assistant turn and treats it as final.
+        """
+        if not self._is_gemini_via_openrouter:
+            return False
+
+        choices = response_data.get("choices", [])
+        if not choices:
+            return False
+
+        choice = choices[0]
+        message = choice.get("message", {})
+        if message.get("tool_calls"):
+            return False
+
+        content = message.get("content")
+        if not isinstance(content, str) or not content:
+            return False
+
+        return bool(self._GEMINI_INTERNAL_CALL_RE.match(content))
 
     @staticmethod
     def _detect_body_429(response_data: dict) -> Optional[str]:
