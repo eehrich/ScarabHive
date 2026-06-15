@@ -28,13 +28,21 @@ ANCHORS = {
 }
 
 # Common platform font fallbacks tried when no alias matches.
+# Display-family fallbacks lean on Impact / DejaVu-Bold because few systems
+# carry a true display font out of the box — the cover_artist prompt assumes
+# real display fonts will be dropped into the plugin fonts_dir (see
+# src/plugins/image_compose/fonts/README.md for the recommended set).
 SYSTEM_FONT_FALLBACKS = {
-    "serif":      ["georgia.ttf", "Georgia.ttf", "DejaVuSerif.ttf", "Times New Roman.ttf", "times.ttf"],
-    "serif_bold": ["georgiab.ttf", "Georgia Bold.ttf", "DejaVuSerif-Bold.ttf", "timesbd.ttf"],
-    "sans":       ["arial.ttf", "Arial.ttf", "DejaVuSans.ttf", "Helvetica.ttf"],
-    "sans_bold":  ["arialbd.ttf", "Arial Bold.ttf", "DejaVuSans-Bold.ttf", "Helvetica-Bold.ttf"],
-    "mono":       ["consola.ttf", "Consolas.ttf", "DejaVuSansMono.ttf", "Courier New.ttf", "cour.ttf"],
-    "display":    ["impact.ttf", "Impact.ttf", "DejaVuSans-Bold.ttf"],
+    "serif":           ["georgia.ttf", "Georgia.ttf", "DejaVuSerif.ttf", "Times New Roman.ttf", "times.ttf"],
+    "serif_bold":      ["georgiab.ttf", "Georgia Bold.ttf", "DejaVuSerif-Bold.ttf", "timesbd.ttf"],
+    "sans":            ["arial.ttf", "Arial.ttf", "DejaVuSans.ttf", "Helvetica.ttf"],
+    "sans_bold":       ["arialbd.ttf", "Arial Bold.ttf", "DejaVuSans-Bold.ttf", "Helvetica-Bold.ttf"],
+    "mono":            ["consola.ttf", "Consolas.ttf", "DejaVuSansMono.ttf", "Courier New.ttf", "cour.ttf"],
+    "display":         ["impact.ttf", "Impact.ttf", "DejaVuSans-Bold.ttf"],
+    "display_grotesk": ["impact.ttf", "Impact.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"],
+    "script":          ["segoesc.ttf", "Segoe Script.ttf", "Brush Script.ttf", "DejaVuSans-Oblique.ttf"],
+    "stencil":         ["stencil.ttf", "Stencil.ttf", "impact.ttf", "DejaVuSans-Bold.ttf"],
+    "display_block":   ["impact.ttf", "Impact.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"],
 }
 
 

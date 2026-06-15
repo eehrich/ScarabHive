@@ -18,7 +18,7 @@ tools:
                 anchor ∈ top_left|top_center|top_right|center_left|center|center_right|bottom_left|bottom_center|bottom_right
 
               image: src(path|data-URI), size:[w,h]|{width_pct,height_pct}, fit(cover|contain|stretch)
-              text:  text, font(sans|sans_bold|serif|serif_bold|mono|display|filename), size, color("#rrggbb[aa]"),
+              text:  text, font(sans|sans_bold|serif|serif_bold|mono|display|display_grotesk|script|stencil|display_block|filename), size, color("#rrggbb[aa]"),
                      align(left|center|right), max_width(px|{width_pct}), line_height, tracking, uppercase,
                      stroke:{width,color}, shadow:{offset:[dx,dy], blur, color}
               rect:  rect:[x,y,w,h], fill, radius, border:{width,color}
@@ -121,8 +121,12 @@ config:
   properties:
     fonts_dir:
       type: string
-      default: "data/fonts"
-      description: "Directory containing TTF/OTF files. Aliases resolve here first; system fonts are tried as fallback."
+      default: "src/plugins/image_compose/fonts"
+      description: >
+        Directory containing TTF/OTF files. Aliases resolve here first; system
+        fonts are tried as fallback. Default points to the plugin-bundled font
+        directory so fonts ship with the plugin. Override with an absolute path
+        or a project-relative path (e.g. "data/fonts") to use external fonts.
     font_aliases:
       type: object
       description: >

@@ -154,9 +154,19 @@ plugins:
       type: image_compose
       enabled: true
       description: "Compose layered images (background + text + shapes + gradients + SVG)"
-      fonts_dir: "data/fonts"
+      fonts_dir: "src/plugins/image_compose/fonts"   # plugin-bundled assets
       output_root: "."
-      # font_aliases: { serif_bold: "CrimsonPro-Bold.ttf", sans: "Inter-Regular.ttf" }
+      # font_aliases: drop a TTF into fonts_dir and map an alias name to its filename.
+      # Available aliases (used in image_compose schema + cover_artist prompt):
+      #   sans, sans_bold, serif, serif_bold, mono, display,
+      #   display_grotesk (Type-Driven), script (handwritten), stencil (grunge),
+      #   display_block (dramatic display)
+      # Example:
+      # font_aliases:
+      #   display_grotesk: "Oswald-Bold.ttf"
+      #   script: "Caveat-Regular.ttf"
+      #   stencil: "StardosStencil-Bold.ttf"
+      #   display_block: "BungeeInline-Regular.ttf"
       overlap_check_enabled: true   # warn on text/svg BBox overlap pairs after render
       overlap_min_gap_px: 30        # required clearance between text/svg layers (px)
 
