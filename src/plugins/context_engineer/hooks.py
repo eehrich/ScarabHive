@@ -162,12 +162,17 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         for sid in stale_compaction:
             del self._last_compaction_time[sid]
     
-    def _get_session_components(self, session_id: str) -> dict[str, Any]:
+    def _get_session_components(self, session_id: str,
+                                overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """Get or create session-scoped components.
-        
+
         Args:
             session_id: Session identifier
-            
+            overrides: Optional per-agent overrides for CompactionConfig fields.
+                Sourced from ``context.hook_config`` in ``engineer_context``.
+                Applied only on first creation of session components — caching
+                means later calls with different overrides are ignored.
+
         Returns:
             Dict with tool_store, variable_manager, core_memory, archival_memory
         """
@@ -175,6 +180,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Update last accessed time
             self._session_components[session_id]["last_accessed"] = time.time()
             return self._session_components[session_id]
+
+        # `_o(key, default)`: return override if present, else the plugin default
+        # captured at __init__. Pure helper so the CompactionConfig block stays
+        # readable.
+        ov = overrides or {}
+        def _o(key: str, default: Any) -> Any:
+            return ov.get(key, default)
         
         if session_id not in self._session_components:
             # Create session-specific storage paths
@@ -204,27 +216,30 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     max_files=self.media_store_max_files
                 )
             
-            # Create compaction config
+            # Create compaction config — `_o(...)` lets per-agent hook overrides
+            # relax fields like `tool_result_keep_last` for media-heavy agents
+            # (cover_artist, repeated comfyui image loads) without touching the
+            # plugin-wide default for every other agent.
             compaction_config = CompactionConfig(
-                layer1_threshold=self.layer1_threshold,
-                layer2_threshold=self.layer2_threshold,
-                layer3_threshold=self.layer3_threshold,
-                target_tokens=self.target_tokens,
-                max_request_bytes=self.max_request_bytes,
-                target_request_bytes=self.target_request_bytes,
-                tool_result_min_size=self.tool_result_min_size,
-                tool_result_keep_last=self.tool_result_keep_last,
-                tool_result_max_inline_size=self.tool_result_max_inline_size,
-                variable_min_size=self.variable_min_size,
-                assistant_keep_last=self.assistant_keep_last,
-                archive_after_turns=self.archive_after_turns,
-                drop_after_turns=self.drop_after_turns,
-                keep_system_messages=self.keep_system_messages,
-                max_messages=self.max_messages,
-                deduplicate_media=self.deduplicate_media,
-                compact_media_after_user_message=self.compact_media_after_user_message,
-                compact_media_after_final_response=self.compact_media_after_final_response,
-                always_compact_media_keep_last=self.always_compact_media_keep_last,
+                layer1_threshold=_o("layer1_threshold", self.layer1_threshold),
+                layer2_threshold=_o("layer2_threshold", self.layer2_threshold),
+                layer3_threshold=_o("layer3_threshold", self.layer3_threshold),
+                target_tokens=_o("target_tokens", self.target_tokens),
+                max_request_bytes=_o("max_request_bytes", self.max_request_bytes),
+                target_request_bytes=_o("target_request_bytes", self.target_request_bytes),
+                tool_result_min_size=_o("tool_result_min_size", self.tool_result_min_size),
+                tool_result_keep_last=_o("tool_result_keep_last", self.tool_result_keep_last),
+                tool_result_max_inline_size=_o("tool_result_max_inline_size", self.tool_result_max_inline_size),
+                variable_min_size=_o("variable_min_size", self.variable_min_size),
+                assistant_keep_last=_o("assistant_keep_last", self.assistant_keep_last),
+                archive_after_turns=_o("archive_after_turns", self.archive_after_turns),
+                drop_after_turns=_o("drop_after_turns", self.drop_after_turns),
+                keep_system_messages=_o("keep_system_messages", self.keep_system_messages),
+                max_messages=_o("max_messages", self.max_messages),
+                deduplicate_media=_o("deduplicate_media", self.deduplicate_media),
+                compact_media_after_user_message=_o("compact_media_after_user_message", self.compact_media_after_user_message),
+                compact_media_after_final_response=_o("compact_media_after_final_response", self.compact_media_after_final_response),
+                always_compact_media_keep_last=_o("always_compact_media_keep_last", self.always_compact_media_keep_last),
                 store_media_before_compaction=self.store_media_before_compaction,
                 media_store_ttl_seconds=self.media_store_ttl_seconds,
                 media_store_max_files=self.media_store_max_files
@@ -295,8 +310,14 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 else:
                     messages_as_dicts.append(msg)
             
+            # Per-agent overrides via hooks.overrides[context_engineer.engineer_context]
+            # in agent YAML — relax compaction thresholds for media-heavy agents
+            # without changing the plugin-wide default. Applied at session-component
+            # creation only (subsequent overrides ignored due to caching).
+            hook_overrides = context.hook_config if context.hook_config else None
+
             # Get session components (needed for token/byte estimation and compaction)
-            components = self._get_session_components(session_id)
+            components = self._get_session_components(session_id, overrides=hook_overrides)
             strategy: LayeredCompactionStrategy = components["strategy"]
             
             # Get actual or estimated token usage (prefer actual from usage_tracker)
