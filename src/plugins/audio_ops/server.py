@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import logging
 from pathlib import Path
@@ -211,15 +212,19 @@ class AudioOpsServer(SchemaBasedMCPServer):
             )
         return ext[1:]  # Remove leading dot
     
-    def _load_audio(self, filepath: Path):
+    async def _load_audio(self, filepath: Path):
         """Load audio file using pydub.
-        
+
+        Async: the whole-file decode (AudioSegment.from_file) is offloaded to a
+        worker thread so it never blocks the shared event loop. Callers must
+        ``await`` this.
+
         Args:
             filepath: Path to audio file
-            
+
         Returns:
             AudioSegment object
-            
+
         Raises:
             AudioOpsError: If file cannot be loaded
         """
@@ -231,11 +236,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 error_type="DependencyError",
                 details={"missing": "pydub"}
             )
-        
+
         fmt = self._validate_format(filepath)
-        
+
         try:
-            return AudioSegment.from_file(str(filepath), format=fmt)
+            return await asyncio.to_thread(AudioSegment.from_file, str(filepath), format=fmt)
         except FileNotFoundError:
             raise AudioOpsError(
                 f"Audio file not found: {filepath.name}",
@@ -327,7 +332,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 await status.progress(f"Loading: {source_file}")
             
             # Load audio
-            audio = self._load_audio(source_path)
+            audio = await self._load_audio(source_path)
             duration_sec = len(audio) / 1000.0
             
             # Validate time range against duration
@@ -365,7 +370,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 operation_desc = f"Removed {start_time}s-{end_time}s"
             
             # Export
-            result_audio.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(result_audio.export, str(dest_path), format=dest_format)
             
             result_duration = len(result_audio) / 1000.0
             
@@ -469,7 +474,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         error_type="FileNotFoundError",
                         details={"file": filename, "index": i}
                     )
-                audio = self._load_audio(source_path)
+                audio = await self._load_audio(source_path)
                 segments.append(audio)
                 total_source_duration += len(audio) / 1000.0
                 
@@ -497,7 +502,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     result += segment
             
             # Export
-            result.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(result.export, str(dest_path), format=dest_format)
             
             result_duration = len(result) / 1000.0
             
@@ -572,7 +577,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if status:
                 await status.progress(f"Reading: {filename}")
             
-            audio = self._load_audio(filepath)
+            audio = await self._load_audio(filepath)
             
             result = {
                 "status": "success",
@@ -710,7 +715,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 silent_audio = silent_audio.set_channels(2)
             
             # Export
-            silent_audio.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(silent_audio.export, str(dest_path), format=dest_format)
             
             duration_sec = duration_ms / 1000.0
             
@@ -790,7 +795,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             for filepath in sorted(matching_files):
                 if filepath.is_file() and filepath.suffix.lower() in SUPPORTED_FORMATS:
                     try:
-                        audio = self._load_audio(filepath)
+                        audio = await self._load_audio(filepath)
                         files.append({
                             "name": filepath.name,
                             "size_bytes": filepath.stat().st_size,
@@ -863,7 +868,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if status:
                 await status.progress(f"Loading: {filename}")
             
-            audio = self._load_audio(filepath)
+            audio = await self._load_audio(filepath)
             duration_sec = len(audio) / 1000.0
             
             # Handle segment extraction if start/end provided
@@ -910,7 +915,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 effective_storage = self._resolve_storage_path(session_id)
                 segment_filename = f"_temp_segment_{filepath.stem}.wav"
                 segment_path = effective_storage / segment_filename
-                segment.export(str(segment_path), format="wav")
+                await asyncio.to_thread(segment.export, str(segment_path), format="wav")
                 output_path = segment_path
                 
                 segment_info = {
@@ -1089,8 +1094,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 await status.progress(f"Loading audio files: {file1}, {file2}")
             
             # Load both audio files
-            audio1 = self._load_audio(file1_path)
-            audio2 = self._load_audio(file2_path)
+            audio1 = await self._load_audio(file1_path)
+            audio2 = await self._load_audio(file2_path)
             
             duration1_sec = len(audio1) / 1000.0
             duration2_sec = len(audio2) / 1000.0
@@ -1122,7 +1127,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 mixed_result = self._mix_with_factor(audio1, audio2, validated_factor)
             
             # Export
-            mixed_result.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(mixed_result.export, str(dest_path), format=dest_format)
             
             result_duration = len(mixed_result) / 1000.0
             
@@ -1481,7 +1486,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 await status.progress(f"Loading: {source_file}")
             
             # Load audio
-            audio = self._load_audio(source_path)
+            audio = await self._load_audio(source_path)
             
             if use_envelope and validated_envelope is not None:
                 if status:
@@ -1507,7 +1512,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     result = result - peak_amplitude  # Boost to 0 dB peak
             
             # Export
-            result.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(result.export, str(dest_path), format=dest_format)
             
             result_duration = len(result) / 1000.0
             
@@ -1770,7 +1775,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "-f", "null", "-"
             ]
             
-            result = subprocess.run(detect_cmd, capture_output=True, text=True)
+            result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
             
             # Parse silence_start and silence_end from stderr
             silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
@@ -1790,7 +1795,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         "ffprobe", "-v", "quiet", "-print_format", "json",
                         "-show_format", str(source_path)
                     ]
-                    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
                     if probe_result.returncode == 0:
                         probe_data = json.loads(probe_result.stdout)
                         end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
@@ -1890,7 +1895,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "-f", "null", "-"
             ]
             
-            result = subprocess.run(detect_cmd, capture_output=True, text=True)
+            result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
             
             # Parse silence segments
             silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
@@ -1899,7 +1904,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if not silence_starts:
                 # No silences found, just copy file
                 await status.progress("No silences detected, copying file...")
-                subprocess.run([
+                await asyncio.to_thread(subprocess.run, [
                     "ffmpeg", "-y", "-i", str(source_path),
                     "-c", "copy", str(dest_path)
                 ], capture_output=True, check=True)
@@ -1925,7 +1930,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         "ffprobe", "-v", "quiet", "-print_format", "json",
                         "-show_format", str(source_path)
                     ]
-                    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
                     if probe_result.returncode == 0:
                         probe_data = json.loads(probe_result.stdout)
                         end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
@@ -1939,7 +1944,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if not silences_to_compress:
                 # No silences exceed threshold, copy file
                 await status.progress("No silences exceed max duration, copying file...")
-                subprocess.run([
+                await asyncio.to_thread(subprocess.run, [
                     "ffmpeg", "-y", "-i", str(source_path),
                     "-c", "copy", str(dest_path)
                 ], capture_output=True, check=True)
@@ -1963,7 +1968,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", str(source_path)
             ]
-            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
             total_duration = 0.0
             if probe_result.returncode == 0:
                 probe_data = json.loads(probe_result.stdout)
@@ -2017,7 +2022,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             ffmpeg_cmd.append(str(dest_path))
             
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+            result = await asyncio.to_thread(subprocess.run, ffmpeg_cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
                 raise AudioOpsError(
@@ -2026,7 +2031,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 )
             
             # Get new duration
-            probe_result = subprocess.run([
+            probe_result = await asyncio.to_thread(subprocess.run, [
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", str(dest_path)
             ], capture_output=True, text=True)

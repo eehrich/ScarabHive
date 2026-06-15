@@ -9,6 +9,8 @@ Test coverage:
 """
 from __future__ import annotations
 
+import subprocess
+import threading
 import warnings
 import pytest
 from pathlib import Path
@@ -2484,4 +2486,77 @@ class TestSessionIsolation:
         # Should find session1_file.wav
         file_names = [f["name"] for f in result["files"]]
         assert "session1_file.wav" in file_names
+        # Should NOT find session2_file.wav (belongs to a different session)
         assert "session2_file.wav" not in file_names
+
+
+class TestEventLoopOffload:
+    """PB16: the blocking pydub decode/encode and ffmpeg subprocesses must run
+    OFF the event loop (the AudioOpsServer is a process-wide singleton, so any
+    inline blocking call freezes every other session).
+    """
+
+    @pytest.mark.asyncio
+    async def test_decode_runs_off_event_loop(self, server, sample_wav, mock_status, monkeypatch):
+        main_ident = threading.get_ident()
+        seen = {}
+        real = AudioSegment.from_file
+
+        def spy(*args, **kwargs):
+            seen["ident"] = threading.get_ident()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(AudioSegment, "from_file", staticmethod(spy))
+
+        result = await server.cut({
+            "source_file": sample_wav.name, "dest_file": "off1.wav",
+            "start_time": 1.0, "end_time": 2.0, "_status": mock_status,
+        })
+        assert result["status"] == "success"
+        assert seen.get("ident") is not None, "from_file was never called"
+        assert seen["ident"] != main_ident, "decode ran on the event-loop thread"
+
+    @pytest.mark.asyncio
+    async def test_encode_export_runs_off_event_loop(self, server, sample_wav, mock_status, monkeypatch):
+        main_ident = threading.get_ident()
+        seen = {}
+        real = AudioSegment.export
+
+        def spy(self, *args, **kwargs):
+            seen["ident"] = threading.get_ident()
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(AudioSegment, "export", spy)
+
+        result = await server.cut({
+            "source_file": sample_wav.name, "dest_file": "off2.wav",
+            "start_time": 1.0, "end_time": 2.0, "_status": mock_status,
+        })
+        assert result["status"] == "success"
+        assert seen.get("ident") is not None, "export was never called"
+        assert seen["ident"] != main_ident, "encode/export ran on the event-loop thread"
+
+    @pytest.mark.asyncio
+    async def test_ffmpeg_subprocess_runs_off_event_loop(self, server, sample_wav, mock_status, monkeypatch):
+        # Robust to ffmpeg being absent: the spy records the thread id before
+        # delegating, so we prove the offload even if the binary is missing.
+        main_ident = threading.get_ident()
+        seen = {}
+        real = subprocess.run
+
+        def spy(*args, **kwargs):
+            seen["ident"] = threading.get_ident()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", spy)
+
+        try:
+            await server.detect_silence({
+                "source_file": sample_wav.name,
+                "_status": mock_status,
+            })
+        except Exception:
+            pass  # ffmpeg may be unavailable; we only assert the offload below
+
+        assert seen.get("ident") is not None, "subprocess.run was never reached"
+        assert seen["ident"] != main_ident, "ffmpeg subprocess ran on the event-loop thread"
