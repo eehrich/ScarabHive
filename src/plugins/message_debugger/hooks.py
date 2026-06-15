@@ -5,6 +5,7 @@ in a SQLite database for debugging and inspection.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -97,7 +98,12 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         try:
             if self.db:
                 ts = context.metadata.get('timestamp_ms', time.time() * 1000)
-                self.db.insert_llm_request(
+                # Offload the json.dumps + commit off the event loop (this hook
+                # fires on every LLM request). The DB uses thread-local
+                # connections (check_same_thread=False, WAL), so a worker thread
+                # is safe.
+                await asyncio.to_thread(
+                    self.db.insert_llm_request,
                     timestamp_ms=ts,
                     direction='request',
                     agent_name=context.agent_name or '',
@@ -126,7 +132,10 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         try:
             if self.db:
                 ts = context.metadata.get('timestamp_ms', time.time() * 1000)
-                self.db.insert_llm_request(
+                # Offload the json.dumps + commit off the event loop (fires on
+                # every LLM response). Thread-local connection -> worker-safe.
+                await asyncio.to_thread(
+                    self.db.insert_llm_request,
                     timestamp_ms=ts,
                     direction='response',
                     agent_name=context.agent_name or '',
@@ -158,109 +167,128 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
     async def _capture_turn(self, context: HookContext, snapshot_type: str) -> HookResult:
         """Capture an agent-level message snapshot (turn)."""
         try:
-            messages = context.messages or []
+            # Snapshot the message list ON the event loop so the worker thread
+            # iterates a private copy — immune to any concurrent mutation of the
+            # live list (no "list changed size during iteration").
+            messages = list(context.messages or [])
             if not messages:
                 return HookResult(
                     success=True, modified=False, context=context,
                     metadata={'reason': 'no_messages', 'snapshot_type': snapshot_type}
                 )
-            
-            message_data = []
-            total_tokens = 0
-            
-            for idx, msg in enumerate(messages):
-                if not isinstance(msg, ChatMessage):
-                    try:
-                        msg = ChatMessage(**msg)
-                    except (TypeError, ValueError):
-                        continue
-                
-                msg_tokens = 0
-                if self.include_token_estimates:
-                    msg_tokens = estimate_token_count([msg])
-                    total_tokens += msg_tokens
-                
-                msg_info: Dict[str, Any] = {
-                    'index': idx,
-                    'role': msg.role,
-                    'content': str(msg.content) if msg.content else None,
-                    'content_length': len(str(msg.content)) if msg.content else 0,
-                    'estimated_tokens': msg_tokens if self.include_token_estimates else None,
-                }
-                
-                if self.include_tool_calls:
-                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                        tool_calls_info = []
-                        for tc in msg.tool_calls:
-                            tool_calls_info.append({
-                                'id': tc.get('id'),
-                                'type': tc.get('type'),
-                                'function': {
-                                    'name': tc.get('function', {}).get('name'),
-                                    'arguments': tc.get('function', {}).get('arguments'),
-                                }
-                            })
-                        msg_info['tool_calls'] = tool_calls_info
-                        msg_info['tool_call_count'] = len(tool_calls_info)
-                    else:
-                        msg_info['tool_calls'] = None
-                        msg_info['tool_call_count'] = 0
-                    
-                    if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                        msg_info['tool_call_id'] = msg.tool_call_id
-                        msg_info['is_tool_result'] = True
-                    else:
-                        msg_info['tool_call_id'] = None
-                        msg_info['is_tool_result'] = False
-                
-                message_data.append(msg_info)
-            
-            llm_response = None
-            if snapshot_type == 'post_llm' and context.llm_response:
-                llm_response = {
-                    'model': context.llm_response.get('model'),
-                    'usage': context.llm_response.get('usage'),
-                    'finish_reason': context.llm_response.get('finish_reason'),
-                }
-            
-            context_window = None
-            if context.llm and hasattr(context.llm, 'context_window'):
-                context_window = context.llm.context_window
-            
-            timestamp_ms = time.time() * 1000
-            
-            # Store in SQLite
-            if self.db:
-                self.db.insert_turn(
-                    timestamp_ms=timestamp_ms,
-                    snapshot_type=snapshot_type,
-                    agent_name=context.agent_name or '',
-                    request_id=context.request_id or '',
-                    session_id=context.session_id or '',
-                    step=context.step,
-                    message_count=len(message_data),
-                    total_tokens=total_tokens,
-                    context_window=context_window,
-                    messages=message_data,
-                    llm_response=llm_response,
-                )
-            
+
+            # Offload token estimation + json.dumps + commit off the event loop.
+            message_count, total_tokens = await asyncio.to_thread(
+                self._build_and_store_turn, messages, context, snapshot_type
+            )
+
             logger.debug(
                 f"Captured {snapshot_type} turn: agent={context.agent_name}, "
-                f"messages={len(message_data)}, tokens={total_tokens}"
+                f"messages={message_count}, tokens={total_tokens}"
             )
-            
+
             return HookResult(
                 success=True, modified=False, context=context,
                 metadata={
                     'captured': True, 'snapshot_type': snapshot_type,
-                    'message_count': len(message_data), 'total_tokens': total_tokens,
+                    'message_count': message_count, 'total_tokens': total_tokens,
                 }
             )
-            
+
         except Exception as e:
             logger.exception(f"Failed to capture {snapshot_type} turn: {e}")
             return HookResult(
                 success=True, modified=False, context=context,
                 metadata={'error': str(e), 'snapshot_type': snapshot_type}
             )
+
+    def _build_and_store_turn(
+        self, messages: List[Any], context: HookContext, snapshot_type: str
+    ) -> tuple[int, int]:
+        """Build the message snapshot (token estimation) and persist it to SQLite.
+
+        Synchronous — runs in a worker thread via asyncio.to_thread so the heavy
+        per-message token estimation, json.dumps and commit never block the
+        event loop. ``messages`` is a snapshot list taken on the event loop (see
+        _capture_turn). Returns (message_count, total_tokens).
+        """
+        message_data = []
+        total_tokens = 0
+
+        for idx, msg in enumerate(messages):
+            if not isinstance(msg, ChatMessage):
+                try:
+                    msg = ChatMessage(**msg)
+                except (TypeError, ValueError):
+                    continue
+
+            msg_tokens = 0
+            if self.include_token_estimates:
+                msg_tokens = estimate_token_count([msg])
+                total_tokens += msg_tokens
+
+            msg_info: Dict[str, Any] = {
+                'index': idx,
+                'role': msg.role,
+                'content': str(msg.content) if msg.content else None,
+                'content_length': len(str(msg.content)) if msg.content else 0,
+                'estimated_tokens': msg_tokens if self.include_token_estimates else None,
+            }
+
+            if self.include_tool_calls:
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    tool_calls_info = []
+                    for tc in msg.tool_calls:
+                        tool_calls_info.append({
+                            'id': tc.get('id'),
+                            'type': tc.get('type'),
+                            'function': {
+                                'name': tc.get('function', {}).get('name'),
+                                'arguments': tc.get('function', {}).get('arguments'),
+                            }
+                        })
+                    msg_info['tool_calls'] = tool_calls_info
+                    msg_info['tool_call_count'] = len(tool_calls_info)
+                else:
+                    msg_info['tool_calls'] = None
+                    msg_info['tool_call_count'] = 0
+
+                if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+                    msg_info['tool_call_id'] = msg.tool_call_id
+                    msg_info['is_tool_result'] = True
+                else:
+                    msg_info['tool_call_id'] = None
+                    msg_info['is_tool_result'] = False
+
+            message_data.append(msg_info)
+
+        llm_response = None
+        if snapshot_type == 'post_llm' and context.llm_response:
+            llm_response = {
+                'model': context.llm_response.get('model'),
+                'usage': context.llm_response.get('usage'),
+                'finish_reason': context.llm_response.get('finish_reason'),
+            }
+
+        context_window = None
+        if context.llm and hasattr(context.llm, 'context_window'):
+            context_window = context.llm.context_window
+
+        timestamp_ms = time.time() * 1000
+
+        if self.db:
+            self.db.insert_turn(
+                timestamp_ms=timestamp_ms,
+                snapshot_type=snapshot_type,
+                agent_name=context.agent_name or '',
+                request_id=context.request_id or '',
+                session_id=context.session_id or '',
+                step=context.step,
+                message_count=len(message_data),
+                total_tokens=total_tokens,
+                context_window=context_window,
+                messages=message_data,
+                llm_response=llm_response,
+            )
+
+        return len(message_data), total_tokens
