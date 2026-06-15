@@ -156,7 +156,25 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         # Memory ID counters per session (session_id -> int)
         self._memory_counters: Dict[str, int] = {}
 
-        logger.info(f"MemoryServer initialized with storage_path={self.storage_path}")
+        # Behavioral config from schema.yaml (defaults mirror schema). Previously
+        # these were dead config — the inject hook hardcoded values and the
+        # per-session cap was never enforced (unbounded growth).
+        self.max_memories = int(getattr(mcp_config, 'max_memories', None) or 10)
+        self.max_memories_per_session = int(
+            getattr(mcp_config, 'max_memories_per_session', None) or 5000
+        )
+        self.search_n_results = int(getattr(mcp_config, 'search_n_results', None) or 5)
+        _semantic = getattr(mcp_config, 'use_semantic_injection', None)
+        self.use_semantic_injection = True if _semantic is None else bool(_semantic)
+        _auto_kw = getattr(mcp_config, 'auto_extract_keywords', None)
+        self.auto_extract_keywords = True if _auto_kw is None else bool(_auto_kw)
+
+        logger.info(
+            f"MemoryServer initialized with storage_path={self.storage_path}, "
+            f"max_memories={self.max_memories}, "
+            f"max_memories_per_session={self.max_memories_per_session}, "
+            f"use_semantic_injection={self.use_semantic_injection}"
+        )
 
     def _get_collection_name(self, session_id: str) -> str:
         """Get collection name for session"""
@@ -459,8 +477,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         agent_name: Optional[str] = None
     ) -> Dict:
         """Store a new memory"""
-        # Auto-extract keywords if not provided
-        if keywords is None or len(keywords) == 0:
+        # Auto-extract keywords if not provided (gated by config)
+        if self.auto_extract_keywords and (keywords is None or len(keywords) == 0):
             keywords = self._extract_keywords(f"{title} {content}")
 
         # Generate memory ID with session-specific counter (async)
@@ -483,6 +501,23 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         # Store metadata in JSON
         collection = await self._load_collection(session_id)
+
+        # Enforce the per-session cap (bounds the JSON metadata file — fully
+        # re-serialized on every save — and the vector collection). Evict the
+        # least-important, then oldest memories to make room for the new one.
+        if self.max_memories_per_session > 0:
+            while len(collection.memories) >= self.max_memories_per_session:
+                victim = min(
+                    collection.memories.values(),
+                    key=lambda m: (m.importance, m.created_at),
+                )
+                del collection.memories[victim.memory_id]
+                await self._delete_memory_from_chroma(session_id, victim.memory_id)
+                logger.info(
+                    f"Per-session memory cap ({self.max_memories_per_session}) "
+                    f"reached for {session_id}; evicted {victim.memory_id}"
+                )
+
         collection.memories[memory_id] = memory
         await self._save_collection(collection)
 
@@ -847,7 +882,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     return {"error": error_msg}
                 
                 query = arguments["query"]
-                n_results = arguments.get("n_results", 5)
+                n_results = arguments.get("n_results", self.search_n_results)
                 if status:
                     await status.progress(f"Searching: '{query[:50]}...'")
 
@@ -965,9 +1000,9 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             if not collection.memories or len(collection.memories) == 0:
                 return HookResult(success=True, modified=False)
 
-            # Get config
-            max_memories = 10  # Default, should come from config
-            use_semantic = True  # Default
+            # Config-driven (wired from mcp_config in __init__)
+            max_memories = self.max_memories
+            use_semantic = self.use_semantic_injection
 
             # Get user's current message for semantic search
             user_message = None
