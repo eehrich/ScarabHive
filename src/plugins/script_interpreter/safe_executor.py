@@ -37,7 +37,46 @@ class SafeExecutor:
         self.output_buffer = []
         self.start_time = None
         self.loop_count = 0
-        
+
+        # DoS guards for single uninterruptible C-level operations. A `**` or a
+        # sequence `*` int runs as ONE C call, so check_timeout() (only evaluated
+        # at AST-node boundaries) cannot interrupt it and it can block the
+        # interpreter / exhaust memory. We bound the RESULT size before computing
+        # it. (resource.setrlimit would be the OS-level alternative but is
+        # Unix-only.) Pow is bounded by compute time (~1 MB result is sub-100ms);
+        # sequence-multiply by the configured memory budget (worst-case 8 B/elem).
+        self._max_pow_result_bits = 8 * 1024 * 1024
+        self._max_seq_len = max(1, int(getattr(self.config, "max_memory_mb", 50)) * 1024 * 1024 // 8)
+
+    def _guard_binop_size(self, op, left, right):
+        """Reject `**` / sequence-`*` whose result would be huge, before it runs.
+
+        Raises ValueError (formatted into a clean error result by execute()).
+        No-op for every other operator and for value combinations that cannot
+        blow up (e.g. int*int, negative/zero exponents, base in {-1,0,1}).
+        """
+        if isinstance(op, ast.Pow):
+            if (isinstance(left, int) and isinstance(right, int)
+                    and right > 0 and left not in (-1, 0, 1)):
+                est_bits = right * left.bit_length()
+                if est_bits > self._max_pow_result_bits:
+                    raise ValueError(
+                        f"'**' result too large (~{est_bits} bits exceeds the "
+                        f"{self._max_pow_result_bits}-bit limit); rejected to "
+                        f"avoid blocking the interpreter"
+                    )
+        elif isinstance(op, ast.Mult):
+            seq, n = None, None
+            if isinstance(left, (str, bytes, bytearray, list, tuple)) and isinstance(right, int):
+                seq, n = left, right
+            elif isinstance(right, (str, bytes, bytearray, list, tuple)) and isinstance(left, int):
+                seq, n = right, left
+            if seq is not None and n > 0 and len(seq) * n > self._max_seq_len:
+                raise ValueError(
+                    f"'*' result too large ({len(seq) * n} elements exceeds the "
+                    f"{self._max_seq_len}-element limit); rejected"
+                )
+
     def safe_print(self, *args):
         """Safe print function that captures output."""
         if not args:
@@ -483,6 +522,7 @@ class SafeExecutor:
             rhs_value = self.eval_expression(node.value)
             
             # Perform the operation
+            self._guard_binop_size(node.op, current_value, rhs_value)
             if isinstance(node.op, ast.Add):
                 new_value = current_value + rhs_value
             elif isinstance(node.op, ast.Sub):
@@ -761,7 +801,8 @@ class SafeExecutor:
         elif isinstance(node, ast.BinOp):
             left = self.eval_expression(node.left)
             right = self.eval_expression(node.right)
-            
+            self._guard_binop_size(node.op, left, right)
+
             if isinstance(node.op, ast.Add):
                 return left + right
             elif isinstance(node.op, ast.Sub):

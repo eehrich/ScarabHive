@@ -1,5 +1,6 @@
 """MCP Server for Script Interpreter Plugin."""
 
+import asyncio
 import logging
 import time
 from typing import Any, TYPE_CHECKING
@@ -118,7 +119,10 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         executor = self._get_executor(session_id)
 
         try:
-            result = executor.execute(code, reset_sandbox=False)
+            # Offload the (potentially CPU-bound) sandbox execution to a worker
+            # thread so it never blocks the shared event loop for other sessions.
+            # The executor serialises its own concurrent use via an internal lock.
+            result = await asyncio.to_thread(executor.execute, code, reset_sandbox=False)
 
             if not result.get("success", False) or result.get("error"):
                 # Publish error status
