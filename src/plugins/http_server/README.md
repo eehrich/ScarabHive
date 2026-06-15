@@ -263,6 +263,8 @@ Validate tool parameters without execution.
 
 ## Authentication
 
+> **Implementation status (2026-06-14):** The server implements **API-key auth on `POST /call`** — send the key via `X-API-Key: <key>` or `Authorization: Bearer <key>`. The key is read from the `HTTP_SERVER_AUTH_KEY` env var (or `mcp_config.auth_key`). `GET /health` is intentionally unauthenticated (liveness). When **no** key is configured the server **refuses to bind a non-loopback host** (e.g. `0.0.0.0`) and only serves on `127.0.0.1`. The Basic-auth, CORS, rate-limiting, `/validate`, `/tools/*`, `/metrics`, and WebSocket sections below are **not yet implemented** (roadmap, not current behavior); the only real endpoints are `/health` and `/call`.
+
 ### API Key Authentication
 ```bash
 # Include API key in header
