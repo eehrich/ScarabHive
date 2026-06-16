@@ -344,15 +344,15 @@ plugins:
               field: inputs.seed
 
         - id: sdxl_base_refiner
-          name: "SDXL Base + Refiner (High Quality)"
-          description: "Two-pass SDXL workflow: base model generates structure, refiner model polishes details. Produces significantly fewer artifacts and deformations. Requires both sd_xl_base_1.0.safetensors and sd_xl_refiner_1.0.safetensors checkpoints."
+          name: "SDXL Base + Refiner + Hires-Fix"
+          description: "Three-pass SDXL workflow: base model generates structure at width x height, refiner polishes details, then a 4x-UltraSharp upscale + lanczos downscale to hires_width x hires_height + low-denoise refine pass. Output dimensions = (hires_width, hires_height). Defaults give general SDXL-style output; set explicit hires dimensions for cover-art use. Requires both sd_xl_base_1.0 and sd_xl_refiner_1.0 checkpoints + 4x-UltraSharp."
           category: image_generation
           workflow_file: sdxl_base_refiner.json
           parameters:
             - name: prompt
               type: string
               required: true
-              description: "Text description of the image to generate (injected into both base and refiner CLIP encoders)"
+              description: "Text description of the image to generate (injected into both base and refiner CLIP encoders + hires refine)"
               node_id: "20"
               field: inputs.text
             - name: prompt_refiner
@@ -365,7 +365,7 @@ plugins:
               type: string
               required: false
               default: "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text, signature, jpeg artifacts"
-              description: "Things to avoid (injected into both base and refiner negative prompts)"
+              description: "Things to avoid (injected into both base and refiner negative prompts + hires refine)"
               node_id: "21"
               field: inputs.text
             - name: negative_prompt_refiner
@@ -377,13 +377,13 @@ plugins:
             - name: width
               type: integer
               default: 1024
-              description: "Image width (1024 recommended for SDXL, must be divisible by 8)"
+              description: "Base image width — match an SDXL training bucket (1024x1024, 832x1216 for 2:3, 1216x832 for 3:2). Must be divisible by 8."
               node_id: "30"
               field: inputs.width
             - name: height
               type: integer
               default: 1024
-              description: "Image height (1024 recommended for SDXL, must be divisible by 8)"
+              description: "Base image height — match an SDXL training bucket. Must be divisible by 8."
               node_id: "30"
               field: inputs.height
             - name: steps
@@ -422,6 +422,42 @@ plugins:
               description: "Random seed for refiner sampler (0 for random)"
               node_id: "41"
               field: inputs.noise_seed
+            - name: hires_width
+              type: integer
+              default: 1024
+              description: "Final width after 4x upscale + lanczos downscale. Set to width for no resize, or to width * 1.5 for hires-fix boost. Must be divisible by 8."
+              node_id: "72"
+              field: inputs.width
+            - name: hires_height
+              type: integer
+              default: 1024
+              description: "Final height after 4x upscale + lanczos downscale. Set to height for no resize, or to height * 1.5 for hires-fix boost. Must be divisible by 8."
+              node_id: "72"
+              field: inputs.height
+            - name: hires_steps
+              type: integer
+              default: 20
+              description: "Sampling steps for the hires refine pass (15-25 typical)"
+              node_id: "74"
+              field: inputs.steps
+            - name: hires_cfg
+              type: float
+              default: 7.5
+              description: "CFG scale for hires refine pass"
+              node_id: "74"
+              field: inputs.cfg
+            - name: hires_denoise
+              type: float
+              default: 0.4
+              description: "Denoise strength for hires refine pass (0.0 = no change, 0.3-0.5 for sharpening, 0.6+ alters composition). Default 0.4 mirrors juggernaut_xl."
+              node_id: "74"
+              field: inputs.denoise
+            - name: hires_seed
+              type: integer
+              default: 0
+              description: "Random seed for hires refine pass (0 for random; can match seed for consistency)"
+              node_id: "74"
+              field: inputs.seed
 
         - id: sdxl_img2img
           name: "SDXL img2img (Style Continuation)"

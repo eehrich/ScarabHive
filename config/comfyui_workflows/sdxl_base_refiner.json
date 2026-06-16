@@ -110,7 +110,7 @@
     },
     "class_type": "KSamplerAdvanced",
     "_meta": {
-      "title": "KSampler Base (Steps 0-24)"
+      "title": "KSampler Base (Steps 0-26)"
     }
   },
   "41": {
@@ -143,7 +143,7 @@
     },
     "class_type": "KSamplerAdvanced",
     "_meta": {
-      "title": "KSampler Refiner (Steps 24-30)"
+      "title": "KSampler Refiner (Steps 26-30)"
     }
   },
   "50": {
@@ -162,11 +162,114 @@
       "title": "VAE Decode (Base VAE)"
     }
   },
+  "70": {
+    "inputs": {
+      "model_name": "4x-UltraSharp.safetensors"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Load Upscale Model (4x-UltraSharp)"
+    }
+  },
+  "71": {
+    "inputs": {
+      "upscale_model": [
+        "70",
+        0
+      ],
+      "image": [
+        "50",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Upscale Image (4x-UltraSharp)"
+    }
+  },
+  "72": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 1024,
+      "crop": "disabled",
+      "image": [
+        "71",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Downscale to hires target"
+    }
+  },
+  "73": {
+    "inputs": {
+      "pixels": [
+        "72",
+        0
+      ],
+      "vae": [
+        "10",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode (for hires refine)"
+    }
+  },
+  "74": {
+    "inputs": {
+      "seed": 0,
+      "steps": 20,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.4,
+      "model": [
+        "10",
+        0
+      ],
+      "positive": [
+        "20",
+        0
+      ],
+      "negative": [
+        "21",
+        0
+      ],
+      "latent_image": [
+        "73",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler (hires refine pass)"
+    }
+  },
+  "75": {
+    "inputs": {
+      "samples": [
+        "74",
+        0
+      ],
+      "vae": [
+        "10",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode (final)"
+    }
+  },
   "60": {
     "inputs": {
       "filename_prefix": "sdxl_refined",
       "images": [
-        "50",
+        "75",
         0
       ]
     },
