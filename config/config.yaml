@@ -331,8 +331,19 @@ auth:
       - pattern: "/plugins/user_management/*"
         policy: "require_auth"
         min_role: "admin"
-        description: "Management of users via plugin requires admin role"        
-      
+        description: "Management of users via plugin requires admin role"
+
+      # writer_admin exposes the whole writer DB (jobs.db, books.db,
+      # sessions, story payloads, raw reader feedback) — operator
+      # surface only. Pre-existing gap closed in Phase D after the
+      # Phase-B review surfaced H1 (any user-role JWT could DELETE
+      # queue jobs, dump payloads, etc.). The plugin button itself was
+      # gated at the UI layer, but the routes were technically reachable.
+      - pattern: "/plugins/writer_admin/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "writer_admin plugin (DB inspector + queue debug) requires admin role"
+
       # Example: Allow anonymous access to specific plugin endpoint
       # - pattern: "GET /plugins/todo/panel"
       #   policy: "allow_anonymous"
