@@ -4,37 +4,9 @@ import logging
 import os
 import re
 import sys
-from logging.handlers import RotatingFileHandler
 from typing import Optional
 
-
-class FailTolerantRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that swallows PermissionError on Windows during rotation.
-
-    Multi-process Logging-Konflikt: wenn mehrere Prozesse (z.B. parallele agent-cli
-    Instanzen aus einem Batch-Run) gleichzeitig dieselbe Logdatei offen halten,
-    schlägt ``os.rename`` mit ``[WinError 32] Process used by another process``
-    fehl. Statt dann den ganzen Log-Pfad mit einem CallStack-Trace lahmzulegen
-    (siehe Issue: Logging-Errors während Batch-Runs), ignorieren wir den
-    Rotation-Fehler und schreiben weiter in die bestehende Datei. Worst-Case:
-    die Datei wächst über ``maxBytes`` hinaus, bis das Lock frei ist und beim
-    nächsten Rotation-Versuch wieder klappt.
-    """
-
-    def rotate(self, source: str, dest: str) -> None:
-        try:
-            super().rotate(source, dest)
-        except (PermissionError, OSError) as e:
-            # Stderr-Direkt-Print weil das Logging-System gerade ja Probleme hat.
-            # `flush=True` damit die Meldung nicht in Stream-Buffer hängenbleibt.
-            try:
-                print(
-                    f"[logging] Rotation skipped (file held by another process): "
-                    f"{source} -> {dest}: {e}",
-                    file=sys.stderr, flush=True,
-                )
-            except Exception:
-                pass
+from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 
 class ColorizedFormatter(logging.Formatter):
@@ -221,11 +193,17 @@ def setup_logging(
     # tests that inspect root handlers see it. We ensure earlier handlers
     # were closed above to avoid duplicate open descriptors.
     if rotation_enabled:
-        file_handler = FailTolerantRotatingFileHandler(
+        # Multi-process-safe rotation via portalocker file locks (cross-platform).
+        # Replaces the old FailTolerantRotatingFileHandler workaround which
+        # silently lost backup files when several agent-cli processes hit the
+        # rotation boundary at the same time on Windows (os.remove ran before
+        # the os.rename failed -> cli.log.1 deleted, swallow -> data gone).
+        file_handler = ConcurrentRotatingFileHandler(
             file_path,
             maxBytes=max_bytes,
             backupCount=backup_count,
             encoding="utf-8",
+            use_gzip=False,
         )
     else:
         file_handler = logging.FileHandler(file_path, mode="w", encoding="utf-8")

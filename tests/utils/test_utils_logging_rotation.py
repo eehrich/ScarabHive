@@ -1,62 +1,84 @@
-"""Tests für FailTolerantRotatingFileHandler.
+"""Tests für Multi-Process-sichere Log-Rotation.
 
 Hintergrund: bei parallelen agent-cli-Instanzen unter Windows scheitert
 ``os.rename(source, dest)`` während der Log-Rotation mit
 ``PermissionError [WinError 32]``, weil andere Prozesse die Datei offen
-halten. Der Handler soll diesen Fehler verschlucken statt einen
-Logging-Crash mit StackTrace zu produzieren.
+halten. Die frühere `FailTolerantRotatingFileHandler`-Lösung swallowed
+nur das letzte rename, hatte aber zuvor bereits Backup-Files via
+`os.remove` gelöscht — sodass cli.log.1 unwiderruflich verschwand.
+
+Aktuelle Lösung: `concurrent_log_handler.ConcurrentRotatingFileHandler`
+nutzt File-Locks (portalocker, cross-platform) und serialisiert
+Rotationen sauber zwischen Prozessen.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from unittest.mock import patch
 
-from agent_system.utils.logging import FailTolerantRotatingFileHandler
+from agent_system.utils.logging import setup_logging
+from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 
-def test_rotate_swallows_permission_error(tmp_path: Path, capfd) -> None:
-    """Wenn ``os.rename`` ein PermissionError wirft, wird die Rotation
-    übersprungen — keine Exception bubbled up.
+def test_rotation_enabled_uses_concurrent_handler(tmp_path: Path) -> None:
+    """`setup_logging(rotation_enabled=True)` muss einen
+    `ConcurrentRotatingFileHandler` an den Root-Logger hängen.
     """
-    log_file = tmp_path / "test.log"
-    handler = FailTolerantRotatingFileHandler(
-        str(log_file), maxBytes=100, backupCount=2, encoding="utf-8",
-    )
+    log_file = tmp_path / "rot.log"
     try:
-        with patch("os.rename", side_effect=PermissionError("locked")):
-            handler.rotate(str(log_file), str(log_file) + ".1")  # must not raise
+        setup_logging(
+            enabled=True,
+            level="INFO",
+            file_path=str(log_file),
+            rotation_enabled=True,
+            max_bytes=100,
+            backup_count=2,
+        )
+        root = logging.getLogger()
+        concurrent_handlers = [
+            h for h in root.handlers if isinstance(h, ConcurrentRotatingFileHandler)
+        ]
+        assert len(concurrent_handlers) == 1
+        h = concurrent_handlers[0]
+        assert h.maxBytes == 100
+        assert h.backupCount == 2
     finally:
-        handler.close()
+        # Sauberes Schließen — sonst hält der Lock-File-Handle die Datei offen.
+        for h in list(logging.getLogger().handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
 
-    captured = capfd.readouterr()
-    assert "Rotation skipped" in captured.err
 
-
-def test_rotate_swallows_oserror(tmp_path: Path) -> None:
-    """OSError (Superklasse) wird ebenfalls verschluckt."""
-    log_file = tmp_path / "test.log"
-    handler = FailTolerantRotatingFileHandler(
-        str(log_file), maxBytes=100, backupCount=2, encoding="utf-8",
-    )
+def test_rotation_actually_rotates_on_size_limit(tmp_path: Path) -> None:
+    """Über den maxBytes-Wert hinaus wird tatsächlich rotiert."""
+    log_file = tmp_path / "spam.log"
     try:
-        with patch("os.rename", side_effect=OSError("disk error")):
-            handler.rotate(str(log_file), str(log_file) + ".1")
+        setup_logging(
+            enabled=True,
+            level="INFO",
+            file_path=str(log_file),
+            rotation_enabled=True,
+            max_bytes=200,
+            backup_count=2,
+        )
+        logger = logging.getLogger("rotation_smoke")
+        # write enough to trigger rotation
+        for i in range(50):
+            logger.info("line %d %s", i, "x" * 80)
+        # Force handlers to flush
+        for h in logging.getLogger().handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+        # At least one backup must exist
+        backups = sorted(tmp_path.glob("spam.log.*"))
+        assert backups, "Expected at least one rotated backup file"
     finally:
-        handler.close()
-
-
-def test_rotate_normal_path_delegates_to_super(tmp_path: Path) -> None:
-    """Ohne Fehler delegiert ``rotate`` an die Parent-Implementierung
-    (verifiziert via os.rename-Mock-Aufruf-Count).
-    """
-    log_file = tmp_path / "test.log"
-    log_file.write_text("x")
-    handler = FailTolerantRotatingFileHandler(
-        str(log_file), maxBytes=100, backupCount=2, encoding="utf-8",
-    )
-    try:
-        with patch("os.rename") as mock_rename:
-            handler.rotate(str(log_file), str(log_file) + ".1")
-            assert mock_rename.called
-    finally:
-        handler.close()
+        for h in list(logging.getLogger().handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
