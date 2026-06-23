@@ -70,6 +70,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
         output_path = params.get("output_path")
         include_content = params.get("include_content", True)
         layers_dir_param = params.get("layers_dir")
+        spec_path = params.get("spec_path")
 
         # `spec` accepts either a dict (internal/test callers) or a JSON string
         # (LLM callers). String is the schema-declared form because Gemini's
@@ -137,6 +138,23 @@ class ImageComposeServer(SchemaBasedMCPServer):
             }
             if meta.get("layer_files"):
                 result["layer_files"] = meta["layer_files"]
+
+            # Optional: persist the (validated, in-memory) spec as JSON next
+            # to the composite. We write the dict ourselves with
+            # ensure_ascii=False so non-ASCII text (German umlauts etc.) is
+            # stored as UTF-8 chars instead of \u escapes. This sidesteps the
+            # double-encoding mojibake we saw when LLMs serialised specs as
+            # JSON strings themselves and passed them through file_ops.
+            if spec_path and isinstance(spec_path, str):
+                spec_full = Path(spec_path)
+                if not spec_full.is_absolute():
+                    spec_full = (self.output_root / spec_full).resolve()
+                spec_full.parent.mkdir(parents=True, exist_ok=True)
+                spec_full.write_text(
+                    json.dumps(spec, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                result["spec_path"] = str(spec_full)
             if warnings_list:
                 result["action_required"] = (
                     "Re-compose: address each item in `warnings` (e.g. reduce "

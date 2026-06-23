@@ -56,6 +56,12 @@ tools:
           layers_dir:
             type: string
             description: "Auto-derived from output_path (<stem>_layers/). Omit unless overriding."
+          spec_path:
+            type: string
+            description: >
+              Optional: persist the in-memory spec as JSON next to the composite (UTF-8,
+              ensure_ascii=False). Pass this instead of writing the spec yourself via
+              file_ops — avoids double-encoding mojibake on non-ASCII text (e.g. ü → Ã¼).
         required: [spec, output_path]
 
   - type: function
