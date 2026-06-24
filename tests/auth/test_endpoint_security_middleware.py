@@ -505,6 +505,220 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert role == "user"  # Unknown role defaults to user
 
 
+class TestEndpointSecurityMiddlewareApiKeyExtraction:
+    """Tests for X-API-Key fallback in _extract_user_info.
+
+    Backs the middleware patch that makes the same key UserDatabase accepts
+    via FastAPI's ``X-API-Key`` header also work at the ASGI middleware layer
+    (previously the middleware rejected such requests before the endpoint
+    ever ran).
+    """
+
+    @pytest.fixture
+    def middleware(self):
+        """Create middleware with known secret."""
+        config = AuthConfig(
+            enabled=True,
+            secret_key="test-secret-key-12345",
+            algorithm="HS256",
+        )
+        app = AsyncMock()
+        return EndpointSecurityMiddleware(app, config)
+
+    @pytest.fixture
+    def api_key_db(self, tmp_path, monkeypatch):
+        """Temporary UserDatabase wired as the global singleton.
+
+        Resets the global ``_db`` reference both before and after the test so
+        that the middleware's lazy lookup uses our isolated copy and the next
+        test doesn't see leaked state.
+        """
+        from pathlib import Path
+        from agent_system.auth import database as auth_db
+        from agent_system.auth.models import UserCreate, UserRole
+
+        previous = auth_db._db
+        db = auth_db.setup_database(Path(tmp_path) / "users.db")
+        user = db.create_user(UserCreate(
+            username="apiuser",
+            email="api@example.com",
+            password="irrelevant-pw-123",
+            full_name="API User",
+            role=UserRole.ADMIN,
+            is_active=True,
+        ))
+        api_key = db.generate_user_api_key(user.id)
+        yield db, user, api_key
+        auth_db._db = previous
+
+    def _create_token(self, payload: dict, secret: str = "test-secret-key-12345") -> str:
+        from jose import jwt
+        return jwt.encode(payload, secret, algorithm="HS256")
+
+    def test_extract_from_api_key_header(self, middleware, api_key_db):
+        """Valid X-API-Key should authenticate the request."""
+        _, user, api_key = api_key_db
+        scope = {
+            "headers": [(b"x-api-key", api_key.encode())],
+            "query_string": b"",
+        }
+
+        username, role = middleware._extract_user_info(scope)
+        assert username == user.username
+        assert role == "admin"
+
+    def test_api_key_unknown_returns_none(self, middleware, api_key_db):
+        """Unknown key must yield (None, None) without raising."""
+        scope = {
+            "headers": [(b"x-api-key", b"not-a-real-key")],
+            "query_string": b"",
+        }
+
+        username, role = middleware._extract_user_info(scope)
+        assert username is None
+        assert role is None
+
+    def test_api_key_inactive_user_rejected(self, middleware, api_key_db):
+        """Deactivated users must be rejected even with a valid key."""
+        db, user, api_key = api_key_db
+        from agent_system.auth.models import UserUpdate
+        db.update_user(user.id, UserUpdate(is_active=False))
+
+        scope = {
+            "headers": [(b"x-api-key", api_key.encode())],
+            "query_string": b"",
+        }
+
+        username, role = middleware._extract_user_info(scope)
+        assert username is None
+        assert role is None
+
+    def test_jwt_takes_precedence_over_api_key(self, middleware, api_key_db):
+        """Valid JWT wins over X-API-Key when both are present."""
+        _, _, api_key = api_key_db
+        token = self._create_token({"sub": "jwtuser", "role": "user"})
+        scope = {
+            "headers": [
+                (b"authorization", f"Bearer {token}".encode()),
+                (b"x-api-key", api_key.encode()),
+            ],
+            "query_string": b"",
+        }
+
+        username, role = middleware._extract_user_info(scope)
+        assert username == "jwtuser"
+        assert role == "user"
+
+    def test_invalid_jwt_falls_back_to_api_key(self, middleware, api_key_db):
+        """An invalid/expired JWT must not block a valid X-API-Key fallback."""
+        _, user, api_key = api_key_db
+        scope = {
+            "headers": [
+                (b"authorization", b"Bearer garbage.not.a.jwt"),
+                (b"x-api-key", api_key.encode()),
+            ],
+            "query_string": b"",
+        }
+
+        username, role = middleware._extract_user_info(scope)
+        assert username == user.username
+        assert role == "admin"
+
+    def test_empty_api_key_header_returns_none(self, middleware, api_key_db):
+        """An empty X-API-Key header must not crash the lookup."""
+        scope = {
+            "headers": [(b"x-api-key", b"   ")],
+            "query_string": b"",
+        }
+
+        username, role = middleware._extract_user_info(scope)
+        assert username is None
+        assert role is None
+
+    def test_api_key_lookup_is_constant_time(self, middleware, api_key_db, monkeypatch):
+        """Verify path goes through verify_api_key (hmac.compare_digest)."""
+        _, _, api_key = api_key_db
+        called = {"verify": False}
+
+        from agent_system.auth import security as auth_security
+        original_verify = auth_security.verify_api_key
+
+        def spy_verify(plain, hashed):
+            called["verify"] = True
+            return original_verify(plain, hashed)
+
+        monkeypatch.setattr(auth_security, "verify_api_key", spy_verify)
+
+        scope = {
+            "headers": [(b"x-api-key", api_key.encode())],
+            "query_string": b"",
+        }
+        middleware._extract_user_info(scope)
+        assert called["verify"], "verify_api_key (hmac.compare_digest) must be invoked"
+
+    def test_api_key_verify_runs_on_db_miss_too(self, middleware, api_key_db, monkeypatch):
+        """verify_api_key must be invoked even when the key is unknown.
+
+        Keeps the timing path constant between hit and miss so an attacker
+        cannot enumerate valid API keys by measuring response latency.
+        """
+        calls = []
+        from agent_system.auth import security as auth_security
+        original_verify = auth_security.verify_api_key
+
+        def spy_verify(plain, hashed):
+            calls.append(hashed[:8])
+            return original_verify(plain, hashed)
+
+        monkeypatch.setattr(auth_security, "verify_api_key", spy_verify)
+
+        scope = {
+            "headers": [(b"x-api-key", b"nonexistent-key-12345")],
+            "query_string": b"",
+        }
+        username, role = middleware._extract_user_info(scope)
+        assert (username, role) == (None, None)
+        assert len(calls) == 1, "verify_api_key must be called on miss too (timing parity)"
+
+    def test_multiple_api_key_headers_rejected(self, middleware, api_key_db):
+        """Two X-API-Key headers must be rejected as ambiguous.
+
+        Python dict() keeps the LAST tuple, while Starlette/FastAPI Header()
+        returns the FIRST — so if a client (or upstream proxy) sends two
+        keys the middleware and downstream endpoint could authenticate as
+        different users. Resolve the ambiguity by rejecting outright.
+        """
+        _, _, api_key = api_key_db
+        scope = {
+            "headers": [
+                (b"x-api-key", api_key.encode()),
+                (b"x-api-key", b"other-key-value"),
+            ],
+            "query_string": b"",
+        }
+        username, role = middleware._extract_user_info(scope)
+        assert username is None
+        assert role is None
+
+    def test_db_lookup_failure_returns_none_without_raising(self, middleware, api_key_db, monkeypatch):
+        """A raised exception in the DB layer must not surface as 500."""
+        from agent_system.auth import database as auth_db
+
+        broken = type("Broken", (), {
+            "get_user_by_api_key": lambda self, h: (_ for _ in ()).throw(RuntimeError("disk full"))
+        })()
+        monkeypatch.setattr(auth_db, "_db", broken)
+        middleware._user_db = broken
+
+        scope = {
+            "headers": [(b"x-api-key", b"any-key")],
+            "query_string": b"",
+        }
+        username, role = middleware._extract_user_info(scope)
+        assert username is None
+        assert role is None
+
+
 class TestEndpointSecurityMiddlewareCall:
     """Tests for middleware __call__ method."""
     

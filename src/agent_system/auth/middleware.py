@@ -45,7 +45,7 @@ class EndpointSecurityMiddleware:
     def __init__(self, app: ASGIApp, auth_config: "AuthConfig"):
         """
         Initialize endpoint security middleware.
-        
+
         Args:
             app: ASGI application
             auth_config: Authentication configuration with endpoint_security rules
@@ -54,6 +54,22 @@ class EndpointSecurityMiddleware:
         self.auth_config = auth_config
         self._compiled_patterns: List[tuple] = []
         self._compile_patterns()
+        # Lazy-loaded singleton handle for X-API-Key validation against UserDatabase.
+        # None until first X-API-Key request reaches the middleware.
+        self._user_db: Optional[Any] = None
+
+    def _get_user_db(self) -> Any:
+        """Lazy import + cache the global UserDatabase singleton.
+
+        Imported lazily so the middleware module does not pull in the auth
+        database (and its SQLite init side-effects) at import time. The
+        underlying SQLite database opens a fresh connection per query, so the
+        cached handle is safe to share across concurrent ASGI requests.
+        """
+        if self._user_db is None:
+            from agent_system.auth.database import get_db
+            self._user_db = get_db()
+        return self._user_db
     
     def _compile_patterns(self) -> None:
         """Compile endpoint patterns into regex for efficient matching."""
@@ -152,26 +168,33 @@ class EndpointSecurityMiddleware:
         return (default_requires_auth, "user" if default_requires_auth else None, "default")
     
     def _extract_user_info(self, scope: Scope) -> tuple:
-        """Extract user info from JWT token.
-        
+        """Extract user info from JWT token or X-API-Key header.
+
         Checks in priority order:
-        1. Authorization: Bearer <token> header
-        2. access_token cookie
-        3. ?token=<token> query parameter (for WebSocket/SSE connections)
-        
+        1. Authorization: Bearer <token> header (JWT)
+        2. access_token cookie (JWT)
+        3. ?token=<token> query parameter (JWT, for WebSocket/SSE connections)
+        4. X-API-Key header (API key, looked up in UserDatabase)
+
+        JWT validation failures fall through to the X-API-Key lookup so that
+        clients which combine an invalid/expired session with a valid API key
+        (e.g. a still-mounted browser cookie alongside a programmatic header)
+        are still authenticated. If neither path yields a valid user, returns
+        (None, None).
+
         Returns:
             Tuple of (username, role) or (None, None) if not authenticated
         """
         from jose import jwt, JWTError
-        
+
         headers = dict(scope.get("headers", []))
         token = None
-        
+
         # 1. Try Authorization header (highest priority)
         auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-        
+
         # 2. Try cookie
         if not token:
             cookie_header = headers.get(b"cookie", b"").decode("utf-8", errors="ignore")
@@ -180,7 +203,7 @@ class EndpointSecurityMiddleware:
                 if part.startswith("access_token="):
                     token = part[13:].strip()
                     break
-        
+
         # 3. Try query parameter (for SSE/WebSocket where headers may not be available)
         if not token:
             query_string = scope.get("query_string", b"").decode("utf-8", errors="ignore")
@@ -189,38 +212,120 @@ class EndpointSecurityMiddleware:
                 token_list = query_params.get("token", [])
                 if token_list:
                     token = token_list[0].strip()
-        
-        if not token:
+
+        # Try to decode JWT if a token was found. Soft-fail to allow the
+        # X-API-Key fallback below to still authenticate the request.
+        if token:
+            try:
+                payload = jwt.decode(
+                    token,
+                    self.auth_config.secret_key,
+                    algorithms=[self.auth_config.algorithm]
+                )
+                username = payload.get("sub")
+                role = payload.get("role", "user")
+
+                if not username or not isinstance(username, str):
+                    logger.debug("JWT token has invalid or missing 'sub' claim")
+                elif not all(c.isalnum() or c in '_-.' for c in username):
+                    logger.warning("JWT token has invalid username format")
+                else:
+                    if not isinstance(role, str) or role.lower() not in ROLE_HIERARCHY:
+                        logger.debug(f"JWT token has unknown role: {role}, defaulting to 'user'")
+                        role = "user"
+                    return (username, role)
+            except JWTError as e:
+                logger.debug(f"JWT token error: {e}")
+
+        # 4. Try X-API-Key header (API key auth via UserDatabase).
+        # Count duplicate X-API-Key headers BEFORE collapsing to a dict —
+        # Python dict() keeps the LAST tuple, while Starlette's Headers.get
+        # (used by downstream FastAPI dependencies) returns the FIRST. Sending
+        # two values could otherwise authenticate one user at the middleware
+        # and a different user at the endpoint. Reject the ambiguous case.
+        raw_headers = scope.get("headers", [])
+        api_key_header_count = sum(1 for h in raw_headers if h[0].lower() == b"x-api-key")
+        if api_key_header_count > 1:
+            logger.warning("Multiple X-API-Key headers received; rejecting request")
             return (None, None)
-        
-        # Decode JWT token with verification
+        api_key = headers.get(b"x-api-key", b"").decode("utf-8", errors="ignore").strip()
+        if api_key:
+            return self._lookup_api_key(api_key)
+
+        return (None, None)
+
+    # Constant dummy hash for the "key not in DB" branch of _lookup_api_key.
+    # Used to keep verify_api_key timing identical between hit and miss so that
+    # the SQLite lookup latency is the only remaining signal (~µs constant).
+    _DUMMY_API_KEY_HASH = "0" * 64
+
+    def _lookup_api_key(self, api_key: str) -> tuple:
+        """Validate an X-API-Key against the user database.
+
+        Uses the same flow as auth.dependencies.get_current_user:
+        hash → DB lookup → hmac.compare_digest verify → return (username, role).
+
+        Security invariants:
+        - Never logs the raw key or the stored hash.
+        - Always runs verify_api_key() (constant-time hmac.compare_digest)
+          on EVERY call — even on a DB miss — to flatten timing differences
+          between known and unknown keys.
+        - Inactive users are rejected.
+        - Username/role are sanitized identically to the JWT path so the
+          downstream audit/role checks see the same shape.
+        - Infrastructure errors (DB/import) are logged at WARNING so an
+          operator notices silent 401-loops; only the exception class is
+          logged (never the raw key).
+
+        Returns:
+            Tuple of (username, role) on success, (None, None) otherwise.
+        """
         try:
-            payload = jwt.decode(
-                token, 
-                self.auth_config.secret_key, 
-                algorithms=[self.auth_config.algorithm]
+            from agent_system.auth.security import hash_api_key, verify_api_key
+        except ImportError as exc:
+            logger.error(f"API-Key auth unavailable — security module import failed: {exc}")
+            return (None, None)
+
+        try:
+            api_key_hash = hash_api_key(api_key)
+            user_in_db = self._get_user_db().get_user_by_api_key(api_key_hash)
+        except Exception as exc:  # noqa: BLE001
+            # DB-side failure (corrupted file, locked, etc.) — loud, no raw key.
+            logger.error(
+                "API-Key DB lookup failed (%s); requests with X-API-Key will return 401",
+                exc.__class__.__name__,
             )
-            username = payload.get("sub")
-            role = payload.get("role", "user")
-            
-            # Validate extracted values
-            if not username or not isinstance(username, str):
-                logger.debug("JWT token has invalid or missing 'sub' claim")
+            return (None, None)
+
+        # Always verify, even on miss, to equalise timing between hit/miss.
+        stored_hash = user_in_db.api_key if user_in_db and user_in_db.api_key else self._DUMMY_API_KEY_HASH
+        verified = verify_api_key(api_key, stored_hash)
+        if not user_in_db or not verified or not user_in_db.is_active:
+            return (None, None)
+
+        try:
+            username = user_in_db.username
+            if not isinstance(username, str) or not all(
+                c.isalnum() or c in "_-." for c in username
+            ):
+                logger.warning("API-Key user has invalid username format")
                 return (None, None)
-            
-            # Sanitize username (alphanumeric, underscore, hyphen, dot only)
-            if not all(c.isalnum() or c in '_-.' for c in username):
-                logger.warning("JWT token has invalid username format")
-                return (None, None)
-            
-            # Validate role is a known value
+
+            role_obj = user_in_db.role
+            role = role_obj.value if hasattr(role_obj, "value") else str(role_obj)
             if not isinstance(role, str) or role.lower() not in ROLE_HIERARCHY:
-                logger.debug(f"JWT token has unknown role: {role}, defaulting to 'user'")
+                logger.warning(
+                    "API-Key user has unknown role %r; defaulting to 'user'",
+                    role,
+                )
                 role = "user"
-            
+
             return (username, role)
-        except JWTError as e:
-            logger.debug(f"JWT token error: {e}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "API-Key user record could not be normalised (%s)",
+                exc.__class__.__name__,
+            )
             return (None, None)
     
     def _check_role(self, user_role: Optional[str], min_role: Optional[str]) -> bool:
@@ -365,8 +470,17 @@ class SecurityAuditMiddleware:
         self._audit_log: List[Dict[str, Any]] = []
         self._max_memory_entries = max_memory_entries
         self._log_allowed = log_allowed
+        # Lazy handle for X-API-Key → username resolution against UserDatabase.
+        self._user_db: Optional[Any] = None
         self._setup_security_logger()
         SecurityAuditMiddleware._instance = self
+
+    def _get_user_db(self) -> Any:
+        """Lazy-load the global UserDatabase singleton (see EndpointSecurityMiddleware)."""
+        if self._user_db is None:
+            from agent_system.auth.database import get_db
+            self._user_db = get_db()
+        return self._user_db
     
     def _setup_security_logger(self) -> None:
         """Setup dedicated security audit file logger."""
@@ -446,13 +560,22 @@ class SecurityAuditMiddleware:
             )
     
     def _extract_user_from_headers(self, scope: Scope) -> str:
-        """Extract username from JWT token in Authorization header or cookie."""
+        """Extract username from JWT token (Bearer/cookie) or X-API-Key header.
+
+        Audit-only path: returns the username for logging, does NOT authorize.
+        JWT extraction is unverified (decode-only) because EndpointSecurityMiddleware
+        is responsible for the actual auth decision; we just want a name in the log.
+
+        For X-API-Key requests we still look up the hash in UserDatabase so the
+        audit log shows the real username instead of 'anonymous' (without that
+        lookup the audit log would lie about who hit /run).
+        """
         headers = dict(scope.get("headers", []))
-        
+
         # Try Authorization header first
         auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
         token = None
-        
+
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
         else:
@@ -464,13 +587,13 @@ class SecurityAuditMiddleware:
                     if cookie.startswith("access_token="):
                         token = cookie[13:]
                         break
-        
+
         if token:
             try:
                 # Decode JWT without verification (we just want the username for logging)
                 import base64
                 import json
-                
+
                 # JWT format: header.payload.signature
                 parts = token.split(".")
                 if len(parts) >= 2:
@@ -480,10 +603,39 @@ class SecurityAuditMiddleware:
                     if padding != 4:
                         payload_b64 += "=" * padding
                     payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                    return payload.get("sub", "anonymous")
+                    sub = payload.get("sub")
+                    if sub:
+                        return sub
             except Exception:
                 pass
-        
+
+        # Fall back to X-API-Key lookup so audit log reflects the real user.
+        # Mirror the strict checks of EndpointSecurityMiddleware._lookup_api_key
+        # so the audit log never attributes a request to a user whose key
+        # would actually be rejected (inactive account, hash collision, etc.).
+        raw_headers = scope.get("headers", [])
+        if sum(1 for h in raw_headers if h[0].lower() == b"x-api-key") > 1:
+            # Ambiguous request — match EndpointSecurityMiddleware: stay anonymous.
+            return "anonymous"
+        api_key = headers.get(b"x-api-key", b"").decode("utf-8", errors="ignore").strip()
+        if api_key:
+            try:
+                from agent_system.auth.security import hash_api_key, verify_api_key
+                user = self._get_user_db().get_user_by_api_key(hash_api_key(api_key))
+                if (
+                    user
+                    and user.username
+                    and user.api_key
+                    and user.is_active
+                    and verify_api_key(api_key, user.api_key)
+                ):
+                    return user.username
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Audit user-lookup failed (%s); logging as anonymous",
+                    exc.__class__.__name__,
+                )
+
         return "anonymous"
     
     def _get_category(self, path: str) -> str:
