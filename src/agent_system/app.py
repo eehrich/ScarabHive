@@ -1084,7 +1084,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         llm_override = None
         llm_profile_info = None
 
-        # Override agent if specified
+        # Override agent if specified. When the caller passes an
+        # EXPLICIT agent_name we must NOT silently fall back to the
+        # default agent — that turns an "agent name typo" or a "plugin
+        # not loaded" bug into a chat_agent run that returns HTTP 200,
+        # which downstream batch dispatchers (writer-jobs book_generation
+        # / fix) treat as success. Strict 404 instead, so the caller's
+        # job-row goes 'failed' with a useful error.
         if agent_name and agent_name != selected_agent.name:
             try:
                 selected_agent = _app_registry.get(agent_name)  # type: ignore[attr-defined]
@@ -1096,18 +1102,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent._session_service = _session_service
                 logger.debug(f"Injected SessionService into agent '{agent_name}' via /run endpoint")
             except KeyError:
-                # Agent not found - fallback to default_agent
-                default_agent_name = config.default_agent
-                logger.warning(f"Agent '{agent_name}' not found, falling back to default_agent '{default_agent_name}'")
-                try:
-                    selected_agent = _app_registry.get(default_agent_name)  # type: ignore[attr-defined]
-                    from .servers.agent.server import Agent as _Agent
-                    if not isinstance(selected_agent, _Agent):
-                        raise HTTPException(status_code=500, detail=f"Default agent '{default_agent_name}' is not an agent")
-                    selected_agent._session_service = _session_service
-                    logger.debug(f"Using default_agent '{default_agent_name}' and injected SessionService")
-                except KeyError:
-                    raise HTTPException(status_code=500, detail=f"Neither agent '{agent_name}' nor default_agent '{default_agent_name}' found")
+                logger.warning(
+                    "Agent '%s' not found — returning 404 (no silent fallback)",
+                    agent_name,
+                )
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"agent_not_found:{agent_name}. "
+                        "Check the plugin name (registered MCP server name, not "
+                        "the agent yaml filename) and that the plugin is loaded."
+                    ),
+                )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
 
