@@ -481,9 +481,19 @@ class MessageDebuggerDB:
         return {"turns_deleted": turns_deleted, "requests_deleted": requests_deleted}
 
     def vacuum(self) -> None:
-        """Reclaim disk space after deletions."""
+        """Reclaim disk space after deletions (shrinks the file).
+
+        In WAL mode VACUUM writes the compacted database into the WAL; without a
+        checkpoint the main file stays at its old size on disk until the next
+        checkpoint/close. Checkpoint(TRUNCATE) here so the file actually shrinks
+        immediately.
+        """
         conn = self._get_conn()
         conn.execute("VACUUM")
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            pass
 
     # ---- Size-bounded retention (automatic) ----------------------------------
 

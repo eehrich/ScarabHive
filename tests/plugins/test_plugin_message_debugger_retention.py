@@ -109,6 +109,36 @@ class TestAutoRetentionKeepsFileBounded:
         )
 
 
+class TestManualPruneShrinksFile:
+    """The manual front-panel 'prune old entries' path must actually shrink the
+    file (prune to the cap + VACUUM), unlike the per-write auto retention."""
+
+    def test_enforce_plus_vacuum_shrinks_file(self, db):
+        db._retention_check_interval = 10**9  # drive manually
+        _insert_turns(db, 300)
+        before = os.path.getsize(db.db_path)
+        db.enforce_retention()  # prune oldest down to LOW
+        db.vacuum()             # reclaim freed pages to the OS
+        after = os.path.getsize(db.db_path)
+        assert after < before * 0.6, f"file did not shrink: {before} -> {after}"
+
+    @pytest.mark.asyncio
+    async def test_prune_endpoint_reclaims_and_reports(self, db):
+        from plugins.message_debugger.web_endpoints import MessageDebuggerWebFactory
+
+        db._retention_check_interval = 10**9
+        _insert_turns(db, 300)
+        factory = MessageDebuggerWebFactory(db=db)
+
+        res = await factory.prune(None, max_turns=10, max_requests=10, vacuum=True)
+
+        assert res["turns_deleted"] > 0
+        assert res["vacuumed"] is True
+        assert res["freed_mb"] > 0, "manual prune must report reclaimed space"
+        assert "size_after_mb" in res
+        assert _count(db) <= 10  # only the most-recent turns kept
+
+
 class TestRetentionDisabled:
     def test_cap_zero_disables_pruning(self, tmp_path):
         d = MessageDebuggerDB(tmp_path / "nocap.db", wal_mode=True, max_size_mb=0)

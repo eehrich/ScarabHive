@@ -134,11 +134,45 @@ class MessageDebuggerWebFactory:
         max_requests: int = Query(default=5000, ge=100, le=100000, description="Keep only the N most recent LLM requests"),
         vacuum: bool = Query(default=True, description="Reclaim disk space after pruning"),
     ):
-        """Prune old entries and optionally VACUUM to reclaim disk space."""
+        """Prune old entries and (by default) VACUUM to reclaim disk space.
+
+        Manual cleanup path: first drop to the row caps, then enforce the
+        configured size cap (row counts alone don't bound bytes when payloads are
+        large), then VACUUM so the file actually shrinks (the per-write auto
+        retention never VACUUMs — it relies on page reuse). VACUUM needs free
+        temp space roughly the size of the remaining data, so it can fail on a
+        full disk; that is reported instead of erroring the request.
+        """
+        import os
+
+        def _disk_bytes() -> int:
+            total = 0
+            for suffix in ("", "-wal", "-shm"):
+                p = f"{self.db.db_path}{suffix}"
+                if os.path.exists(p):
+                    total += os.path.getsize(p)
+            return total
+
+        size_before = _disk_bytes()
+
         result = self.db.prune_to_max(max_turns=max_turns, max_requests=max_requests)
+        # Also enforce the configured size cap (down to the LOW watermark).
+        cap = self.db.enforce_retention()
+        result["turns_deleted"] += cap.get("turns_deleted", 0)
+        result["requests_deleted"] += cap.get("requests_deleted", 0)
+
+        result["vacuumed"] = False
         if vacuum and (result["turns_deleted"] > 0 or result["requests_deleted"] > 0):
-            self.db.vacuum()
-            result["vacuumed"] = True
+            try:
+                self.db.vacuum()
+                result["vacuumed"] = True
+            except Exception as e:  # e.g. not enough free space for the temp copy
+                logger.warning("message_debugger manual VACUUM failed: %s", e)
+                result["vacuum_error"] = str(e)
+
+        size_after = _disk_bytes()
+        result["freed_mb"] = round((size_before - size_after) / 1024 / 1024, 1)
+        result["size_after_mb"] = round(size_after / 1024 / 1024, 1)
         return {'status': 'pruned', **result}
     
     # ---- Panel rendering ----

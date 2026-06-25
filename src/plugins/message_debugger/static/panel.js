@@ -290,7 +290,7 @@ const debugger_ = {
             document.getElementById('modal-overlay').classList.add('visible');
             if (typeof Prism !== 'undefined') Prism.highlightAllUnder(document.getElementById('modal-body'));
             this.addCopyIcons();
-        } catch (e) { alert('Failed to load turn: ' + e.message); }
+        } catch (e) { this.notify('Failed to load turn: ' + e.message); }
     },
 
     async showRequestDetail(id) {
@@ -347,7 +347,7 @@ const debugger_ = {
             document.getElementById('modal-overlay').classList.add('visible');
             if (typeof Prism !== 'undefined') Prism.highlightAllUnder(document.getElementById('modal-body'));
             this.addCopyIcons();
-        } catch (e) { alert('Failed to load request: ' + e.message); }
+        } catch (e) { this.notify('Failed to load request: ' + e.message); }
     },
 
     closeModal() {
@@ -383,24 +383,31 @@ const debugger_ = {
             const res = await fetch('/plugins/message_debugger/clear', { method: 'DELETE' });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ detail: res.statusText }));
-                alert('Clear failed: ' + (err.detail || res.statusText));
+                this.notify('Clear failed: ' + (err.detail || res.statusText));
                 return;
             }
             await this.refresh();
-        } catch (e) { alert('Clear failed: ' + e.message); }
+        } catch (e) { this.notify('Clear failed: ' + e.message); }
     },
 
     async pruneOld() {
-        const maxTurns = prompt('Keep how many recent turns?', '5000');
-        if (!maxTurns) return;
-        const maxReqs = prompt('Keep how many recent LLM requests?', '5000');
-        if (!maxReqs) return;
+        const ok = await this.confirm(
+            'Prune old entries down to the configured size cap and VACUUM to reclaim disk space?\n\n' +
+            'Keeps the most recent data; the oldest is removed.'
+        );
+        if (!ok) return;
         try {
-            const res = await fetch(`/plugins/message_debugger/prune?max_turns=${maxTurns}&max_requests=${maxReqs}&vacuum=true`, { method: 'POST' });
+            const res = await fetch('/plugins/message_debugger/prune?vacuum=true', { method: 'POST' });
             const data = await res.json();
-            alert(`Pruned: ${data.turns_deleted} turns, ${data.requests_deleted} requests deleted.${data.vacuumed ? ' DB vacuumed.' : ''}`);
+            let msg = `Pruned ${data.turns_deleted} turns and ${data.requests_deleted} requests.`;
+            if (data.vacuumed) {
+                msg += `\nVACUUM reclaimed ${data.freed_mb} MB (DB now ${data.size_after_mb} MB).`;
+            } else if (data.vacuum_error) {
+                msg += `\nVACUUM failed (likely not enough free disk for the temp copy): ${data.vacuum_error}`;
+            }
             await this.refresh();
-        } catch (e) { alert('Prune failed: ' + e.message); }
+            this.notify(msg);
+        } catch (e) { this.notify('Prune failed: ' + e.message); }
     },
 
     confirm(message) {
@@ -416,6 +423,23 @@ const debugger_ = {
         if (this.confirmResolve) {
             this.confirmResolve(result);
             this.confirmResolve = null;
+        }
+    },
+
+    // Info dialog — native alert() is unreliable inside the panel iframe.
+    notify(message) {
+        return new Promise(resolve => {
+            this.notifyResolve = resolve;
+            document.getElementById('notify-message').textContent = message;
+            document.getElementById('notify-overlay').classList.add('visible');
+        });
+    },
+
+    closeNotify() {
+        document.getElementById('notify-overlay').classList.remove('visible');
+        if (this.notifyResolve) {
+            this.notifyResolve();
+            this.notifyResolve = null;
         }
     },
 

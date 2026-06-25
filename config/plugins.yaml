@@ -939,6 +939,12 @@ plugins:
     message_debugger:
       type: message_debugger
       enabled: true
+      config:
+        # Hard cap on the debugger DB's data size. Above ~90% the oldest
+        # turns/requests are auto-pruned down to ~75% (file plateaus, reuses
+        # freed pages, no VACUUM). The manual "prune old entries" panel button
+        # additionally VACUUMs to shrink the file on disk. 0 disables retention.
+        max_db_size_mb: 5120
 
     debate_forum:
       type: debate_forum

@@ -126,6 +126,19 @@
             </div>
         </div>
     </div>
+
+    <!-- Info / notification modal (alert() does not work inside the iframe) -->
+    <div class="modal-overlay" id="notify-overlay" onclick="debugger_.closeNotify()">
+        <div class="confirm-modal" onclick="event.stopPropagation()">
+            <div class="confirm-header">
+                <h3>ℹ️ Message Debugger</h3>
+            </div>
+            <div class="confirm-body" id="notify-message" style="white-space: pre-line"></div>
+            <div class="confirm-actions">
+                <button class="primary" onclick="debugger_.closeNotify()">OK</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Prism.js for JSON Syntax Highlighting -->
