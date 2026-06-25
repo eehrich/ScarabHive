@@ -24,18 +24,33 @@ class MessageDebuggerDB:
     - llm_requests: LLM-client-level raw API request/response logs
     """
     
-    def __init__(self, db_path: str | Path, wal_mode: bool = True):
+    def __init__(self, db_path: str | Path, wal_mode: bool = True, max_size_mb: float = 5120):
         """Initialize database.
-        
+
         Args:
             db_path: Path to SQLite database file
             wal_mode: Enable WAL mode for concurrent access (default True)
+            max_size_mb: Hard cap on the debugger DB's real data size. When the
+                used data exceeds ~90% of this, the oldest turns/requests are
+                pruned down to ~75% (hysteresis: rarely, in one batch). 0 = off.
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._wal_mode = wal_mode
         self._local = threading.local()
-        
+
+        # Size-bounded retention (hysteresis). We measure REAL data size
+        # ((page_count - freelist_count) * page_size), which drops on DELETE even
+        # without VACUUM; the file plateaus at its high-water mark and reuses the
+        # freed pages, so it stops growing. High/low watermarks avoid per-write
+        # thrashing — pruning runs only after ~15% of the budget has accumulated.
+        self._max_size_bytes = int(float(max_size_mb) * 1024 * 1024) if max_size_mb and max_size_mb > 0 else 0
+        self._high_bytes = int(self._max_size_bytes * 0.90)
+        self._low_bytes = int(self._max_size_bytes * 0.75)
+        self._retention_check_interval = 200  # measure size only every N writes
+        self._writes_since_check = 0
+        self._retention_lock = threading.Lock()
+
         # Initialize schema
         self._init_schema()
         logger.info(f"MessageDebuggerDB initialized: {self.db_path}")
@@ -164,6 +179,7 @@ class MessageDebuggerDB:
             )
         )
         conn.commit()
+        self.maybe_enforce_retention()
         return cursor.lastrowid  # type: ignore[return-value]
     
     # Columns to select in list queries (excludes large JSON blobs)
@@ -286,6 +302,7 @@ class MessageDebuggerDB:
             )
         )
         conn.commit()
+        self.maybe_enforce_retention()
         return cursor.lastrowid  # type: ignore[return-value]
     
     def get_llm_requests(
@@ -467,7 +484,105 @@ class MessageDebuggerDB:
         """Reclaim disk space after deletions."""
         conn = self._get_conn()
         conn.execute("VACUUM")
-    
+
+    # ---- Size-bounded retention (automatic) ----------------------------------
+
+    def _used_bytes(self, conn: sqlite3.Connection) -> int:
+        """Real data size: (allocated pages - free pages) * page size.
+
+        Unlike os.path.getsize this DROPS when rows are deleted (freed pages go
+        on the freelist), so it is the right metric to bound without VACUUM.
+        """
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        return max(0, (page_count - freelist) * page_size)
+
+    def enforce_retention(self) -> Dict[str, int]:
+        """Prune oldest rows when the data size exceeds the high watermark.
+
+        Hysteresis: only fires above HIGH (~90% of the cap) and then deletes the
+        oldest turns/requests in batches down to LOW (~75%). The file does not
+        shrink (no VACUUM) but stops growing — freed pages are reused. Safe to
+        call from any worker thread; concurrent calls are skipped by the caller.
+        """
+        if self._max_size_bytes <= 0:
+            return {"turns_deleted": 0, "requests_deleted": 0}
+        conn = self._get_conn()
+        if self._used_bytes(conn) <= self._high_bytes:
+            return {"turns_deleted": 0, "requests_deleted": 0}
+
+        turns_deleted = 0
+        requests_deleted = 0
+        # Aim a hair below LOW so a single proportional pass lands safely under it.
+        target = max(1, int(self._low_bytes * 0.98))
+        # Delete the oldest rows in proportion to how far we are over target,
+        # re-measuring each pass (row sizes vary, so converge in a few passes
+        # rather than guessing a fixed batch — too-large a batch would wipe the
+        # whole table when rows are big; too-small would checkpoint-thrash).
+        for _ in range(16):
+            used = self._used_bytes(conn)
+            if used <= target:
+                break
+            turn_count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+            req_count = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
+            if turn_count == 0 and req_count == 0:
+                break
+            frac = min(1.0, (used - target) / used)
+            drop_t = max(1, int(turn_count * frac)) if turn_count else 0
+            drop_r = max(1, int(req_count * frac)) if req_count else 0
+            if drop_t:
+                turns_deleted += conn.execute(
+                    "DELETE FROM turns WHERE id IN "
+                    "(SELECT id FROM turns ORDER BY timestamp_ms ASC LIMIT ?)",
+                    (drop_t,),
+                ).rowcount
+            if drop_r:
+                requests_deleted += conn.execute(
+                    "DELETE FROM llm_requests WHERE id IN "
+                    "(SELECT id FROM llm_requests ORDER BY timestamp_ms ASC LIMIT ?)",
+                    (drop_r,),
+                ).rowcount
+            conn.commit()
+            # Checkpoint so the freelist (and thus _used_bytes) reflects the
+            # deletes in WAL mode; ignore if checkpointing is unavailable.
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.OperationalError:
+                pass
+
+        if turns_deleted or requests_deleted:
+            logger.info(
+                "message_debugger retention: pruned %d turns + %d requests "
+                "(data over %.0f MB high-watermark, down toward %.0f MB)",
+                turns_deleted, requests_deleted,
+                self._high_bytes / 1024**2, self._low_bytes / 1024**2,
+            )
+        return {"turns_deleted": turns_deleted, "requests_deleted": requests_deleted}
+
+    def maybe_enforce_retention(self) -> None:
+        """Cheap per-write hook: every N writes, size-check and prune if needed.
+
+        Most calls are a no-op (counter only). The size measurement runs every
+        _retention_check_interval writes; the actual prune happens far more
+        rarely (only above the high watermark). A non-blocking lock guarantees
+        at most one prune runs at a time across worker threads.
+        """
+        if self._max_size_bytes <= 0:
+            return
+        self._writes_since_check += 1
+        if self._writes_since_check < self._retention_check_interval:
+            return
+        if not self._retention_lock.acquire(blocking=False):
+            return  # another thread is already pruning; it covers us
+        try:
+            self._writes_since_check = 0
+            self.enforce_retention()
+        except Exception as e:  # retention must never break capture
+            logger.warning("message_debugger retention failed: %s", e)
+        finally:
+            self._retention_lock.release()
+
     def close(self) -> None:
         """Close the database connection."""
         if hasattr(self._local, 'conn') and self._local.conn:

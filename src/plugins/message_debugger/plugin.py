@@ -51,9 +51,12 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
             # Ensure parent directory exists
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # Create SQLite database
-        self._db = MessageDebuggerDB(db_path)
-        logger.info(f"MessageDebugger DB initialized at: {db_path}")
+        # Create SQLite database with a hard size cap (auto-retention).
+        max_size_mb = config.get('max_db_size_mb', 5120)  # default 5 GB
+        self._db = MessageDebuggerDB(db_path, max_size_mb=max_size_mb)
+        logger.info(
+            f"MessageDebugger DB initialized at: {db_path} (cap {max_size_mb} MB)"
+        )
         
         # Legacy list kept for backward compat (not actively used)
         self._message_history: List[Dict[str, Any]] = []

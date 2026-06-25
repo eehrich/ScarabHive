@@ -91,6 +91,13 @@ config:
     minimum: 50
     maximum: 2000
 
+  max_db_size_mb:
+    type: integer
+    default: 5120
+    description: "Hard cap on the debugger DB's data size (MB). Above ~90% the oldest turns/requests are pruned down to ~75% (hysteresis). The file plateaus at this size and reuses freed pages (no VACUUM). 0 disables retention."
+    minimum: 0
+    maximum: 1048576
+
 # Web UI configuration
 web_ui:
   # Header button configuration
