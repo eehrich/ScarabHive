@@ -1086,6 +1086,99 @@ class TestComfyUIServer:
 
 
 # =============================================================================
+# Security: upload_image allowlist
+# =============================================================================
+
+class TestUploadImageSecurity:
+    """Verify _op_upload_image rejects paths outside the upload_source_dirs
+    allowlist — preventing the LLM from instructing ComfyUI to ingest
+    arbitrary host files (DB, .env, SSH keys, /etc/passwd, ...).
+    """
+
+    @pytest.fixture
+    def mock_system_config(self) -> MagicMock:
+        return MagicMock()
+
+    def _make_server(self, mock_system_config, tmp_path, allowed_roots):
+        from plugins.comfyui.server import ComfyUIServer
+        cfg = MagicMock()
+        cfg.host = "127.0.0.1"
+        cfg.port = 8188
+        cfg.timeout_seconds = 30
+        cfg.output_dir = str(tmp_path / "outputs")
+        cfg.workflow_files_dir = str(tmp_path / "workflows")
+        cfg.workflows = []
+        cfg.upload_source_dirs = allowed_roots
+        return ComfyUIServer("comfyui", mock_system_config, cfg)
+
+    @pytest.mark.asyncio
+    async def test_path_outside_allowlist_rejected(
+        self, mock_system_config: MagicMock, tmp_path: Path,
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "outside" / "secret.png"
+        outside.parent.mkdir()
+        outside.write_bytes(b"x")
+
+        server = self._make_server(mock_system_config, tmp_path, [str(allowed)])
+        # Patch client so we'd detect any actual upload attempt
+        server.client.upload_image = AsyncMock()  # type: ignore[assignment]
+
+        result = await server._op_upload_image(
+            {"file_path": str(outside)}, status=None,
+        )
+        assert "error" in result
+        assert "allowlist" in result["error"] or "upload_source_dirs" in result["error"]
+        server.client.upload_image.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_null_byte_in_path_rejected(
+        self, mock_system_config: MagicMock, tmp_path: Path,
+    ) -> None:
+        server = self._make_server(mock_system_config, tmp_path, [str(tmp_path)])
+        server.client.upload_image = AsyncMock()  # type: ignore[assignment]
+
+        result = await server._op_upload_image(
+            {"file_path": "some/file\x00.png"}, status=None,
+        )
+        assert "null bytes" in result.get("error", "")
+        server.client.upload_image.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_allowlist_disables_upload(
+        self, mock_system_config: MagicMock, tmp_path: Path,
+    ) -> None:
+        f = tmp_path / "img.png"
+        f.write_bytes(b"x")
+        server = self._make_server(mock_system_config, tmp_path, [])
+        server.client.upload_image = AsyncMock()  # type: ignore[assignment]
+
+        result = await server._op_upload_image({"file_path": str(f)}, status=None)
+        assert "error" in result
+        assert "disabled" in result["error"]
+        server.client.upload_image.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_path_inside_allowlist_accepted(
+        self, mock_system_config: MagicMock, tmp_path: Path,
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        f = allowed / "img.png"
+        f.write_bytes(b"PNGDATA")
+
+        server = self._make_server(mock_system_config, tmp_path, [str(allowed)])
+        server.client.upload_image = AsyncMock(
+            return_value={"name": "img.png", "subfolder": ""}
+        )
+
+        result = await server._op_upload_image({"file_path": str(f)}, status=None)
+        assert result.get("status") == "uploaded"
+        server.client.upload_image.assert_called_once()
+
+
+# =============================================================================
 # Cleanup Tests
 # =============================================================================
 

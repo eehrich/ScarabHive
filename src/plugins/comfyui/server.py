@@ -85,6 +85,26 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Legacy: self.output_dir for backward compatibility (uses base path)
         self.output_dir = self._output_dir_base
         self.cleanup_age_hours = int(getattr(mcp_config, 'cleanup_age_hours', 48))
+
+        # upload_image security allowlist — list of absolute roots that
+        # _op_upload_image is allowed to read from. Defaults to the
+        # project's ``data/`` tree (where writer assets live). An empty
+        # list disables upload_image entirely. LLM-controlled file_path
+        # values are rejected if they don't resolve inside one of these
+        # roots, preventing confused-deputy reads of arbitrary host files.
+        raw_allowlist = getattr(mcp_config, 'upload_source_dirs', None)
+        if raw_allowlist is None:
+            # Sensible default: allow reads from data/ (writer asset tree)
+            # plus the plugin's own output_dir (re-upload of generated images).
+            raw_allowlist = ["data", str(self._output_dir_base)]
+        self._upload_source_dirs: list[Path] = []
+        for p in raw_allowlist:
+            try:
+                self._upload_source_dirs.append(Path(p).resolve())
+            except (TypeError, OSError) as e:
+                logger.warning(
+                    "Skipping invalid comfyui.upload_source_dirs entry %r: %s", p, e,
+                )
         
         # Parse workflow configurations
         self.workflows: dict[str, dict[str, Any]] = {}
@@ -288,16 +308,70 @@ class ComfyUIServer(SchemaBasedMCPServer):
             asyncio.create_task(self._cleanup_old_files())
         
         try:
-            server_status = await self.client.ping()
-            if server_status.get("status") == "online":
-                queue_data = await self.client.get_queue()
+            # Aggregate queue across all configured servers so jobs
+            # queued on a non-primary host are not silently flagged
+            # stale by the sync pass.
+            queue_data = await self._get_aggregated_queue()
+            if queue_data is None:
+                logger.debug("No ComfyUI server online, skipping startup sync")
+            else:
                 updated = await self._sync_stale_jobs_with_history(queue_data)
                 if updated > 0:
                     logger.info("Startup sync: updated %d stale jobs", updated)
-            else:
-                logger.debug("ComfyUI server not online, skipping startup sync")
         except Exception as e:
             logger.debug("Failed to sync jobs on startup: %s", e)
+
+    async def _get_aggregated_queue(self) -> dict[str, Any] | None:
+        """Aggregate queue_pending + queue_running across every configured
+        ComfyUI server.
+
+        Returns ``None`` if every server probe fails (caller treats as "no
+        live data — do not touch DB job statuses"). Otherwise returns a
+        single dict shaped like ComfyUIClient.get_queue() so the existing
+        stale-detection logic in job_tracker.get_stale_job_ids works
+        unchanged.
+        """
+        if len(self._servers) <= 1:
+            try:
+                ping = await self.client.ping()
+                if ping.get("status") != "online":
+                    return None
+                return await self.client.get_queue()
+            except Exception as e:
+                logger.debug("Primary ComfyUI server unreachable: %s", e)
+                return None
+
+        async def _probe(srv: dict[str, Any]) -> dict[str, Any] | None:
+            try:
+                probe = self._build_client(srv["host"], srv["port"], self.output_dir)
+                ping = await probe.ping()
+                if ping.get("status") != "online":
+                    return None
+                return await probe.get_queue()
+            except Exception as e:
+                logger.debug(
+                    "ComfyUI server %s:%s unreachable: %s",
+                    srv["host"], srv.get("port", 8188), e,
+                )
+                return None
+
+        results = await asyncio.gather(*[_probe(s) for s in self._servers])
+        merged_pending: list = []
+        merged_running: list = []
+        any_alive = False
+        for r in results:
+            if r is None:
+                continue
+            any_alive = True
+            merged_pending.extend(r.get("queue_pending", []))
+            merged_running.extend(r.get("queue_running", []))
+
+        if not any_alive:
+            return None
+        return {
+            "queue_pending": merged_pending,
+            "queue_running": merged_running,
+        }
     
     async def _sync_stale_jobs_with_history(self, queue_data: dict[str, Any]) -> int:
         """Sync stale jobs by checking history before marking as failed.
@@ -318,9 +392,12 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         updated = 0
         for prompt_id in stale_ids:
-            # Check if job is in history (completed or failed)
+            # Check if job is in history (completed or failed). Use the
+            # per-job client so jobs queued on a non-primary server are
+            # probed against THEIR server, not the primary's history.
             try:
-                history = await self.client.get_history(prompt_id)
+                job_client = await self._client_for_job(prompt_id, self.output_dir)
+                history = await job_client.get_history(prompt_id)
                 if prompt_id in history:
                     # Job completed - check for errors
                     job_data = history[prompt_id]
@@ -729,7 +806,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
             # History only contains *completed* jobs. Distinguish "still running"
             # (job exists in queue, just not done yet — agent called result too
             # early) from genuinely "not found" (never queued or already cleared).
-            live = await job_client.check_status(prompt_id)
+            live = await job_client.get_status(prompt_id)
             live_state = live.get("status", "unknown")
             if live_state in ("pending", "running"):
                 msg = f"Job {prompt_id} is still {live_state}, result not available yet"
@@ -1061,7 +1138,27 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     continue
                 
                 for path in paths:
+                    # Stored paths are bare filenames relative to the
+                    # job's effective_output_dir (set_outputs persists
+                    # `f"{output_prefix}_{filename}"`). Resolve against
+                    # the output dir; otherwise Path(filename).exists()
+                    # evaluates against the process CWD and never matches.
                     path_obj = Path(path)
+                    if not path_obj.is_absolute():
+                        path_obj = effective_output_dir / path_obj
+                    # Defensive containment check — the stored local_path
+                    # is server-set, but resolve anyway in case the output
+                    # dir contains symlinks pointing elsewhere.
+                    try:
+                        resolved = path_obj.resolve()
+                        resolved.relative_to(effective_output_dir.resolve())
+                        path_obj = resolved
+                    except (ValueError, OSError):
+                        logger.warning(
+                            "Stored output path %s escapes output dir %s; skipping",
+                            path_obj, effective_output_dir,
+                        )
+                        continue
                     if path_obj.exists():
                         mime_type = self._guess_mime_type(path_obj.name, content_type)
                         
@@ -1406,6 +1503,15 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         obj[parts[-1]] = value
 
+    @staticmethod
+    def _is_contained(path: Path, root: Path) -> bool:
+        """True if *path* (resolved) is inside *root* (resolved)."""
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
     async def _op_upload_image(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
         """Upload a local image file to ComfyUI's input folder.
 
@@ -1426,14 +1532,45 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 await status.error("file_path is required for upload_image")
             return {"error": "file_path is required"}
 
-        file_path = Path(file_path_str)
-        if not file_path.exists():
-            # Try relative to working directory
-            file_path = Path.cwd() / file_path_str
-        if not file_path.exists():
+        # SECURITY: file_path comes from the LLM. Constrain it to the
+        # configured upload_source_dirs allowlist so the tool cannot be
+        # tricked into reading arbitrary host files (e.g. /etc/passwd,
+        # SSH keys, .env). Reject paths with null bytes outright.
+        if "\x00" in file_path_str:
+            err = "file_path contains null bytes"
             if status:
-                await status.error(f"File not found: {file_path_str}")
-            return {"error": f"File not found: {file_path_str}"}
+                await status.error(err)
+            return {"error": err}
+
+        if not self._upload_source_dirs:
+            err = "upload_image disabled (no upload_source_dirs configured)"
+            if status:
+                await status.error(err)
+            return {"error": err}
+
+        raw = Path(file_path_str)
+        candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / file_path_str]
+        file_path: Path | None = None
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            if any(self._is_contained(resolved, root) for root in self._upload_source_dirs):
+                file_path = resolved
+                break
+
+        if file_path is None:
+            roots = ", ".join(str(r) for r in self._upload_source_dirs)
+            err = (
+                f"file_path {file_path_str!r} not found inside the configured "
+                f"upload_source_dirs allowlist ({roots})"
+            )
+            if status:
+                await status.error(err)
+            return {"error": err}
 
         try:
             image_data = file_path.read_bytes()
@@ -1501,14 +1638,17 @@ class ComfyUIServer(SchemaBasedMCPServer):
         async def get_jobs() -> JSONResponse:
             """Get all tracked jobs."""
             server_status = await self.client.ping()
-            
-            # Sync DB with live queue and history to update stale jobs
-            if server_status.get("status") == "online":
-                queue_data = await self.client.get_queue()
-                # Use history-aware sync to avoid race conditions
+
+            # Sync DB with live queue and history to update stale jobs.
+            # Aggregate across all configured servers so load-balanced jobs
+            # on non-primary hosts are not flagged stale.
+            queue_data = await self._get_aggregated_queue()
+            if queue_data is not None:
                 await self._sync_stale_jobs_with_history(queue_data)
-                
-                # Check live status for all active jobs IN PARALLEL
+
+                # Check live status for all active jobs IN PARALLEL — each
+                # against the server that actually owns it, via
+                # _client_for_job.
                 active_jobs = self.job_tracker.get_active_jobs()
                 if active_jobs:
                     async def check_and_update_job(job: dict) -> None:
@@ -1517,7 +1657,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         if not prompt_id:
                             return
                         try:
-                            live = await self.client.get_status(prompt_id)
+                            job_client = await self._client_for_job(
+                                prompt_id, self.output_dir
+                            )
+                            live = await job_client.get_status(prompt_id)
                             live_status = live.get("status", "unknown")
                             db_status = job.get("status")
                             # Update DB if status changed (e.g. queued/running -> completed)
@@ -1528,7 +1671,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
                                 self.job_tracker.update_status(prompt_id, live_status, error_msg)
                         except Exception as e:
                             logger.warning(f"Failed to check status for job {prompt_id}: {e}")
-                    
+
                     # Run all status checks in parallel
                     await asyncio.gather(*[check_and_update_job(job) for job in active_jobs])
             
