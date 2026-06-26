@@ -1099,7 +1099,7 @@ class TestUploadImageSecurity:
     def mock_system_config(self) -> MagicMock:
         return MagicMock()
 
-    def _make_server(self, mock_system_config, tmp_path, allowed_roots):
+    def _make_server(self, mock_system_config, tmp_path, allowed_roots, *, image_exts=None):
         from plugins.comfyui.server import ComfyUIServer
         cfg = MagicMock()
         cfg.host = "127.0.0.1"
@@ -1109,6 +1109,12 @@ class TestUploadImageSecurity:
         cfg.workflow_files_dir = str(tmp_path / "workflows")
         cfg.workflows = []
         cfg.upload_source_dirs = allowed_roots
+        # Default to PNG-only for tests that don't override — keeps the
+        # extension-allowlist active (an unset MagicMock attribute would
+        # return another MagicMock, defeating the check).
+        cfg.upload_image_extensions = (
+            image_exts if image_exts is not None else [".png", ".jpg"]
+        )
         return ComfyUIServer("comfyui", mock_system_config, cfg)
 
     @pytest.mark.asyncio
@@ -1176,6 +1182,73 @@ class TestUploadImageSecurity:
         result = await server._op_upload_image({"file_path": str(f)}, status=None)
         assert result.get("status") == "uploaded"
         server.client.upload_image.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_image_extension_rejected_even_inside_allowlist(
+        self, mock_system_config: MagicMock, tmp_path: Path,
+    ) -> None:
+        """A .db / .env / .json file inside an allowed root must still be
+        rejected — the allowlist is necessary but not sufficient, the
+        extension allowlist closes the remaining exfil window."""
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        db_file = allowed / "writer.db"
+        db_file.write_bytes(b"SQLite format 3\x00")
+
+        server = self._make_server(mock_system_config, tmp_path, [str(allowed)])
+        server.client.upload_image = AsyncMock()  # type: ignore[assignment]
+
+        result = await server._op_upload_image({"file_path": str(db_file)}, status=None)
+        assert "error" in result
+        assert "extension" in result["error"]
+        server.client.upload_image.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_string_allowlist_normalised_to_list(
+        self, mock_system_config: MagicMock, tmp_path: Path,
+    ) -> None:
+        """upload_source_dirs: ``"data/img"`` (string, not list) must be
+        normalised to a single-entry list — otherwise it's iterated
+        character-by-character and the allowlist is silently empty."""
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        f = allowed / "img.png"
+        f.write_bytes(b"PNG")
+
+        server = self._make_server(mock_system_config, tmp_path, str(allowed))
+        server.client.upload_image = AsyncMock(
+            return_value={"name": "img.png", "subfolder": ""}
+        )
+
+        result = await server._op_upload_image({"file_path": str(f)}, status=None)
+        assert result.get("status") == "uploaded"
+
+    def test_default_allowlist_excludes_bare_data_dir(
+        self, mock_system_config: MagicMock, tmp_path: Path,
+    ) -> None:
+        """Default (no explicit upload_source_dirs) must NOT include the
+        bare project ``data/`` tree — that would re-expose databases
+        and writer state which the allowlist exists to protect."""
+        from plugins.comfyui.server import ComfyUIServer
+        cfg = MagicMock()
+        cfg.host = "127.0.0.1"
+        cfg.port = 8188
+        cfg.timeout_seconds = 30
+        cfg.output_dir = str(tmp_path / "outputs")
+        cfg.workflow_files_dir = str(tmp_path / "workflows")
+        cfg.workflows = []
+        # Force the getattr default branch
+        del cfg.upload_source_dirs
+        del cfg.upload_image_extensions
+
+        server = ComfyUIServer("comfyui", mock_system_config, cfg)
+        resolved_roots = {str(r) for r in server._upload_source_dirs}
+        # The bare project root data/ must NOT be in the default list.
+        bare_data = str(Path("data").resolve())
+        assert bare_data not in resolved_roots, (
+            "Default allowlist must not include bare data/ — exposes DBs "
+            "and writer state. Got: %s" % resolved_roots
+        )
 
 
 # =============================================================================

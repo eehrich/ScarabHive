@@ -28,6 +28,22 @@ class AudioOpsError(Exception):
         self.details = details or {}
 
 
+def _int32_to_int24_bytes(samples: "np.ndarray") -> bytes:
+    """Pack an int32 sample array into 3-byte little-endian PCM.
+
+    pydub supports sample_width=3 (24-bit PCM), but numpy has no native
+    int24 dtype. We drop the high byte of each little-endian int32 sample
+    to produce the packed 24-bit representation pydub round-trips.
+    """
+    import numpy as np
+    if samples.dtype != np.int32:
+        samples = samples.astype(np.int32)
+    raw = samples.tobytes()
+    # Build a uint8 view and strip every 4th byte (the high byte).
+    arr = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 4)
+    return arr[:, :3].tobytes()
+
+
 class AudioOpsServer(SchemaBasedMCPServer):
     """MCP server for audio file manipulation.
     
@@ -1390,19 +1406,25 @@ class AudioOpsServer(SchemaBasedMCPServer):
         mixed = a1.astype(np.float32) * vol1 + a2.astype(np.float32) * vol2
         np.clip(mixed, min_val, max_val, out=mixed)
 
-        # Cast back to the segment's PCM dtype.
+        # Cast back to the segment's PCM byte format. pydub supports 1/2/4
+        # natively (np.int8/int16/int32). 24-bit (sample_width=3) has no
+        # numpy dtype — we pack int32 samples into 3 bytes manually so
+        # 24-bit masters survive the round-trip instead of silently being
+        # written as int16-mangled bytes.
         if sample_width == 1:
-            out_dtype = np.int8
+            out_bytes = mixed.astype(np.int8).tobytes()
         elif sample_width == 2:
-            out_dtype = np.int16
+            out_bytes = mixed.astype(np.int16).tobytes()
+        elif sample_width == 3:
+            out_bytes = _int32_to_int24_bytes(mixed.astype(np.int32))
         elif sample_width == 4:
-            out_dtype = np.int32
+            out_bytes = mixed.astype(np.int32).tobytes()
         else:
-            out_dtype = np.int16
+            # Unknown width — keep prior behaviour but log so we hear about it.
+            logger.warning("Unexpected sample_width=%s in _mix_with_envelope", sample_width)
+            out_bytes = mixed.astype(np.int16).tobytes()
 
-        out_arr = mixed.astype(out_dtype)
-
-        return audio1._spawn(out_arr.tobytes())
+        return audio1._spawn(out_bytes)
 
     async def volume(self, params: dict[str, Any]) -> dict[str, Any]:
         """Adjust volume of an audio file with static gain or dynamic envelope.
@@ -1748,18 +1770,21 @@ class AudioOpsServer(SchemaBasedMCPServer):
         processed = samples.astype(np.float32) * gains
         np.clip(processed, min_val, max_val, out=processed)
 
+        # Cast back to the segment's PCM byte format — see _mix_with_envelope
+        # for the same 24-bit handling.
         if sample_width == 1:
-            out_dtype = np.int8
+            out_bytes = processed.astype(np.int8).tobytes()
         elif sample_width == 2:
-            out_dtype = np.int16
+            out_bytes = processed.astype(np.int16).tobytes()
+        elif sample_width == 3:
+            out_bytes = _int32_to_int24_bytes(processed.astype(np.int32))
         elif sample_width == 4:
-            out_dtype = np.int32
+            out_bytes = processed.astype(np.int32).tobytes()
         else:
-            out_dtype = np.int16
+            logger.warning("Unexpected sample_width=%s in _apply_volume_envelope", sample_width)
+            out_bytes = processed.astype(np.int16).tobytes()
 
-        out_arr = processed.astype(out_dtype)
-
-        return audio._spawn(out_arr.tobytes())
+        return audio._spawn(out_bytes)
 
     async def detect_silence(self, params: dict[str, Any]) -> dict[str, Any]:
         """Detect silent segments in audio file.

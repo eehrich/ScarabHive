@@ -87,16 +87,32 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self.cleanup_age_hours = int(getattr(mcp_config, 'cleanup_age_hours', 48))
 
         # upload_image security allowlist — list of absolute roots that
-        # _op_upload_image is allowed to read from. Defaults to the
-        # project's ``data/`` tree (where writer assets live). An empty
-        # list disables upload_image entirely. LLM-controlled file_path
-        # values are rejected if they don't resolve inside one of these
-        # roots, preventing confused-deputy reads of arbitrary host files.
+        # _op_upload_image is allowed to read from. LLM-controlled
+        # file_path values are rejected if they don't resolve inside one
+        # of these roots, preventing confused-deputy reads of arbitrary
+        # host files. An empty list disables upload_image entirely.
+        #
+        # Default scope is INTENTIONALLY narrow — the plugin's own
+        # output_dir (re-upload of generated images) and an
+        # image-asset subtree under data/. The bare project ``data/``
+        # tree contains databases (writer.db, users.db, message_debugger
+        # debugger.db, comfyui jobs.db, lessons_learned), agent traces,
+        # and other non-image state. Setting the default to ``data/``
+        # would re-open the confused-deputy class the allowlist was
+        # introduced to close. Operators who need broader access opt in
+        # explicitly via the ``upload_source_dirs`` config.
         raw_allowlist = getattr(mcp_config, 'upload_source_dirs', None)
         if raw_allowlist is None:
-            # Sensible default: allow reads from data/ (writer asset tree)
-            # plus the plugin's own output_dir (re-upload of generated images).
-            raw_allowlist = ["data", str(self._output_dir_base)]
+            raw_allowlist = [
+                str(self._output_dir_base),
+                "data/comfyui",
+                "data/writer/assets",
+            ]
+        # Normalise a string config to a single-entry list so a misset
+        # YAML value (e.g. upload_source_dirs: "data/img") doesn't get
+        # iterated character-by-character into a silently-empty list.
+        if isinstance(raw_allowlist, (str, Path)):
+            raw_allowlist = [raw_allowlist]
         self._upload_source_dirs: list[Path] = []
         for p in raw_allowlist:
             try:
@@ -105,6 +121,21 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 logger.warning(
                     "Skipping invalid comfyui.upload_source_dirs entry %r: %s", p, e,
                 )
+
+        # Permitted file extensions for upload_image (case-insensitive).
+        # Defense-in-depth against exfil of non-image bytes (DB files,
+        # JSON traces, .env, etc.) even if they sit inside an allowed
+        # root. Override via mcp_config.upload_image_extensions.
+        raw_exts = getattr(mcp_config, 'upload_image_extensions', None)
+        if raw_exts is None:
+            raw_exts = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+        if isinstance(raw_exts, str):
+            raw_exts = [raw_exts]
+        self._upload_image_extensions: set[str] = {
+            e.lower() if e.startswith(".") else f".{e.lower()}"
+            for e in raw_exts
+            if isinstance(e, str)
+        }
         
         # Parse workflow configurations
         self.workflows: dict[str, dict[str, Any]] = {}
@@ -327,40 +358,52 @@ class ComfyUIServer(SchemaBasedMCPServer):
 
         Returns ``None`` if every server probe fails (caller treats as "no
         live data — do not touch DB job statuses"). Otherwise returns a
-        single dict shaped like ComfyUIClient.get_queue() so the existing
-        stale-detection logic in job_tracker.get_stale_job_ids works
-        unchanged.
+        dict shaped like ComfyUIClient.get_queue() PLUS a private
+        ``_dead_servers`` set listing URLs whose queue we could not
+        observe. Callers (specifically _sync_stale_jobs_with_history)
+        use that to skip stale-classification of jobs whose owning
+        server is currently unreachable — without it a transient blip
+        on one of N servers would mark every in-flight job on it as
+        failed.
+
+        ``get_stale_job_ids`` ignores unknown keys so the extra field
+        does not affect existing logic.
         """
         if len(self._servers) <= 1:
             try:
                 ping = await self.client.ping()
                 if ping.get("status") != "online":
                     return None
-                return await self.client.get_queue()
+                q = await self.client.get_queue()
+                q["_dead_servers"] = set()
+                return q
             except Exception as e:
                 logger.debug("Primary ComfyUI server unreachable: %s", e)
                 return None
 
-        async def _probe(srv: dict[str, Any]) -> dict[str, Any] | None:
+        async def _probe(srv: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+            url = f"http://{srv['host']}:{srv.get('port', 8188)}"
             try:
                 probe = self._build_client(srv["host"], srv["port"], self.output_dir)
                 ping = await probe.ping()
                 if ping.get("status") != "online":
-                    return None
-                return await probe.get_queue()
+                    return (url, None)
+                return (url, await probe.get_queue())
             except Exception as e:
                 logger.debug(
                     "ComfyUI server %s:%s unreachable: %s",
                     srv["host"], srv.get("port", 8188), e,
                 )
-                return None
+                return (url, None)
 
         results = await asyncio.gather(*[_probe(s) for s in self._servers])
         merged_pending: list = []
         merged_running: list = []
+        dead_servers: set[str] = set()
         any_alive = False
-        for r in results:
+        for url, r in results:
             if r is None:
+                dead_servers.add(url)
                 continue
             any_alive = True
             merged_pending.extend(r.get("queue_pending", []))
@@ -371,6 +414,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         return {
             "queue_pending": merged_pending,
             "queue_running": merged_running,
+            "_dead_servers": dead_servers,
         }
     
     async def _sync_stale_jobs_with_history(self, queue_data: dict[str, Any]) -> int:
@@ -390,14 +434,40 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if not stale_ids:
             return 0
         
+        # Skip stale-classification of jobs whose owning server is
+        # currently down — _get_aggregated_queue couldn't see that
+        # server's queue, so absence from the merged dict says nothing
+        # about the job. Without this guard a transient blip would
+        # false-fail every in-flight job on the affected server.
+        dead_servers: set[str] = queue_data.get("_dead_servers", set()) if isinstance(queue_data, dict) else set()
+
         updated = 0
         for prompt_id in stale_ids:
+            if dead_servers:
+                job_server = self.job_tracker.get_server_url(prompt_id)
+                if job_server and job_server in dead_servers:
+                    logger.debug(
+                        "Skipping stale-check for %s (owning server %s currently unreachable)",
+                        prompt_id, job_server,
+                    )
+                    continue
+
             # Check if job is in history (completed or failed). Use the
             # per-job client so jobs queued on a non-primary server are
             # probed against THEIR server, not the primary's history.
             try:
                 job_client = await self._client_for_job(prompt_id, self.output_dir)
                 history = await job_client.get_history(prompt_id)
+                # comfyui_client.get_history returns {'error': '...'} on
+                # a network failure instead of raising — without this
+                # guard a transient network blip lands in the "truly
+                # lost → mark failed" branch below.
+                if isinstance(history, dict) and "error" in history:
+                    logger.debug(
+                        "Skipping stale-check for %s — get_history error: %s",
+                        prompt_id, history.get("error"),
+                    )
+                    continue
                 if prompt_id in history:
                     # Job completed - check for errors
                     job_data = history[prompt_id]
@@ -1571,6 +1641,22 @@ class ComfyUIServer(SchemaBasedMCPServer):
             if status:
                 await status.error(err)
             return {"error": err}
+
+        # Defense-in-depth: even if a non-image file (DB, .env, JSON
+        # trace) sits inside an allowed root, refuse to upload it as
+        # an "image". Closes the exfil window that a broad allowlist
+        # would otherwise leave open.
+        if self._upload_image_extensions:
+            ext = file_path.suffix.lower()
+            if ext not in self._upload_image_extensions:
+                allowed_exts = ", ".join(sorted(self._upload_image_extensions))
+                err = (
+                    f"file_path {file_path.name!r} extension {ext!r} not in "
+                    f"the allowed image extensions ({allowed_exts})"
+                )
+                if status:
+                    await status.error(err)
+                return {"error": err}
 
         try:
             image_data = file_path.read_bytes()
