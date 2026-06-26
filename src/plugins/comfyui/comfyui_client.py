@@ -575,36 +575,56 @@ class ComfyUIClient:
         prompt_id: str,
         timeout: float = 300.0,
         poll_interval: float = 2.0,
-        on_progress: Callable[[dict[str, Any]], None] | None = None
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        unknown_grace_seconds: float = 30.0,
     ) -> dict[str, Any]:
         """Poll until workflow execution completes.
-        
+
         Args:
             prompt_id: The prompt ID to wait for
             timeout: Max seconds to wait
             poll_interval: Seconds between status checks
             on_progress: Optional callback for status updates
-            
+            unknown_grace_seconds: How long to tolerate "unknown" status
+                before treating it as terminal. Right after queue submission
+                a job can briefly be absent from both /queue and /history
+                (race window), so an immediate "unknown" must not be treated
+                as failure.
+
         Returns:
             Final status dict
         """
         start_time = asyncio.get_event_loop().time()
-        
+        first_unknown_time: float | None = None
+
         while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
+            now = asyncio.get_event_loop().time()
+            elapsed = now - start_time
             if elapsed > timeout:
                 return {
                     "status": "timeout",
                     "prompt_id": prompt_id,
                     "error": f"Workflow execution timed out after {timeout}s"
                 }
-            
+
             status = await self.get_status(prompt_id)
-            
+
             if on_progress:
                 on_progress(status)
-            
-            if status["status"] in ["completed", "failed", "unknown"]:
+
+            if status["status"] in ["completed", "failed"]:
                 return status
-            
+
+            if status["status"] == "unknown":
+                # Treat "unknown" as transient during the grace window —
+                # the job may exist in the queue but not yet be visible in
+                # /queue or /history (race right after submission).
+                if first_unknown_time is None:
+                    first_unknown_time = now
+                elif (now - first_unknown_time) >= unknown_grace_seconds:
+                    return status
+            else:
+                # Any other status resets the unknown grace timer
+                first_unknown_time = None
+
             await asyncio.sleep(poll_interval)

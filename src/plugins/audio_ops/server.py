@@ -1331,58 +1331,78 @@ class AudioOpsServer(SchemaBasedMCPServer):
     
     def _mix_with_envelope(self, audio1, audio2, envelope: builtins.list[dict[str, float]], total_ms: int):
         """Mix two audio segments with a dynamic envelope.
-        
-        Processes audio in small chunks, applying interpolated mix factor.
-        
+
+        Vectorised via numpy: builds a per-sample factor envelope and applies
+        `out = a1 * (1-f) + a2 * f` over the whole buffer at once. Avoids the
+        O(N) Python loop over 10ms chunks (millions of iterations for
+        book-length audio).
+
         Args:
             audio1: First AudioSegment
-            audio2: Second AudioSegment  
+            audio2: Second AudioSegment
             envelope: List of {time, factor} points
             total_ms: Total duration in milliseconds
-            
+
         Returns:
             Mixed AudioSegment
         """
-        from pydub import AudioSegment
-        import math
-        
-        # Process in 10ms chunks for smooth transitions
-        chunk_ms = 10
-        result = AudioSegment.empty()
-        
-        for pos_ms in range(0, total_ms, chunk_ms):
-            # Get chunk end (don't exceed total)
-            end_ms = min(pos_ms + chunk_ms, total_ms)
-            
-            # Get factor at midpoint of chunk
-            mid_sec = (pos_ms + end_ms) / 2 / 1000.0
-            factor = self._interpolate_factor(envelope, mid_sec)
-            
-            # Extract chunks
-            chunk1 = audio1[pos_ms:end_ms]
-            chunk2 = audio2[pos_ms:end_ms]
-            
-            # Apply volume based on factor
-            vol1 = 1.0 - factor
-            vol2 = factor
-            
-            if vol1 > 0:
-                db1 = 20 * math.log10(vol1)
-                chunk1 = chunk1 + db1
-            else:
-                chunk1 = chunk1 - 120
-            
-            if vol2 > 0:
-                db2 = 20 * math.log10(vol2)
-                chunk2 = chunk2 + db2
-            else:
-                chunk2 = chunk2 - 120
-            
-            # Mix chunks and append
-            mixed_chunk = chunk1.overlay(chunk2)
-            result += mixed_chunk
-        
-        return result
+        import numpy as np
+
+        # Both segments are pre-padded to the same length by the caller.
+        # Take format metadata from audio1 (audio2 is overlaid onto it).
+        sample_rate = audio1.frame_rate
+        channels = audio1.channels
+        sample_width = audio1.sample_width
+
+        # Pull interleaved PCM into numpy arrays. AudioSegment.get_array_of_samples()
+        # already matches sample_width (int8/int16/int32).
+        a1 = np.array(audio1.get_array_of_samples(), dtype=np.int32)
+        a2 = np.array(audio2.get_array_of_samples(), dtype=np.int32)
+
+        # Defensive length align (overlay tolerates mismatch; we just truncate).
+        n = min(a1.shape[0], a2.shape[0])
+        a1 = a1[:n]
+        a2 = a2[:n]
+
+        # Number of frames (samples per channel).
+        frame_count = n // channels
+
+        # Build per-frame factor envelope via vectorised linear interpolation
+        # over the envelope control points.
+        frame_times = np.arange(frame_count, dtype=np.float64) / float(sample_rate)
+        env_times = np.array([p["time"] for p in envelope], dtype=np.float64)
+        env_factors = np.array([p["factor"] for p in envelope], dtype=np.float64)
+        # np.interp clamps to first/last value outside the range - matches
+        # _interpolate_factor semantics.
+        factors = np.interp(frame_times, env_times, env_factors)
+
+        # Expand to per-sample (repeat each frame factor across channels).
+        if channels > 1:
+            factors = np.repeat(factors, channels)
+
+        vol1 = (1.0 - factors).astype(np.float32)
+        vol2 = factors.astype(np.float32)
+
+        # Mix and clip to the sample range for the given width.
+        max_val = (1 << (8 * sample_width - 1)) - 1
+        min_val = -(1 << (8 * sample_width - 1))
+
+        mixed = a1.astype(np.float32) * vol1 + a2.astype(np.float32) * vol2
+        np.clip(mixed, min_val, max_val, out=mixed)
+
+        # Cast back to the segment's PCM dtype.
+        if sample_width == 1:
+            out_dtype = np.int8
+        elif sample_width == 2:
+            out_dtype = np.int16
+        elif sample_width == 4:
+            out_dtype = np.int32
+        else:
+            out_dtype = np.int16
+
+        out_arr = mixed.astype(out_dtype)
+
+        return audio1._spawn(out_arr.tobytes())
 
     async def volume(self, params: dict[str, Any]) -> dict[str, Any]:
         """Adjust volume of an audio file with static gain or dynamic envelope.
@@ -1687,37 +1707,59 @@ class AudioOpsServer(SchemaBasedMCPServer):
     
     def _apply_volume_envelope(self, audio, envelope: builtins.list[dict[str, float]]):
         """Apply dynamic volume envelope to audio.
-        
-        Processes audio in small chunks, applying interpolated gain.
-        
+
+        Vectorised via numpy: builds a per-sample gain envelope (converted from
+        dB to linear factor) and applies it in one multiplication. Avoids the
+        O(N) Python loop over 10ms chunks (millions of iterations for
+        book-length audio).
+
         Args:
             audio: AudioSegment
             envelope: List of {time, gain_db} points
-            
+
         Returns:
             Processed AudioSegment
         """
-        from pydub import AudioSegment
-        
-        total_ms = len(audio)
-        # Process in 10ms chunks for smooth transitions
-        chunk_ms = 10
-        result = AudioSegment.empty()
-        
-        for pos_ms in range(0, total_ms, chunk_ms):
-            end_ms = min(pos_ms + chunk_ms, total_ms)
-            
-            # Get gain at midpoint of chunk
-            mid_sec = (pos_ms + end_ms) / 2 / 1000.0
-            gain = self._interpolate_gain(envelope, mid_sec)
-            
-            # Extract chunk and apply gain
-            chunk = audio[pos_ms:end_ms]
-            chunk = chunk + gain
-            
-            result += chunk
-        
-        return result
+        import numpy as np
+
+        sample_rate = audio.frame_rate
+        channels = audio.channels
+        sample_width = audio.sample_width
+
+        samples = np.array(audio.get_array_of_samples(), dtype=np.int32)
+        n = samples.shape[0]
+        frame_count = n // channels
+
+        # Build per-frame gain (dB) via vectorised interpolation, then convert
+        # to linear amplitude factor. np.interp clamps outside the range - same
+        # behaviour as _interpolate_gain.
+        frame_times = np.arange(frame_count, dtype=np.float64) / float(sample_rate)
+        env_times = np.array([p["time"] for p in envelope], dtype=np.float64)
+        env_gains_db = np.array([p["gain_db"] for p in envelope], dtype=np.float64)
+        gains_db = np.interp(frame_times, env_times, env_gains_db)
+        gains = np.power(10.0, gains_db / 20.0).astype(np.float32)
+
+        if channels > 1:
+            gains = np.repeat(gains, channels)
+
+        max_val = (1 << (8 * sample_width - 1)) - 1
+        min_val = -(1 << (8 * sample_width - 1))
+
+        processed = samples.astype(np.float32) * gains
+        np.clip(processed, min_val, max_val, out=processed)
+
+        if sample_width == 1:
+            out_dtype = np.int8
+        elif sample_width == 2:
+            out_dtype = np.int16
+        elif sample_width == 4:
+            out_dtype = np.int32
+        else:
+            out_dtype = np.int16
+
+        out_arr = processed.astype(out_dtype)
+
+        return audio._spawn(out_arr.tobytes())
 
     async def detect_silence(self, params: dict[str, Any]) -> dict[str, Any]:
         """Detect silent segments in audio file.
@@ -1776,7 +1818,16 @@ class AudioOpsServer(SchemaBasedMCPServer):
             ]
             
             result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
-            
+
+            # Check ffmpeg succeeded - otherwise an empty match list would
+            # incorrectly report "no silences" for a broken/unreadable file.
+            if result.returncode != 0:
+                raise AudioOpsError(
+                    f"ffmpeg silencedetect failed: {result.stderr[:500]}",
+                    error_type="ProcessingError",
+                    details={"returncode": result.returncode, "source_file": source_file}
+                )
+
             # Parse silence_start and silence_end from stderr
             silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
             silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
@@ -1896,7 +1947,16 @@ class AudioOpsServer(SchemaBasedMCPServer):
             ]
             
             result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
-            
+
+            # Check ffmpeg succeeded - otherwise an empty match list would
+            # incorrectly report "no silences" for a broken/unreadable file.
+            if result.returncode != 0:
+                raise AudioOpsError(
+                    f"ffmpeg silencedetect failed: {result.stderr[:500]}",
+                    error_type="ProcessingError",
+                    details={"returncode": result.returncode, "source_file": source_file}
+                )
+
             # Parse silence segments
             silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
             silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)

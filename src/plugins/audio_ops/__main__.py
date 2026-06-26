@@ -690,10 +690,13 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     
     if not silence_starts:
         print("\nNo silences found, copying file as-is...")
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(source_path),
-            "-c", "copy", str(dest_path)
-        ], capture_output=True, check=True)
+        copy_cmd = ["ffmpeg", "-y", "-i", str(source_path)]
+        # Only use -c copy when containers match; otherwise transcode so ffmpeg
+        # picks a codec compatible with the destination container.
+        if source_path.suffix.lower() == dest_path.suffix.lower():
+            copy_cmd.extend(["-c", "copy"])
+        copy_cmd.append(str(dest_path))
+        subprocess.run(copy_cmd, capture_output=True, check=True)
         print(f"Copied to: {dest_path.name}")
         return 0
     
@@ -723,10 +726,13 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     
     if not silences_to_compress:
         print(f"\nNo silences exceed {max_silence}s, copying file as-is...")
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(source_path),
-            "-c", "copy", str(dest_path)
-        ], capture_output=True, check=True)
+        copy_cmd = ["ffmpeg", "-y", "-i", str(source_path)]
+        # Only use -c copy when containers match; otherwise transcode so ffmpeg
+        # picks a codec compatible with the destination container.
+        if source_path.suffix.lower() == dest_path.suffix.lower():
+            copy_cmd.extend(["-c", "copy"])
+        copy_cmd.append(str(dest_path))
+        subprocess.run(copy_cmd, capture_output=True, check=True)
         print(f"Copied to: {dest_path.name}")
         return 0
     
