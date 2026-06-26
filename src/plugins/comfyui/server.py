@@ -169,6 +169,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Flag for cleanup task - will be started lazily when event loop is available
         self._cleanup_task_started = False
+        # Strong reference to the running cleanup task so the event loop
+        # doesn't GC it mid-execution (asyncio docs warn fire-and-forget
+        # tasks can disappear, producing "Task was destroyed but it is
+        # pending" warnings and partial cleanups).
+        self._cleanup_task: asyncio.Task[int] | None = None
         
         logger.info(
             "ComfyUI plugin initialized: %s:%s with %d workflows",
@@ -307,12 +312,26 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if "{session_id}" not in self._output_dir_template:
             # No template - return base path
             return self._output_dir_base
-        
+
         if not session_id:
             # Template exists but no session_id provided - use base path
             logger.debug("output_dir template contains {session_id} but no session_id provided, using base path")
             return self._output_dir_base
-        
+
+        # SECURITY: session_id is harness-supplied by convention, but a
+        # tainted value (`..`, `..\Windows`, absolute path) would let
+        # template substitution escape the configured output root and
+        # turn every subsequent file write into an arbitrary-write
+        # primitive. Reject anything that isn't a strict identifier
+        # and fall back to the base dir.
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{1,64}", session_id):
+            logger.warning(
+                "Rejecting suspicious session_id %r; falling back to base output dir",
+                session_id,
+            )
+            return self._output_dir_base
+
         # Substitute session_id into template
         resolved_path = Path(self._output_dir_template.replace("{session_id}", session_id))
         resolved_path.mkdir(parents=True, exist_ok=True)
@@ -336,7 +355,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Start cleanup task now that we have an event loop
         if self.cleanup_age_hours > 0 and not self._cleanup_task_started:
             self._cleanup_task_started = True
-            asyncio.create_task(self._cleanup_old_files())
+            self._cleanup_task = asyncio.create_task(self._cleanup_old_files())
         
         try:
             # Aggregate queue across all configured servers so jobs
@@ -497,62 +516,70 @@ class ComfyUIServer(SchemaBasedMCPServer):
     
     async def _cleanup_old_files(self) -> int:
         """Delete output files older than cleanup_age_hours.
-        
+
         Also removes empty directories that are older than cleanup_age_hours.
-        
+
+        The actual filesystem walk runs in a worker thread via
+        ``asyncio.to_thread`` so a large output tree (recursive rglob +
+        per-file stat) doesn't block the event loop for seconds and
+        starve other tool calls.
+
         Returns:
             Number of files deleted
         """
         if self.cleanup_age_hours <= 0:
             return 0
-        
+
         import time
-        
+
         cutoff_time = time.time() - (self.cleanup_age_hours * 3600)
-        deleted_files = 0
-        deleted_dirs = 0
-        
-        try:
-            # First pass: Delete old files
-            for file_path in self.output_dir.rglob('*'):
-                if not file_path.is_file():
-                    continue
-                
-                # Check file age
-                file_mtime = file_path.stat().st_mtime
-                if file_mtime < cutoff_time:
+
+        def _do_cleanup() -> int:
+            deleted_files = 0
+            deleted_dirs = 0
+            try:
+                # First pass: Delete old files
+                for file_path in self.output_dir.rglob('*'):
+                    if not file_path.is_file():
+                        continue
+
+                    # Check file age
+                    file_mtime = file_path.stat().st_mtime
+                    if file_mtime < cutoff_time:
+                        try:
+                            file_path.unlink()
+                            deleted_files += 1
+                            logger.debug(f"Deleted old file: {file_path.name} (age: {(time.time() - file_mtime) / 3600:.1f}h)")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete {file_path}: {e}")
+
+                # Second pass: Delete empty old directories (bottom-up to handle nested empty dirs)
+                # Sort by depth (deepest first) to delete child dirs before parents
+                all_dirs = [d for d in self.output_dir.rglob('*') if d.is_dir()]
+                all_dirs.sort(key=lambda p: len(p.parts), reverse=True)
+
+                for dir_path in all_dirs:
                     try:
-                        file_path.unlink()
-                        deleted_files += 1
-                        logger.debug(f"Deleted old file: {file_path.name} (age: {(time.time() - file_mtime) / 3600:.1f}h)")
-                    except Exception as e:
-                        logger.warning(f"Failed to delete {file_path}: {e}")
-            
-            # Second pass: Delete empty old directories (bottom-up to handle nested empty dirs)
-            # Sort by depth (deepest first) to delete child dirs before parents
-            all_dirs = [d for d in self.output_dir.rglob('*') if d.is_dir()]
-            all_dirs.sort(key=lambda p: len(p.parts), reverse=True)
-            
-            for dir_path in all_dirs:
-                try:
-                    # Check if directory is empty
-                    if not any(dir_path.iterdir()):
-                        # Check directory age (only delete old empty dirs)
-                        dir_mtime = dir_path.stat().st_mtime
-                        if dir_mtime < cutoff_time:
-                            dir_path.rmdir()
-                            deleted_dirs += 1
-                            logger.debug(f"Deleted empty old directory: {dir_path.name} (age: {(time.time() - dir_mtime) / 3600:.1f}h)")
-                except Exception:
-                    # Ignore errors (dir might not be empty anymore, race condition, etc.)
-                    pass
-            
-            if deleted_files > 0 or deleted_dirs > 0:
-                logger.info(f"Cleanup: Deleted {deleted_files} files and {deleted_dirs} empty directories older than {self.cleanup_age_hours}h")
-        except Exception as e:
-            logger.error(f"Failed to cleanup old files: {e}")
-        
-        return deleted_files
+                        # Check if directory is empty
+                        if not any(dir_path.iterdir()):
+                            # Check directory age (only delete old empty dirs)
+                            dir_mtime = dir_path.stat().st_mtime
+                            if dir_mtime < cutoff_time:
+                                dir_path.rmdir()
+                                deleted_dirs += 1
+                                logger.debug(f"Deleted empty old directory: {dir_path.name} (age: {(time.time() - dir_mtime) / 3600:.1f}h)")
+                    except Exception:
+                        # Ignore errors (dir might not be empty anymore, race condition, etc.)
+                        pass
+
+                if deleted_files > 0 or deleted_dirs > 0:
+                    logger.info(f"Cleanup: Deleted {deleted_files} files and {deleted_dirs} empty directories older than {self.cleanup_age_hours}h")
+            except Exception as e:
+                logger.error(f"Failed to cleanup old files: {e}")
+
+            return deleted_files
+
+        return await asyncio.to_thread(_do_cleanup)
     
     # =========================================================================
     # MCP Tool: workflow
@@ -649,7 +676,12 @@ class ComfyUIServer(SchemaBasedMCPServer):
 
             job_client = await self._client_for_job(prompt_id, self.output_dir)
             result = await job_client.cancel(prompt_id)
-            self.job_tracker.update_status(prompt_id, "cancelled")
+            # Only update tracker if cancel was successful — mirrors the
+            # web router guard. ComfyUIClient.cancel returns
+            # {"status": "error", ...} on failure; without this guard we
+            # would lie to consumers about the live job state.
+            if result.get("status") in ("cancelled", "already_finished"):
+                self.job_tracker.update_status(prompt_id, "cancelled")
             if status:
                 await status.end("Job cancelled")
             return result
@@ -1017,9 +1049,15 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Update tracker
         self.job_tracker.update_status(prompt_id, "completed")
         
-        # Cleanup old files after job completion
-        if self.cleanup_age_hours > 0:
-            asyncio.create_task(self._cleanup_old_files())
+        # Cleanup old files after job completion. Single-flight: if a
+        # previous cleanup is still running, skip — otherwise a burst of
+        # concurrent jobs spawns overlapping rglob walks competing on
+        # the same filesystem. Store the reference so the loop can't GC
+        # the task mid-walk.
+        if self.cleanup_age_hours > 0 and (
+            self._cleanup_task is None or self._cleanup_task.done()
+        ):
+            self._cleanup_task = asyncio.create_task(self._cleanup_old_files())
         
         # Store output paths
         output_paths = {

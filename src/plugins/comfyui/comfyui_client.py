@@ -171,7 +171,17 @@ class ComfyUIClient:
                     "error": job_data.get("status", {}).get("messages", [])
                 }
             return {"status": "completed", "prompt_id": prompt_id}
-        
+
+        # If the history lookup itself failed (e.g. ComfyUI hiccup), surface
+        # the error so callers can distinguish "truly not in history" from
+        # "history endpoint unreachable".
+        if "error" in history:
+            return {
+                "status": "unknown",
+                "prompt_id": prompt_id,
+                "error": history["error"],
+            }
+
         return {"status": "unknown", "prompt_id": prompt_id}
     
     async def get_queue(self) -> dict[str, Any]:
@@ -240,8 +250,13 @@ class ComfyUIClient:
                     async with session.post(f"{self.base_url}/interrupt") as resp:
                         if resp.status != 200:
                             logger.warning(f"Interrupt returned status {resp.status}")
+                            return {
+                                "status": "error",
+                                "prompt_id": prompt_id,
+                                "error": f"interrupt returned HTTP {resp.status}",
+                            }
                     return {"status": "cancelled", "prompt_id": prompt_id, "was_running": True}
-                    
+
                 elif job_status in ("pending", "queued"):
                     # Job is in queue - delete it from queue
                     # Note: ComfyUI API returns "pending", job_tracker uses "queued"
@@ -250,6 +265,11 @@ class ComfyUIClient:
                     async with session.post(f"{self.base_url}/queue", json=data) as resp:
                         if resp.status != 200:
                             logger.warning(f"Queue delete returned status {resp.status}")
+                            return {
+                                "status": "error",
+                                "prompt_id": prompt_id,
+                                "error": f"queue delete returned HTTP {resp.status}",
+                            }
                     return {"status": "cancelled", "prompt_id": prompt_id, "was_pending": True}
                     
                 elif job_status in ("completed", "failed"):
@@ -363,8 +383,15 @@ class ComfyUIClient:
 
             logger.info("Restarting ComfyUI service on %s …", ssh_target)
             try:
-                proc = _sp.run(
-                    restart_cmd, capture_output=True, text=True, timeout=30,
+                # Run the blocking subprocess in a thread so we do not
+                # stall the event loop for up to 30s (other coroutines,
+                # FastAPI handlers, pings would freeze).
+                proc = await asyncio.to_thread(
+                    _sp.run,
+                    restart_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if proc.returncode != 0:
                     err = (proc.stderr or proc.stdout or "").strip()
@@ -449,10 +476,16 @@ class ComfyUIClient:
 
     @staticmethod
     def _release_restart_lock(fd: int | None, lock_path: Path) -> None:
-        """Release the restart lock file."""
+        """Release the restart lock file.
+
+        Only unlinks the lock file when ``fd`` is not None — i.e. when we
+        actually acquired the lock. Otherwise another process owns it and
+        we must not remove their lock.
+        """
+        if fd is None:
+            return
         try:
-            if fd is not None:
-                os.close(fd)
+            os.close(fd)
             lock_path.unlink(missing_ok=True)
         except Exception:
             pass

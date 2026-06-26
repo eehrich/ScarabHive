@@ -800,6 +800,14 @@ class AudioOpsServer(SchemaBasedMCPServer):
             files = []
             
             if pattern:
+                # Reject path-traversal in the user-supplied glob (Path.glob
+                # honours '..' segments and can escape the storage root).
+                if ".." in pattern:
+                    raise AudioOpsError(
+                        f"Invalid pattern: {pattern}. Path traversal not allowed.",
+                        error_type="SecurityError",
+                        details={"pattern": pattern, "reason": "path_traversal_attempt"}
+                    )
                 # Use glob pattern
                 matching_files = list(effective_storage.glob(pattern))
             else:
@@ -927,9 +935,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 segment = audio[start_ms:end_ms]
                 segment_duration = len(segment) / 1000.0
                 
-                # Save segment to temp file for multimodal content (in session-isolated dir)
+                # Save segment to temp file for multimodal content (in session-isolated dir).
+                # Include start_ms/end_ms in filename so concurrent load() calls
+                # for different segments of the same source don't overwrite each other.
                 effective_storage = self._resolve_storage_path(session_id)
-                segment_filename = f"_temp_segment_{filepath.stem}.wav"
+                segment_filename = f"_temp_segment_{filepath.stem}_{start_ms}_{end_ms}.wav"
                 segment_path = effective_storage / segment_filename
                 await asyncio.to_thread(segment.export, str(segment_path), format="wav")
                 output_path = segment_path
@@ -1824,7 +1834,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     error_type="ValueError"
                 )
 
-            await status.progress("Detecting silence...")
+            if status:
+                await status.progress("Detecting silence...")
 
             # Validate and resolve path
             source_path = self._validate_path(source_file, session_id)
@@ -1885,8 +1896,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     "duration": duration
                 })
             
-            await status.end(f"Found {len(silences)} silence segments")
-            
+            if status:
+                await status.end(f"Found {len(silences)} silence segments")
+
             return {
                 "status": "success",
                 "silence_count": len(silences),
@@ -1895,9 +1907,10 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "min_duration": min_duration,
                 "source_file": source_file
             }
-            
+
         except AudioOpsError as e:
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type})
             return {
                 "status": "error",
                 "error": str(e),
@@ -1905,7 +1918,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
             }
         except Exception as e:
             logger.exception(f"Unexpected error detecting silence in {source_file}")
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": "UnexpectedError"})
             return {
                 "status": "error",
                 "error": str(e),
@@ -1951,8 +1965,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     error_type="ValueError"
                 )
 
-            await status.progress("Analyzing silence...")
-            
+            if status:
+                await status.progress("Analyzing silence...")
+
             # Validate and resolve paths
             source_path = self._validate_path(source_file, session_id)
             dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
@@ -1988,13 +2003,15 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             if not silence_starts:
                 # No silences found, just copy file
-                await status.progress("No silences detected, copying file...")
+                if status:
+                    await status.progress("No silences detected, copying file...")
                 await asyncio.to_thread(subprocess.run, [
                     "ffmpeg", "-y", "-i", str(source_path),
                     "-c", "copy", str(dest_path)
                 ], capture_output=True, check=True)
-                
-                await status.end("No silences to compress")
+
+                if status:
+                    await status.end("No silences to compress")
                 return {
                     "status": "success",
                     "compressed_count": 0,
@@ -2028,13 +2045,15 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             if not silences_to_compress:
                 # No silences exceed threshold, copy file
-                await status.progress("No silences exceed max duration, copying file...")
+                if status:
+                    await status.progress("No silences exceed max duration, copying file...")
                 await asyncio.to_thread(subprocess.run, [
                     "ffmpeg", "-y", "-i", str(source_path),
                     "-c", "copy", str(dest_path)
                 ], capture_output=True, check=True)
-                
-                await status.end("No silences exceed max duration")
+
+                if status:
+                    await status.end("No silences exceed max duration")
                 return {
                     "status": "success",
                     "compressed_count": 0,
@@ -2043,7 +2062,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     "dest_file": dest_file
                 }
             
-            await status.progress(f"Compressing {len(silences_to_compress)} silence segments...")
+            if status:
+                await status.progress(f"Compressing {len(silences_to_compress)} silence segments...")
             
             # Step 2: Build segments to keep
             keep_duration = max_silence / 2.0
@@ -2128,11 +2148,12 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             time_saved = total_duration - new_duration
             
-            await status.end(
-                f"Compressed {len(silences_to_compress)} silences, saved {time_saved:.1f}s "
-                f"({total_duration:.1f}s -> {new_duration:.1f}s)"
-            )
-            
+            if status:
+                await status.end(
+                    f"Compressed {len(silences_to_compress)} silences, saved {time_saved:.1f}s "
+                    f"({total_duration:.1f}s -> {new_duration:.1f}s)"
+                )
+
             return {
                 "status": "success",
                 "compressed_count": len(silences_to_compress),
@@ -2142,9 +2163,10 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "source_file": source_file,
                 "dest_file": dest_file
             }
-            
+
         except AudioOpsError as e:
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type})
             return {
                 "status": "error",
                 "error": str(e),
@@ -2152,7 +2174,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
             }
         except Exception as e:
             logger.exception(f"Unexpected error compressing silence in {source_file}")
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": "UnexpectedError"})
             return {
                 "status": "error",
                 "error": str(e),

@@ -35,6 +35,13 @@ class ComfyUIJobTracker:
     def _init_db(self) -> None:
         """Initialize database schema."""
         with sqlite3.connect(self.db_path) as conn:
+            # Enable WAL so concurrent readers don't block writers,
+            # and wait up to 5s on lock contention before raising.
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=5000")
+            except sqlite3.Error:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS jobs (
                     prompt_id TEXT PRIMARY KEY,
@@ -132,17 +139,18 @@ class ComfyUIJobTracker:
                     (status, now, prompt_id)
                 )
             elif status in ["completed", "failed", "cancelled"]:
-                # Calculate duration
+                # Calculate duration from started_at (actual run time);
+                # fall back to submitted_at if the job never reached 'running'.
                 cursor = conn.execute(
-                    "SELECT submitted_at FROM jobs WHERE prompt_id = ?",
+                    "SELECT COALESCE(started_at, submitted_at) FROM jobs WHERE prompt_id = ?",
                     (prompt_id,)
                 )
                 row = cursor.fetchone()
                 duration = None
                 if row and row[0]:
                     try:
-                        submitted = datetime.fromisoformat(row[0])
-                        duration = (datetime.now(timezone.utc) - submitted).total_seconds()
+                        started = datetime.fromisoformat(row[0])
+                        duration = (datetime.now(timezone.utc) - started).total_seconds()
                     except ValueError:
                         pass
                 

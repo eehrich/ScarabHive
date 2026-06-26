@@ -65,6 +65,23 @@ def get_storage_path() -> Path:
     return Path(config.get("storage_path", "data/audio_ops"))
 
 
+def _safe_join(storage: Path, filename: str) -> Path:
+    """Join filename onto storage, rejecting path traversal.
+
+    Mirrors server.py:_validate_path: reject literal '..' segments and
+    confirm the resolved path is inside the resolved storage directory.
+    Raises ValueError on violation.
+    """
+    if ".." in Path(filename).parts:
+        raise ValueError(f"Invalid filename: {filename!r} (path traversal not allowed)")
+    resolved = (storage / filename).resolve()
+    try:
+        resolved.relative_to(storage.resolve())
+    except ValueError:
+        raise ValueError(f"Invalid filename: {filename!r} (escapes storage directory)")
+    return resolved
+
+
 async def cmd_info(args: argparse.Namespace) -> int:
     """Show audio file info."""
     try:
@@ -74,21 +91,25 @@ async def cmd_info(args: argparse.Namespace) -> int:
         return 1
     
     storage = get_storage_path()
-    filepath = storage / args.file
-    
+    try:
+        filepath = _safe_join(storage, args.file)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not filepath.exists():
         print(f"Error: File not found: {filepath}", file=sys.stderr)
         return 1
-    
+
     ext = filepath.suffix.lower()
     if ext not in {".flac", ".mp3", ".wav"}:
         print(f"Error: Unsupported format: {ext}", file=sys.stderr)
         return 1
-    
+
     try:
         audio = AudioSegment.from_file(str(filepath), format=ext[1:])
         duration = len(audio) / 1000.0
-        
+
         print(f"File: {filepath.name}")
         print(f"  Format:      {ext[1:].upper()}")
         print(f"  Duration:    {duration:.2f} seconds")
@@ -112,9 +133,13 @@ async def cmd_cut(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    source_path = storage / args.source
-    dest_path = storage / args.dest
+
+    try:
+        source_path = _safe_join(storage, args.source)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     mode = args.mode
     
     if not source_path.exists():
@@ -185,27 +210,35 @@ async def cmd_merge(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    dest_path = storage / args.dest
+
+    try:
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     dest_ext = dest_path.suffix.lower()
-    
+
     if dest_ext not in {".flac", ".mp3", ".wav"}:
         print(f"Error: Unsupported output format: {dest_ext}", file=sys.stderr)
         return 1
-    
+
     source_files = args.sources
     if len(source_files) < 2:
         print("Error: At least 2 source files required", file=sys.stderr)
         return 1
-    
+
     crossfade = args.crossfade
-    
+
     try:
         segments = []
         total_duration = 0.0
-        
+
         for filename in source_files:
-            filepath = storage / filename
+            try:
+                filepath = _safe_join(storage, filename)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
             if not filepath.exists():
                 print(f"Error: File not found: {filepath}", file=sys.stderr)
                 return 1
@@ -309,8 +342,12 @@ async def cmd_load(args: argparse.Namespace) -> int:
         return 1
     
     storage = get_storage_path()
-    filepath = storage / args.file
-    
+    try:
+        filepath = _safe_join(storage, args.file)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not filepath.exists():
         print(f"Error: File not found: {args.file}", file=sys.stderr)
         return 1
@@ -376,10 +413,14 @@ async def cmd_mix(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    file1_path = storage / args.file1
-    file2_path = storage / args.file2
-    dest_path = storage / args.dest
+
+    try:
+        file1_path = _safe_join(storage, args.file1)
+        file2_path = _safe_join(storage, args.file2)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     
     if not file1_path.exists():
         print(f"Error: File not found: {file1_path}", file=sys.stderr)
@@ -455,14 +496,18 @@ async def cmd_volume(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    source_path = storage / args.source
-    dest_path = storage / args.dest
-    
+
+    try:
+        source_path = _safe_join(storage, args.source)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not source_path.exists():
         print(f"Error: File not found: {source_path}", file=sys.stderr)
         return 1
-    
+
     for path in [source_path, dest_path]:
         ext = path.suffix.lower()
         if ext not in {".flac", ".mp3", ".wav"}:
@@ -475,7 +520,14 @@ async def cmd_volume(args: argparse.Namespace) -> int:
     if gain_db is None and not normalize:
         print("Error: Either --gain or --normalize must be specified", file=sys.stderr)
         return 1
-    
+
+    if gain_db is not None and normalize:
+        # Applying gain then normalizing peak to 0 dB cancels the user's
+        # gain intent — the result is identical to --normalize alone.
+        # Reject the combination to avoid silently discarding --gain.
+        print("Error: --gain and --normalize are mutually exclusive (normalize would discard gain)", file=sys.stderr)
+        return 1
+
     if gain_db is not None and not -60.0 <= gain_db <= 24.0:
         print(f"Error: gain should be between -60 and +24 dB, got {gain_db}", file=sys.stderr)
         return 1
@@ -527,14 +579,18 @@ async def cmd_create(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    dest_path = storage / args.dest
-    
+
+    try:
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     ext = dest_path.suffix.lower()
     if ext not in {".flac", ".mp3", ".wav"}:
         print(f"Error: Unsupported format: {ext}", file=sys.stderr)
         return 1
-    
+
     duration_ms = args.duration
     sample_rate = args.sample_rate
     channels = args.channels
@@ -555,9 +611,11 @@ async def cmd_create(args: argparse.Namespace) -> int:
         print(f"Creating {duration_ms}ms silent audio ({channels}ch @ {sample_rate}Hz)")
         
         silent = AudioSegment.silent(duration=duration_ms, frame_rate=sample_rate)
-        
-        if channels == 1:
-            silent = silent.set_channels(1)
+
+        # pydub's AudioSegment.silent() always returns mono; explicitly
+        # upmix to stereo when the user asks for it (channels == 2).
+        if channels == 2:
+            silent = silent.set_channels(2)
         
         dest_format = ext[1:]
         silent.export(str(dest_path), format=dest_format)
@@ -581,12 +639,16 @@ async def cmd_detect_silence(args: argparse.Namespace) -> int:
     import json
     
     storage = get_storage_path()
-    filepath = storage / args.file
-    
+    try:
+        filepath = _safe_join(storage, args.file)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not filepath.exists():
         print(f"Error: File not found: {filepath}", file=sys.stderr)
         return 1
-    
+
     threshold_db = args.threshold
     min_duration = args.min_duration
     
@@ -660,13 +722,17 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     import json
     
     storage = get_storage_path()
-    source_path = storage / args.source
-    dest_path = storage / args.dest
-    
+    try:
+        source_path = _safe_join(storage, args.source)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not source_path.exists():
         print(f"Error: File not found: {source_path}", file=sys.stderr)
         return 1
-    
+
     max_silence = args.max_silence
     threshold_db = args.threshold
     mp3_bitrate = args.bitrate
