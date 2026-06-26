@@ -68,10 +68,14 @@ def get_storage_path() -> Path:
 def _safe_join(storage: Path, filename: str) -> Path:
     """Join filename onto storage, rejecting path traversal.
 
-    Mirrors server.py:_validate_path: reject literal '..' segments and
-    confirm the resolved path is inside the resolved storage directory.
-    Raises ValueError on violation.
+    Mirrors server.py:_validate_path: reject empty input, embedded NUL bytes,
+    and literal '..' segments, then confirm the resolved path is inside the
+    resolved storage directory. Raises ValueError on violation.
     """
+    if not filename:
+        raise ValueError("Invalid filename: empty")
+    if "\x00" in filename:
+        raise ValueError(f"Invalid filename: {filename!r} (NUL byte not allowed)")
     if ".." in Path(filename).parts:
         raise ValueError(f"Invalid filename: {filename!r} (path traversal not allowed)")
     resolved = (storage / filename).resolve()
@@ -80,6 +84,26 @@ def _safe_join(storage: Path, filename: str) -> Path:
     except ValueError:
         raise ValueError(f"Invalid filename: {filename!r} (escapes storage directory)")
     return resolved
+
+
+def _safe_glob_pattern(pattern: str) -> str:
+    """Validate a glob pattern for cmd_list.
+
+    Path.glob in CPython 3.12+ honours '..' segments and traverses outside
+    the search root, and absolute patterns either raise or escape. Reject
+    both so the CLI matches the same safety envelope as _safe_join.
+    """
+    if not pattern:
+        raise ValueError("Invalid pattern: empty")
+    if "\x00" in pattern:
+        raise ValueError(f"Invalid pattern: {pattern!r} (NUL byte not allowed)")
+    # Reject absolute patterns (POSIX '/' prefix or Windows drive/UNC).
+    p = Path(pattern)
+    if p.is_absolute() or pattern.startswith(("/", "\\")):
+        raise ValueError(f"Invalid pattern: {pattern!r} (absolute paths not allowed)")
+    if ".." in p.parts:
+        raise ValueError(f"Invalid pattern: {pattern!r} (path traversal not allowed)")
+    return pattern
 
 
 async def cmd_info(args: argparse.Namespace) -> int:
@@ -297,8 +321,13 @@ async def cmd_list(args: argparse.Namespace) -> int:
     
     pattern = args.pattern
     files: list[Path] = []
-    
+
     if pattern:
+        try:
+            pattern = _safe_glob_pattern(pattern)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
         files.extend(storage.glob(pattern))
     else:
         for ext in [".flac", ".mp3", ".wav"]:
@@ -519,13 +548,6 @@ async def cmd_volume(args: argparse.Namespace) -> int:
     
     if gain_db is None and not normalize:
         print("Error: Either --gain or --normalize must be specified", file=sys.stderr)
-        return 1
-
-    if gain_db is not None and normalize:
-        # Applying gain then normalizing peak to 0 dB cancels the user's
-        # gain intent — the result is identical to --normalize alone.
-        # Reject the combination to avoid silently discarding --gain.
-        print("Error: --gain and --normalize are mutually exclusive (normalize would discard gain)", file=sys.stderr)
         return 1
 
     if gain_db is not None and not -60.0 <= gain_db <= 24.0:

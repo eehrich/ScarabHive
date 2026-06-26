@@ -35,11 +35,10 @@ class ComfyUIJobTracker:
     def _init_db(self) -> None:
         """Initialize database schema."""
         with sqlite3.connect(self.db_path) as conn:
-            # Enable WAL so concurrent readers don't block writers,
-            # and wait up to 5s on lock contention before raising.
+            # Enable WAL so concurrent readers don't block writers.
+            # (Busy timeout defaults to 5s via sqlite3.connect(timeout=5.0).)
             try:
                 conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA busy_timeout=5000")
             except sqlite3.Error:
                 pass
             conn.execute("""

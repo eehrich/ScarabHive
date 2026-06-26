@@ -936,11 +936,23 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 segment_duration = len(segment) / 1000.0
                 
                 # Save segment to temp file for multimodal content (in session-isolated dir).
-                # Include start_ms/end_ms in filename so concurrent load() calls
-                # for different segments of the same source don't overwrite each other.
+                # Use NamedTemporaryFile(delete=False) so concurrent load() calls
+                # for the same (file, start, end) tuple don't race on the same path
+                # (one could be unlinked downstream while another is mid-use).
+                # The file must outlive this call - the caller consumes
+                # _multimodal_content asynchronously - so we keep delete=False
+                # and do not unlink here.
+                import tempfile
                 effective_storage = self._resolve_storage_path(session_id)
-                segment_filename = f"_temp_segment_{filepath.stem}_{start_ms}_{end_ms}.wav"
-                segment_path = effective_storage / segment_filename
+                effective_storage.mkdir(parents=True, exist_ok=True)
+                tmp = tempfile.NamedTemporaryFile(
+                    prefix=f"_temp_segment_{filepath.stem}_{start_ms}_{end_ms}_",
+                    suffix=".wav",
+                    dir=str(effective_storage),
+                    delete=False,
+                )
+                tmp.close()
+                segment_path = Path(tmp.name)
                 await asyncio.to_thread(segment.export, str(segment_path), format="wav")
                 output_path = segment_path
                 
@@ -1910,11 +1922,12 @@ class AudioOpsServer(SchemaBasedMCPServer):
 
         except AudioOpsError as e:
             if status:
-                await status.error(str(e), meta={"error_type": e.error_type})
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
             return {
                 "status": "error",
                 "error": str(e),
-                "error_type": e.error_type
+                "error_type": e.error_type,
+                "details": e.details
             }
         except Exception as e:
             logger.exception(f"Unexpected error detecting silence in {source_file}")
@@ -2166,11 +2179,12 @@ class AudioOpsServer(SchemaBasedMCPServer):
 
         except AudioOpsError as e:
             if status:
-                await status.error(str(e), meta={"error_type": e.error_type})
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
             return {
                 "status": "error",
                 "error": str(e),
-                "error_type": e.error_type
+                "error_type": e.error_type,
+                "details": e.details
             }
         except Exception as e:
             logger.exception(f"Unexpected error compressing silence in {source_file}")
