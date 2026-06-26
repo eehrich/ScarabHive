@@ -409,9 +409,15 @@ async def cmd_load(args: argparse.Namespace) -> int:
         if is_segment:
             start_ms = int(start_time * 1000)
             end_ms = int(end_time * 1000)
+            if end_ms <= start_ms:
+                print(
+                    f"Error: empty segment after clamp (start={start_time:.3f}s, end={end_time:.3f}s, duration={duration:.3f}s)",
+                    file=sys.stderr,
+                )
+                return 1
             segment = audio[start_ms:end_ms]
             segment_duration = len(segment) / 1000.0
-            
+
             output_file = storage / f"_temp_segment_{filepath.stem}.wav"
             segment.export(str(output_file), format="wav")
             

@@ -1978,6 +1978,13 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     error_type="ValueError"
                 )
 
+            if max_silence <= 0:
+                raise AudioOpsError(
+                    f"max_silence must be positive, got: {max_silence}",
+                    error_type="ValidationError",
+                    details={"max_silence": max_silence}
+                )
+
             if status:
                 await status.progress("Analyzing silence...")
 

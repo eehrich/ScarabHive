@@ -1603,12 +1603,26 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         parts = field_path.split(".")
         obj = workflow[node_id]
-        
-        for part in parts[:-1]:
-            if part not in obj:
-                obj[part] = {}
+
+        for idx, part in enumerate(parts[:-1]):
+            if not isinstance(obj, dict) or part not in obj:
+                traversed = ".".join(parts[: idx + 1])
+                logger.warning(
+                    "Workflow field path not present: node %s missing '%s' "
+                    "(field=%s) — check workflow YAML parameter mapping",
+                    node_id, traversed, field_path,
+                )
+                return
             obj = obj[part]
-        
+
+        if not isinstance(obj, dict):
+            logger.warning(
+                "Workflow field path not present: node %s parent of '%s' "
+                "is %s, not dict (field=%s)",
+                node_id, parts[-1], type(obj).__name__, field_path,
+            )
+            return
+
         obj[parts[-1]] = value
 
     @staticmethod

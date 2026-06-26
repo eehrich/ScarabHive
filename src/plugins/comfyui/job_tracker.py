@@ -62,8 +62,11 @@ class ComfyUIJobTracker:
             # Migrate existing DBs that don't have server_url yet
             try:
                 conn.execute("ALTER TABLE jobs ADD COLUMN server_url TEXT")
-            except Exception:
-                pass  # Column already exists
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    logger.error("Unexpected error adding server_url column: %s", exc)
+                    raise
+                # Column already exists — expected on re-init.
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)"
             )
@@ -149,8 +152,11 @@ class ComfyUIJobTracker:
                 if row and row[0]:
                     try:
                         started = datetime.fromisoformat(row[0])
+                        # Legacy/migration rows may be naive — treat as UTC.
+                        if started.tzinfo is None:
+                            started = started.replace(tzinfo=timezone.utc)
                         duration = (datetime.now(timezone.utc) - started).total_seconds()
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
                 
                 conn.execute(

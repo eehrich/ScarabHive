@@ -450,7 +450,7 @@ class ComfyUIClient:
         poll: float = 2.0,
     ) -> int:
         """Atomically create a lock file.  Wait if another process holds it."""
-        deadline = asyncio.get_event_loop().time() + wait_timeout
+        deadline = asyncio.get_running_loop().time() + wait_timeout
         while True:
             try:
                 fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -460,7 +460,7 @@ class ComfyUIClient:
             except FileExistsError:
                 # Check for stale lock (older than 2 minutes).
                 try:
-                    age = asyncio.get_event_loop().time() - lock_path.stat().st_mtime
+                    age = asyncio.get_running_loop().time() - lock_path.stat().st_mtime
                     if age > 120:
                         logger.warning(
                             "Removing stale ComfyUI restart lock (%.0fs old)", age,
@@ -469,7 +469,7 @@ class ComfyUIClient:
                         continue
                 except Exception:
                     pass
-                if asyncio.get_event_loop().time() >= deadline:
+                if asyncio.get_running_loop().time() >= deadline:
                     raise TimeoutError("restart lock wait timed out")
                 logger.debug("Waiting for ComfyUI restart lock …")
                 await asyncio.sleep(poll)
@@ -627,11 +627,11 @@ class ComfyUIClient:
         Returns:
             Final status dict
         """
-        start_time = asyncio.get_event_loop().time()
+        start_time = asyncio.get_running_loop().time()
         first_unknown_time: float | None = None
 
         while True:
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             elapsed = now - start_time
             if elapsed > timeout:
                 return {
