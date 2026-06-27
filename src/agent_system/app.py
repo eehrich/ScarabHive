@@ -2118,12 +2118,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "completed": False
             }
         
-        # Request not active - it either completed or was never started
+        # Request not active in either tracker.
+        #
+        # 2026-06-27 fix: previously returned ``status='completed',
+        # completed=true`` which LIED about the run's outcome — there
+        # is no positive evidence the request finished successfully,
+        # only that this process doesn't know about it (typical case:
+        # agent-api restarted and the BackgroundJob died with it).
+        # The writer-side reconcile pass (producer.py
+        # _reconcile_agent_api_orphans) consumed that lie as success
+        # and marked the queue row 'done' → silent data loss
+        # (2026-06-26 incident root cause). Frontend's poll loop
+        # also treated it as a clean completion and rendered an
+        # empty result.
+        #
+        # New contract: status='unknown', completed=false +
+        # error+reason so the writer-side reconcile leaves the row
+        # for the sweep (= Resume) and the frontend's poll loop
+        # surfaces the loss instead of silently swallowing it.
         return {
             "request_id": request_id,
-            "status": "completed",
-            "completed": True,
-            "message": "Request finished - check session for results"
+            "status": "unknown",
+            "completed": False,
+            "reason": "no_active_run",
+            "error": "Request not found — the server may have restarted while this run was active",
         }
 
     @app.post("/api/requests/{request_id}/cancel")
