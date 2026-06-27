@@ -771,3 +771,105 @@ class TestCancelJobRegistryWalk:
         await mgr.cancel_job("test-rid")
         agent1.cancel_request.assert_not_called()
         agent2.cancel_request.assert_awaited_once_with("test-rid")
+
+
+class TestCancelJobIntegrationWithCancellationManager:
+    """Self-review follow-up: the standalone TestCancelJobRegistryWalk
+    cases mock the cancellation manager away. These exercise the REAL
+    CancellationManager singleton + the registry walk together so the
+    ``token_cancelled or agent_cancelled or job_exists`` return-value
+    composition is provably correct under realistic state."""
+
+    def _isolate_cancellation_manager(self, monkeypatch):
+        """Replace the singleton with a fresh instance so the test
+        starts with an empty token store and other tests can't pollute
+        what we see."""
+        from agent_system.core import cancellation as cm
+        fresh = cm.CancellationManager()
+        monkeypatch.setattr(cm, "_cancellation_manager", fresh)
+        return fresh
+
+    @pytest.mark.asyncio
+    async def test_token_and_registry_walk_both_fire_and_return_true(
+        self, monkeypatch,
+    ):
+        """The realistic production case: cancel arrives, the token
+        store has a token for the request_id AND a registered agent
+        owns it. Both layers must fire — the agent's per-request flag
+        flips (registry walk) AND the prefix-token gets set (so
+        sub-requests cancel too). Return True."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        cm = self._isolate_cancellation_manager(monkeypatch)
+        # Pre-create a token as if /run had registered one for this rid.
+        cm.create_token("req-real")
+        # And one prefix-matched sub-request — must also get cancelled.
+        cm.create_token("req-real_sub_xyz")
+
+        mgr = BackgroundJobManager()
+        owning = _agent_owning({"req-real"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["owning"])
+        registry.get = MagicMock(return_value=owning)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("req-real")
+        assert ok is True
+
+        # Token layer: parent + sub both flipped to cancelled.
+        assert cm.get_token("req-real").is_cancelled
+        assert cm.get_token("req-real_sub_xyz").is_cancelled
+        # Registry layer: owning server got the call.
+        owning.cancel_request.assert_awaited_once_with("req-real")
+
+    @pytest.mark.asyncio
+    async def test_token_only_no_agent_returns_true(self, monkeypatch):
+        """A request that has a registered token but no Agent server
+        owns it (rare: token registered, agent died, default agent
+        also doesn't know about it). Token-only success path must
+        STILL return True — the operator's button feels correct."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        cm = self._isolate_cancellation_manager(monkeypatch)
+        cm.create_token("orphan")
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"someone-else"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("orphan")
+        assert ok is True
+        assert cm.get_token("orphan").is_cancelled
+        unrelated.cancel_request.assert_not_called()
+        default_agent.cancel_request.assert_awaited_once_with("orphan")
+
+    @pytest.mark.asyncio
+    async def test_no_token_no_agent_no_job_returns_false(
+        self, monkeypatch,
+    ):
+        """The only path that must return False — every layer
+        genuinely had nothing to cancel. Closes the regression
+        precisely: pre-fix the endpoint lied with True even here."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        self._isolate_cancellation_manager(monkeypatch)
+        # No create_token call — token store is empty.
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"someone-else"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("never-existed")
+        assert ok is False
