@@ -97,6 +97,30 @@ class BackgroundJobManager:
         self._jobs: dict[str, BackgroundJob] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task[None]] = None
+        # Optional registry of MCP-registered agent servers. cancel_job
+        # walks it so a request that lives on a sub-agent (e.g.
+        # linear_book, v5b_story_designer) is cancelled on the SERVER
+        # that actually owns it, not just the default agent. Without
+        # this the agent's per-server _request_manager flag never
+        # flips and the agent keeps running until completion despite
+        # the cancellation token being set — the 2026-06-27 cancel
+        # regression. Wired by app.py after the registry is built.
+        self._agent_registry: Any = None
+        # Optional default agent. Belt-and-suspenders for callers that
+        # bind requests to the global default agent (chat_agent on
+        # most deploys) without going through the registry.
+        self._default_agent: Any = None
+
+    def set_agent_registry(self, registry: Any, default_agent: Any) -> None:
+        """Wire the MCP registry + default agent into cancel_job.
+
+        Idempotent. Called once at startup from app.py after the
+        registry is fully populated. The setter pattern keeps the
+        services layer free of an upstream import of the FastAPI
+        app module.
+        """
+        self._agent_registry = registry
+        self._default_agent = default_agent
     
     async def start_cleanup_task(self) -> None:
         """Start periodic cleanup of completed jobs."""
@@ -239,51 +263,153 @@ class BackgroundJobManager:
             return self._jobs.get(request_id)
     
     async def cancel_job(self, request_id: str, force_timeout: float = 0.0) -> bool:
-        """Cancel a running job gracefully.
-        
-        Performs graceful cancellation:
-        1. Uses CancellationManager to cancel tokens with prefix matching
-           (this propagates to sub-agents with request_ids like "parent_sub_xxx")
-        2. The agent checks is_cancelled() at each step and can shutdown cleanly
-           (save session, send status events, yield "cancelled" event)
-        3. Only if force_timeout > 0, waits that long then force-cancels the asyncio task
-        
+        """Cancel a running job gracefully across all layers.
+
+        Cancellation has three independent layers, each addressing a
+        different leak path observed in production:
+
+        1. ``CancellationManager`` token (prefix-matched so sub-agent
+           requests like ``parent_sub_xxx`` get cancelled too). Agents
+           check ``is_cancelled()`` at every LLM-result handler / tool
+           dispatch / sub-agent join and shut down cleanly.
+
+        2. **Agent-server cancel** — walk the registered MCP servers
+           and call ``cancel_request(request_id)`` on the one that
+           actually owns the request. Without this the
+           per-server ``_request_manager`` flag never flips, so the
+           agent's own loop never sees the cancellation even after
+           the token is set (2026-06-27 regression: ``/api/requests/
+           {rid}/cancel`` had been calling cancel only on the
+           DEFAULT global agent, missing every linear_book /
+           v5b_story_designer / cover_artist request). The default
+           agent is then tried as belt-and-suspenders for caller paths
+           that bypassed the registry.
+
+        3. Optional ``force_timeout`` — if the agent is mid-blocking-
+           I/O (``asyncio.to_thread`` around httpx), the token + flag
+           don't end the asyncio task until the I/O returns. The
+           timeout then triggers ``Task.cancel()`` so the next await
+           point unwinds.
+
         Args:
             request_id: The request ID to cancel
             force_timeout: If > 0, force-cancel task after this many seconds if still running
-        
+
         Returns:
-            True if job was found and cancellation initiated, False otherwise
+            True if cancellation was applied somewhere — token set,
+            registered agent acknowledged, default agent acknowledged,
+            or the background job task was found. False only when
+            none of those layers matched (the request really wasn't
+            tracked).
         """
-        # Use CancellationManager for token-based cancellation with prefix matching
-        # This cancels the main request AND all sub-requests (e.g., sub-agents)
-        # The agent will detect this via _is_cancelled() and shutdown gracefully
+        # 1. Token cancellation (existing behaviour, prefix-matched).
         cancellation_manager = get_cancellation_manager()
         token_cancelled = cancellation_manager.cancel_request(request_id)
-        
         if token_cancelled:
-            logger.info(f"[BACKGROUND_JOB] Set cancellation token for {request_id} (including sub-requests)")
-        
-        # Check if job exists
+            logger.info(
+                "[BACKGROUND_JOB] Set cancellation token for %s "
+                "(including sub-requests)", request_id,
+            )
+
+        # 2. Agent-server cancel via registry walk.
+        agent_cancelled = await self._cancel_on_owning_agent(request_id)
+
+        # Job-task lookup — used to gate force_timeout AND so we can
+        # report 'something matched' even if only the BackgroundJob
+        # task exists (no token / no agent ack).
         async with self._lock:
             job = self._jobs.get(request_id)
             job_exists = job is not None and job.status == JobStatus.RUNNING
-        
-        if not job_exists:
-            return token_cancelled  # Return True if we at least cancelled tokens
-        
-        # If force_timeout specified, wait then force-cancel if still running
-        if force_timeout > 0:
-            logger.info(f"[BACKGROUND_JOB] Waiting {force_timeout}s for graceful shutdown of {request_id}")
+
+        # 3. Force-cancel after grace.
+        if job_exists and force_timeout > 0:
+            logger.info(
+                "[BACKGROUND_JOB] Waiting %ss for graceful shutdown of %s",
+                force_timeout, request_id,
+            )
             await asyncio.sleep(force_timeout)
-            
             async with self._lock:
                 job = self._jobs.get(request_id)
                 if job and job.status == JobStatus.RUNNING:
-                    logger.warning(f"[BACKGROUND_JOB] Force-cancelling task for {request_id} after timeout")
+                    logger.warning(
+                        "[BACKGROUND_JOB] Force-cancelling task for %s "
+                        "after timeout", request_id,
+                    )
                     job.task.cancel()
-        
-        return True
+
+        return token_cancelled or agent_cancelled or job_exists
+
+    async def _cancel_on_owning_agent(self, request_id: str) -> bool:
+        """Find the Agent server that owns `request_id` and call its
+        cancel_request. Falls back to the default agent if no
+        registered server matches.
+
+        Returns True if any agent acknowledged the cancel. Pure
+        method on the manager — no FastAPI imports — so the
+        services layer stays clean of upstream dependencies.
+        """
+        # The Agent class is imported lazily so importing this module
+        # before the agent server is built doesn't trigger a circular
+        # import (services → servers → ... → services).
+        try:
+            from agent_system.servers.agent.server import Agent as _Agent
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[BACKGROUND_JOB] Agent class import failed during "
+                "cancel — registry walk skipped",
+            )
+            return False
+
+        # Walk the registry first — that's where sub-agent servers
+        # (linear_book, v5b_*, cover_artist, ...) register themselves.
+        if self._agent_registry is not None:
+            try:
+                names = self._agent_registry.list()
+            except Exception:  # noqa: BLE001
+                names = []
+            for name in names:
+                try:
+                    srv = self._agent_registry.get(name)
+                except Exception:  # noqa: BLE001
+                    continue
+                if not isinstance(srv, _Agent):
+                    continue
+                try:
+                    active = srv._request_manager.get_active_requests()
+                except Exception:  # noqa: BLE001
+                    # Older Agent without _request_manager — skip.
+                    continue
+                if request_id not in active:
+                    continue
+                try:
+                    ok = await srv.cancel_request(request_id)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[BACKGROUND_JOB] cancel_request on agent=%s "
+                        "raised — continuing", name,
+                    )
+                    continue
+                if ok:
+                    logger.info(
+                        "[BACKGROUND_JOB] Cancel propagated via "
+                        "registry to agent=%s for request_id=%s",
+                        name, request_id,
+                    )
+                    return True
+
+        # Belt-and-suspenders: try the default agent. Idempotent for
+        # callers that wire requests directly to it.
+        if self._default_agent is not None:
+            try:
+                return bool(
+                    await self._default_agent.cancel_request(request_id)
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[BACKGROUND_JOB] default-agent cancel raised — "
+                    "treating as not-found",
+                )
+        return False
     
     async def get_active_jobs(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
         """Get list of active jobs, optionally filtered by user.

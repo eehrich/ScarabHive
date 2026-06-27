@@ -543,50 +543,49 @@ async def cancel_active_session(
     request_id: str,
     admin_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """
-    Cancel an active session by request ID (admin only).
-    
+    """Cancel an active session by request ID (admin only).
+
+    Delegates to the canonical ``BackgroundJobManager.cancel_job`` path
+    that walks the agent registry + sets the cancellation token + force-
+    cancels the task after the grace period. The previously-duplicated
+    walk-the-registry loop lived here AND in ``/api/requests/{rid}/
+    cancel`` AND was the only one that worked correctly for sub-agent
+    requests — consolidated 2026-06-27 so there's a single
+    implementation everyone shares.
+
     Args:
         request_id: The request ID to cancel
         admin_user: Current admin user (verified by require_admin)
-    
+
     Returns:
         Status of the cancellation
     """
-    from agent_system.app import _app_registry
-    from agent_system.servers.agent.server import Agent
-    
-    # Try to cancel across all agents
-    cancelled = False
-    
+    from agent_system.services.background_job_manager import (
+        get_background_job_manager,
+    )
+
     try:
-        for agent_name in _app_registry.list():
-            try:
-                srv = _app_registry.get(agent_name)
-                if not isinstance(srv, Agent):
-                    continue
-                
-                # Check if this agent has this request
-                active_requests = srv._request_manager.get_active_requests()
-                if request_id in active_requests:
-                    success = await srv.cancel_request(request_id)
-                    if success:
-                        cancelled = True
-                        logger.info(f"Admin {admin_user.username} cancelled request {request_id} on agent {agent_name}")
-                        break
-                        
-            except Exception as e:
-                logger.debug(f"Failed to cancel on agent {agent_name}: {e}")
-                continue
-                
-    except Exception as e:
-        logger.exception(f"Failed to cancel request {request_id}: {e}")
+        success = await get_background_job_manager().cancel_job(
+            request_id, force_timeout=5.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Admin %s: cancel for request_id=%s failed: %s",
+            admin_user.username, request_id, exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to cancel request: {str(e)}"
+            detail=f"Failed to cancel request: {exc}",
         )
-    
-    if cancelled:
+
+    if success:
+        logger.info(
+            "Admin %s cancelled request %s",
+            admin_user.username, request_id,
+        )
         return {"status": "cancelled", "request_id": request_id}
-    else:
-        return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}
+    return {
+        "status": "not_found",
+        "request_id": request_id,
+        "message": "Request not found or already completed",
+    }

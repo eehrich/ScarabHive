@@ -607,3 +607,167 @@ class TestCleanupLoop:
         
         await job_manager.stop_cleanup_task()
         assert job_manager._cleanup_task is None
+
+
+# --------------------------------------------------------------------------- #
+# 2026-06-27 — registry-aware cancel_job
+# --------------------------------------------------------------------------- #
+
+
+def _agent_owning(owned_request_ids: set[str]):
+    """Stand-in for agent_system.servers.agent.server.Agent that
+    passes isinstance() AND exposes _request_manager + cancel_request
+    so cancel_job's registry walk can drive it deterministically."""
+    from unittest.mock import AsyncMock, MagicMock
+    from agent_system.servers.agent.server import Agent
+
+    agent = MagicMock(spec=Agent)
+    agent._request_manager = MagicMock()
+    agent._request_manager.get_active_requests = MagicMock(
+        return_value=set(owned_request_ids),
+    )
+    agent.cancel_request = AsyncMock(return_value=True)
+    return agent
+
+
+class TestCancelJobRegistryWalk:
+    """The 2026-06-27 cancel regression: writer-side cancel was
+    setting the cancellation token + asking the DEFAULT agent only.
+    Sub-agent requests (linear_book, v5b_story_designer, ...) kept
+    running because the agent server that owned them never had its
+    _request_manager flag flipped. cancel_job now walks the registry
+    AND falls back to the default agent."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_walks_registry_and_cancels_owning_agent(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        owning = _agent_owning({"req-target"})
+        bystander = _agent_owning({"req-other"})
+        non_agent = MagicMock()  # not Agent → must be filter-skipped
+
+        registry = MagicMock()
+        registry.list = MagicMock(
+            return_value=["non_agent", "bystander", "owning"],
+        )
+        registry.get = MagicMock(side_effect=lambda n: {
+            "non_agent": non_agent,
+            "bystander": bystander,
+            "owning": owning,
+        }[n])
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("req-target")
+        assert ok is True
+        owning.cancel_request.assert_awaited_once_with("req-target")
+        bystander.cancel_request.assert_not_called()
+        # default-agent path is the fallback and must NOT have fired
+        # (we found the request via the registry).
+        default_agent.cancel_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancel_falls_back_to_default_agent_when_registry_misses(
+        self,
+    ):
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"some-other-id"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=True)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("orphan-id")
+        assert ok is True
+        unrelated._request_manager.get_active_requests.assert_called_once()
+        unrelated.cancel_request.assert_not_called()
+        default_agent.cancel_request.assert_awaited_once_with("orphan-id")
+
+    @pytest.mark.asyncio
+    async def test_cancel_returns_false_when_nothing_owns(self):
+        """Single source of truth must not lie with True if no layer
+        actually acknowledged the cancel — that's the regression we
+        are closing."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"x"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        # Make sure no CancellationManager token exists for this id
+        # so the True path can only come from an agent ack.
+        ok = await mgr.cancel_job("ghost-id")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_survives_registry_probe_exception(self):
+        """A broken Agent server (probe raises) must not abort the
+        whole cancel — log and move on to the next server / default."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        broken = _agent_owning({"x"})
+        broken._request_manager.get_active_requests = MagicMock(
+            side_effect=RuntimeError("simulated probe failure"),
+        )
+        healthy = _agent_owning({"target"})
+
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["broken", "healthy"])
+        registry.get = MagicMock(side_effect=lambda n: {
+            "broken": broken, "healthy": healthy,
+        }[n])
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("target")
+        assert ok is True
+        healthy.cancel_request.assert_awaited_once_with("target")
+
+    @pytest.mark.asyncio
+    async def test_cancel_without_registry_wired_still_works(self):
+        """Backward compat: if set_agent_registry was never called
+        (legacy startup path / test code), cancel_job must still
+        behave like the original token-only version. No crash, no
+        registry walk, just the token + job-task layers."""
+        mgr = BackgroundJobManager()
+        # Deliberately NO set_agent_registry call.
+        ok = await mgr.cancel_job("ghost-id")
+        assert ok is False    # token didn't exist, no agent, no job
+
+    @pytest.mark.asyncio
+    async def test_set_agent_registry_is_idempotent(self):
+        """Wiring is a single call from app.py startup; tolerate
+        re-invocation (e.g. hot-reload of the FastAPI app) without
+        losing state."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        reg1 = MagicMock()
+        reg1.list = MagicMock(return_value=[])
+        agent1 = MagicMock()
+        agent1.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=reg1, default_agent=agent1)
+
+        reg2 = MagicMock()
+        reg2.list = MagicMock(return_value=[])
+        agent2 = MagicMock()
+        agent2.cancel_request = AsyncMock(return_value=True)
+        # Second call overrides — that's the contract.
+        mgr.set_agent_registry(registry=reg2, default_agent=agent2)
+
+        await mgr.cancel_job("test-rid")
+        agent1.cancel_request.assert_not_called()
+        agent2.cancel_request.assert_awaited_once_with("test-rid")

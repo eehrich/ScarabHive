@@ -795,6 +795,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     agent = selected_agent
 
+    # Wire the BackgroundJobManager with the registry + default agent
+    # so cancel_job can walk every Agent-typed server that may own a
+    # request (linear_book, v5b_story_designer, cover_artist, …) and
+    # only fall back to the default agent when no registered server
+    # matches. Single source of truth for "cancel a writer-side
+    # request anywhere" — every endpoint (/api/requests/{rid}/cancel,
+    # /admin/active-sessions/{rid}/cancel, writer-jobs propagation)
+    # now delegates to one path.
+    try:
+        get_background_job_manager().set_agent_registry(
+            registry=registry, default_agent=agent,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "BackgroundJobManager registry wiring failed: %s — cancel "
+            "endpoints will fall back to default-agent-only behaviour",
+            exc,
+        )
+
     # Store agent and registry in app state for dependency injection
     app.state.agent = agent
     app.state.mcp_registry = registry
@@ -2110,34 +2129,41 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.post("/api/requests/{request_id}/cancel")
     async def cancel_request(request_id: str, force: bool = Query(default=False)):
         """Cancel an active request by its ID.
-        
-        Performs graceful cancellation:
-        1. Sets cancellation tokens (agent detects via is_cancelled() and shuts down cleanly)
-        2. Agent can save session, send status events, yield "cancelled" event
-        3. If force=True, waits 5s then force-cancels task if still running
-        
+
+        Delegates to ``BackgroundJobManager.cancel_job`` which is the
+        single source of truth for writer-side cancellation: it sets
+        the cancellation token, walks the agent registry to call
+        ``cancel_request`` on the server that actually owns the
+        request (linear_book, v5b_story_designer, cover_artist, ...),
+        falls back to the default agent for chat_agent-style requests,
+        and force-cancels the asyncio task after the grace period.
+
+        See ``BackgroundJobManager.cancel_job`` for the layered
+        semantics. The 2026-06-27 cancel regression (sub-agent
+        requests reported 'cancelled' but kept running) is closed
+        there — every caller of this endpoint, the admin endpoint at
+        ``/admin/active-sessions/{rid}/cancel``, and the writer-jobs
+        propagation helper now use the same path.
+
         Args:
             request_id: The request ID to cancel
             force: If True, force-cancel after 5s if agent doesn't respond to graceful cancel
         """
         logger = logging.getLogger(__name__)
-        logger.info("Cancel request received for request_id=%s (force=%s)", request_id, force)
-
-        # Use BackgroundJobManager for graceful cancellation
-        # This sets cancellation tokens - agent will detect and shutdown cleanly
-        job_manager = get_background_job_manager()
-        force_timeout = 5.0 if force else 0.0
-        job_success = await job_manager.cancel_job(request_id, force_timeout=force_timeout)
-        
-        # ALWAYS also call agent.cancel_request for belt-and-suspenders
-        # This ensures the agent's internal request tracking is updated
-        agent_success = await agent.cancel_request(request_id)
-        
-        if job_success or agent_success:
-            logger.info(f"Cancel successful: job_manager={job_success}, agent={agent_success}")
+        logger.info(
+            "Cancel request received for request_id=%s (force=%s)",
+            request_id, force,
+        )
+        success = await get_background_job_manager().cancel_job(
+            request_id, force_timeout=5.0 if force else 0.0,
+        )
+        if success:
             return {"status": "cancelled", "request_id": request_id}
-        else:
-            return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}
+        return {
+            "status": "not_found",
+            "request_id": request_id,
+            "message": "Request not found or already completed",
+        }
 
     async def _verify_session_owner(sid: str, current_user: Any) -> None:
         """Raise 403 if the authenticated user does not own the session.
