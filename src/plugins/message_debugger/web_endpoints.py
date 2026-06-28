@@ -5,7 +5,9 @@ and raw LLM API request/response logs from the SQLite database.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -130,21 +132,26 @@ class MessageDebuggerWebFactory:
     async def prune(
         self,
         request: Request,
-        max_turns: int = Query(default=5000, ge=100, le=100000, description="Keep only the N most recent turns"),
-        max_requests: int = Query(default=5000, ge=100, le=100000, description="Keep only the N most recent LLM requests"),
         vacuum: bool = Query(default=True, description="Reclaim disk space after pruning"),
     ):
-        """Prune old entries and (by default) VACUUM to reclaim disk space.
+        """Prune old entries down to the size cap and (by default) VACUUM.
 
-        Manual cleanup path: first drop to the row caps, then enforce the
-        configured size cap (row counts alone don't bound bytes when payloads are
-        large), then VACUUM so the file actually shrinks (the per-write auto
-        retention never VACUUMs — it relies on page reuse). VACUUM needs free
-        temp space roughly the size of the remaining data, so it can fail on a
-        full disk; that is reported instead of erroring the request.
+        Cost-preserving: like the auto retention this STRIPS the oldest payloads
+        (keeping the tiny cost columns) and drops the oldest turn snapshots — it
+        does NOT throw away cost history. force=True drives it down to the LOW
+        watermark even when between watermarks, then VACUUM shrinks the file on
+        disk (the auto path never VACUUMs). VACUUM needs free temp space roughly
+        the size of the remaining data, so it can fail on a full disk; that is
+        reported instead of erroring the request.
+
+        Runs OFF the event loop (it can take many seconds) and under the
+        retention lock so it never collides with the per-write auto retention.
         """
-        import os
+        result = await asyncio.to_thread(self._run_manual_prune, vacuum)
+        return {'status': 'pruned', **result}
 
+    def _run_manual_prune(self, vacuum: bool) -> dict:
+        """Synchronous manual prune+VACUUM — invoked via asyncio.to_thread."""
         def _disk_bytes() -> int:
             total = 0
             for suffix in ("", "-wal", "-shm"):
@@ -153,27 +160,25 @@ class MessageDebuggerWebFactory:
                     total += os.path.getsize(p)
             return total
 
-        size_before = _disk_bytes()
+        # Serialise with the auto retention (same DB, same write lock).
+        with self.db._retention_lock:
+            size_before = _disk_bytes()
+            result = self.db.enforce_retention(force=True, budget=120.0)
+            did_work = result["stripped"] or result["turns_deleted"] or result["requests_deleted"]
 
-        result = self.db.prune_to_max(max_turns=max_turns, max_requests=max_requests)
-        # Also enforce the configured size cap (down to the LOW watermark).
-        cap = self.db.enforce_retention()
-        result["turns_deleted"] += cap.get("turns_deleted", 0)
-        result["requests_deleted"] += cap.get("requests_deleted", 0)
+            result["vacuumed"] = False
+            if vacuum and did_work:
+                try:
+                    self.db.vacuum()
+                    result["vacuumed"] = True
+                except Exception as e:  # e.g. not enough free space for the temp copy
+                    logger.warning("message_debugger manual VACUUM failed: %s", e)
+                    result["vacuum_error"] = str(e)
 
-        result["vacuumed"] = False
-        if vacuum and (result["turns_deleted"] > 0 or result["requests_deleted"] > 0):
-            try:
-                self.db.vacuum()
-                result["vacuumed"] = True
-            except Exception as e:  # e.g. not enough free space for the temp copy
-                logger.warning("message_debugger manual VACUUM failed: %s", e)
-                result["vacuum_error"] = str(e)
-
-        size_after = _disk_bytes()
-        result["freed_mb"] = round((size_before - size_after) / 1024 / 1024, 1)
-        result["size_after_mb"] = round(size_after / 1024 / 1024, 1)
-        return {'status': 'pruned', **result}
+            size_after = _disk_bytes()
+            result["freed_mb"] = round((size_before - size_after) / 1024 / 1024, 1)
+            result["size_after_mb"] = round(size_after / 1024 / 1024, 1)
+            return result
     
     # ---- Panel rendering ----
     

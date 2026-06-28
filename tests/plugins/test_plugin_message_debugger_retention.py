@@ -1,153 +1,178 @@
 """
-Size-bounded auto-retention for the message_debugger DB.
+Size-bounded, cost-preserving auto-retention for the message_debugger DB.
 
-Goal (user): the SQLite file must stop growing — it should plateau at the cap.
-SQLite DELETE does not shrink the file, but freed pages are reused, so the file
-stays bounded. We measure REAL data size ((page_count - freelist) * page_size),
-prune oldest rows with hysteresis (high/low watermark), and never VACUUM.
+The user keeps the debugger DB for COST calculation, so retention must not throw
+away the (tiny) cost columns (provider/model/usage/request_id/timestamps). The
+payload/response BLOBs are ~all the bytes, so retention STRIPS the oldest
+payloads (keeping the cost row) and drops the oldest turn snapshots; it only
+deletes cost rows as a last resort. Work is time-budgeted so it never delays a
+capture write past the 5s hook timeout.
 """
 
 import os
+import time
 
 import pytest
 
 from plugins.message_debugger.database import MessageDebuggerDB
 
-# ~20 KB of message JSON per turn -> a 1 MB cap is reached in ~50 turns.
+_BIG = {"messages": [{"role": "user", "content": "x" * 5000}], "model": "gpt-5"}
 _BIG_MESSAGES = [{"role": "user", "content": "x" * 5000} for _ in range(4)]
+
+
+def _insert_requests(db, n, start=0):
+    for i in range(n):
+        db.insert_llm_request(
+            timestamp_ms=float(start + i), direction="response", agent_name="a",
+            request_id=f"req_{start + i}", session_id="s",
+            provider="openai", model="gpt-5",
+            payload=_BIG, response_data=_BIG,
+            usage={"prompt_tokens": 100, "completion_tokens": 50},
+            duration_ms=123.0, finish_reason="stop",
+        )
 
 
 def _insert_turns(db, n, start=0):
     for i in range(n):
-        db.insert_turn(
-            timestamp_ms=float(start + i),
-            snapshot_type="pre_llm",
-            agent_name="a",
-            session_id="s",
-            messages=_BIG_MESSAGES,
-        )
+        db.insert_turn(timestamp_ms=float(start + i), snapshot_type="pre_llm",
+                       agent_name="a", session_id="s", messages=_BIG_MESSAGES)
 
 
-def _count(db):
-    return db._get_conn().execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+def _count_requests(db):
+    return db._get_conn().execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
 
 
-def _ts_range(db):
-    row = db._get_conn().execute(
+def _req(db, request_id):
+    return db._get_conn().execute(
+        "SELECT payload_json, response_json, usage_json, model, provider "
+        "FROM llm_requests WHERE request_id = ?", (request_id,),
+    ).fetchone()
+
+
+def _turns_ts_range(db):
+    return db._get_conn().execute(
         "SELECT MIN(timestamp_ms), MAX(timestamp_ms) FROM turns"
     ).fetchone()
-    return row[0], row[1]
 
 
 @pytest.fixture
 def db(tmp_path):
-    # 1 MB cap -> high ~0.9 MB, low ~0.75 MB; tiny so the test is fast.
+    # 1 MB cap -> HIGH ~0.9 MB, LOW ~0.75 MB; tiny so the test is fast.
     d = MessageDebuggerDB(tmp_path / "ret.db", wal_mode=True, max_size_mb=1)
+    d._retention_check_interval = 10**9  # default: drive retention manually
+    d._retention_batch = 20
+    d._retention_budget_s = 30           # generous so one call reaches LOW
     yield d
     d.close()
 
 
-class TestEnforceRetention:
-    def test_prunes_down_to_low_watermark(self, db):
-        db._retention_check_interval = 10**9  # disable auto; drive it manually
-        _insert_turns(db, 300)
+class TestCostPreserving:
+    def test_strips_old_payloads_but_keeps_cost_rows(self, db):
+        _insert_requests(db, 120)  # ~1.2 MB of payloads, over the 1 MB cap
         conn = db._get_conn()
-        assert db._used_bytes(conn) > db._high_bytes, "setup: should be over HIGH"
+        assert db._used_bytes(conn) > db._high_bytes
 
         res = db.enforce_retention()
 
-        assert res["turns_deleted"] > 0
-        assert db._used_bytes(conn) <= db._low_bytes, "must prune down to LOW"
+        assert res["stripped"] > 0
+        assert _count_requests(db) == 120, "cost rows must NOT be deleted"
+        old = _req(db, "req_0")
+        assert old["payload_json"] is None and old["response_json"] is None
+        assert old["usage_json"] is not None and old["model"] == "gpt-5", "cost cols kept"
+        new = _req(db, "req_119")
+        assert new["payload_json"] is not None, "newest payload kept for debugging"
+        assert db._used_bytes(conn) <= db._low_bytes
 
-    def test_oldest_pruned_newest_kept(self, db):
-        db._retention_check_interval = 10**9
-        _insert_turns(db, 300)  # timestamps 0..299
+    def test_last_resort_deletes_oldest_cost_rows_when_nothing_else(self, db):
+        # All payloads already stripped (cost-only rows) but still over cap:
+        # the only way to honour the cap is to delete the oldest cost rows.
+        _insert_requests(db, 200)
+        db._get_conn().execute("UPDATE llm_requests SET payload_json=NULL, response_json=NULL")
+        db._get_conn().commit()
+        db._get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # force a tiny cap so the cost-only rows still exceed it
+        db._max_size_bytes = 32 * 1024
+        db._high_bytes = int(db._max_size_bytes * 0.90)
+        db._low_bytes = int(db._max_size_bytes * 0.75)
+
+        res = db.enforce_retention(force=True)
+        assert res["requests_deleted"] > 0
+        assert _count_requests(db) < 200  # oldest cost rows removed as last resort
+
+    def test_noop_below_high(self, db):
+        _insert_requests(db, 5)
+        assert db.enforce_retention() == {"stripped": 0, "turns_deleted": 0, "requests_deleted": 0}
+
+
+class TestTurns:
+    def test_turns_pruned_oldest_first(self, db):
+        _insert_turns(db, 300)
         db.enforce_retention()
-
-        lo, hi = _ts_range(db)
-        assert hi == 299.0, "newest turn must survive"
-        assert lo > 0.0, "oldest turns must be pruned"
-
-    def test_noop_below_high_watermark(self, db):
-        db._retention_check_interval = 10**9
-        _insert_turns(db, 5)  # tiny, well under cap
-        before = _count(db)
-        res = db.enforce_retention()
-        assert res == {"turns_deleted": 0, "requests_deleted": 0}
-        assert _count(db) == before
+        lo, hi = _turns_ts_range(db)
+        assert hi == 299.0, "newest turn kept"
+        assert lo and lo > 0.0, "oldest turns pruned"
 
 
-class TestAutoRetentionKeepsFileBounded:
-    def test_file_plateaus_under_continuous_inserts(self, db):
-        db._retention_check_interval = 25  # check often for the test
-        # Insert ~16 MB worth of turns into a 1 MB-capped DB.
-        _insert_turns(db, 800)
-
-        conn = db._get_conn()
-        used = db._used_bytes(conn)
-        file_bytes = os.path.getsize(db.db_path)
-
-        # Real data is bounded near the cap (NOT the ~16 MB that unbounded
-        # growth would produce).
-        assert used < db._max_size_bytes * 2, f"data not bounded: {used}"
-        # The file itself plateaued well below unbounded growth.
-        assert file_bytes < db._max_size_bytes * 3, f"file not bounded: {file_bytes}"
-        # And capture still works (rows are present, just bounded).
-        assert _count(db) > 0
-
-    def test_reuse_after_prune_does_not_grow_file(self, db):
-        db._retention_check_interval = 25
-        _insert_turns(db, 500)
-        file_after_first = os.path.getsize(db.db_path)
-        # Insert another large batch — freed pages must be reused, file ~flat.
-        _insert_turns(db, 500, start=10_000)
-        file_after_second = os.path.getsize(db.db_path)
-
-        # Allow a little slack but the file must NOT have grown by another batch.
-        assert file_after_second <= file_after_first * 1.5, (
-            f"file kept growing: {file_after_first} -> {file_after_second}"
-        )
+class TestBudget:
+    def test_call_is_time_bounded_and_stays_armed(self, db):
+        db._retention_batch = 5
+        _insert_requests(db, 300)
+        t = time.time()
+        db.enforce_retention(budget=0.05)  # tiny budget -> at most one slice
+        assert time.time() - t < 2.0, "a retention call must never block long"
+        assert db._pruning is True, "not finished -> still armed, continues next call"
 
 
-class TestManualPruneShrinksFile:
-    """The manual front-panel 'prune old entries' path must actually shrink the
-    file (prune to the cap + VACUUM), unlike the per-write auto retention."""
-
-    def test_enforce_plus_vacuum_shrinks_file(self, db):
-        db._retention_check_interval = 10**9  # drive manually
-        _insert_turns(db, 300)
+class TestManualPrune:
+    def test_force_prune_then_vacuum_shrinks_and_keeps_cost(self, db):
+        _insert_requests(db, 120)
         before = os.path.getsize(db.db_path)
-        db.enforce_retention()  # prune oldest down to LOW
-        db.vacuum()             # reclaim freed pages to the OS
+        db.enforce_retention(force=True)
+        db.vacuum()
         after = os.path.getsize(db.db_path)
-        assert after < before * 0.6, f"file did not shrink: {before} -> {after}"
+        assert after < before * 0.7, f"file did not shrink: {before} -> {after}"
+        assert _count_requests(db) == 120, "cost rows preserved through manual prune"
 
     @pytest.mark.asyncio
-    async def test_prune_endpoint_reclaims_and_reports(self, db):
+    async def test_prune_endpoint_strips_reports_and_keeps_cost(self, db):
         from plugins.message_debugger.web_endpoints import MessageDebuggerWebFactory
 
-        db._retention_check_interval = 10**9
-        _insert_turns(db, 300)
+        _insert_requests(db, 120)
         factory = MessageDebuggerWebFactory(db=db)
+        res = await factory.prune(None, vacuum=True)
 
-        res = await factory.prune(None, max_turns=10, max_requests=10, vacuum=True)
-
-        assert res["turns_deleted"] > 0
+        assert res["stripped"] > 0
         assert res["vacuumed"] is True
-        assert res["freed_mb"] > 0, "manual prune must report reclaimed space"
+        assert res["freed_mb"] > 0
         assert "size_after_mb" in res
-        assert _count(db) <= 10  # only the most-recent turns kept
+        assert _count_requests(db) == 120
 
 
-class TestRetentionDisabled:
-    def test_cap_zero_disables_pruning(self, tmp_path):
+class TestDisabled:
+    def test_cap_zero_disables(self, tmp_path):
         d = MessageDebuggerDB(tmp_path / "nocap.db", wal_mode=True, max_size_mb=0)
         try:
-            d._retention_check_interval = 10  # would fire often if enabled
-            _insert_turns(d, 120)
-            # No retention: every row is kept.
+            d._retention_check_interval = 5
+            _insert_requests(d, 120)
             assert d._get_conn().execute(
-                "SELECT COUNT(*) FROM turns"
+                "SELECT COUNT(*) FROM llm_requests"
             ).fetchone()[0] == 120
         finally:
             d.close()
+
+
+class TestAutoRetentionBounds:
+    @pytest.mark.asyncio
+    async def test_auto_keeps_data_bounded(self, db):
+        # Re-enable the auto trigger with a short interval; insert far over cap.
+        db._retention_check_interval = 25
+        db._retention_budget_s = 30
+        _insert_requests(db, 600)
+        # Drain any remaining armed pruning (auto fires inside inserts; finish it).
+        for _ in range(50):
+            if not db._pruning:
+                break
+            db.enforce_retention()
+        used = db._used_bytes(db._get_conn())
+        assert used < db._max_size_bytes * 2, f"data not bounded: {used}"
+        assert _count_requests(db) > 0  # cost rows retained

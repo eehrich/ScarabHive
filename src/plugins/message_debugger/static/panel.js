@@ -392,14 +392,16 @@ const debugger_ = {
 
     async pruneOld() {
         const ok = await this.confirm(
-            'Prune old entries down to the configured size cap and VACUUM to reclaim disk space?\n\n' +
-            'Keeps the most recent data; the oldest is removed.'
+            'Prune to the size cap and VACUUM to reclaim disk space?\n\n' +
+            'Strips the oldest raw payloads (cost data is kept) and drops the ' +
+            'oldest message snapshots. Cost history is preserved.'
         );
         if (!ok) return;
         try {
             const res = await fetch('/plugins/message_debugger/prune?vacuum=true', { method: 'POST' });
             const data = await res.json();
-            let msg = `Pruned ${data.turns_deleted} turns and ${data.requests_deleted} requests.`;
+            let msg = `Stripped ${data.stripped} payloads, dropped ${data.turns_deleted} turns` +
+                      (data.requests_deleted ? `, deleted ${data.requests_deleted} old cost rows` : '') + '.';
             if (data.vacuumed) {
                 msg += `\nVACUUM reclaimed ${data.freed_mb} MB (DB now ${data.size_after_mb} MB).`;
             } else if (data.vacuum_error) {

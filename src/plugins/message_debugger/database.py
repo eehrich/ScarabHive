@@ -50,6 +50,13 @@ class MessageDebuggerDB:
         self._retention_check_interval = 200  # measure size only every N writes
         self._writes_since_check = 0
         self._retention_lock = threading.Lock()
+        # Hysteresis state: once we cross HIGH we keep pruning (in small,
+        # time-budgeted slices) until LOW, then rest. A single retention call is
+        # bounded to ~1s so it never delays a capture write past the 5s hook
+        # timeout (the old "prune all the way to LOW in one write" tripped it).
+        self._pruning = False
+        self._retention_budget_s = 1.0
+        self._retention_batch = 500  # rows stripped/deleted per pass
 
         # Initialize schema
         self._init_schema()
@@ -125,6 +132,14 @@ class MessageDebuggerDB:
                 ON llm_requests(direction, duration_ms);
             CREATE INDEX IF NOT EXISTS idx_llm_requests_error
                 ON llm_requests(error) WHERE error IS NOT NULL AND error != '';
+
+            -- Partial index over rows that still carry a payload, so retention
+            -- can find the OLDEST un-stripped row in O(log n) instead of scanning
+            -- past every already-stripped old row (stripped rows drop out of this
+            -- index automatically when their BLOBs are NULLed).
+            CREATE INDEX IF NOT EXISTS idx_llm_requests_stripable
+                ON llm_requests(timestamp_ms)
+                WHERE payload_json IS NOT NULL OR response_json IS NOT NULL;
 
             -- request_id index — drives writer-costs queries that walk the
             -- request tree of a root_request_id via equality + prefix LIKE
@@ -508,67 +523,89 @@ class MessageDebuggerDB:
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         return max(0, (page_count - freelist) * page_size)
 
-    def enforce_retention(self) -> Dict[str, int]:
-        """Prune oldest rows when the data size exceeds the high watermark.
+    def enforce_retention(self, force: bool = False, budget: float = None) -> Dict[str, int]:
+        """Keep the DB within its size cap WITHOUT discarding cost history.
 
-        Hysteresis: only fires above HIGH (~90% of the cap) and then deletes the
-        oldest turns/requests in batches down to LOW (~75%). The file does not
-        shrink (no VACUUM) but stops growing — freed pages are reused. Safe to
-        call from any worker thread; concurrent calls are skipped by the caller.
+        The payload/response BLOBs are ~all the bytes; the cost columns
+        (provider/model/usage/request_id/timestamps) are tiny. So when over the
+        HIGH watermark we first STRIP the oldest llm_request payloads (NULL the
+        BLOBs, keep the cost row) and drop the oldest turns (debug snapshots, not
+        cost-relevant). Only as a last resort — when every old payload is already
+        stripped and turns are gone but we are still over budget — do we delete
+        the oldest cost rows.
+
+        Time-budgeted: a single call does at most ~1s of work so it never delays
+        a capture write past the 5s hook timeout. Hysteresis: once armed (over
+        HIGH) it keeps pruning across calls until LOW, then rests. No VACUUM —
+        freed pages are reused, the file plateaus.
         """
+        keys = {"stripped": 0, "turns_deleted": 0, "requests_deleted": 0}
         if self._max_size_bytes <= 0:
-            return {"turns_deleted": 0, "requests_deleted": 0}
+            return keys
         conn = self._get_conn()
-        if self._used_bytes(conn) <= self._high_bytes:
-            return {"turns_deleted": 0, "requests_deleted": 0}
+        used = self._used_bytes(conn)
+        if not self._pruning:
+            # Auto path arms only above HIGH; the manual button passes force=True
+            # to prune down to LOW even when between the watermarks.
+            if used <= self._high_bytes and not force:
+                return keys
+            self._pruning = True  # arm: prune down to LOW
 
-        turns_deleted = 0
-        requests_deleted = 0
-        # Aim a hair below LOW so a single proportional pass lands safely under it.
+        BATCH = self._retention_batch
         target = max(1, int(self._low_bytes * 0.98))
-        # Delete the oldest rows in proportion to how far we are over target,
-        # re-measuring each pass (row sizes vary, so converge in a few passes
-        # rather than guessing a fixed batch — too-large a batch would wipe the
-        # whole table when rows are big; too-small would checkpoint-thrash).
-        for _ in range(16):
-            used = self._used_bytes(conn)
-            if used <= target:
-                break
-            turn_count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
-            req_count = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
-            if turn_count == 0 and req_count == 0:
-                break
-            frac = min(1.0, (used - target) / used)
-            drop_t = max(1, int(turn_count * frac)) if turn_count else 0
-            drop_r = max(1, int(req_count * frac)) if req_count else 0
-            if drop_t:
-                turns_deleted += conn.execute(
-                    "DELETE FROM turns WHERE id IN "
-                    "(SELECT id FROM turns ORDER BY timestamp_ms ASC LIMIT ?)",
-                    (drop_t,),
-                ).rowcount
-            if drop_r:
-                requests_deleted += conn.execute(
+        deadline = time.monotonic() + (budget if budget else self._retention_budget_s)
+        stripped = turns_deleted = requests_deleted = 0
+
+        while used > target and time.monotonic() < deadline:
+            # 1) Strip the oldest payloads — frees the bulk of the bytes while
+            #    KEEPING the cost row (usage/model/provider/request_id/...).
+            n = conn.execute(
+                "UPDATE llm_requests SET payload_json = NULL, response_json = NULL "
+                "WHERE id IN (SELECT id FROM llm_requests "
+                "             WHERE payload_json IS NOT NULL OR response_json IS NOT NULL "
+                "             ORDER BY timestamp_ms ASC LIMIT ?)",
+                (BATCH,),
+            ).rowcount
+            # 2) Drop the oldest turns (agent message snapshots; not used for costing).
+            n2 = conn.execute(
+                "DELETE FROM turns WHERE id IN "
+                "(SELECT id FROM turns ORDER BY timestamp_ms ASC LIMIT ?)",
+                (BATCH,),
+            ).rowcount
+            progress = n + n2
+            if progress == 0:
+                # Nothing cheap left (all old payloads stripped, no turns): the
+                # DB is cost-only rows. Last resort — delete oldest cost rows.
+                n3 = conn.execute(
                     "DELETE FROM llm_requests WHERE id IN "
                     "(SELECT id FROM llm_requests ORDER BY timestamp_ms ASC LIMIT ?)",
-                    (drop_r,),
+                    (BATCH,),
                 ).rowcount
+                requests_deleted += n3
+                if n3 == 0:
+                    break  # truly empty
+            stripped += n
+            turns_deleted += n2
             conn.commit()
             # Checkpoint so the freelist (and thus _used_bytes) reflects the
-            # deletes in WAL mode; ignore if checkpointing is unavailable.
+            # freed pages in WAL mode; ignore if checkpointing is unavailable.
             try:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.OperationalError:
                 pass
+            used = self._used_bytes(conn)
 
-        if turns_deleted or requests_deleted:
+        if used <= target:
+            self._pruning = False  # reached LOW -> rest until HIGH again
+
+        if stripped or turns_deleted or requests_deleted:
             logger.info(
-                "message_debugger retention: pruned %d turns + %d requests "
-                "(data over %.0f MB high-watermark, down toward %.0f MB)",
-                turns_deleted, requests_deleted,
-                self._high_bytes / 1024**2, self._low_bytes / 1024**2,
+                "message_debugger retention: stripped %d payloads, dropped %d turns, "
+                "deleted %d old cost rows (used now %.0f MB, cap %.0f MB)",
+                stripped, turns_deleted, requests_deleted,
+                used / 1024**2, self._high_bytes / 1024**2,
             )
-        return {"turns_deleted": turns_deleted, "requests_deleted": requests_deleted}
+        return {"stripped": stripped, "turns_deleted": turns_deleted, "requests_deleted": requests_deleted}
 
     def maybe_enforce_retention(self) -> None:
         """Cheap per-write hook: every N writes, size-check and prune if needed.
