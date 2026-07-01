@@ -265,12 +265,16 @@ llm_system:
     # ---------------------------------------------------------------------------
     # ANTHROPIC CLAUDE MODELS (Sync/Streaming)
     # ---------------------------------------------------------------------------
-    # Claude Sonnet 4.5 - Smart model for complex agents and coding
-    claude-sonnet-4-5:
+    # Claude Sonnet 5 - Best speed/intelligence balance in Sonnet tier;
+    # near-Opus quality on coding & agentic work. Adaptive thinking on by
+    # default (manual budget_tokens removed). New tokenizer (~30% more tokens
+    # for the same text vs 4.5). 1M context, 128K max output.
+    # Pricing: $3/$15 per MTok (intro $2/$10 through 2026-08-31).
+    claude-sonnet-5:
       provider: anthropic
-      model: claude-sonnet-4-5-20250929
+      model: claude-sonnet-5
       api_key: "***REMOVED***"
-      context_window: 200000
+      context_window: 1000000
       request_timeout: 180
       max_tokens: 32768
       include_thinking: false
@@ -284,12 +288,17 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Sonnet 4.5 with Extended Thinking
-    claude-sonnet-4-5-thinking:
+    # Claude Sonnet 5 with Extended (Adaptive) Thinking
+    # NOTE: on Sonnet 5, thinking={type:enabled, budget_tokens:N} returns 400.
+    # Adaptive thinking is the only "on" mode — the app layer must send
+    # thinking={type:"adaptive"} instead of a fixed budget. `thinking_budget`
+    # kept here for backward compat / soft cap indicator; not used as an API
+    # budget on Sonnet 5.
+    claude-sonnet-5-thinking:
       provider: anthropic
-      model: claude-sonnet-4-5-20250929
-      api_key: "***REMOVED***"      
-      context_window: 200000
+      model: claude-sonnet-5
+      api_key: "***REMOVED***"
+      context_window: 1000000
       request_timeout: 300
       max_tokens: 32768
       include_thinking: true
@@ -367,12 +376,12 @@ llm_system:
     # ---------------------------------------------------------------------------
     # ANTHROPIC BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
-    claude-sonnet-4-5-batch:
+    claude-sonnet-5-batch:
       provider: batch
       batch_provider: anthropic
-      model: claude-sonnet-4-5-20250929
+      model: claude-sonnet-5
       api_key: "***REMOVED***"
-      context_window: 200000
+      context_window: 1000000
       max_tokens: 8192
       capabilities:
         tools: true
@@ -628,6 +637,20 @@ llm_system:
         function_calling: true
         streaming: true
 
+    # Ollama Gemma 4 — Google's open model via local Ollama.
+    ollama-gemma-4:
+      provider: ollama
+      model: gemma4:latest
+      ollama_url: http://192.0.2.64:11434
+      ollama_mode: native
+      request_timeout: 240
+      context_window: 128000
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        image_input: true
+
     # ---------------------------------------------------------------------------
     # DEEPSEEK MODELS
     # ---------------------------------------------------------------------------
@@ -817,15 +840,15 @@ llm_system:
       description: "OpenAI nano model for fast tasks"
       max_steps: 500
 
-    # Claude 4.5 profiles
+    # Claude profiles
     claude-sonnet:
-      model_ref: claude-sonnet-4-5
-      description: "Claude Sonnet 4.5 - Smart model for complex agents and coding"
+      model_ref: claude-sonnet-5
+      description: "Claude Sonnet 5 - Best speed/intelligence balance in Sonnet tier; near-Opus quality on coding & agentic work"
       max_steps: 500
-    
+
     claude-sonnet-batch:
-      model_ref: claude-sonnet-4-5-batch
-      description: "Claude Sonnet 4.5 (batch)"
+      model_ref: claude-sonnet-5-batch
+      description: "Claude Sonnet 5 (batch)"
       max_steps: 500
 
     claude-opus:
@@ -882,7 +905,7 @@ llm_system:
       max_steps: 500        
 
     local:
-      model_ref: ollama-gpt-oss-20b
+      model_ref: ollama-gemma-4
       description: "Local model for privacy and offline usage"
       max_steps: 500
 
