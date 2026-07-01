@@ -313,12 +313,16 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Opus 4.5 - Premium model with maximum intelligence
-    claude-opus-4-5:
+    # Claude Opus 4.8 - Most capable Opus-tier: highly autonomous,
+    # SOTA long-horizon agentic work, knowledge work, and memory.
+    # Same API surface as 4.7 (adaptive thinking only; sampling params &
+    # budget_tokens removed). 1M context at standard pricing (no long-context
+    # premium). $5/$25 per MTok.
+    claude-opus-4-8:
       provider: anthropic
-      model: claude-opus-4-5-20251101
+      model: claude-opus-4-8
       api_key: "***REMOVED***"
-      context_window: 200000
+      context_window: 1000000
       request_timeout: 300
       max_tokens: 16384
       include_thinking: false
@@ -332,12 +336,16 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Opus 4.5 with Extended Thinking
-    claude-opus-4-5-thinking:
+    # Claude Opus 4.8 with Extended (Adaptive) Thinking
+    # NOTE: on Opus 4.8, thinking={type:enabled, budget_tokens:N} returns 400.
+    # Adaptive thinking is the only "on" mode — app layer must send
+    # thinking={type:"adaptive"} instead of a fixed budget. `thinking_budget`
+    # bleibt für Backward-Compat / Soft-Cap; NICHT als API-Budget genutzt.
+    claude-opus-4-8-thinking:
       provider: anthropic
-      model: claude-opus-4-5-20251101
+      model: claude-opus-4-8
       api_key: "***REMOVED***"
-      context_window: 200000
+      context_window: 1000000
       request_timeout: 600
       max_tokens: 32768
       include_thinking: true
@@ -390,12 +398,12 @@ llm_system:
         streaming: false
         json_mode: true
 
-    claude-opus-4-5-batch:
+    claude-opus-4-8-batch:
       provider: batch
       batch_provider: anthropic
-      model: claude-opus-4-5-20251101
+      model: claude-opus-4-8
       api_key: "***REMOVED***"
-      context_window: 200000
+      context_window: 1000000
       max_tokens: 16384
       capabilities:
         tools: true
@@ -852,13 +860,13 @@ llm_system:
       max_steps: 500
 
     claude-opus:
-      model_ref: claude-opus-4-5
-      description: "Claude Opus 4.5 - Premium model with maximum intelligence"
+      model_ref: claude-opus-4-8
+      description: "Claude Opus 4.8 - Most capable Opus-tier: highly autonomous, SOTA long-horizon agentic work, knowledge work, and memory"
       max_steps: 500
-    
+
     claude-opus-batch:
-      model_ref: claude-opus-4-5-batch
-      description: "Claude Opus 4.5 (batch)"
+      model_ref: claude-opus-4-8-batch
+      description: "Claude Opus 4.8 (batch)"
       max_steps: 500
 
     claude-haiku:
