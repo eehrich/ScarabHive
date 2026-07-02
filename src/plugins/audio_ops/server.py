@@ -11,6 +11,7 @@ from typing import Any, TYPE_CHECKING
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 if TYPE_CHECKING:
+    import numpy as np
     from agent_system.config import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
