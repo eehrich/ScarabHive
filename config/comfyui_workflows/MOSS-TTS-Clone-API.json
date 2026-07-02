@@ -1,0 +1,142 @@
+{
+  "1": {
+    "inputs": {
+      "model_id": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (1.7B)",
+      "device": "cuda"
+    },
+    "class_type": "MOSSLoadModel",
+    "_meta": {
+      "title": "MOSS-TTS Load Model"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": [
+        "4",
+        0
+      ],
+      "language": "German",
+      "instruction": "audio book narrator",
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "target_tokens": [
+        "10",
+        0
+      ],
+      "max_new_tokens": 4096,
+      "seed": [
+        "5",
+        0
+      ],
+      "moss_model": [
+        "1",
+        0
+      ],
+      "reference_audio": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "MOSSVoiceClone",
+    "_meta": {
+      "title": "MOSS-TTS Voice Clone"
+    }
+  },
+  "3": {
+    "inputs": {
+      "audio": "DE-Egon.wav",
+      "audioUI": ""
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Load Audio"
+    }
+  },
+  "4": {
+    "inputs": {
+      "value": "test"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "InputText"
+    }
+  },
+  "5": {
+    "inputs": {
+      "value": 43
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "6": {
+    "inputs": {
+      "audioUI": "",
+      "audio": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "8": {
+    "inputs": {
+      "preview": "1192",
+      "previewMode": null,
+      "source": [
+        "2",
+        1
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "GeneratedTokens"
+    }
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  },
+  "10": {
+    "inputs": {
+      "text": [
+        "4",
+        0
+      ],
+      "words_per_minute": 160
+    },
+    "class_type": "MOSSEstimateTokens",
+    "_meta": {
+      "title": "MOSS-TTS Estimate Tokens"
+    }
+  },
+  "11": {
+    "inputs": {
+      "preview": "5",
+      "previewMode": false,
+      "source": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "EstimatedTokens"
+    }
+  }
+}
