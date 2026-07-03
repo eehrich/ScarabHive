@@ -55,6 +55,9 @@ async def test_status_fallback_returns_unknown_not_completed(
     # Stub the background job manager to always say "I don't know".
     empty_mgr = MagicMock()
     empty_mgr.get_job = AsyncMock(return_value=None)
+    # Registry-walk fallback (2026-07-03: is_request_active_anywhere)
+    # also misses — all lookup layers return nothing.
+    empty_mgr.is_request_active_anywhere = AsyncMock(return_value=False)
     monkeypatch.setattr(
         app_mod, "get_background_job_manager", lambda: empty_mgr,
     )
@@ -143,3 +146,40 @@ async def test_status_returns_completed_when_bg_job_has_it(
     # The positive-evidence keys producer.py T1 looks for:
     assert "sse_clients" in body
     assert "events_buffered" in body
+
+
+async def test_status_registry_walk_finds_subagent_request(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """2026-07-03 fix (writer_jobs audit, Finding A-F3 status side):
+    a /run on a NON-default agent (linear_book, cover_artist, ...)
+    registers in that agent's request manager — the default agent's
+    session tracker misses it. The endpoint must consult the
+    BackgroundJobManager's registry walk
+    (is_request_active_anywhere) and report 'running', otherwise the
+    writer-side reconcile treats a live multi-hour run as lost and
+    re-queues it for resume (double-run)."""
+    _disable_auth()
+    from agent_system import app as app_mod
+
+    mgr = MagicMock()
+    mgr.get_job = AsyncMock(return_value=None)
+    # The walk DOES find the request on a sub-agent server.
+    mgr.is_request_active_anywhere = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        app_mod, "get_background_job_manager", lambda: mgr,
+    )
+
+    app = app_mod.build_app()
+    # Default agent's tracker does NOT know the request.
+    app.state.agent._session_tracker.is_request_active = AsyncMock(
+        return_value=False,
+    )
+
+    async with _client(app) as client:
+        resp = await client.get("/api/requests/subagent-rid/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["completed"] is False
+    mgr.is_request_active_anywhere.assert_awaited_once_with("subagent-rid")

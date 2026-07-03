@@ -410,7 +410,70 @@ class BackgroundJobManager:
                     "treating as not-found",
                 )
         return False
-    
+
+    async def is_request_active_anywhere(self, request_id: str) -> bool:
+        """True when ``request_id`` is live on ANY tracked surface.
+
+        Mirrors ``_cancel_on_owning_agent``'s registry walk for the
+        STATUS side. The ``/api/requests/{rid}/status`` endpoint's
+        session-tracker fallback used to consult only the DEFAULT
+        agent's tracker — the exact per-agent blind spot the
+        2026-06-27 cancel regression had on the cancel side: a
+        ``/run?agent_name=linear_book`` request registers in
+        linear_book's ``_request_manager``, so the default agent's
+        tracker reports it inactive and the endpoint answered
+        ``unknown/no_active_run`` for a run that was actively
+        grinding. The writer-side reconcile pass consumed that as
+        "BackgroundJob gone" and re-queued the job for resume —
+        double-running a multi-hour book_generation.
+
+        Checks, in order:
+          1. BackgroundJobManager's own jobs (RUNNING only),
+          2. every registry-registered Agent server's request manager,
+          3. the default agent's request manager.
+        """
+        async with self._lock:
+            job = self._jobs.get(request_id)
+            if job is not None and job.status == JobStatus.RUNNING:
+                return True
+
+        try:
+            from agent_system.servers.agent.server import Agent as _Agent
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[BACKGROUND_JOB] Agent class import failed during "
+                "status walk — registry walk skipped",
+            )
+            _Agent = None  # type: ignore[assignment]
+
+        if _Agent is not None and self._agent_registry is not None:
+            try:
+                names = self._agent_registry.list()
+            except Exception:  # noqa: BLE001
+                names = []
+            for name in names:
+                try:
+                    srv = self._agent_registry.get(name)
+                except Exception:  # noqa: BLE001
+                    continue
+                if not isinstance(srv, _Agent):
+                    continue
+                try:
+                    active = srv._request_manager.get_active_requests()
+                except Exception:  # noqa: BLE001
+                    continue
+                if request_id in active:
+                    return True
+
+        if self._default_agent is not None:
+            try:
+                active = self._default_agent._request_manager.get_active_requests()
+                if request_id in active:
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
     async def get_active_jobs(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
         """Get list of active jobs, optionally filtered by user.
         

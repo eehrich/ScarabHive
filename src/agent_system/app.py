@@ -4,6 +4,7 @@ import asyncio  # noqa: F401 - used in nested closures in event_stream() and lif
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime  # noqa: F401 - used in health endpoint
 from .utils.id import short_id
@@ -1405,7 +1406,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         content_type = request.headers.get('content-type', '')
         logger.debug("/run content-type: %s", content_type)
 
-        # JSON body: {"task": "...", "session_id": "...", "agent_name": "...", "llm_profile": "..."}
+        # Optional client-supplied request id — collected from body/form/
+        # query below, validated + applied after parsing.
+        client_request_id: Optional[str] = None
+
+        # JSON body: {"task": "...", "session_id": "...", "agent_name": "...", "llm_profile": "...", "request_id": "..."}
         if content_type.startswith('application/json'):
             body = await request.json()
             logger.debug("/run parsed JSON body: %s", body)
@@ -1418,6 +1423,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     agent_name = body.get('agent_name')
                 if not llm_profile and 'llm_profile' in body:
                     llm_profile = body.get('llm_profile')
+                if 'request_id' in body:
+                    client_request_id = body.get('request_id')
 
         # multipart/form-data: parse form and files
         elif content_type.startswith('multipart/form-data'):
@@ -1436,6 +1443,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 agent_name = form.get('agent_name')
             if not llm_profile and 'llm_profile' in form:
                 llm_profile = form.get('llm_profile')
+            if 'request_id' in form:
+                client_request_id = form.get('request_id')
             # Collect UploadFile instances - use getlist() for repeated fields
             if hasattr(form, 'getlist'):
                 files_list = form.getlist('files')
@@ -1452,6 +1461,46 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             query_task = request.query_params.get('task')
             if query_task:
                 task = query_task
+        if not client_request_id:
+            client_request_id = request.query_params.get('request_id')
+
+        # Client-supplied request_id (writer-jobs worker et al.): lets the
+        # caller key this run under an id IT already persisted, so its
+        # later ``/api/requests/{rid}/status`` probes and
+        # ``/api/requests/{rid}/cancel`` propagation actually match this
+        # run. Without this, /run minted an id the caller never learns
+        # (the response body carries no request_id), so writer-side
+        # reconcile probes were guaranteed misses — reported
+        # ``unknown/no_active_run`` for live runs (→ resume double-run)
+        # and cancel propagation no-opped while the agent kept burning
+        # tokens.
+        #
+        # Guards:
+        #   - format whitelist (8-64 url-safe chars) — the id flows into
+        #     log lines, ownership maps and cancellation-token keys;
+        #   - 409 when the id is already live ANYWHERE (BackgroundJob,
+        #     any registry agent, default agent). This doubles as a
+        #     duplicate-dispatch guard: a writer retry that fires while
+        #     the original run is still grinding gets a clean 409
+        #     (classified transient writer-side) instead of silently
+        #     starting a second concurrent agent run for the same job.
+        if client_request_id:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", str(client_request_id)):
+                raise HTTPException(
+                    status_code=400,
+                    detail="invalid request_id: expected 8-64 chars [A-Za-z0-9_-]",
+                )
+            if await get_background_job_manager().is_request_active_anywhere(
+                str(client_request_id)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"request_id {client_request_id} is already active — "
+                        "the original run is still in flight"
+                    ),
+                )
+            request_id = str(client_request_id)
 
         logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user=%s",
                    task, len(upload_files), request_id, session_id, agent_name or "default", 
@@ -2108,16 +2157,27 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "events_buffered": job.event_queue.qsize() if job.event_queue else 0
             }
         
-        # Fallback to session tracker
+        # Fallback to session tracker — checks the DEFAULT agent first
+        # (cheap), then walks the agent registry so requests running on
+        # sub-agent servers (linear_book, v5b_story_designer,
+        # cover_artist, ...) are seen too. Without the walk this
+        # endpoint reported ``unknown/no_active_run`` for a /run that
+        # was actively grinding on a non-default agent — the writer
+        # reconcile pass consumed that as "run lost" and re-queued the
+        # job for resume, double-running multi-hour generations. Same
+        # per-agent blind-spot class as the 2026-06-27 cancel
+        # regression, fixed the same way (registry walk).
         is_active = await agent._session_tracker.is_request_active(request_id)
-        
+        if not is_active:
+            is_active = await job_manager.is_request_active_anywhere(request_id)
+
         if is_active:
             return {
                 "request_id": request_id,
                 "status": "running",
                 "completed": False
             }
-        
+
         # Request not active in either tracker.
         #
         # 2026-06-27 fix: previously returned ``status='completed',
