@@ -13,7 +13,7 @@ hooks:
   - name: debugger_capture_post_llm
     type: post_llm_call
     enabled: true
-    timeout: 5.0
+    timeout: 20.0
     description: "Captures LLM response immediately after receiving from LLM (runs first in post-chain)"
     category: "message_debugging"
     order:
@@ -33,7 +33,7 @@ hooks:
   - name: debugger_capture_post_response
     type: post_llm_response
     enabled: true
-    timeout: 5.0
+    timeout: 20.0
     description: "Captures raw API response data after receiving from LLM provider"
     category: "message_debugging"
     order:
