@@ -3,7 +3,7 @@ hooks:
   - name: debugger_capture_pre_llm
     type: pre_llm_call
     enabled: true
-    timeout: 5.0
+    timeout: 20.0
     description: "Captures LLM input messages just before sending to LLM (runs last in pre-chain)"
     category: "message_debugging"
     order:
@@ -23,7 +23,7 @@ hooks:
   - name: debugger_capture_pre_request
     type: pre_llm_request
     enabled: true
-    timeout: 5.0
+    timeout: 20.0
     description: "Captures raw API request payload before sending to LLM provider"
     category: "message_debugging"
     order:
