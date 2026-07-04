@@ -37,9 +37,13 @@ deepseek-v4-flash:
   cached_input: 0.0028 # yes cached is 10 times chapeter than on OR
 
 deepseek-v4-pro:
-  input: 1.74
-  output: 3.48
-  cached_input: 0.0145
+#  input: 1.74
+#  output: 3.48
+#  cached_input: 0.0145
+# price July 2026
+   input: 0.435
+   output: 0.87
+   cached_input: 0.003625
 
 # =============================================================================
 # Google Gemini — Direct SDK (generativelanguage.googleapis.com)
