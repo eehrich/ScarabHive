@@ -192,6 +192,16 @@ plugins:
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
       cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
+      # upload_image security allowlist. Mirrors the code defaults PLUS
+      # the writer cover dir — the Phase-E cover_feedback_judge uploads
+      # the real cover composite for its VLM verification passes; without
+      # this entry every judge run dies with "not found inside the
+      # configured upload_source_dirs allowlist" (book 26, job 242).
+      upload_source_dirs:
+        - "data/comfyui/outputs"
+        - "data/comfyui"
+        - "data/writer/assets"
+        - "data/writer/covers"
       workflows:
         - id: stable_audio
           name: "Stable Audio Generation"
