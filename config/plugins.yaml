@@ -177,16 +177,16 @@ plugins:
       host: "192.0.2.5"  # primary / fallback
       port: 8188
       strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"
-      timeout_seconds: 300
+      timeout_seconds: 1200
       servers:  # 4 ComfyUI-Instanzen auf einem Server (2 GPUs), load-balanced
         - host: "192.0.2.64" # PC
           port: 8188
-        - host: "192.0.2.5"  # ComnyfUI1
-          port: 8188
-        - host: "192.0.2.5"
+        #- host: "192.0.2.5"  # gpuhost1
+        #  port: 8188
+        - host: "192.0.2.5" # keep other nodes off
           port: 8189
-        - host: "192.0.2.5"
-          port: 8190
+        #- host: "192.0.2.5"
+        #  port: 8190
         #- host: "192.0.2.5"
         #  port: 8191
 
