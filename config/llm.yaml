@@ -648,11 +648,11 @@ llm_system:
     # Ollama Gemma 4 — Google's open model via local Ollama.
     ollama-gemma-4:
       provider: ollama
-      model: gemma4:latest
+      model: gemma4:12b #gemma4:latest
       ollama_url: http://192.0.2.64:11434
       ollama_mode: native
       request_timeout: 240
-      context_window: 128000
+      context_window: 262144
       capabilities:
         tools: true
         function_calling: true
