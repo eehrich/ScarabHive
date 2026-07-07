@@ -317,9 +317,38 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         status = params.get("_status")
         
         try:
-            # Extract parameters
-            agent_name = params["agent_type"]  # This is actually the agent instance name
-            task = params["task"]
+            # Extract & validate required parameters. LLMs (especially weak
+            # local models) sometimes call 'create' without these — return an
+            # actionable error so the agent can correct the call instead of
+            # getting an opaque KeyError and blindly retrying the same broken
+            # call (raw params["..."] surfaced just "'agent_type'" to the agent).
+            agent_name = params.get("agent_type")  # This is actually the agent instance name
+            task = params.get("task")
+            missing = [
+                key for key, val in (("agent_type", agent_name), ("task", task))
+                if not (isinstance(val, str) and val.strip())
+            ]
+            if missing:
+                phase_allowed = self._get_phase_allowed_agents(params)
+                concrete = phase_allowed or [a for a in self.allowed_agents if a != "*"]
+                agent_hint = (
+                    f"one of: {', '.join(concrete)}" if concrete
+                    else "the name of a registered agent"
+                )
+                error_msg = (
+                    f"Missing required parameter(s) for 'create': {', '.join(missing)}. "
+                    f"'create' needs 'agent_type' ({agent_hint}) and "
+                    f"'task' (the instruction text for the sub-agent)."
+                )
+                logger.info(f"create rejected — {error_msg}")
+                if status:
+                    await status.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "error_type": "missing_parameter",
+                }
+
             instance_label = params.get("instance_label")
             use_advanced_model = params.get("use_advanced_model", False)
             blocking = params.get("blocking", True)  # NEW: default to blocking behavior

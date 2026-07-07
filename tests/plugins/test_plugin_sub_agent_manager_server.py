@@ -1425,3 +1425,61 @@ class TestMinResultLengthGuard:
         assert result["status"] == "completed"
         assert result["result"].startswith("Cancelled:")
         assert call_count == 1
+
+
+class TestCreateParamValidation:
+    """Missing required params on 'create' must yield an actionable error for the
+    agent, not a raw KeyError (weak LLMs otherwise blindly retry the bad call)."""
+
+    @pytest.mark.asyncio
+    async def test_missing_agent_type_returns_actionable_error(self, server):
+        result = await server._handle_create({"task": "Write a title"})
+        assert result["status"] == "error"
+        assert result["error_type"] == "missing_parameter"
+        assert "agent_type" in result["error"]
+        # No opaque KeyError repr leaking to the agent.
+        assert result["error"] != "'agent_type'"
+
+    @pytest.mark.asyncio
+    async def test_missing_task_returns_actionable_error(self, server):
+        result = await server._handle_create({"agent_type": "some_agent"})
+        assert result["status"] == "error"
+        assert result["error_type"] == "missing_parameter"
+        assert "task" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_both_missing_lists_both(self, server):
+        result = await server._handle_create({})
+        assert result["status"] == "error"
+        assert "agent_type" in result["error"]
+        assert "task" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_blank_agent_type_treated_as_missing(self, server):
+        result = await server._handle_create({"agent_type": "   ", "task": "x"})
+        assert result["status"] == "error"
+        assert result["error_type"] == "missing_parameter"
+        assert "agent_type" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_restricted_manager_lists_allowed_agents(self, restricted_server):
+        """When the manager restricts agents, the hint names the valid choices."""
+        result = await restricted_server._handle_create({"task": "x"})
+        assert result["status"] == "error"
+        assert "coding_agent" in result["error"]
+        assert "testing_agent" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_wildcard_manager_gives_generic_hint(self, server):
+        """Wildcard managers cannot enumerate agents — no bare '*' in the hint."""
+        result = await server._handle_create({"task": "x"})
+        assert "one of: *" not in result["error"]
+        assert "registered agent" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_create_missing_param_no_keyerror(self, server):
+        """Through the public manage_sub_agent entrypoint (the real path)."""
+        result = await server.manage_sub_agent({"operation": "create", "task": "x"})
+        assert result["status"] == "error"
+        assert result["error_type"] == "missing_parameter"
+        assert "agent_type" in result["error"]
