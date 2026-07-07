@@ -7,7 +7,7 @@ tools:
       description: |
         Manage persistent sub-agents. They maintain history and can be continued.
 
-        Operations:
+        Operations (required):
         - create: Spawn+execute (blocking=true default, false=async)
         - continue: Send new message to existing agent (blocking=true default, false=async)
         - poll: Check async status (NON-BLOCKING) -> Do not poll too frequently!
