@@ -961,6 +961,18 @@ form {
   font-size: inherit;
 }
 
+/* Wrap long code lines instead of scrolling horizontally forever.
+   Targets the code element too, to override Prism's white-space: pre on
+   code[class*="language-"]. */
+.response-text pre,
+.response-text pre code,
+.container-section .response-text pre,
+.container-section .response-text pre code {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
 /* Improved list styling */
 .response-text ul, .response-text ol {
   margin: 8px 0;
