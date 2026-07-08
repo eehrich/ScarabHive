@@ -71,30 +71,37 @@ tools:
     function:
       name: "{{ name }}_post_message"
       description: >
-        Post a message to a debate channel. The message is attributed to a named agent
-        with a role (advocate, critic, moderator, etc.) and a round number.
+        Post a message to a debate channel. Long output: post the first chunk, then send
+        the rest with append=true + the returned message_id (concatenated server-side into
+        one message) — never truncate or summarize.
       parameters:
         type: object
         properties:
           channel_id:
             type: integer
-            description: "ID of the channel to post to"
+            description: "Channel to post to (new message)"
           agent_name:
             type: string
-            description: "Display name of the agent (e.g. 'Mira', 'Sven', 'Kai')"
+            description: "Agent display name (e.g. 'Mira', 'Sven')"
           agent_role:
             type: string
             description: "Role in the debate"
           round:
             type: integer
-            description: "Discussion round number (1, 2, 3, ...)"
+            description: "Round number (1, 2, 3, ...)"
           content:
             type: string
-            description: "The message content"
+            description: "Message content (or next chunk if append=true)"
+          append:
+            type: boolean
+            description: "Append 'content' to message_id instead of posting new — long output in chunks. Continue exactly where the last chunk ended."
+          message_id:
+            type: integer
+            description: "Message to append to (from the first post). Required if append=true."
           metadata:
             type: object
-            description: "Optional metadata (llm_profile, token_count, etc.)"
-        required: [channel_id, agent_name, agent_role, round, content]
+            description: "Optional metadata (llm_profile, token_count, ...)"
+        required: [content]
 
   - type: function
     function:

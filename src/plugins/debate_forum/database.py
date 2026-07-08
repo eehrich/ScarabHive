@@ -296,6 +296,44 @@ class DebateForumDB:
         conn.commit()
         return {"message_id": cur.lastrowid, "channel_id": channel_id}
 
+    def append_message(self, message_id: int, content: str) -> dict[str, Any] | None:
+        """Append a chunk to an existing message's content (server-side concat).
+
+        Lets a large output be posted across several bounded calls yet stay ONE
+        complete, machine-readable message row — avoids the coordinator LLM
+        having to re-emit a huge blob in a single tool call (which truncates).
+
+        Returns {message_id, channel_id, length} on success, or None if the
+        message does not exist.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT channel_id FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()
+        if not row:
+            return None
+        channel_id = row[0]
+        conn.execute(
+            "UPDATE messages SET content = content || ? WHERE id = ?",
+            (content, message_id),
+        )
+        conn.execute(
+            "UPDATE channels SET updated_at = datetime('now') WHERE id = ?",
+            (channel_id,),
+        )
+        conn.commit()
+        length = conn.execute(
+            "SELECT LENGTH(content) FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()[0]
+        return {"message_id": message_id, "channel_id": channel_id, "length": length}
+
+    def get_message(self, message_id: int) -> dict[str, Any] | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()
+        return self._row_to_message(row) if row else None
+
     def get_messages(
         self,
         channel_id: int,

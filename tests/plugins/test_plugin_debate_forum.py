@@ -5,7 +5,6 @@ Tests cover:
 - MCP tool methods via DebateForumServer
 - Error handling and edge cases
 """
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
@@ -254,6 +253,30 @@ class TestDebateForumDB:
         after = db.get_channel(cid)["updated_at"]
         assert after >= before
 
+    def test_append_message(self, db: DebateForumDB):
+        ch = db.create_channel(name="ch", topic="t")
+        cid = ch["channel_id"]
+        posted = db.post_message(cid, "Mira", "advocate", 1, "Part one. ")
+        res = db.append_message(posted["message_id"], "Part two.")
+        assert res is not None
+        assert res["message_id"] == posted["message_id"]
+        assert res["channel_id"] == cid
+        # Content is concatenated into ONE message, not a new row.
+        msgs = db.get_messages(cid)
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == "Part one. Part two."
+        assert res["length"] == len("Part one. Part two.")
+
+    def test_append_message_nonexistent(self, db: DebateForumDB):
+        assert db.append_message(999, "x") is None
+
+    def test_get_message(self, db: DebateForumDB):
+        ch = db.create_channel(name="ch", topic="t")
+        posted = db.post_message(ch["channel_id"], "A", "r", 1, "hello there")
+        msg = db.get_message(posted["message_id"])
+        assert msg is not None and msg["content"] == "hello there"
+        assert db.get_message(999) is None
+
 
 # =============================================================================
 # Server Tool Tests
@@ -331,6 +354,59 @@ class TestDebateForumServer:
         })
         assert "error" in result
         assert "too short" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_post_message_append_chunks(self, server: DebateForumServer, status_mock: AsyncMock):
+        ch = await server.create_channel({"name": "ch", "topic": "t"})
+        first = await server.post_message({
+            "channel_id": ch["channel_id"],
+            "agent_name": "Mira",
+            "agent_role": "advocate",
+            "round": 1,
+            "content": '{"synopsis": "a very long first chunk of the JSON output ',
+            "_status": status_mock,
+        })
+        assert first["status"] == "posted"
+        mid = first["message_id"]
+        # Continuation chunk — short on its own, must NOT be rejected by min-length.
+        second = await server.post_message({
+            "append": True,
+            "message_id": mid,
+            "content": 'that continues here", "world": "..."}',
+            "_status": status_mock,
+        })
+        assert second["status"] == "appended"
+        assert second["message_id"] == mid
+        # Stored as ONE complete message.
+        msg = server.db.get_message(mid)
+        assert msg["content"].startswith('{"synopsis"')
+        assert msg["content"].endswith('"world": "..."}')
+        assert len(server.db.get_messages(ch["channel_id"])) == 1
+
+    @pytest.mark.asyncio
+    async def test_append_requires_message_id(self, server: DebateForumServer):
+        result = await server.post_message({"append": True, "content": "more text here"})
+        assert "error" in result and "message_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_append_nonexistent_message(self, server: DebateForumServer):
+        result = await server.post_message({
+            "append": True, "message_id": 999, "content": "orphan chunk",
+        })
+        assert "error" in result and "not found" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_append_to_concluded_channel_rejected(self, server: DebateForumServer):
+        ch = await server.create_channel({"name": "ch", "topic": "t"})
+        posted = await server.post_message({
+            "channel_id": ch["channel_id"], "agent_name": "A", "agent_role": "r",
+            "round": 1, "content": "initial chunk long enough to pass min length filter",
+        })
+        await server.conclude({"channel_id": ch["channel_id"], "verdict": {"x": 1}})
+        result = await server.post_message({
+            "append": True, "message_id": posted["message_id"], "content": "late chunk",
+        })
+        assert "error" in result and "not active" in result["error"]
 
     @pytest.mark.asyncio
     async def test_get_thread_text(self, server: DebateForumServer):

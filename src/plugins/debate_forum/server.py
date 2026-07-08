@@ -94,6 +94,35 @@ class DebateForumServer(SchemaBasedMCPServer):
         content = params.get("content", "")
         metadata = params.get("metadata")
 
+        # ── Append mode: continue an existing message with another chunk ──
+        # For long outputs, post the first chunk normally, then append the rest
+        # (append=true + message_id). The chunks are concatenated server-side
+        # into ONE complete message, so nothing is truncated and the stored
+        # JSON stays whole. Continuation chunks skip the min-length check.
+        if params.get("append"):
+            message_id = params.get("message_id")
+            if not message_id or not content:
+                return {"error": "append=true requires 'message_id' and 'content'"}
+            msg = self.db.get_message(message_id)
+            if not msg:
+                return {"error": f"Message {message_id} not found (cannot append)"}
+            channel = self.db.get_channel(msg["channel_id"])
+            if not channel or channel["status"] != "active":
+                return {"error": f"Channel {msg['channel_id']} is not active, cannot append"}
+            result = self.db.append_message(message_id, content)
+            status = params.get("_status")
+            if status:
+                await status.progress(
+                    f"Appended {len(content)} chars to message {message_id} "
+                    f"(now {result['length']})"
+                )
+            return {
+                "status": "appended",
+                "message_id": message_id,
+                "channel_id": msg["channel_id"],
+                "length": result["length"],
+            }
+
         if not channel_id or not agent_name or not content:
             return {"error": "channel_id, agent_name, and content are required"}
 
