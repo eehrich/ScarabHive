@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse
 
 from agent_system.plugins.schema_router import create_schema_router
+from agent_system.utils.markdown_render import markdown_to_html
 
 if TYPE_CHECKING:
     from .database import DebateForumDB
@@ -91,6 +92,14 @@ class DebateForumWebFactory:
         if not channel:
             raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
         channel["message_count"] = self.db.get_message_count(channel_id)
+        # Render the verdict summary Markdown to HTML for the panel (display-only;
+        # verdict_summary / verdict_json stay raw in the DB). Mirror the panel's
+        # own resolution: prefer verdict_summary, fall back to verdict_json.summary.
+        summary = channel.get("verdict_summary")
+        if not summary and isinstance(channel.get("verdict_json"), dict):
+            summary = channel["verdict_json"].get("summary")
+        if summary:
+            channel["verdict_summary_html"] = markdown_to_html(summary)
         return channel
 
     async def api_get_messages(
@@ -103,6 +112,11 @@ class DebateForumWebFactory:
         if not channel:
             raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
         messages = self.db.get_messages(channel_id, limit=limit)
+        # Render each post's Markdown to HTML for the panel (same central
+        # renderer the main chat panel uses). The DB keeps the raw Markdown —
+        # this is display-only; ``content`` stays untouched for copy/export.
+        for m in messages:
+            m["content_html"] = markdown_to_html(m.get("content", ""))
         return {
             "channel_id": channel_id,
             "messages": messages,

@@ -123,7 +123,9 @@ async def test_inject_works_with_dict_messages(formatter):
 async def test_format_markdown_output_conversion(formatter):
     """Test Markdown to HTML conversion."""
     # Skip if markdown library not available
-    if not formatter.markdown_converter:
+    try:
+        import markdown  # noqa: F401
+    except ImportError:
         pytest.skip("Markdown library not available")
     
     output = '# Hello\n\nThis is **bold** and this is `code`.'
@@ -196,7 +198,9 @@ async def test_format_markdown_output_no_output(formatter):
 @pytest.mark.asyncio
 async def test_html_sanitization(formatter):
     """Test that HTML sanitization removes dangerous content."""
-    if not formatter.markdown_converter:
+    try:
+        import markdown  # noqa: F401
+    except ImportError:
         pytest.skip("Markdown library not available")
     
     # This would be dangerous if not sanitized

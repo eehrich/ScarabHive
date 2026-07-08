@@ -6,7 +6,6 @@ Injects system prompt to guide LLM to generate Markdown output.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from typing import Any
 from agent_system.hooks import HookContext, HookResult
 from agent_system.hooks.schema_based import SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
+from agent_system.utils.markdown_render import extract_markdown_content, markdown_to_html
 
 logger = logging.getLogger(__name__)
 
@@ -63,38 +63,10 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
             allowed_tags = allowed_tags.get('default', [])
         self.allowed_html_tags = set(allowed_tags)
         
-        # Initialize markdown converter
-        try:
-            import markdown
-            
-            extensions = []
-            if self.enable_tables:
-                extensions.append('tables')
-            if self.enable_code_highlighting:
-                # Use fenced_code with Prism.js-compatible class names
-                # Note: Do NOT use 'codehilite' - it generates incompatible CSS classes
-                extensions.append('fenced_code')
-            
-            # Add nl2br to convert newlines to <br> tags
-            # This ensures list items appear on separate lines
-            extensions.append('nl2br')
-            
-            # Configure fenced_code to use 'language-' prefix for Prism.js
-            extension_configs = {
-                'fenced_code': {
-                    'lang_prefix': 'language-'
-                }
-            }
-            
-            self.markdown_converter = markdown.Markdown(
-                extensions=extensions,
-                extension_configs=extension_configs,
-                output_format='html5'
-            )
-            logger.debug(f"MarkdownFormatterPlugin initialized with {len(extensions)} extensions")
-        except ImportError as e:
-            logger.warning(f"Failed to initialize markdown converter: {e}")
-            self.markdown_converter = None
+        # Markdown → HTML conversion is centralised in
+        # agent_system.utils.markdown_render (shared with the debate forum);
+        # this hook only decides WHEN to convert (target_format / config gates)
+        # and passes the enabled extensions through.
     
     async def inject_markdown_system_prompt(self, context: HookContext) -> HookResult:
         """Inject system prompt before each LLM call to guide LLM to use Markdown.
@@ -237,37 +209,31 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
             
             # Extract markdown content if wrapped in ```markdown``` code block
             # This handles cases where LLM wraps markdown in a code block
-            markdown_content = self._extract_markdown_content(output)
+            markdown_content = extract_markdown_content(output)
             if markdown_content != output:
                 logger.debug(f"Extracted markdown from code block wrapper (original: {len(output)} chars, extracted: {len(markdown_content)} chars)")
                 output = markdown_content
             
             # Handle different target formats
             if target_format == 'html':
-                if not self.convert_to_html or not self.markdown_converter:
+                # Delegate to the central renderer (shared with the debate forum).
+                # Returns None when disabled here or when markdown is unavailable.
+                html_content = None
+                if self.convert_to_html:
+                    html_content = markdown_to_html(
+                        output,
+                        tables=self.enable_tables,
+                        code=self.enable_code_highlighting,
+                        sanitize=self.sanitize_html,
+                    )
+                if html_content is None:
                     return HookResult(
                         success=True,
                         modified=False,
                         context=context,
                         metadata={'content_format': 'text'}
                     )
-                
-                # Convert Markdown to HTML
-                html_content = self.markdown_converter.convert(output)
-                
-                # Fix list rendering: ensure lists have proper line breaks
-                # Markdown requires blank line before lists, but LLMs often forget this
-                html_content = self._fix_list_formatting(html_content)
-                
-                # Remove inline style attributes from table elements
-                # The Python markdown 'tables' extension adds style="text-align: ..." attributes
-                # which can interfere with CSS styling in the frontend
-                html_content = self._remove_table_inline_styles(html_content)
-                
-                # Sanitize HTML if enabled
-                if self.sanitize_html:
-                    html_content = self._sanitize_html(html_content)
-                
+
                 # Update context with formatted output
                 context.output = html_content
                 
@@ -412,123 +378,3 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 metadata={'content_format': 'text'},
                 error=str(e)
             )
-    
-    def _extract_markdown_content(self, text: str) -> str:
-        """Extract markdown content from code block wrapper if present.
-        
-        Handles cases where LLM wraps markdown output in ```markdown``` code block.
-        Also handles cases where markdown content is not wrapped.
-        
-        Args:
-            text: Input text that may be wrapped in ```markdown``` block
-            
-        Returns:
-            Extracted markdown content or original text
-        """
-        # Pattern to match ```markdown ... ``` or ```md ... ```
-        # Use DOTALL flag to match newlines within the block
-        pattern = r'^```(?:markdown|md)\s*\n(.*?)\n```\s*$'
-        match = re.match(pattern, text.strip(), re.DOTALL)
-        
-        if match:
-            # Extract content from code block
-            return match.group(1)
-        
-        # No wrapper found, treat entire text as markdown
-        return text
-    
-    def _sanitize_html(self, html: str) -> str:
-        """Sanitize HTML to prevent XSS attacks.
-        
-        Simple sanitization that only allows whitelisted tags.
-        
-        Args:
-            html: HTML string to sanitize
-            
-        Returns:
-            Sanitized HTML string
-        """
-        # Remove script tags and their content
-        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Remove event handlers
-        html = re.sub(r'\son\w+\s*=\s*["\'][^"\']*["\']', '', html, flags=re.IGNORECASE)
-        
-        # Remove javascript: URLs
-        html = re.sub(r'href\s*=\s*["\']javascript:[^"\']*["\']', '', html, flags=re.IGNORECASE)
-        
-        # Simple tag whitelist (more sophisticated solutions would use bleach library)
-        # For now, we trust markdown library's output and just remove obvious threats
-        
-        return html
-    
-    def _fix_list_formatting(self, html: str) -> str:
-        """Fix inline list items that should be on separate lines.
-        
-        When markdown lists are not properly separated by blank lines,
-        they get rendered inline. This fixes that by ensuring list items
-        appear on separate lines.
-        
-        Args:
-            html: HTML content that may contain inline list items
-            
-        Returns:
-            HTML with properly formatted lists
-        """
-        # Pattern: text followed by list items rendered inline (without proper <ul>/<ol>)
-        # Example: "<p>Text - Item 1 - Item 2 - Item 3</p>"
-        # Should be: "<p>Text</p><ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul>"
-        
-        # Find paragraphs containing multiple "- " or "• " list markers
-        def fix_inline_list(match):
-            content = match.group(1)
-            
-            # Check if this looks like an inline list (multiple - or • on one line)
-            if content.count(' - ') >= 2 or content.count(' • ') >= 2:
-                # Split by list markers
-                parts = re.split(r'\s[-•]\s', content)
-                
-                # First part might be intro text
-                intro = parts[0].strip()
-                items = [p.strip() for p in parts[1:] if p.strip()]
-                
-                # Build proper list HTML
-                html_parts = []
-                if intro:
-                    html_parts.append(f'<p>{intro}</p>')
-                if items:
-                    html_parts.append('<ul>')
-                    for item in items:
-                        html_parts.append(f'<li>{item}</li>')
-                    html_parts.append('</ul>')
-                
-                return ''.join(html_parts)
-            
-            # Not an inline list, return as-is
-            return match.group(0)
-        
-        # Apply fix to paragraphs
-        html = re.sub(r'<p>(.*?)</p>', fix_inline_list, html, flags=re.DOTALL)
-        
-        return html
-
-    def _remove_table_inline_styles(self, html: str) -> str:
-        """Remove inline style attributes from table elements.
-        
-        The Python markdown 'tables' extension adds style="text-align: ..." attributes
-        to <th> and <td> elements based on the alignment specified in the markdown (: --- :).
-        These inline styles have higher CSS specificity and can interfere with our
-        responsive CSS styling. This method removes them so CSS can control alignment.
-        
-        Args:
-            html: HTML content that may contain tables with inline styles
-            
-        Returns:
-            HTML with style attributes removed from table elements
-        """
-        # Remove style attributes from <th> and <td> elements
-        # Pattern: style="..." within table header or data cells
-        html = re.sub(r'(<th[^>]*)\s+style="[^"]*"', r'\1', html)
-        html = re.sub(r'(<td[^>]*)\s+style="[^"]*"', r'\1', html)
-        
-        return html

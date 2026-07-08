@@ -368,12 +368,16 @@
                         <span class="msg-timestamp">${formatTimestamp(msg.created_at)}</span>
                         <button class="btn-pin" title="${isPinned ? 'Unpin' : 'Pin'}" data-msg-id="${msg.id}" data-pinned="${isPinned ? '1' : '0'}">${pinIcon}</button>
                     </div>
-                    <div class="msg-content">${escapeHtml(msg.content)}</div>
+                    <div class="msg-content markdown-body">${msg.content_html || escapeHtml(msg.content)}</div>
                 </div>
             </div>`;
         }
 
         $chatMessages.innerHTML = html;
+        // Syntax-highlight fenced code blocks (Prism, loaded from CDN in the
+        // panel head — matches the main chat panel). Degrades gracefully if
+        // Prism isn't available.
+        if (window.Prism) window.Prism.highlightAllUnder($chatMessages);
         // Scroll to bottom
         $chatMessages.scrollTop = $chatMessages.scrollHeight;
 
@@ -457,7 +461,9 @@
             // Build HTML
             let html = "";
             if (summary) {
-                html += `<p class="verdict-summary">${escapeHtml(summary)}</p>`;
+                const summaryHtml = channel.verdict_summary_html
+                    || `<p>${escapeHtml(summary)}</p>`;
+                html += `<div class="verdict-summary markdown-body">${summaryHtml}</div>`;
             }
 
             // Show key verdict fields (if verdict_json is an object with useful keys)
@@ -480,6 +486,7 @@
             }
 
             $verdictContent.innerHTML = html;
+            if (window.Prism) window.Prism.highlightAllUnder($verdictContent);
         } else {
             $verdictBox.style.display = "none";
         }
