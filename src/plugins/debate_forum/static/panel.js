@@ -7,6 +7,10 @@
     let selectedChannelId = null;
     let currentChannel = null;
     let pollTimer = null;
+    // Signature of the currently rendered messages (count + total content length).
+    // Content length is included so appended chunks (which don't change the count)
+    // still trigger a re-render while polling.
+    let lastMsgSig = "";
 
     const POLL_INTERVAL = 4000; // ms
     const ROLE_PALETTE_SIZE = 8; // number of color slots (slot0–slot7)
@@ -337,6 +341,7 @@
             $chatMessages.innerHTML =
                 '<div class="empty-state">No messages yet — debate has not started</div>';
             renderParticipants([]);
+            lastMsgSig = msgSignature(messages);
             return;
         }
 
@@ -383,6 +388,15 @@
 
         // Update participants sidebar
         renderParticipants(messages);
+        lastMsgSig = msgSignature(messages);
+    }
+
+    // Cheap change signature: message count + total content length. Catches
+    // both new messages AND appended chunks (same count, growing content).
+    function msgSignature(messages) {
+        let total = 0;
+        for (const m of messages) total += m.content ? m.content.length : 0;
+        return messages.length + ":" + total;
     }
 
     function renderParticipants(messages) {
@@ -651,9 +665,11 @@
             if (selectedChannelId && currentChannel && currentChannel.status === "active") {
                 try {
                     const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
-                    const currentCount = parseInt($chatMsgCount.textContent, 10) || 0;
-                    if ((msgData.count || 0) !== currentCount) {
-                        renderMessages(msgData.messages || []);
+                    const msgs = msgData.messages || [];
+                    // Re-render on any change — new messages OR appended chunks
+                    // (count-only would miss appends, which don't add a row).
+                    if (msgSignature(msgs) !== lastMsgSig) {
+                        renderMessages(msgs);
                         $chatMsgCount.textContent = (msgData.count || 0) + " messages";
                     }
                 } catch (e) { /* ignore */ }
