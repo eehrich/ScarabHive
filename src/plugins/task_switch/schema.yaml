@@ -28,15 +28,14 @@ tools:
     function:
       name: "{{ name }}_set_context"
       description: |
-        Set runtime context variables for the current session. These variables are used in 
-        prompt templates and precondition checks. For example, set book_id when starting 
-        work on a specific book, so precondition checks can validate the correct book status.
+        Set runtime context variables for the current session, as key-value pairs.
+        They are stored in the session's template_vars and used in prompt templates
+        and precondition checks (e.g. set an id or phase, then a gate check can
+        validate it). Pass each variable as its own argument, e.g.
+        {"current_task": "review", "target_id": "42"}.
       parameters:
         type: object
-        properties:
-          book_id:
-            type: string
-            description: "ID of the book to work on (used in precondition checks)"
+        properties: {}
         additionalProperties: true
 
 
