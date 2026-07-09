@@ -142,6 +142,12 @@ class ToolScriptServer(SchemaBasedMCPServer):
 
         timeout = min(float(params.get("timeout") or self._timeout), self._timeout)
 
+        # Bound the lock map in long-running server processes: idle (unlocked)
+        # entries carry no state and can be dropped once the map grows.
+        if len(self._session_locks) > 500:
+            for key in [k for k, v in self._session_locks.items()
+                        if not v.locked()][:250]:
+                self._session_locks.pop(key, None)
         lock = self._session_locks.setdefault(str(session_id or "global"),
                                               asyncio.Lock())
         if lock.locked():
