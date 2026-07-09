@@ -266,6 +266,40 @@ class TestErrorContract:
         res = await run(server, agent, 'x = (1\nresult = 2')
         assert res["status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_keyerror_gets_type_prefix(self, agent):
+        # First live run: bare "'teile'" was undiagnosable — the type prefix
+        # is what tells the model it was a missing dict key.
+        server = make_server()
+        res = await run(server, agent, 'd = {"a": 1}\nresult = d["teile"]')
+        assert res["status"] == "error"
+        assert "teile" in res["error"]
+        assert "error" in res["error"].lower() or ":" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_parse_json_seeded(self, agent):
+        # Tools return JSON as text (json_store read); parse_json bridges the
+        # missing json module — the first live run reached for json.loads.
+        server = make_server()
+        res = await run(server, agent, (
+            'r = call_tool("store_manage_json", operation="read", doc="d1")\n'
+            'data = parse_json(r["json"])\n'
+            'result = data["x"] + 1'
+        ))
+        assert res["status"] == "ok" and res["result"] == 2
+
+    @pytest.mark.asyncio
+    async def test_parse_json_invalid_input(self, agent):
+        server = make_server()
+        res = await run(server, agent, (
+            'try:\n'
+            '    parse_json("not json {")\n'
+            '    result = "no-error"\n'
+            'except ToolCallError:\n'
+            '    result = "caught"'
+        ))
+        assert res["status"] == "ok" and res["result"] == "caught"
+
 
 # ---------------------------------------------------------------------------
 # Security / caps

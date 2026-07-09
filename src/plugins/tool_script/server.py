@@ -47,7 +47,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Callables seeded into the sandbox — excluded from variable snapshots/results.
-_SEEDED_NAMES = ("call_tool", "log", "ToolCallError")
+_SEEDED_NAMES = ("call_tool", "log", "ToolCallError", "parse_json")
+
+
+def _parse_json(text: Any) -> Any:
+    """Sandbox-seeded ``parse_json(text)`` — parse a JSON string to data
+    (tools often return JSON as text; the sandbox has no json module)."""
+    if not isinstance(text, str):
+        raise ToolCallError(
+            f"parse_json expects a string, got {type(text).__name__}.")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ToolCallError(
+            f"parse_json: invalid JSON at line {e.lineno} column {e.colno}: "
+            f"{e.msg}") from e
 
 # Small scalar values are reported verbatim in the failure snapshot; anything
 # larger only as type + size (the snapshot must not dump the payloads the
@@ -163,6 +177,10 @@ class ToolScriptServer(SchemaBasedMCPServer):
             executor.safe_executor.variables["call_tool"] = call_tool
             executor.safe_executor.variables["log"] = log
             executor.safe_executor.variables["ToolCallError"] = ToolCallError
+            # No `import json` in the sandbox — but tools return JSON text all
+            # the time (json_store read -> {"json": "..."}). Observed in the
+            # first live run: the model immediately reached for json.loads.
+            executor.safe_executor.variables["parse_json"] = _parse_json
 
             try:
                 exec_result = await asyncio.to_thread(executor.execute, script)
@@ -430,6 +448,11 @@ class ToolScriptServer(SchemaBasedMCPServer):
             err = exec_result.get("error") or {}
             if isinstance(err, dict):
                 message = err.get("message") or str(err)
+                # A bare KeyError message is just "'teile'" — the type prefix
+                # is what makes it diagnosable for the model.
+                err_type = err.get("type")
+                if err_type and err_type not in message:
+                    message = f"{err_type}: {message}"
                 line = err.get("line_number")
             else:  # pragma: no cover - executor always returns a dict here
                 message, line = str(err), None
