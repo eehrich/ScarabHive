@@ -963,7 +963,7 @@ plugins:
       enabled: true
       config:
         db_path: "data/debate_forum/forum.db"
-        min_message_length: 50  # 0 = disabled
+        min_message_length: 10  # 0 = disabled
 
     simple_prompt_inject:
       type: simple_prompt_inject

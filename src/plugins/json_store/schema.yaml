@@ -66,15 +66,23 @@ config:
     type: number
     default: 48
     description: "Evict a session namespace after this many idle hours (0 = never). Prevents unbounded memory growth in long-running server processes."
+  key_aliases:
+    type: object
+    default: {}
+    description: |
+      Optional wrong->right key remaps (flat, applied at any level before fuzzy
+      matching). Use for semantic renames fuzzy is too weak for. Auto-applied and
+      reported in the result's 'remapped'. Example: { synopsis: synopsis_text }
   key_models:
     type: object
     default: {}
     description: |
       Optional allowed-key model per document name. Nested dict of allowed keys;
       "*" allows any key at that level (dynamic names, e.g. character names);
-      {} means free subtree (no further enforcement). Writes/merges/set_value
-      introducing keys outside the model are rejected with an error listing the
-      allowed keys. Example:
+      {} means free subtree (no further enforcement). Unknown keys are auto-remapped
+      to the closest allowed key (via key_aliases or a confident fuzzy match, e.g.
+      'genere'->'genre') and reported; keys that can't be mapped are rejected with a
+      "did you mean 'X'?" hint. Example:
         key_models:
           synopsis:
             synopsis: {}

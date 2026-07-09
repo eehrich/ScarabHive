@@ -40,6 +40,7 @@ import json
 import logging
 import re
 import time
+from difflib import get_close_matches
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
@@ -72,6 +73,11 @@ class JsonStoreServer(SchemaBasedMCPServer):
         # are rejected with the allowed keys listed.
         key_models = config_dict.get("key_models") or {}
         self._key_models: Dict[str, Any] = key_models if isinstance(key_models, dict) else {}
+        # Explicit wrong->right key remaps applied before fuzzy matching (for
+        # semantic renames fuzzy is too weak for, e.g. synopsis -> synopsis_text).
+        aliases = config_dict.get("key_aliases") or {}
+        self._key_aliases: Dict[str, str] = {
+            str(k): str(v) for k, v in aliases.items()} if isinstance(aliases, dict) else {}
 
         # namespace (session id or "global") -> doc name -> Python object
         self._docs: Dict[str, Dict[str, Any]] = {}
@@ -203,42 +209,72 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return base + incoming
         return incoming
 
-    @classmethod
-    def _collect_key_violations(cls, value: Any, model: Any, path: str,
-                                violations: List[str]) -> None:
-        """Recursively check ``value`` against a key model.
+    def _resolve_key(self, key: str, allowed: List[str]) -> Optional[str]:
+        """Map an unknown key to an allowed one: explicit alias first, then a
+        confident fuzzy match (typos like 'genere'→'genre'). None if neither.
+        Semantic renames (e.g. synopsis→synopsis_text) that fuzzy is too weak
+        for belong in the ``key_aliases`` config."""
+        alias = self._key_aliases.get(key)
+        if alias and alias in allowed:
+            return alias
+        close = get_close_matches(key, allowed, n=1, cutoff=0.85)
+        return close[0] if close else None
+
+    def _normalize_keys(self, value: Any, model: Any, path: str,
+                        remaps: List[str], violations: List[str]) -> Any:
+        """Return a copy of ``value`` with unknown keys remapped to the closest
+        allowed key (recording each remap); keys that can't be mapped are left
+        in place and recorded as violations (with a 'did you mean' hint).
 
         Model semantics: dict = allowed keys at this level ("*" = any key,
-        its value models the children); empty dict = free subtree. Arrays
-        apply the model to each element. Scalars are always fine (this is a
-        KEY model, not a type schema)."""
+        models the children); empty dict = free subtree; arrays apply the model
+        per element; scalars are free (this is a KEY model, not a type schema)."""
         if not isinstance(model, dict) or not model:
-            return  # free subtree
+            return value
         if isinstance(value, list):
-            for i, item in enumerate(value):
-                cls._collect_key_violations(item, model, f"{path}[{i}]", violations)
-            return
+            return [self._normalize_keys(v, model, f"{path}[{i}]", remaps, violations)
+                    for i, v in enumerate(value)]
         if not isinstance(value, dict):
-            return
+            return value
         wildcard = model.get("*")
+        allowed = [k for k in model if k != "*"]
+        result: Dict[str, Any] = {}
         for key, child in value.items():
             child_path = f"{path}.{key}" if path else str(key)
             if key in model:
-                cls._collect_key_violations(child, model[key], child_path, violations)
+                result[key] = self._normalize_keys(child, model[key], child_path,
+                                                   remaps, violations)
             elif wildcard is not None:
-                cls._collect_key_violations(child, wildcard, child_path, violations)
+                result[key] = self._normalize_keys(child, wildcard, child_path,
+                                                   remaps, violations)
             else:
-                allowed = [k for k in model.keys() if k != "*"]
-                violations.append(f"'{child_path}' (allowed here: {allowed})")
+                target = self._resolve_key(key, allowed)
+                if target and target not in value and target not in result:
+                    remaps.append(f"{child_path} → {target}")
+                    tgt_path = f"{path}.{target}" if path else target
+                    result[target] = self._normalize_keys(child, model[target], tgt_path,
+                                                           remaps, violations)
+                else:
+                    # Not auto-remapped (no confident match, or the target key is
+                    # already present). Suggest the nearest allowed key loosely so
+                    # the agent knows how to correct it.
+                    suggest = target or next(
+                        iter(get_close_matches(key, allowed, n=1, cutoff=0.5)), None)
+                    hint = (f" (did you mean '{suggest}'?)" if suggest
+                            else f" (allowed: {allowed})")
+                    violations.append(f"'{child_path}'{hint}")
+                    result[key] = child  # keep so the doc is rejected, not silently dropped
+        return result
 
-    def _validate_keys(self, doc_name: str, value: Any) -> List[str]:
-        """Violations of the configured key model for ``doc_name`` (empty = ok)."""
+    def _apply_key_model(self, doc_name: str, value: Any) -> Tuple[Any, List[str], List[str]]:
+        """(normalized_value, remaps, violations) for ``doc_name``'s key model."""
         model = self._key_models.get(doc_name)
         if not model:
-            return []
+            return value, [], []
+        remaps: List[str] = []
         violations: List[str] = []
-        self._collect_key_violations(value, model, "", violations)
-        return violations
+        normalized = self._normalize_keys(value, model, "", remaps, violations)
+        return normalized, remaps, violations
 
     # ------------------------------------------------------------------
     # Result / storage helpers
@@ -282,8 +318,8 @@ class JsonStoreServer(SchemaBasedMCPServer):
         return {
             "status": "error",
             "error": f"Unknown key(s) not in the document's key model: "
-                     f"{'; '.join(shown)}{more}. Remove or rename these keys — "
-                     f"do not invent fields.",
+                     f"{'; '.join(shown)}{more}. Rename them to the suggested/allowed "
+                     f"key and resend — do not invent fields.",
         }
 
     def _commit(self, params: Dict[str, Any], name: str, value: Any,
@@ -295,15 +331,18 @@ class JsonStoreServer(SchemaBasedMCPServer):
         if name not in bucket and len(bucket) >= self._max_docs:
             return {"status": "error",
                     "error": f"Too many documents ({self._max_docs}). Delete unused ones."}
+        # Key model: auto-remap known/typo'd keys, reject the rest.
+        value, remaps, violations = self._apply_key_model(name, value)
+        if violations:
+            return self._key_model_error(violations)
         size = self._size(value)
         if size > self._max_doc_bytes:
             return {"status": "error",
                     "error": f"Document too large ({size} chars > limit "
                              f"{self._max_doc_bytes})."}
-        violations = self._validate_keys(name, value)
-        if violations:
-            return self._key_model_error(violations)
         bucket[name] = value
+        if remaps:
+            extra["remapped"] = remaps
         return self._summary(name, value, size, **extra)
 
     @classmethod

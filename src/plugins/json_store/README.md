@@ -44,18 +44,23 @@ my_json:
     max_docs: 50
     max_doc_bytes: 2097152
     namespace_ttl_hours: 48   # evict idle session namespaces (0 = never)
-    # Optional: allowed keys per document — writes with other keys are
-    # rejected with the allowed keys listed. "*" = any key (dynamic names),
-    # {} = free subtree.
+    # Optional wrong->right remaps for semantic renames (applied before fuzzy).
+    key_aliases:
+      synopsis: synopsis_text
+    # Optional: allowed keys per document. Unknown keys are auto-remapped to the
+    # closest allowed key (via key_aliases or a confident fuzzy match like
+    # 'genere'->'genre') and reported in the result's 'remapped'; keys that can't
+    # be mapped are rejected with a "did you mean 'X'?" hint. "*" = any key
+    # (dynamic names), {} = free subtree.
     key_models:
       synopsis:
-        synopsis: {}
+        synopsis_text: {}
         genre: {}
         key_characters:
           "*": { age: {}, role: {}, arc: {} }
 ```
 
-Failed checks (unknown keys, size limit, invalid JSON) never partially apply —
+Failed checks (unmappable keys, size limit, invalid JSON) never partially apply —
 the stored document stays untouched. Exception: `delete_keys` applies each path
 independently and reports unknown ones in `missing`.
 

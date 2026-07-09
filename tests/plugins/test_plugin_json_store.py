@@ -70,6 +70,25 @@ class TestWrite:
         assert json.loads((await server.read({**SID, "doc": "syn"}))["json"]) == {"a": 1, "b": 2}
 
     @pytest.mark.asyncio
+    async def test_write_repairs_truncated_json(self, server):
+        # The real coordinator case: JSON cut off mid-string, no closing braces.
+        truncated = '{"synopsis_text": "Die Story beginnt und dann bricht sie ab'
+        res = await server.write({**SID, "doc": "syn", "json_text": truncated})
+        assert res["status"] == "ok"
+        assert "auto_repaired_json" in res["repairs"]
+        data = json.loads((await server.read({**SID, "doc": "syn"}))["json"])
+        assert data["synopsis_text"].startswith("Die Story beginnt")
+
+    @pytest.mark.asyncio
+    async def test_merge_also_repairs_invalid_json_text(self, server):
+        await server.write({**SID, "doc": "syn", "data": {"genre": "X"}})
+        # merge must run the same tolerant parse, not just write
+        res = await server.merge(
+            {**SID, "doc": "syn", "json_text": '{"synopsis_text": "a\nb", "extra": 1,}'})
+        assert res["status"] == "ok"
+        assert "auto_repaired_json" in res["repairs"]
+
+    @pytest.mark.asyncio
     async def test_write_unrecoverable_input_precise_error(self, server):
         res = await server.write(
             {**SID, "doc": "syn", "json_text": "Hallo, das ist gar kein JSON."})
@@ -433,6 +452,69 @@ class TestKeyModel:
             {**SID, "doc": "scratch", "data": {"anything": {"goes": True}}}
         )
         assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_typo_key_auto_remapped(self, modeled_server):
+        # 'genere' is a typo of 'genre' → auto-remapped, not rejected
+        res = await modeled_server.write(
+            {**SID, "doc": "synopsis", "data": {"genere": "SciFi"}})
+        assert res["status"] == "ok"
+        assert any("genere → genre" in r for r in res["remapped"])
+        data = json.loads((await modeled_server.read({**SID, "doc": "synopsis"}))["json"])
+        assert data == {"genre": "SciFi"}
+
+    @pytest.mark.asyncio
+    async def test_near_perfect_typo_auto_remapped(self, modeled_server):
+        # 'key_charcters' (missing 'a') is close enough → auto-remapped
+        res = await modeled_server.write(
+            {**SID, "doc": "synopsis", "data": {"key_charcters": {"Nora": {"age": 3}}}})
+        assert res["status"] == "ok"
+        assert any("key_charcters → key_characters" in r for r in res["remapped"])
+
+    @pytest.mark.asyncio
+    async def test_collision_rejected_with_suggestion(self, modeled_server):
+        # 'genere' would remap to 'genre', but 'genre' is already present → reject
+        res = await modeled_server.write(
+            {**SID, "doc": "synopsis", "data": {"genre": "A", "genere": "B"}})
+        assert res["status"] == "error"
+        assert "did you mean 'genre'" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_truly_unknown_key_lists_allowed(self, modeled_server):
+        res = await modeled_server.write(
+            {**SID, "doc": "synopsis", "data": {"völlig_erfunden_xyz": 1}})
+        assert res["status"] == "error"
+        assert "allowed:" in res["error"]  # no close match → allowed list
+
+
+class TestKeyAliases:
+    @pytest.fixture
+    def aliased_server(self, mock_system_config):
+        return JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True, config={
+                "key_aliases": {"synopsis": "synopsis_text"},
+                "key_models": {"synopsis": {"synopsis_text": {}, "genre": {}}},
+            }),
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_alias_remaps_semantic_rename(self, aliased_server):
+        # synopsis→synopsis_text is a semantic rename fuzzy would miss; alias fixes it
+        res = await aliased_server.write(
+            {**SID, "doc": "synopsis", "data": {"synopsis": "die Story", "genre": "X"}})
+        assert res["status"] == "ok"
+        assert any("synopsis → synopsis_text" in r for r in res["remapped"])
+        data = json.loads((await aliased_server.read({**SID, "doc": "synopsis"}))["json"])
+        assert data == {"synopsis_text": "die Story", "genre": "X"}
+
+    @pytest.mark.asyncio
+    async def test_alias_collision_not_applied(self, aliased_server):
+        # both 'synopsis' and 'synopsis_text' present → don't clobber, reject
+        res = await aliased_server.write(
+            {**SID, "doc": "synopsis",
+             "data": {"synopsis": "A", "synopsis_text": "B"}})
+        assert res["status"] == "error"
 
 
 # ---------------------------------------------------------------------------
