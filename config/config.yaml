@@ -67,10 +67,19 @@ auth:
   security_headers_enabled: true
 
   # CORS settings
+  # NOTE: "*" and cors_credentials are mutually exclusive. Starlette answers a
+  # wildcard by REFLECTING the request Origin, so credentials would let any
+  # cross-origin page read authenticated responses. Requested together, the
+  # middleware drops credentials and warns.
+  # The bundled UI is served same-origin (templates + /static), so it needs no
+  # credentialed CORS. For a cross-origin frontend, list its origins explicitly
+  # and set cors_credentials: true, e.g.
+  #   cors_origins: ["http://localhost:3000"]
+  #   cors_credentials: true
   cors_enabled: true
   cors_origins:
     - "*"  # Change to specific origins in production
-  cors_credentials: true
+  cors_credentials: false
   cors_methods:
     - "*"
   cors_headers:

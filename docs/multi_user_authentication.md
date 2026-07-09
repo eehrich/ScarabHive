@@ -194,7 +194,10 @@ auth:
 
 5. **CORS Configuration**
    - Restrict `cors_origins` to trusted domains only
-   - Set `cors_allow_credentials: true` only when necessary
+   - Set `cors_credentials: true` only when necessary — and only together with an
+     explicit `cors_origins` allowlist. Combined with the `"*"` wildcard it is
+     refused (the middleware drops credentials and warns), because Starlette
+     reflects the request Origin instead of sending a literal `*`.
 
 ## API Reference
 

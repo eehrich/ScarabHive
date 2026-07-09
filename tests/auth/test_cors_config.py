@@ -5,12 +5,21 @@ Security focus: credentials must never be combined with a wildcard origin,
 because Starlette's CORSMiddleware reflects the request Origin (not a literal
 "*") and emits Access-Control-Allow-Credentials: true in that case, which would
 let cross-origin pages read authenticated responses (F14).
+
+Coherence focus: the SHIPPED defaults must not request that impossible pair —
+otherwise the guard fires on every server start and the warning degrades into
+boot noise nobody reads.
 """
 
+import logging
+from pathlib import Path
+
+import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agent_system.auth.middleware import configure_cors
+from agent_system.config.models import AuthConfig
 
 
 def _app_with_cors(**cors_kwargs) -> TestClient:
@@ -81,3 +90,55 @@ class TestCorsWildcardWithoutCredentials:
         resp = client.get("/ping", headers={"Origin": "https://anything.example"})
         assert resp.headers.get("access-control-allow-origin") == "*"
         assert resp.headers.get("access-control-allow-credentials") is None
+
+
+def _is_coherent(origins, credentials) -> bool:
+    """The pair configure_cors accepts without dropping anything."""
+    return not (credentials and "*" in origins)
+
+
+class TestShippedDefaultsAreCoherent:
+    """The defaults must never ask for wildcard + credentials.
+
+    Regression guard: that combination made every API start log a WARNING and
+    silently disabled credentials, so config.yaml claimed a behavior the server
+    did not have.
+    """
+
+    def test_auth_config_defaults_are_coherent(self):
+        cfg = AuthConfig()
+        assert _is_coherent(cfg.cors_origins, cfg.cors_credentials), (
+            f"AuthConfig defaults request the impossible pair: "
+            f"origins={cfg.cors_origins}, credentials={cfg.cors_credentials}")
+
+    def test_shipped_config_yaml_is_coherent(self):
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        auth = yaml.safe_load(config_path.read_text(encoding="utf-8"))["auth"]
+        origins = auth.get("cors_origins", ["*"])
+        credentials = auth.get("cors_credentials", AuthConfig().cors_credentials)
+        assert _is_coherent(origins, credentials), (
+            f"config/config.yaml requests the impossible pair: "
+            f"origins={origins}, credentials={credentials}")
+
+    def test_defaults_configure_cors_without_warning(self, caplog):
+        cfg = AuthConfig()
+        app = FastAPI()
+        with caplog.at_level(logging.WARNING, logger="agent_system.auth.middleware"):
+            configure_cors(
+                app,
+                allow_origins=cfg.cors_origins,
+                allow_credentials=cfg.cors_credentials,
+                allow_methods=cfg.cors_methods,
+                allow_headers=cfg.cors_headers,
+            )
+        assert not caplog.records, (
+            f"default CORS config still warns on startup: "
+            f"{[r.message for r in caplog.records]}")
+
+    def test_guard_still_warns_when_explicitly_misconfigured(self, caplog):
+        # The warning must remain for operators who really ask for the bad pair.
+        app = FastAPI()
+        with caplog.at_level(logging.WARNING, logger="agent_system.auth.middleware"):
+            configure_cors(app, allow_origins=["*"], allow_credentials=True)
+        assert any("incompatible with wildcard origin" in r.message
+                   for r in caplog.records)

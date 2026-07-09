@@ -667,9 +667,14 @@ class AuthConfig(BaseModel):
     security_headers_enabled: bool = True
 
     # CORS settings
+    # cors_credentials defaults to False because cors_origins defaults to the
+    # wildcard, and the two are mutually exclusive (configure_cors would drop
+    # credentials and warn). Enable it together with an explicit origin
+    # allowlist for a cross-origin frontend; the bundled same-origin UI never
+    # needs it.
     cors_enabled: bool = True
     cors_origins: List[str] = Field(default_factory=lambda: ["*"])
-    cors_credentials: bool = True
+    cors_credentials: bool = False
     cors_methods: List[str] = Field(default_factory=lambda: ["*"])
     cors_headers: List[str] = Field(default_factory=lambda: ["*"])
 
