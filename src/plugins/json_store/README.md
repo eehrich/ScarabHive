@@ -20,7 +20,7 @@ One tool, `<instance>_manage_json`, dispatched via `operation`
 
 | operation     | params                          | effect |
 |---------------|---------------------------------|--------|
-| `write`       | `doc?`, `data`\|`json_text`, `if_exists?` | create a doc — **omit `doc`** to get a fresh collision-free id back (best for parallel writers); `if_exists` (`error` default = catch collisions, `replace` = overwrite on purpose) applies only to a named doc |
+| `write`       | `doc?`, `data`\|`json_text`, `if_exists?`, `write_access?` | create a doc — **omit `doc`** to get a fresh collision-free id back (best for parallel writers); `if_exists` (`error` default = catch collisions, `replace` = overwrite on purpose) applies only to a named doc; `write_access` (`owner` default, see below) |
 | `read`        | `doc`, `path?`                  | canonical JSON (whole or sub-path) |
 | `merge`       | `doc`, `data`\|`json_text`, `array_mode?` | deep-merge (dicts recurse, scalars overwrite, arrays replace/concat) |
 | `merge_doc`   | `doc` (target), `source`, `array_mode?` | deep-merge one stored doc into another, in code (no JSON re-typing) |
@@ -33,6 +33,30 @@ One tool, `<instance>_manage_json`, dispatched via `operation`
 Paths use dot notation with `[i]` for arrays: `key_characters.Nora.age`,
 `milestones[2].label`.
 
+## Write protection (owner)
+
+Agents share a namespace to collaborate, so a confused reader can silently
+clobber someone else's document. Observed live: three panel writers merged into
+and deleted keys from the coordinator's `synopsis`, shrinking it each round.
+
+Therefore **a document belongs to the session that created it**:
+
+- Everyone sharing the namespace may **read** every document.
+- Only the owner may `write` / `merge` / `merge_doc` (target) / `set_value` /
+  `delete_keys` / `delete_doc` it. `merge_doc`'s **source** is read-only, so an
+  owner can merge someone else's document into their own.
+- Pass `write_access: "shared"` when creating a document to opt out, or set
+  `default_write_access: shared` in the config for the old behaviour.
+- `list` reports `writable` per document.
+
+Ownership is bound to the runtime-injected `_session_id`: not a token the model
+has to carry (nothing to leak into a forum post or to forget), and
+model-supplied `_`-prefixed arguments are stripped before dispatch, so an LLM
+cannot impersonate another agent.
+
+The denial message tells the agent what to do instead — write your own document
+(omit `doc` for a fresh id) and let the owner merge it.
+
 ## Configuration
 
 ```yaml
@@ -42,6 +66,7 @@ my_json:
   config:
     session_scoped: true      # docs isolated per agent session (default);
                               # calls without a session id share "global"
+    default_write_access: owner   # 'shared' restores the pre-0.5 free-for-all
     max_docs: 50
     max_doc_bytes: 2097152
     namespace_ttl_hours: 48   # evict idle session namespaces (0 = never)

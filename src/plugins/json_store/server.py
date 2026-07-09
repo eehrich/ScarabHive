@@ -80,8 +80,22 @@ class JsonStoreServer(SchemaBasedMCPServer):
         self._key_aliases: Dict[str, str] = {
             str(k): str(v) for k, v in aliases.items()} if isinstance(aliases, dict) else {}
 
+        # Write protection: a document belongs to the session that created it and
+        # only that session may modify it; everyone sharing the namespace may
+        # read. Agents share a namespace to collaborate, and a confused (or
+        # overeager) reader would otherwise silently clobber the coordinator's
+        # main document — observed live: three panel writers merging into and
+        # deleting keys from the same 'synopsis' doc, shrinking it each time.
+        # Ownership is bound to the runtime-injected _session_id (which the LLM
+        # cannot forge), not to a token the model has to carry around.
+        # 'shared' opts a document out at creation time.
+        self._default_write_access: str = str(
+            config_dict.get("default_write_access", "owner")).lower()
+
         # namespace (session id or "global") -> doc name -> Python object
         self._docs: Dict[str, Dict[str, Any]] = {}
+        # namespace -> doc name -> owning session id (None = shared)
+        self._doc_owners: Dict[str, Dict[str, Optional[str]]] = {}
         self._ns_last_access: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
@@ -106,10 +120,54 @@ class JsonStoreServer(SchemaBasedMCPServer):
                        if k != ns and now - ts > self._namespace_ttl_s]
             for k in expired:
                 self._docs.pop(k, None)
+                self._doc_owners.pop(k, None)
                 self._ns_last_access.pop(k, None)
                 logger.info("json_store: evicted idle namespace '%s' (TTL)", k)
         self._ns_last_access[ns] = now
         return self._docs.setdefault(ns, {})
+
+    # ------------------------------------------------------------------
+    # Write protection (owner = creating session)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _caller(params: Dict[str, Any]) -> str:
+        """The calling agent's identity. Runtime-injected, not LLM-supplied."""
+        return str(params.get("_session_id") or "global")
+
+    def _owners(self, params: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        return self._doc_owners.setdefault(self._ns(params), {})
+
+    def _write_guard(self, params: Dict[str, Any],
+                     name: str) -> Optional[Dict[str, Any]]:
+        """Reject a mutation of a document owned by a different session.
+
+        Returns an error dict, or None when the write may proceed (document is
+        new, shared, or owned by the caller). Reads never pass through here.
+        """
+        if name not in self._bucket(params):
+            return None  # creating a new document — ownership is set on commit
+        owner = self._owners(params).get(name)
+        if owner is None or owner == self._caller(params):
+            return None
+        return {
+            "status": "error",
+            "error": f"Document '{name}' belongs to another agent and is "
+                     f"read-only for you. Read it freely, but do not modify it: "
+                     f"write your own document instead (omit 'doc' to get a "
+                     f"fresh id) and let its owner merge your changes.",
+        }
+
+    def _register_owner(self, params: Dict[str, Any], name: str) -> Optional[str]:
+        """Record ownership of a freshly created document. Returns the error
+        message for an invalid ``write_access`` value, else None."""
+        access = str(params.get("write_access")
+                     or self._default_write_access).lower()
+        if access not in ("owner", "shared"):
+            return "write_access must be 'owner' or 'shared'"
+        self._owners(params)[name] = (
+            self._caller(params) if access == "owner" else None)
+        return None
 
     @staticmethod
     def _new_doc_id(bucket: Dict[str, Any]) -> str:
@@ -410,11 +468,15 @@ class JsonStoreServer(SchemaBasedMCPServer):
 
     def _commit(self, params: Dict[str, Any], name: str, value: Any,
                 **extra: Any) -> Dict[str, Any]:
-        """Single gate for every store: max_docs (new docs), size limit and
-        key model are enforced here, and a failed check never touches the
-        stored document (callers pass fully-built candidate values)."""
+        """Single gate for every store: write protection, max_docs (new docs),
+        size limit and key model are enforced here, and a failed check never
+        touches the stored document (callers pass fully-built candidate values)."""
         bucket = self._bucket(params)
-        if name not in bucket and len(bucket) >= self._max_docs:
+        denied = self._write_guard(params, name)
+        if denied:
+            return denied
+        created = name not in bucket
+        if created and len(bucket) >= self._max_docs:
             return {"status": "error",
                     "error": f"Too many documents ({self._max_docs}). Delete unused ones."}
         # Key model: auto-remap known/typo'd keys, reject the rest.
@@ -426,6 +488,10 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return {"status": "error",
                     "error": f"Document too large ({size} chars > limit "
                              f"{self._max_doc_bytes})."}
+        if created:
+            access_error = self._register_owner(params, name)
+            if access_error:
+                return {"status": "error", "error": access_error}
         bucket[name] = value
         if remaps:
             extra["remapped"] = remaps
@@ -718,6 +784,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
         bucket, name, err = self._require_doc(params)
         if err:
             return err
+        denied = self._write_guard(params, name)
+        if denied:
+            return denied
         deleted, missing = [], []
         for path in paths:
             try:
@@ -745,13 +814,20 @@ class JsonStoreServer(SchemaBasedMCPServer):
         bucket, name, err = self._require_doc(params)
         if err:
             return err
+        denied = self._write_guard(params, name)
+        if denied:
+            return denied
         del bucket[name]
+        self._owners(params).pop(name, None)
         return {"status": "ok", "deleted": name, "remaining": list(bucket.keys())}
 
     async def list_docs(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List the caller's documents with size and top-level keys."""
         bucket = self._bucket(params)
+        owners = self._owners(params)
+        caller = self._caller(params)
         docs = [{"doc": name, "chars": self._size(value),
+                 "writable": owners.get(name) in (None, caller),
                  "top_level": self._top_level(value)}
                 for name, value in bucket.items()]
         return {"status": "ok", "count": len(docs), "docs": docs}

@@ -769,6 +769,150 @@ class TestKeyModelDefaultAndList:
             {**SID, "doc": "d2", "data": {"milestones": []}}))["status"] == "ok"
 
 
+COORD = {"_session_id": "coordinator", "namespace": "grp"}
+WRITER_A = {"_session_id": "writer_a", "namespace": "grp"}
+WRITER_B = {"_session_id": "writer_b", "namespace": "grp"}
+
+
+class TestWriteProtection:
+    """A document belongs to the session that created it.
+
+    Live incident this guards against: three panel writers merged into and
+    deleted keys from the coordinator's 'synopsis', shrinking it each round.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reads_are_free_for_everyone(self, server):
+        await server.write({**COORD, "doc": "synopsis", "data": {"genre": "Krimi"}})
+        for reader in (WRITER_A, WRITER_B):
+            res = await server.read({**reader, "doc": "synopsis"})
+            assert res["status"] == "ok"
+            assert json.loads(res["json"]) == {"genre": "Krimi"}
+        assert (await server.outline({**WRITER_A, "doc": "synopsis"}))["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_foreign_merge_rejected(self, server):
+        await server.write({**COORD, "doc": "synopsis", "data": {"genre": "Krimi"}})
+        res = await server.merge({**WRITER_A, "doc": "synopsis",
+                                  "data": {"synopsis_text": "hijack"}})
+        assert res["status"] == "error"
+        assert "another agent" in res["error"]
+        assert "omit 'doc'" in res["error"]  # tells the writer what to do instead
+        # document untouched
+        data = json.loads((await server.read({**COORD, "doc": "synopsis"}))["json"])
+        assert data == {"genre": "Krimi"}
+
+    @pytest.mark.asyncio
+    async def test_all_foreign_mutations_rejected(self, server):
+        await server.write({**COORD, "doc": "synopsis", "data": {"a": {"b": 1}}})
+        await server.write({**WRITER_A, "doc": "mine", "data": {"x": 1}})
+        cases = [
+            server.write({**WRITER_A, "doc": "synopsis", "data": {"x": 1},
+                          "if_exists": "replace"}),
+            server.merge({**WRITER_A, "doc": "synopsis", "data": {"x": 1}}),
+            server.merge_doc({**WRITER_A, "doc": "synopsis", "source": "mine"}),
+            server.set_value({**WRITER_A, "doc": "synopsis", "path": "a.b", "value": 9}),
+            server.delete_keys({**WRITER_A, "doc": "synopsis", "paths": ["a"]}),
+            server.delete_doc({**WRITER_A, "doc": "synopsis"}),
+        ]
+        for coro in cases:
+            res = await coro
+            assert res["status"] == "error" and "another agent" in res["error"]
+        data = json.loads((await server.read({**COORD, "doc": "synopsis"}))["json"])
+        assert data == {"a": {"b": 1}}
+
+    @pytest.mark.asyncio
+    async def test_owner_may_do_everything(self, server):
+        await server.write({**COORD, "doc": "synopsis", "data": {"a": {"b": 1}}})
+        assert (await server.merge({**COORD, "doc": "synopsis",
+                                    "data": {"c": 2}}))["status"] == "ok"
+        assert (await server.set_value({**COORD, "doc": "synopsis", "path": "a.b",
+                                        "value": 9}))["status"] == "ok"
+        assert (await server.delete_keys({**COORD, "doc": "synopsis",
+                                          "paths": ["c"]}))["status"] == "ok"
+        assert (await server.delete_doc({**COORD, "doc": "synopsis"}))["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_merge_doc_source_is_read_only(self, server):
+        # The v6 flow: writer owns its delta, coordinator owns synopsis and
+        # merges the (foreign) delta into it.
+        await server.write({**COORD, "doc": "synopsis", "data": {"genre": "Krimi"}})
+        delta = await server.write({**WRITER_A, "data": {"world_setting": "Hafen"}})
+        res = await server.merge_doc({**COORD, "doc": "synopsis",
+                                      "source": delta["doc"]})
+        assert res["status"] == "ok"
+        assert res["merged_keys"] == ["world_setting"]
+
+    @pytest.mark.asyncio
+    async def test_parallel_writers_own_their_own_deltas(self, server):
+        a = await server.write({**WRITER_A, "data": {"x": 1}})
+        b = await server.write({**WRITER_B, "data": {"y": 2}})
+        assert a["doc"] != b["doc"]
+        # A cannot touch B's delta ...
+        res = await server.merge({**WRITER_A, "doc": b["doc"], "data": {"z": 3}})
+        assert res["status"] == "error"
+        # ... but may revise its own (same session across `continue`).
+        res = await server.write({**WRITER_A, "doc": a["doc"], "data": {"x": 9},
+                                  "if_exists": "replace"})
+        assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_shared_opt_out(self, server):
+        await server.write({**COORD, "doc": "scratch", "data": {"a": 1},
+                            "write_access": "shared"})
+        res = await server.merge({**WRITER_A, "doc": "scratch", "data": {"b": 2}})
+        assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_invalid_write_access(self, server):
+        res = await server.write({**COORD, "doc": "d", "data": {},
+                                  "write_access": "public"})
+        assert res["status"] == "error" and "write_access" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_write_access_ignored_for_existing_doc(self, server):
+        # A foreign agent cannot hijack a doc by claiming shared access.
+        await server.write({**COORD, "doc": "synopsis", "data": {"a": 1}})
+        res = await server.write({**WRITER_A, "doc": "synopsis", "data": {"a": 2},
+                                  "if_exists": "replace", "write_access": "shared"})
+        assert res["status"] == "error" and "another agent" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_default_shared_config_restores_old_behavior(self, mock_system_config):
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True,
+                      config={"default_write_access": "shared"}))
+        await srv.write({**COORD, "doc": "d", "data": {"a": 1}})
+        assert (await srv.merge({**WRITER_A, "doc": "d",
+                                 "data": {"b": 2}}))["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_list_reports_writable(self, server):
+        await server.write({**COORD, "doc": "synopsis", "data": {"a": 1}})
+        await server.write({**WRITER_A, "doc": "mine", "data": {"a": 1}})
+        docs = {d["doc"]: d["writable"]
+                for d in (await server.list_docs(WRITER_A))["docs"]}
+        assert docs == {"synopsis": False, "mine": True}
+
+    @pytest.mark.asyncio
+    async def test_delete_doc_releases_ownership(self, server):
+        await server.write({**COORD, "doc": "d", "data": {"a": 1}})
+        await server.delete_doc({**COORD, "doc": "d"})
+        # name is free again for anyone
+        assert (await server.write({**WRITER_A, "doc": "d",
+                                    "data": {"b": 2}}))["status"] == "ok"
+        assert (await server.merge({**COORD, "doc": "d",
+                                    "data": {"c": 3}}))["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_sessionless_callers_share_ownership(self, server):
+        # No _session_id -> "global": behaves like a single agent (tests, CLI).
+        await server.write({"namespace": "n", "doc": "d", "data": {"a": 1}})
+        assert (await server.merge({"namespace": "n", "doc": "d",
+                                    "data": {"b": 2}}))["status"] == "ok"
+
+
 class RecordingStatus:
     """Captures the terminal status event the plugin emits."""
 

@@ -15,6 +15,9 @@ tools:
         (deep-merge object), merge_doc (merge one stored doc 'source' into 'doc',
         no JSON re-typing), set_value (one value at 'path'), delete_keys,
         delete_doc, list (existing docs), outline (structure without values).
+        Write protection: a document belongs to whoever created it. You may READ
+        every document in the namespace, but only modify your own — write your
+        own document (omit 'doc' for a fresh id) and let the owner merge it.
       parameters:
         type: object
         properties:
@@ -41,6 +44,10 @@ tools:
             type: string
             enum: [error, replace]
             description: "write with a NAMED doc: what to do if it already exists — error (default, catches collisions) or replace (overwrite on purpose). Ignored when 'doc' is omitted (an auto-id is always a fresh create)."
+          write_access:
+            type: string
+            enum: [owner, shared]
+            description: "Only when CREATING a document: 'owner' (default) = only you may modify it later, everyone sharing the namespace may read it; 'shared' = anyone may modify it. Ignored for existing documents."
           path:
             type: string
             description: "read/set_value: dot path, [i] for arrays (e.g. 'milestones[2].label')"
@@ -65,6 +72,15 @@ config:
     type: boolean
     default: true
     description: "Isolate documents per agent session (false = shared process-wide)"
+  default_write_access:
+    type: string
+    default: owner
+    description: |
+      Write protection for newly created documents when the call does not pass
+      'write_access'. 'owner' (default): only the creating session may modify a
+      document; every session sharing the namespace may read it. 'shared':
+      anyone may modify (pre-0.5 behaviour). Ownership is bound to the
+      runtime-injected _session_id, which an LLM cannot forge.
   max_docs:
     type: integer
     default: 50

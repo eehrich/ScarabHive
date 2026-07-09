@@ -293,6 +293,21 @@ class ToolExecutionManager:
                     json_parse_failed = True
                     params = {}
 
+            # SECURITY: runtime params (_session_id, _agent, _request_id, ...) are
+            # injected by the framework and identify the CALLER. An LLM must never
+            # be able to supply them — a forged _session_id would let a tool
+            # impersonate another agent (e.g. defeat json_store's owner-based write
+            # protection whenever no session id is set, since injection only
+            # overwrites truthy values). Strip them from model-supplied arguments.
+            if not json_parse_failed and isinstance(params, dict):
+                forged = [k for k in params if k.startswith("_")]
+                if forged:
+                    logger.warning(
+                        "Dropping model-supplied runtime param(s) %s from tool call %s",
+                        forged, tool_name,
+                    )
+                    params = {k: v for k, v in params.items() if not k.startswith("_")}
+
             # If JSON parsing failed, return an error to the LLM so it can retry
             if json_parse_failed:
                 tool_call_id = tc.get("id") or f"parse-error-{int(time.time()*1000)}"
