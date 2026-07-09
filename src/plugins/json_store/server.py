@@ -44,6 +44,7 @@ from difflib import get_close_matches
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.utils.id import short_id
 from agent_system.utils.json_utils import repair_json, strip_markdown_fences
 
 if TYPE_CHECKING:
@@ -109,6 +110,18 @@ class JsonStoreServer(SchemaBasedMCPServer):
                 logger.info("json_store: evicted idle namespace '%s' (TTL)", k)
         self._ns_last_access[ns] = now
         return self._docs.setdefault(ns, {})
+
+    @staticmethod
+    def _new_doc_id(bucket: Dict[str, Any]) -> str:
+        """Mint a short, collision-free document id within ``bucket``. Used by
+        ``write`` when the caller omits ``doc`` — parallel writers (e.g. a panel
+        of synopsis writers) each get their own document and return its id
+        upstream, so no name coordination is needed and nothing gets clobbered."""
+        for _ in range(10000):
+            candidate = f"doc_{short_id(8)}"
+            if candidate not in bucket:
+                return candidate
+        return f"doc_{short_id(16)}"  # pragma: no cover — 8-char space exhausted
 
     # ------------------------------------------------------------------
     # Parsing / validation helpers
@@ -214,6 +227,49 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return base + incoming
         return incoming
 
+    # JSON type names usable as a LEAF constraint in a key model (a string
+    # model node, e.g. ``title_suggestion: string``). Value = predicate.
+    _JSON_TYPE_CHECKS = {
+        "string": lambda v: isinstance(v, str),
+        "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "boolean": lambda v: isinstance(v, bool),
+        "array": lambda v: isinstance(v, list),
+        "object": lambda v: isinstance(v, dict),
+        "null": lambda v: v is None,
+        "any": lambda v: True,
+    }
+
+    @staticmethod
+    def _json_type_name(value: Any) -> str:
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float):
+            return "number"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, dict):
+            return "object"
+        return "null" if value is None else type(value).__name__
+
+    def _check_type(self, value: Any, type_name: str, path: str,
+                    violations: List[str]) -> None:
+        """Enforce a leaf type constraint. ``None`` always passes (a typed field
+        left empty/optional must not block the write — the bug class this guards
+        against is the wrong CONTAINER, e.g. an array where a scalar belongs, not
+        a null). An unrecognised type name is treated as free (a config typo must
+        not punish the agent)."""
+        check = self._JSON_TYPE_CHECKS.get(type_name.strip().lower())
+        if check is None or value is None or check(value):
+            return
+        violations.append(
+            f"'{path}' must be {type_name.strip().lower()} but is "
+            f"{self._json_type_name(value)}")
+
     def _resolve_key(self, key: str, allowed: List[str]) -> Optional[str]:
         """Map an unknown key to an allowed one: explicit alias first, then a
         confident fuzzy match (typos like 'genere'→'genre'). None if neither.
@@ -232,8 +288,28 @@ class JsonStoreServer(SchemaBasedMCPServer):
         in place and recorded as violations (with a 'did you mean' hint).
 
         Model semantics: dict = allowed keys at this level ("*" = any key,
-        models the children); empty dict = free subtree; arrays apply the model
-        per element; scalars are free (this is a KEY model, not a type schema)."""
+        models the children); empty dict = free subtree; a string node = a leaf
+        TYPE constraint (e.g. "string", "array"); a one-element LIST node
+        (``[elem_model]``) asserts the value is an array and models each element;
+        other scalars are free."""
+        if isinstance(model, str):
+            # Leaf type constraint — the value carries no keys to model further.
+            self._check_type(value, model, path, violations)
+            return value
+        if isinstance(model, list):
+            # Array constraint: the value must be a list; each element is modeled
+            # by model[0] (or {} = free). Asserts array-ness so a bare object is
+            # rejected instead of silently passing as a single element.
+            if value is None:
+                return value
+            if not isinstance(value, list):
+                violations.append(f"'{path}' must be array but is "
+                                  f"{self._json_type_name(value)}")
+                return value
+            elem_model = model[0] if model else {}
+            return [self._normalize_keys(v, elem_model, f"{path}[{i}]",
+                                         remaps, violations)
+                    for i, v in enumerate(value)]
         if not isinstance(model, dict) or not model:
             return value
         if isinstance(value, list):
@@ -272,8 +348,13 @@ class JsonStoreServer(SchemaBasedMCPServer):
         return result
 
     def _apply_key_model(self, doc_name: str, value: Any) -> Tuple[Any, List[str], List[str]]:
-        """(normalized_value, remaps, violations) for ``doc_name``'s key model."""
+        """(normalized_value, remaps, violations) for ``doc_name``'s key model.
+        A ``"*"`` entry is a default model applied to any doc without its own —
+        so auto-id documents (a writer's unnamed delta) are validated against the
+        same schema at write time, not only when merged into a named target."""
         model = self._key_models.get(doc_name)
+        if model is None:
+            model = self._key_models.get("*")
         if not model:
             return value, [], []
         remaps: List[str] = []
@@ -322,9 +403,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
         more = f" (+{len(violations) - 10} more)" if len(violations) > 10 else ""
         return {
             "status": "error",
-            "error": f"Unknown key(s) not in the document's key model: "
-                     f"{'; '.join(shown)}{more}. Rename them to the suggested/allowed "
-                     f"key and resend — do not invent fields.",
+            "error": f"Key model violation(s): {'; '.join(shown)}{more}. Rename the "
+                     f"flagged key to the suggested/allowed one and use the required "
+                     f"type — do not invent fields or change types.",
         }
 
     def _commit(self, params: Dict[str, Any], name: str, value: Any,
@@ -399,22 +480,29 @@ class JsonStoreServer(SchemaBasedMCPServer):
     # ------------------------------------------------------------------
 
     async def write(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a document. ``if_exists``: 'error' (default — fail if it
-        exists) or 'replace' (overwrite on purpose). Default is error so a name
-        collision between agents is caught, not silently clobbered."""
+        """Create a document. Give ``doc`` to name it yourself, or OMIT it to get
+        a fresh collision-free id back (best for parallel writers — each gets its
+        own document with no name coordination). ``if_exists`` ('error' default —
+        catch a name collision / 'replace' — overwrite on purpose) applies only to
+        a named doc; an auto-id is always a fresh create."""
         status = params.get("_status")
         name = (params.get("doc") or "").strip()
-        if not name:
-            return {"status": "error", "error": "'doc' (document name) is required"}
-        if_exists = (params.get("if_exists") or "error").lower()
-        if if_exists not in ("error", "replace"):
-            return {"status": "error", "error": "if_exists must be 'error' or 'replace'"}
-
-        exists = name in self._bucket(params)
-        if exists and if_exists == "error":
-            return {"status": "error",
-                    "error": f"Document '{name}' already exists. Use a unique doc id, "
-                             f"or if_exists='replace' to overwrite on purpose."}
+        bucket = self._bucket(params)
+        if name:
+            if_exists = (params.get("if_exists") or "error").lower()
+            if if_exists not in ("error", "replace"):
+                return {"status": "error", "error": "if_exists must be 'error' or 'replace'"}
+            exists = name in bucket
+            if exists and if_exists == "error":
+                return {"status": "error",
+                        "error": f"Document '{name}' already exists. Use a unique doc id, "
+                                 f"or if_exists='replace' to overwrite on purpose."}
+        else:
+            # No name given: mint a fresh collision-free id so parallel writers
+            # never clobber each other. The caller returns this id to whoever
+            # merges it (coordinator / panel moderator).
+            name = self._new_doc_id(bucket)
+            exists = False
         try:
             value, repairs = self._extract_payload(params)
         except ValueError as e:

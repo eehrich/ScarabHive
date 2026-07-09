@@ -96,8 +96,8 @@ class TestWrite:
         assert "Invalid JSON" in res["error"]
 
     @pytest.mark.asyncio
-    async def test_write_requires_doc_and_payload(self, server):
-        assert (await server.write({**SID, "data": {"a": 1}}))["status"] == "error"
+    async def test_write_requires_payload(self, server):
+        # doc is optional now (auto-id), but a payload is still required.
         assert (await server.write({**SID, "doc": "x"}))["status"] == "error"
 
     @pytest.mark.asyncio
@@ -120,6 +120,32 @@ class TestWrite:
     async def test_write_fresh_doc_succeeds(self, server):
         res = await server.write({**SID, "doc": "fresh", "data": {"a": 1}})
         assert res["status"] == "ok" and res["replaced"] is False
+
+    @pytest.mark.asyncio
+    async def test_write_without_doc_mints_id(self, server):
+        # A writer omits 'doc' and gets a fresh collision-free id back.
+        res = await server.write({**SID, "data": {"a": 1}})
+        assert res["status"] == "ok"
+        gen = res["doc"]
+        assert gen and gen.startswith("doc_")
+        # The returned id is real and holds exactly what was written.
+        read = await server.read({**SID, "doc": gen})
+        assert json.loads(read["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_write_without_doc_ids_are_unique(self, server):
+        # Parallel writers each get their own document — no clobbering.
+        r1 = await server.write({**SID, "data": {"w": 1}})
+        r2 = await server.write({**SID, "data": {"w": 2}})
+        assert r1["doc"] != r2["doc"]
+        listing = await server.list_docs(SID)
+        assert listing["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_write_without_doc_ignores_if_exists(self, server):
+        # if_exists has no meaning for an auto-id (always a fresh create).
+        res = await server.write({**SID, "data": {"a": 1}, "if_exists": "error"})
+        assert res["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +597,176 @@ class TestKeyModel:
             {**SID, "doc": "synopsis", "data": {"völlig_erfunden_xyz": 1}})
         assert res["status"] == "error"
         assert "allowed:" in res["error"]  # no close match → allowed list
+
+
+@pytest.fixture
+def typed_server(mock_system_config):
+    """Server whose key model enforces leaf TYPES (string node = type name)."""
+    return JsonStoreServer(
+        "json_store", mock_system_config,
+        MCPConfig(type="json_store", enabled=True, config={
+            "key_models": {
+                "synopsis": {
+                    "title_suggestion": "string",
+                    "themes": "array",
+                    "genre": {},
+                    "milestones": {"label": "string", "setting": "string"},
+                    "key_characters": {"*": {"age": {}, "role": "string"}},
+                },
+            },
+        }),
+    )
+
+
+class TestKeyModelTypes:
+    @pytest.mark.asyncio
+    async def test_correct_leaf_types_accepted(self, typed_server):
+        res = await typed_server.write(
+            {**SID, "doc": "synopsis",
+             "data": {"title_suggestion": "Der Fund", "themes": ["Mut", "Heimat"]}})
+        assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_array_where_string_expected_rejected(self, typed_server):
+        # the exact production bug: the writer put a list into title_suggestion.
+        res = await typed_server.write(
+            {**SID, "doc": "synopsis",
+             "data": {"title_suggestion": ["Titel A", "Titel B"]}})
+        assert res["status"] == "error"
+        assert "title_suggestion" in res["error"]
+        assert "must be string" in res["error"] and "array" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_string_where_array_expected_rejected(self, typed_server):
+        res = await typed_server.write(
+            {**SID, "doc": "synopsis", "data": {"themes": "Mut"}})
+        assert res["status"] == "error"
+        assert "themes" in res["error"] and "must be array" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_type_enforced_inside_array_elements(self, typed_server):
+        # milestones is an array; each element's label must be a string.
+        res = await typed_server.write(
+            {**SID, "doc": "synopsis",
+             "data": {"milestones": [{"label": ["nope"], "setting": "Wald"}]}})
+        assert res["status"] == "error"
+        assert "label" in res["error"] and "must be string" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_type_enforced_under_wildcard(self, typed_server):
+        res = await typed_server.write(
+            {**SID, "doc": "synopsis",
+             "data": {"key_characters": {"Nora": {"age": 30, "role": ["Heldin"]}}}})
+        assert res["status"] == "error"
+        assert "role" in res["error"] and "must be string" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_free_node_still_accepts_any_type(self, typed_server):
+        # genre is {} → any type allowed.
+        res = await typed_server.write(
+            {**SID, "doc": "synopsis", "data": {"genre": ["A", "B"]}})
+        assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_null_passes_typed_leaf(self, typed_server):
+        # a typed field left empty as null must NOT block the write (the guard is
+        # against the wrong container, not against an empty/optional field).
+        res = await typed_server.write(
+            {**SID, "doc": "synopsis",
+             "data": {"title_suggestion": None, "themes": None}})
+        assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_name_treated_as_free(self, mock_system_config):
+        # a config typo in the type name must not punish the agent.
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True,
+                      config={"key_models": {"d": {"x": "strng"}}}))
+        res = await srv.write({**SID, "doc": "d", "data": {"x": [1, 2]}})
+        assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_boolean_not_counted_as_integer(self, mock_system_config):
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True,
+                      config={"key_models": {"d": {"n": "integer"}}}))
+        assert (await srv.write({**SID, "doc": "d", "data": {"n": True}}))["status"] == "error"
+        assert (await srv.write({**SID, "doc": "d", "data": {"n": 5},
+                                 "if_exists": "replace"}))["status"] == "ok"
+
+
+@pytest.fixture
+def star_server(mock_system_config):
+    """Server whose key model is keyed under '*' (default for ANY doc name) and
+    uses a list model for an array-of-objects field."""
+    return JsonStoreServer(
+        "json_store", mock_system_config,
+        MCPConfig(type="json_store", enabled=True, config={
+            "key_models": {
+                "*": {
+                    "title_suggestion": "string",
+                    "milestones": [{"label": "string", "setting": "string"}],
+                },
+            },
+        }),
+    )
+
+
+class TestKeyModelDefaultAndList:
+    @pytest.mark.asyncio
+    async def test_star_model_validates_arbitrary_doc_name(self, star_server):
+        # '*' applies to a doc name that has no explicit model (e.g. an auto-id).
+        res = await star_server.write(
+            {**SID, "doc": "doc_random123", "data": {"title_suggestion": ["A", "B"]}})
+        assert res["status"] == "error"
+        assert "title_suggestion" in res["error"] and "must be string" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_star_model_validates_auto_id_write(self, star_server):
+        # Group-A fix: a write WITHOUT a doc name (auto-id) is validated too, so
+        # the writer sees the type error on its own write and can self-correct.
+        res = await star_server.write(
+            {**SID, "data": {"title_suggestion": ["A", "B"]}})  # no doc -> auto-id
+        assert res["status"] == "error"
+        assert "title_suggestion" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_star_model_auto_id_valid_write_ok(self, star_server):
+        res = await star_server.write({**SID, "data": {"title_suggestion": "Der Fund"}})
+        assert res["status"] == "ok" and res["doc"].startswith("doc_")
+
+    @pytest.mark.asyncio
+    async def test_list_model_accepts_array_of_objects(self, star_server):
+        res = await star_server.write(
+            {**SID, "doc": "d",
+             "data": {"milestones": [{"label": "Inciting", "setting": "Wald"}]}})
+        assert res["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_list_model_rejects_bare_object(self, star_server):
+        # the array-coverage gap: a single object where an array belongs.
+        res = await star_server.write(
+            {**SID, "doc": "d",
+             "data": {"milestones": {"label": "Inciting", "setting": "Wald"}}})
+        assert res["status"] == "error"
+        assert "milestones" in res["error"] and "must be array" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_list_model_validates_element_types(self, star_server):
+        res = await star_server.write(
+            {**SID, "doc": "d",
+             "data": {"milestones": [{"label": ["nope"], "setting": "Wald"}]}})
+        assert res["status"] == "error"
+        assert "label" in res["error"] and "must be string" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_list_model_null_and_empty_ok(self, star_server):
+        assert (await star_server.write(
+            {**SID, "doc": "d1", "data": {"milestones": None}}))["status"] == "ok"
+        assert (await star_server.write(
+            {**SID, "doc": "d2", "data": {"milestones": []}}))["status"] == "ok"
 
 
 class TestKeyAliases:

@@ -20,7 +20,7 @@ One tool, `<instance>_manage_json`, dispatched via `operation`
 
 | operation     | params                          | effect |
 |---------------|---------------------------------|--------|
-| `write`       | `doc`, `data`\|`json_text`, `if_exists?` | create a doc (`if_exists`: `error` default = catch collisions, `replace` = overwrite on purpose) |
+| `write`       | `doc?`, `data`\|`json_text`, `if_exists?` | create a doc — **omit `doc`** to get a fresh collision-free id back (best for parallel writers); `if_exists` (`error` default = catch collisions, `replace` = overwrite on purpose) applies only to a named doc |
 | `read`        | `doc`, `path?`                  | canonical JSON (whole or sub-path) |
 | `merge`       | `doc`, `data`\|`json_text`, `array_mode?` | deep-merge (dicts recurse, scalars overwrite, arrays replace/concat) |
 | `merge_doc`   | `doc` (target), `source`, `array_mode?` | deep-merge one stored doc into another, in code (no JSON re-typing) |
@@ -51,14 +51,21 @@ my_json:
     # Optional: allowed keys per document. Unknown keys are auto-remapped to the
     # closest allowed key (via key_aliases or a confident fuzzy match like
     # 'genere'->'genre') and reported in the result's 'remapped'; keys that can't
-    # be mapped are rejected with a "did you mean 'X'?" hint. "*" = any key
-    # (dynamic names), {} = free subtree.
+    # be mapped are rejected with a "did you mean 'X'?" hint. A top-level "*" is a
+    # default model for any doc without its own (validates unnamed/auto-id docs).
+    # Inside a model: "*" = any key (dynamic names), {} = free subtree, a STRING
+    # node = a leaf type (string|number|integer|boolean|array|object|any; wrong
+    # type rejected, null always ok), a one-element LIST [elem] = an array whose
+    # elements match elem.
     key_models:
-      synopsis:
-        synopsis_text: {}
-        genre: {}
+      "*":                         # one schema for every doc in this store
+        synopsis_text: string      # plain string, not an array (null ok)
+        themes: array
+        genre: {}                  # any type
+        milestones:
+          - { label: string, setting: string }   # array of these objects
         key_characters:
-          "*": { age: {}, role: {}, arc: {} }
+          "*": { age: {}, role: string, arc: {} }
 ```
 
 Failed checks (unmappable keys, size limit, invalid JSON) never partially apply —
@@ -72,4 +79,12 @@ independently and reports unknown ones in `missing`.
 - The plugin instance is a process-wide singleton, so passing the same
   `namespace` from different agents/sessions (e.g. a coordinator and its
   sub-agents) shares one document — no need to pass the JSON between them.
-- Key models are a KEY whitelist, not a type schema — scalars/values are free.
+- **Parallel writers:** a writer calls `write` **without `doc`** and gets a
+  fresh collision-free id back in the result's `doc`; it returns that id to its
+  coordinator/moderator, who then `merge_doc`s it. N writers (e.g. a panel) run
+  concurrently in one namespace without clobbering each other — no name is
+  pre-assigned, so the `error` default never needs to be defeated with `replace`.
+- Key models are primarily a KEY whitelist; values are free unless a key's model
+  node is a **string type name** (`string`, `array`, ...) — which enforces the
+  value's JSON type at that leaf (null always passes) — or a **one-element list**
+  `[elem]` — which asserts an array and models each element.

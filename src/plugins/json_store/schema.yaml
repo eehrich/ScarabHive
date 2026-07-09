@@ -27,7 +27,7 @@ tools:
             description: "Optional shared store id — pass the same value in different agents/sessions to share the document (else scoped to your session)."
           doc:
             type: string
-            description: "Document name/id. For merge_doc this is the TARGET. Required for everything except 'list'."
+            description: "Document name/id. For 'write' OMIT it to get a fresh auto-generated collision-free id back (best for parallel writers — each gets its own doc). For merge_doc this is the TARGET. Required for everything except 'write' and 'list'."
           source:
             type: string
             description: "merge_doc: the source document to merge FROM (its values overwrite the target's, deep). Both docs are in the same namespace."
@@ -40,7 +40,7 @@ tools:
           if_exists:
             type: string
             enum: [error, replace]
-            description: "write only: what to do if the doc already exists — error (default, catches collisions) or replace (overwrite on purpose)."
+            description: "write with a NAMED doc: what to do if it already exists — error (default, catches collisions) or replace (overwrite on purpose). Ignored when 'doc' is omitted (an auto-id is always a fresh create)."
           path:
             type: string
             description: "read/set_value: dot path, [i] for arrays (e.g. 'milestones[2].label')"
@@ -88,15 +88,24 @@ config:
     type: object
     default: {}
     description: |
-      Optional allowed-key model per document name. Nested dict of allowed keys;
-      "*" allows any key at that level (dynamic names, e.g. character names);
-      {} means free subtree (no further enforcement). Unknown keys are auto-remapped
-      to the closest allowed key (via key_aliases or a confident fuzzy match, e.g.
-      'genere'->'genre') and reported; keys that can't be mapped are rejected with a
-      "did you mean 'X'?" hint. Example:
+      Optional allowed-key model per document name (a top-level "*" entry is a
+      default applied to any doc without its own — so unnamed/auto-id docs are
+      validated too). Nested dict of allowed keys; "*" allows any key at that
+      level (dynamic names, e.g. character names); {} means free subtree; a STRING
+      node is a leaf TYPE constraint (string|number|integer|boolean|array|object|any)
+      — the value must be that JSON type or null (null always passes; the guard is
+      against the wrong container, e.g. an array where a scalar belongs), else it is
+      rejected; a one-element LIST node [elem] asserts the value is an array and
+      models each element. Unknown keys are auto-remapped to the closest allowed key
+      (via key_aliases or a confident fuzzy match, e.g. 'genere'->'genre') and
+      reported; keys that can't be mapped are rejected with a "did you mean 'X'?"
+      hint. Example:
         key_models:
-          synopsis:
-            synopsis: {}
-            genre: {}
+          "*":                         # one schema for every doc in this store
+            title_suggestion: string   # plain string, not an array (null ok)
+            themes: array
+            genre: {}                  # any type
+            milestones:
+              - { label: string, setting: string }   # array of these objects
             key_characters:
-              "*": { age: {}, role: {}, arc: {} }
+              "*": { age: {}, role: string, arc: {} }
