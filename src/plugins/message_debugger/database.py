@@ -5,13 +5,15 @@ Uses SQLite with WAL mode for concurrent read/write access.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
+import queue
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,8 @@ class MessageDebuggerDB:
     - llm_requests: LLM-client-level raw API request/response logs
     """
     
-    def __init__(self, db_path: str | Path, wal_mode: bool = True, max_size_mb: float = 5120):
+    def __init__(self, db_path: str | Path, wal_mode: bool = True, max_size_mb: float = 5120,
+                 queue_max: int = 2000):
         """Initialize database.
 
         Args:
@@ -33,6 +36,8 @@ class MessageDebuggerDB:
             max_size_mb: Hard cap on the debugger DB's real data size. When the
                 used data exceeds ~90% of this, the oldest turns/requests are
                 pruned down to ~75% (hysteresis: rarely, in one batch). 0 = off.
+            queue_max: Bound on the async write queue (see the async write
+                pipeline below). 0 = unbounded.
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,8 +63,33 @@ class MessageDebuggerDB:
         self._retention_budget_s = 1.0
         self._retention_batch = 500  # rows stripped/deleted per pass
 
-        # Initialize schema
+        # ---- Async write pipeline -------------------------------------------
+        # Capture must NEVER block the agent. A write is heavy: json.dumps of the
+        # whole message list + commit + retention on a multi-GB WAL DB, which can
+        # stall for MINUTES on a checkpoint. The hooks offloaded that to a worker
+        # thread but still *awaited* it — the event loop stayed free, yet the
+        # agent's own coroutine blocked on the await (observed: a single turn
+        # snapshot wedged a whole pipeline run for ~20 min against a 4.7 GB DB).
+        # So every write now goes through a bounded queue drained by ONE
+        # dedicated background thread: the agent only does an O(1) put_nowait and
+        # moves on; a slow DB just makes the queue lag, never the pipeline.
+        # History is preserved — nothing is deleted here. Only on pathological
+        # overflow (writer wedged for a very long time) the newest snapshot is
+        # dropped, loudly, to protect memory instead of blocking or OOMing.
+        self._write_q: "queue.Queue[Optional[Callable[[], Any]]]" = queue.Queue(
+            maxsize=int(queue_max) if queue_max and queue_max > 0 else 0
+        )
+        self._dropped = 0
+        self._closed = False
+
+        # Initialize schema (on this thread's connection) before the writer runs.
         self._init_schema()
+
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop, name="msgdbg-writer", daemon=True
+        )
+        self._writer_thread.start()
+        atexit.register(self.close)
         logger.info(f"MessageDebuggerDB initialized: {self.db_path}")
     
     def _get_conn(self) -> sqlite3.Connection:
@@ -319,7 +349,95 @@ class MessageDebuggerDB:
         conn.commit()
         self.maybe_enforce_retention()
         return cursor.lastrowid  # type: ignore[return-value]
-    
+
+    # ---- Async write pipeline ------------------------------------------------
+
+    def submit(self, fn: "Callable[[], Any]") -> None:
+        """Enqueue an arbitrary write callable (build + insert) for the background
+        writer. Never blocks the caller; used by the capture hooks so the agent
+        loop is never delayed by a slow DB."""
+        self._submit(fn)
+
+    def submit_turn(self, **kwargs: Any) -> None:
+        """Enqueue a turn insert for the background writer (never blocks)."""
+        self._submit(lambda: self.insert_turn(**kwargs))
+
+    def submit_llm_request(self, **kwargs: Any) -> None:
+        """Enqueue an llm_request insert for the background writer (never blocks)."""
+        self._submit(lambda: self.insert_llm_request(**kwargs))
+
+    def _submit(self, fn: "Callable[[], Any]") -> None:
+        if self._closed:
+            return
+        try:
+            self._write_q.put_nowait(fn)
+        except queue.Full:
+            # Writer wedged for a long time. Drop the newest capture (loudly)
+            # rather than block the agent or grow memory without bound.
+            self._dropped += 1
+            if self._dropped == 1 or self._dropped % 200 == 0:
+                logger.warning(
+                    "message_debugger: write queue full — DB writes lagging, "
+                    "dropped %d capture(s) so far", self._dropped,
+                )
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Block until the write queue is drained, or ``timeout`` elapses.
+
+        Not needed in production (writes are fire-and-forget); useful for tests
+        and for a graceful drain before shutdown. Returns True if fully drained.
+        """
+        deadline = time.monotonic() + timeout
+        while self._write_q.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return self._write_q.unfinished_tasks == 0
+
+    def _writer_loop(self) -> None:
+        """Single background thread: drains the write queue, one job at a time.
+
+        Owns its own thread-local connection (created lazily in _get_conn on this
+        thread). A slow insert/commit/retention here only delays the queue, never
+        an agent request. Exceptions never propagate — a debug write must not kill
+        the writer thread.
+        """
+        while True:
+            fn = self._write_q.get()
+            try:
+                if fn is None:  # shutdown sentinel
+                    return
+                fn()
+            except Exception as e:  # noqa: BLE001 — capture must never crash
+                logger.warning("message_debugger write failed: %s", e)
+            finally:
+                self._write_q.task_done()
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Flush pending writes, stop the background writer, close the connection.
+
+        Enqueues a sentinel behind the pending jobs, so the writer drains the
+        backlog (up to ``timeout``) before exiting — history captured just before
+        shutdown is not lost. The flush runs once (idempotent); closing this
+        thread's connection is safe to repeat.
+        """
+        atexit.unregister(self.close)  # explicit close: don't also fire at exit
+        if not self._closed:
+            self._closed = True
+            # Block up to `timeout` for a slot rather than discarding a pending
+            # job — on shutdown we want the backlog flushed, not dropped. The
+            # sentinel sits behind the pending jobs (FIFO), so the writer drains
+            # them first, then exits.
+            try:
+                self._write_q.put(None, timeout=timeout)
+            except queue.Full:
+                pass  # writer is a daemon; it exits with the process regardless
+            if self._writer_thread.is_alive():
+                self._writer_thread.join(timeout=timeout)
+        # Close this thread's connection (thread-local; the writer thread's own
+        # connection is released when that daemon thread exits).
+        if hasattr(self._local, 'conn') and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None
+
     def get_llm_requests(
         self,
         agent_name: Optional[str] = None,
@@ -587,10 +705,13 @@ class MessageDebuggerDB:
             stripped += n
             turns_deleted += n2
             conn.commit()
-            # Checkpoint so the freelist (and thus _used_bytes) reflects the
-            # freed pages in WAL mode; ignore if checkpointing is unavailable.
+            # Nudge a checkpoint so the freelist (and thus _used_bytes) reflects
+            # the freed pages in WAL mode. PASSIVE never blocks on readers; the
+            # old TRUNCATE variant waited for every reader (e.g. the web UI) to
+            # release and could wedge this thread for minutes. Freed pages land on
+            # the freelist on commit regardless, so PASSIVE is sufficient here.
             try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except sqlite3.OperationalError:
                 pass
             used = self._used_bytes(conn)
@@ -630,12 +751,6 @@ class MessageDebuggerDB:
         finally:
             self._retention_lock.release()
 
-    def close(self) -> None:
-        """Close the database connection."""
-        if hasattr(self._local, 'conn') and self._local.conn:
-            self._local.conn.close()
-            self._local.conn = None
-    
     # ---- Helpers ----
     
     @staticmethod

@@ -286,6 +286,7 @@ class TestMessageDebuggerHooks:
         assert result.success is True
         assert result.modified is False
 
+        assert db.flush(timeout=3)  # capture is fire-and-forget; drain the writer
         turns = db.get_turns()
         assert len(turns) == 1
         assert turns[0]["snapshot_type"] == "pre_llm"
@@ -307,6 +308,7 @@ class TestMessageDebuggerHooks:
         result = await hooks_plugin.debugger_capture_post_llm(context)
 
         assert result.success is True
+        assert db.flush(timeout=3)
         turns = db.get_turns()
         assert len(turns) == 1
         assert turns[0]["snapshot_type"] == "post_llm"
@@ -360,6 +362,7 @@ class TestMessageDebuggerHooks:
         result = await hooks_plugin.debugger_capture_pre_llm(context)
 
         assert result.success is True
+        assert db.flush(timeout=3)
         turns = db.get_turns()
         turn_detail = db.get_turn(turns[0]["id"])
         messages = turn_detail["messages_json"]
@@ -384,6 +387,7 @@ class TestMessageDebuggerHooks:
 
         await hooks_plugin.debugger_capture_pre_llm(context)
 
+        assert db.flush(timeout=3)
         turns = db.get_turns()
         assert turns[0]["total_tokens"] > 0
         turn_detail = db.get_turn(turns[0]["id"])
@@ -426,6 +430,7 @@ class TestMessageDebuggerHooks:
         result = await hooks_plugin.debugger_capture_pre_request(context)
 
         assert result.success is True
+        assert db.flush(timeout=3)
         reqs = db.get_llm_requests(direction="request")
         assert len(reqs) == 1
         assert reqs[0]["provider"] == "openai"
@@ -451,6 +456,7 @@ class TestMessageDebuggerHooks:
         result = await hooks_plugin.debugger_capture_post_response(context)
 
         assert result.success is True
+        assert db.flush(timeout=3)
         reqs = db.get_llm_requests(direction="response")
         assert len(reqs) == 1
         assert reqs[0]["duration_ms"] == pytest.approx(750.5)
@@ -474,6 +480,7 @@ class TestMessageDebuggerHooks:
         result = await hooks_plugin.debugger_capture_post_response(context)
 
         assert result.success is True
+        assert db.flush(timeout=3)
         reqs = db.get_llm_requests()
         assert len(reqs) == 1
         assert reqs[0]["error"] == "Rate limit exceeded"
@@ -698,7 +705,8 @@ class TestMessageDebuggerIntegration:
 
         await hybrid_plugin.hooks_plugin.debugger_capture_post_llm(post_context)
 
-        # 3. Verify both snapshots captured in DB
+        # 3. Verify both snapshots captured in DB (drain the async writer first)
+        assert hybrid_plugin._db.flush(timeout=3)
         turns = hybrid_plugin._db.get_turns()
         assert len(turns) == 2
         types = {t["snapshot_type"] for t in turns}

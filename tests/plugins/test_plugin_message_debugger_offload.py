@@ -1,14 +1,18 @@
 """
-PB25: message_debugger DB writes must run OFF the event loop.
+message_debugger capture is FIRE-AND-FORGET.
 
-The four capture hooks fire on every LLM call and previously did synchronous
-sqlite commits (+ json.dumps + token estimation) directly on the event loop.
-These tests prove the heavy work now runs in a worker thread (different thread
-id) while still persisting correctly.
+The four capture hooks fire on every LLM call. They used to do the sqlite commit
+(+ json.dumps + token estimation) on a worker thread but still *await* it — the
+event loop stayed free, yet the agent's own coroutine blocked on the await, which
+wedged a whole pipeline run for ~20 min against a multi-GB DB. Now the hooks only
+ENQUEUE; a single background writer thread ("msgdbg-writer") does the actual
+write. These tests prove: the hook returns without waiting for the DB, the write
+runs on the writer thread, and the data still persists correctly after a flush.
 """
 
 import asyncio
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -46,38 +50,65 @@ def messages():
     ]
 
 
-def _thread_spy(real, sink):
-    def spy(*args, **kwargs):
-        sink["ident"] = threading.get_ident()
-        return real(*args, **kwargs)
-    return spy
-
-
-class TestDbWritesOffloaded:
+class TestFireAndForget:
     @pytest.mark.asyncio
-    async def test_turn_insert_runs_off_event_loop(self, hooks, db, messages):
-        main_ident = threading.get_ident()
-        sink = {}
-        db.insert_turn = _thread_spy(db.insert_turn, sink)
+    async def test_hook_returns_without_awaiting_db(self, hooks, db, messages):
+        # A slow DB write must NOT delay the hook: the agent only enqueues. This
+        # is the whole point of the fix — a wedged multi-GB write can't stall the
+        # pipeline anymore.
+        real = db.insert_turn
 
-        ctx = HookContext(
-            hook_type="pre_llm_call", agent_name="a",
-            request_id="r1", session_id="s1", messages=messages,
-        )
+        def slow(*args, **kwargs):
+            time.sleep(1.0)
+            return real(*args, **kwargs)
+
+        db.insert_turn = slow
+        ctx = HookContext(hook_type="pre_llm_call", agent_name="a",
+                          request_id="r", session_id="s", messages=messages)
+        t0 = time.perf_counter()
         result = await hooks.debugger_capture_pre_llm(ctx)
+        elapsed = time.perf_counter() - t0
 
         assert result.success is True
-        assert "ident" in sink, "insert_turn was never called"
-        assert sink["ident"] != main_ident, "turn write ran on the event-loop thread"
-        # correctness preserved: the turn was persisted
+        assert result.metadata.get("queued") is True
+        assert elapsed < 0.2, f"hook blocked {elapsed:.2f}s on the (slow) DB write"
+        # The write is running on the background writer; drain it, then it's there.
+        assert db.flush(timeout=3)
         assert len(db.get_turns()) == 1
 
     @pytest.mark.asyncio
-    async def test_llm_request_insert_runs_off_event_loop(self, hooks, db):
+    async def test_turn_write_runs_on_writer_thread(self, hooks, db, messages):
         main_ident = threading.get_ident()
         sink = {}
-        db.insert_llm_request = _thread_spy(db.insert_llm_request, sink)
+        real = db.insert_turn
 
+        def spy(*args, **kwargs):
+            sink["ident"] = threading.get_ident()
+            sink["name"] = threading.current_thread().name
+            return real(*args, **kwargs)
+
+        db.insert_turn = spy
+        ctx = HookContext(hook_type="pre_llm_call", agent_name="a",
+                          request_id="r1", session_id="s1", messages=messages)
+        result = await hooks.debugger_capture_pre_llm(ctx)
+
+        assert result.success is True
+        assert db.flush(timeout=3)
+        assert sink.get("ident") not in (None, main_ident), "write ran on the caller thread"
+        assert sink.get("name") == "msgdbg-writer"
+        assert len(db.get_turns()) == 1
+
+    @pytest.mark.asyncio
+    async def test_llm_request_write_off_caller_thread(self, hooks, db):
+        main_ident = threading.get_ident()
+        sink = {}
+        real = db.insert_llm_request
+
+        def spy(*args, **kwargs):
+            sink["ident"] = threading.get_ident()
+            return real(*args, **kwargs)
+
+        db.insert_llm_request = spy
         ctx = HookContext(
             hook_type="pre_llm_request", agent_name="a",
             request_id="r1", session_id="s1",
@@ -89,16 +120,21 @@ class TestDbWritesOffloaded:
         result = await hooks.debugger_capture_pre_request(ctx)
 
         assert result.success is True
-        assert "ident" in sink, "insert_llm_request was never called"
-        assert sink["ident"] != main_ident, "request write ran on the event-loop thread"
+        assert db.flush(timeout=3)
+        assert sink.get("ident") not in (None, main_ident)
         assert len(db.get_llm_requests(direction="request")) == 1
 
     @pytest.mark.asyncio
-    async def test_response_insert_runs_off_event_loop(self, hooks, db):
+    async def test_response_write_off_caller_thread(self, hooks, db):
         main_ident = threading.get_ident()
         sink = {}
-        db.insert_llm_request = _thread_spy(db.insert_llm_request, sink)
+        real = db.insert_llm_request
 
+        def spy(*args, **kwargs):
+            sink["ident"] = threading.get_ident()
+            return real(*args, **kwargs)
+
+        db.insert_llm_request = spy
         ctx = HookContext(
             hook_type="post_llm_response", agent_name="a",
             request_id="r1", session_id="s1",
@@ -110,12 +146,16 @@ class TestDbWritesOffloaded:
         result = await hooks.debugger_capture_post_response(ctx)
 
         assert result.success is True
-        assert sink["ident"] != main_ident, "response write ran on the event-loop thread"
+        assert db.flush(timeout=3)
+        assert sink.get("ident") not in (None, main_ident)
         assert len(db.get_llm_requests(direction="response")) == 1
 
+
+class TestCaptureCorrectness:
+    """The async pipeline must preserve snapshot content + metadata (after flush)."""
+
     @pytest.mark.asyncio
-    async def test_capture_still_correct_post_llm(self, hooks, db, messages):
-        # End-to-end correctness through the to_thread path (no spy).
+    async def test_correct_post_llm_after_flush(self, hooks, db, messages):
         ctx = HookContext(
             hook_type="post_llm_call", agent_name="agentX",
             request_id="r2", session_id="s2", messages=messages,
@@ -123,14 +163,11 @@ class TestDbWritesOffloaded:
         )
         result = await hooks.debugger_capture_post_llm(ctx)
         assert result.success is True
+        assert db.flush(timeout=3)
         turns = db.get_turns()
         assert len(turns) == 1
         assert turns[0]["snapshot_type"] == "post_llm"
         assert turns[0]["agent_name"] == "agentX"
-
-
-class TestCaptureCorrectnessThroughToThread:
-    """The to_thread refactor must preserve the snapshot content + metadata."""
 
     @pytest.mark.asyncio
     async def test_tool_calls_captured(self, hooks, db):
@@ -154,6 +191,7 @@ class TestCaptureCorrectnessThroughToThread:
         result = await hooks.debugger_capture_pre_llm(ctx)
 
         assert result.success is True
+        assert db.flush(timeout=3)
         md = captured["messages"]
         assert md is not None and len(md) == 2
         assistant = md[1]
@@ -176,17 +214,19 @@ class TestCaptureCorrectnessThroughToThread:
 
         assert result.success is True
         assert result.metadata.get("reason") == "no_messages"
-        assert calls["n"] == 0  # no DB write for an empty snapshot
+        assert db.flush(timeout=3)
+        assert calls["n"] == 0  # no DB write enqueued for an empty snapshot
         assert len(db.get_turns()) == 0
 
     @pytest.mark.asyncio
-    async def test_metadata_counts_match(self, hooks, db, messages):
+    async def test_metadata_queued(self, hooks, db, messages):
         ctx = HookContext(hook_type="pre_llm_call", agent_name="a",
                           request_id="r", session_id="s", messages=messages)
         result = await hooks.debugger_capture_pre_llm(ctx)
-        assert result.metadata["captured"] is True
-        assert result.metadata["message_count"] == len(messages)
-        assert result.metadata["total_tokens"] >= 0
+        # Counts are no longer known at hook-return time (the build runs on the
+        # writer thread); the hook reports that it queued the snapshot.
+        assert result.metadata.get("queued") is True
+        assert result.metadata.get("snapshot_type") == "pre_llm"
 
     @pytest.mark.asyncio
     async def test_db_error_does_not_break_hook(self, hooks, db, messages):
@@ -196,10 +236,13 @@ class TestCaptureCorrectnessThroughToThread:
         db.insert_turn = boom
         ctx = HookContext(hook_type="pre_llm_call", agent_name="a",
                           request_id="r", session_id="s", messages=messages)
+        # Best-effort capture: the hook returns success (it only enqueued); the
+        # write fails on the writer thread but is swallowed there — nothing
+        # crashes, nothing persisted.
         result = await hooks.debugger_capture_pre_llm(ctx)
-        # Best-effort capture: a DB failure must NOT fail the LLM call.
         assert result.success is True
-        assert "error" in result.metadata
+        db.flush(timeout=3)
+        assert len(db.get_turns()) == 0
 
 
 class TestConcurrentCapture:
@@ -212,7 +255,8 @@ class TestConcurrentCapture:
             r = await hooks.debugger_capture_pre_llm(ctx)
             assert r.success is True
 
-        # 40 concurrent captures through the to_thread path + thread-local
-        # connections; a write race would surface as an exception here.
+        # 40 concurrent captures enqueue onto one queue; the single writer thread
+        # serializes the writes, so there is no write race by construction.
         await asyncio.gather(*[worker(i) for i in range(40)])
+        assert db.flush(timeout=5)
         assert len(db.get_turns()) == 40

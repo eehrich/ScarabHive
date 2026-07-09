@@ -5,7 +5,6 @@ in a SQLite database for debugging and inspection.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from pathlib import Path
@@ -98,12 +97,12 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         try:
             if self.db:
                 ts = context.metadata.get('timestamp_ms', time.time() * 1000)
-                # Offload the json.dumps + commit off the event loop (this hook
-                # fires on every LLM request). The DB uses thread-local
-                # connections (check_same_thread=False, WAL), so a worker thread
-                # is safe.
-                await asyncio.to_thread(
-                    self.db.insert_llm_request,
+                # Fire-and-forget: hand the json.dumps + commit to the DB's
+                # background writer thread and return immediately. We must NOT
+                # await it — awaiting blocks THIS agent's coroutine on the (possibly
+                # multi-minute) write against a multi-GB DB, even though the event
+                # loop stays free for other requests.
+                self.db.submit_llm_request(
                     timestamp_ms=ts,
                     direction='request',
                     agent_name=context.agent_name or '',
@@ -132,10 +131,8 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         try:
             if self.db:
                 ts = context.metadata.get('timestamp_ms', time.time() * 1000)
-                # Offload the json.dumps + commit off the event loop (fires on
-                # every LLM response). Thread-local connection -> worker-safe.
-                await asyncio.to_thread(
-                    self.db.insert_llm_request,
+                # Fire-and-forget onto the DB's background writer (see pre_request).
+                self.db.submit_llm_request(
                     timestamp_ms=ts,
                     direction='response',
                     agent_name=context.agent_name or '',
@@ -167,7 +164,7 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
     async def _capture_turn(self, context: HookContext, snapshot_type: str) -> HookResult:
         """Capture an agent-level message snapshot (turn)."""
         try:
-            # Snapshot the message list ON the event loop so the worker thread
+            # Snapshot the message list ON the event loop so the writer thread
             # iterates a private copy — immune to any concurrent mutation of the
             # live list (no "list changed size during iteration").
             messages = list(context.messages or [])
@@ -177,22 +174,29 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                     metadata={'reason': 'no_messages', 'snapshot_type': snapshot_type}
                 )
 
-            # Offload token estimation + json.dumps + commit off the event loop.
-            message_count, total_tokens = await asyncio.to_thread(
-                self._build_and_store_turn, messages, context, snapshot_type
-            )
-
-            logger.debug(
-                f"Captured {snapshot_type} turn: agent={context.agent_name}, "
-                f"messages={message_count}, tokens={total_tokens}"
-            )
+            # Snapshot the context fields we need as plain values, then hand the
+            # heavy build (token estimation + json.dumps) AND the write to the DB's
+            # background writer. We do NOT await it: the agent must never block on
+            # a slow debug DB. Plain values (not the live context) keep the
+            # deferred build race-free.
+            ctx = {
+                'agent_name': context.agent_name or '',
+                'request_id': context.request_id or '',
+                'session_id': context.session_id or '',
+                'step': context.step,
+                'llm_response': (dict(context.llm_response)
+                                 if snapshot_type == 'post_llm' and context.llm_response
+                                 else None),
+                'context_window': (context.llm.context_window
+                                   if context.llm and hasattr(context.llm, 'context_window')
+                                   else None),
+            }
+            if self.db:
+                self.db.submit(lambda: self._build_and_store_turn(messages, ctx, snapshot_type))
 
             return HookResult(
                 success=True, modified=False, context=context,
-                metadata={
-                    'captured': True, 'snapshot_type': snapshot_type,
-                    'message_count': message_count, 'total_tokens': total_tokens,
-                }
+                metadata={'queued': True, 'snapshot_type': snapshot_type}
             )
 
         except Exception as e:
@@ -203,14 +207,15 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
             )
 
     def _build_and_store_turn(
-        self, messages: List[Any], context: HookContext, snapshot_type: str
+        self, messages: List[Any], ctx: Dict[str, Any], snapshot_type: str
     ) -> tuple[int, int]:
         """Build the message snapshot (token estimation) and persist it to SQLite.
 
-        Synchronous — runs in a worker thread via asyncio.to_thread so the heavy
-        per-message token estimation, json.dumps and commit never block the
-        event loop. ``messages`` is a snapshot list taken on the event loop (see
-        _capture_turn). Returns (message_count, total_tokens).
+        Synchronous — runs on the DB's background writer thread (via db.submit),
+        so the heavy per-message token estimation, json.dumps and commit never
+        block the agent. ``messages`` is a snapshot list and ``ctx`` a snapshot of
+        plain context values, both taken on the event loop (see _capture_turn).
+        Returns (message_count, total_tokens).
         """
         message_data = []
         total_tokens = 0
@@ -263,16 +268,13 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
             message_data.append(msg_info)
 
         llm_response = None
-        if snapshot_type == 'post_llm' and context.llm_response:
+        lr = ctx.get('llm_response')
+        if snapshot_type == 'post_llm' and lr:
             llm_response = {
-                'model': context.llm_response.get('model'),
-                'usage': context.llm_response.get('usage'),
-                'finish_reason': context.llm_response.get('finish_reason'),
+                'model': lr.get('model'),
+                'usage': lr.get('usage'),
+                'finish_reason': lr.get('finish_reason'),
             }
-
-        context_window = None
-        if context.llm and hasattr(context.llm, 'context_window'):
-            context_window = context.llm.context_window
 
         timestamp_ms = time.time() * 1000
 
@@ -280,13 +282,13 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
             self.db.insert_turn(
                 timestamp_ms=timestamp_ms,
                 snapshot_type=snapshot_type,
-                agent_name=context.agent_name or '',
-                request_id=context.request_id or '',
-                session_id=context.session_id or '',
-                step=context.step,
+                agent_name=ctx.get('agent_name', ''),
+                request_id=ctx.get('request_id', ''),
+                session_id=ctx.get('session_id', ''),
+                step=ctx.get('step', 0),
                 message_count=len(message_data),
                 total_tokens=total_tokens,
-                context_window=context_window,
+                context_window=ctx.get('context_window'),
                 messages=message_data,
                 llm_response=llm_response,
             )

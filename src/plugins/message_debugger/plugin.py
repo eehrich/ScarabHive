@@ -51,11 +51,15 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
             # Ensure parent directory exists
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # Create SQLite database with a hard size cap (auto-retention).
+        # Create SQLite database with a hard size cap (auto-retention). Writes go
+        # through a background thread (see MessageDebuggerDB) so capture never
+        # blocks the agent; queue_max bounds that queue's memory.
         max_size_mb = config.get('max_db_size_mb', 5120)  # default 5 GB
-        self._db = MessageDebuggerDB(db_path, max_size_mb=max_size_mb)
+        queue_max = config.get('capture_queue_max', 2000)
+        self._db = MessageDebuggerDB(db_path, max_size_mb=max_size_mb, queue_max=queue_max)
         logger.info(
-            f"MessageDebugger DB initialized at: {db_path} (cap {max_size_mb} MB)"
+            f"MessageDebugger DB initialized at: {db_path} "
+            f"(cap {max_size_mb} MB, write-queue {queue_max})"
         )
         
         # Legacy list kept for backward compat (not actively used)
