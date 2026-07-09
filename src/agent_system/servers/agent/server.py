@@ -5,6 +5,7 @@ Supports multiple tool calls per conversation turn for better efficiency
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
 from .prompt_strategies import PromptRenderer, PromptContext
 from .loop_detection import ToolCallLoopDetector
+from .escalation import StuckEscalator
 from .tool_discovery import ToolDiscoveryService
 from .tool_schema_builder import ToolSchemaBuilder
 
@@ -292,6 +294,70 @@ class Agent(MCPServer):
         interfere, and previous-request history doesn't leak into new requests.
         """
         return ToolCallLoopDetector(**self._loop_detection_config)
+
+    def _create_stuck_escalator(self, *, already_advanced: bool) -> StuckEscalator:
+        """Per-request escalator (window + budget state must not leak across
+        requests on this shared Agent singleton). Disabled — a no-op — when the
+        config flag is off, no advanced profile exists, or the run is already on
+        the advanced model (nothing to escalate to)."""
+        cfg = self.agent_config
+        has_advanced = bool(cfg and len(cfg.available_llm_profiles) > 1)
+        enabled = bool(
+            cfg and getattr(cfg, "auto_escalate_on_stuck", False)
+            and has_advanced and not already_advanced)
+        return StuckEscalator(
+            enabled=enabled,
+            rounds=int(getattr(cfg, "escalate_rounds", 2)) if cfg else 0,
+            max_calls=int(getattr(cfg, "escalate_max_calls", 6)) if cfg else 0,
+        )
+
+    @staticmethod
+    def _tool_message_is_error(message: "ChatMessage") -> bool:
+        """Whether a tool-result message reports a failure. Mirrors the two
+        error shapes tools use: {"status":"error",...} and a bare {"error":...}
+        (no status). Non-JSON / non-dict content is treated as non-error."""
+        content = getattr(message, "content", None)
+        if not isinstance(content, str) or not content:
+            return False
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if data.get("status") == "error":
+            return True
+        return "status" not in data and bool(data.get("error"))
+
+    def _get_escalation_llm(self):
+        """The advanced-profile LLM client used for auto-escalation, built once
+        and cached (same profile use_advanced_model picks: the last, most
+        capable, of llm_profile). Hooks are wired so cost/debugger tracking
+        captures escalated calls too. Returns None if it cannot be built."""
+        cached = getattr(self, "_escalation_llm_cached", "unset")
+        if cached != "unset":
+            return cached
+        client = None
+        try:
+            profiles = self.agent_config.available_llm_profiles if self.agent_config else []
+            if len(profiles) > 1:
+                from ...llm.factory import create_llm_from_profile
+                ssl_verify = getattr(self.system_config, "network", None)
+                ssl_verify = ssl_verify.ssl_verify if ssl_verify else None
+                client = create_llm_from_profile(
+                    config=self.system_config, llm_profile=profiles[-1],
+                    ssl_verify=ssl_verify)
+                if hasattr(client, "set_app_title"):
+                    client.set_app_title(self.name)
+                if self._hook_manager:
+                    self._hook_manager.wire_llm_hooks(client)
+                logger.info("[%s] built escalation (advanced) LLM: %s",
+                            self.name, profiles[-1])
+        except Exception as e:
+            logger.warning("[%s] could not build escalation LLM: %s", self.name, e)
+            client = None
+        self._escalation_llm_cached = client
+        return client
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
@@ -1715,6 +1781,7 @@ class Agent(MCPServer):
         # Add safeguards against infinite loops
         consecutive_no_tool_calls = 0
         consecutive_empty_responses = 0
+        consecutive_tool_error_steps = 0  # steps whose tool calls ALL errored (stuck signal)
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
 
@@ -1724,6 +1791,16 @@ class Agent(MCPServer):
         # history from a previous request on the same session doesn't
         # cause false positives at the start of a new request.
         loop_detector = self._create_loop_detector()
+
+        # Per-request auto-escalation: swap in the advanced model for a few steps
+        # when the run loop observes the agent is stuck (loop detector / repeated
+        # tool errors). State is request-scoped (must not leak across requests on
+        # this shared Agent singleton). Disabled unless configured and an advanced
+        # profile exists and we're not already running advanced.
+        escalator = self._create_stuck_escalator(
+            already_advanced=(use_advanced_model or llm_override is not None))
+        escalate_error_streak = int(
+            getattr(self.agent_config, "escalate_error_streak", 2)) if self.agent_config else 2
 
         # Helper function to yield any pending status events from per-request forwarder
         def yield_pending_status_events():
@@ -1766,8 +1843,14 @@ class Agent(MCPServer):
             for status_event in yield_pending_status_events():
                 yield status_event
 
+            # Auto-escalation: is this step inside an open escalation window?
+            # begin_step() consumes one advanced call from the run budget.
+            escalated_this_step = escalator.begin_step()
+
             # Signal LLM call start
-            if llm_profile_info_override:
+            if escalated_this_step:
+                llm_display = " (advanced — escalated: stuck)"
+            elif llm_profile_info_override:
                 llm_display = f" ({llm_profile_info_override})"
             else:
                 llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
@@ -1847,7 +1930,14 @@ class Agent(MCPServer):
                 fallback_index = 0  # Already at fallback, no further fallbacks available
                 fallback_profiles = []  # No more fallbacks to try
             else:
+                # Escalated step → advanced client (if it built); otherwise the
+                # run's normal LLM. A persistent fallback (rate-limit path above)
+                # takes precedence — we don't escalate on top of a degraded run.
                 current_llm = active_llm
+                if escalated_this_step:
+                    escalation_llm = self._get_escalation_llm()
+                    if escalation_llm is not None:
+                        current_llm = escalation_llm
                 fallback_index = 0
                 fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
                 # Bug-Fix: fallback_profiles folgt derselben Convention wie
@@ -2233,7 +2323,20 @@ class Agent(MCPServer):
                         f"Loop detected: {loop_result.tool_name} ({loop_result.repetition_count}x)",
                         meta={"step": step + 1, "loop_type": loop_result.loop_type}
                     )
-                    
+
+                    # Objective stuck signal → open an escalation window so the
+                    # NEXT few steps run on the advanced model (budget permitting).
+                    esc_reason = escalator.trigger(
+                        f"tool-call loop ({loop_result.tool_name})")
+                    if esc_reason:
+                        logger.warning(
+                            "[%s] auto-escalating to advanced model at step %d: %s "
+                            "(budget used %d/%d)", self.name, step + 1, esc_reason,
+                            escalator.calls_used, escalator.max_calls)
+                        await status_worker.progress(
+                            f"auto-escalating to advanced model ({esc_reason})",
+                            meta={"step": step + 1})
+
                     # If tool should be blocked, filter it out
                     if loop_result.should_block_tool:
                         blocked_tools = loop_result.blocked_tools
@@ -2307,6 +2410,27 @@ class Agent(MCPServer):
 
                 # Add tool results to the results dictionary
                 results["calls"].extend(tool_results)
+
+                # Stuck signal: a step whose tool calls ALL returned an error.
+                # Catches the near-loops the exact-match detector misses (same
+                # tool retried with slightly varied wrong args). N in a row →
+                # open an escalation window.
+                if tool_messages and all(
+                        self._tool_message_is_error(m) for m in tool_messages):
+                    consecutive_tool_error_steps += 1
+                    if consecutive_tool_error_steps >= escalate_error_streak:
+                        esc_reason = escalator.trigger(
+                            f"{consecutive_tool_error_steps} all-error tool steps")
+                        if esc_reason:
+                            logger.warning(
+                                "[%s] auto-escalating to advanced model at step %d: "
+                                "%s (budget used %d/%d)", self.name, step + 1,
+                                esc_reason, escalator.calls_used, escalator.max_calls)
+                            await status_worker.progress(
+                                f"auto-escalating to advanced model ({esc_reason})",
+                                meta={"step": step + 1})
+                else:
+                    consecutive_tool_error_steps = 0
 
                 # CRITICAL: Check if ANY tool modified the session messages during execution.
                 # Tools can set modified messages via session_tracker.set_compacted_messages()

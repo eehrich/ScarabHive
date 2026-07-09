@@ -1,0 +1,40 @@
+plugins:
+  servers:
+
+    esc_json:
+      type: json_store
+      enabled: true
+      description: "escalation test store"
+
+    # Test agent for auto_escalate_on_stuck: standard profile gpt-5-nano,
+    # advanced profile gpt-5-mini. A deliberately repetitive task trips the
+    # loop detector, which must swap the next steps onto the advanced model.
+    escalation_test_agent:
+      type: basic_agent
+      enabled: true
+      description: "Test agent for stuck auto-escalation (loop detector + tool errors)"
+
+      agent_config:
+        llm_profile: [turbo, chat]   # [standard=gpt-5-nano, advanced=deepseek-chat]
+        max_steps: 8
+        system_template: "./prompts/escalation_test_prompt.md"
+
+        auto_escalate_on_stuck: true
+        escalate_rounds: 2
+        escalate_max_calls: 4
+        escalate_error_streak: 2
+
+        loop_detection:
+          enabled: true
+          exact_match_threshold: 3
+
+        tools:
+          allowed:
+            - "esc_json/*"
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["test", "escalation"]
+        category: "development"
+        visibility: "both"

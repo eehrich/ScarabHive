@@ -249,6 +249,14 @@ class AgentConfig(BaseModel):
     template_vars: Optional[Dict[str, Any]] = None  # Custom variables for Jinja2 template rendering
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)  # Timeout configuration for deadlock prevention
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)  # Tool call loop detection
+    # Auto-escalate to the advanced llm_profile (llm_profile[1]) when the run
+    # loop observes the agent is stuck (loop detector, or repeated all-error tool
+    # steps). Time-boxed + budget-capped; needs llm_profile to be a [std, advanced]
+    # list. No-op when already running advanced (use_advanced_model).
+    auto_escalate_on_stuck: bool = False
+    escalate_rounds: int = 2          # steps to stay on the advanced model per trigger
+    escalate_max_calls: int = 6       # total advanced calls allowed per run (budget)
+    escalate_error_streak: int = 2    # trigger after N consecutive all-error tool steps
 
     @property
     def default_llm_profile(self) -> str:

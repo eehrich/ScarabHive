@@ -177,6 +177,37 @@ When using a custom profile, status updates include the profile information:
 Using LLM profile: think:openai_httpx/gpt-5.1
 ```
 
+## Auto-escalation when stuck
+
+An agent can escalate itself from the standard to the advanced `llm_profile`
+**mid-run** when the run loop objectively observes it is stuck — without the
+agent having to admit it (weak models rarely do). Signals (no self-assessment):
+
+- the tool-call **loop detector** fires (same call/sequence repeated), or
+- **`escalate_error_streak`** consecutive steps whose tool calls ALL returned an
+  error (catches near-loops the exact-match detector misses).
+
+Escalation is time-boxed and budget-capped, not sticky-until-end: each trigger
+opens a window of `escalate_rounds` steps on the advanced model, then the agent
+drops back and only re-escalates on a fresh signal, until `escalate_max_calls`
+advanced calls have been spent this run.
+
+```yaml
+agent_config:
+  llm_profile: [normal, think]   # [standard, advanced]
+  auto_escalate_on_stuck: true
+  escalate_rounds: 2             # advanced steps per trigger
+  escalate_max_calls: 6          # total advanced calls per run (budget)
+  escalate_error_streak: 2       # trigger after N all-error tool steps
+```
+
+No-op unless `llm_profile` is a `[std, advanced]` list and the run isn't already
+advanced (`use_advanced_model`). Each escalated step logs a warning and a status
+line (`advanced — escalated: stuck`) — visible, never silent. Note this is
+complementary to orchestrator escalation (`use_advanced_model` on a
+`continue`): the orchestrator judges *between* runs, auto-escalation intervenes
+*within* one.
+
 ## Example Use Cases
 
 ### Parent Agent Delegating Complex Task
