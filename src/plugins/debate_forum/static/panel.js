@@ -383,12 +383,117 @@
         // panel head — matches the main chat panel). Degrades gracefully if
         // Prism isn't available.
         if (window.Prism) window.Prism.highlightAllUnder($chatMessages);
+        // Add JSON ⇄ human-readable toggle to each ```json block
+        enhanceJsonBlocks($chatMessages);
         // Scroll to bottom
         $chatMessages.scrollTop = $chatMessages.scrollHeight;
 
         // Update participants sidebar
         renderParticipants(messages);
         lastMsgSig = msgSignature(messages);
+    }
+
+    // ── JSON ⇄ human-readable toggle ──────────────────────────
+    // Each ```json block gets a small top-right toggle (like the pin) that
+    // switches between the raw JSON (Prism-highlighted) and a nested,
+    // human-readable rendering parsed from that same JSON. Purely client-side.
+    function prettifyKey(k) {
+        return String(k).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    // Recursively turn a parsed JSON value into DOM. Uses textContent only
+    // (no innerHTML) so message content can never inject markup.
+    function jsonToDom(value) {
+        if (Array.isArray(value)) {
+            const ul = document.createElement("ul");
+            ul.className = "json-array";
+            for (const item of value) {
+                const li = document.createElement("li");
+                li.appendChild(jsonToDom(item));
+                ul.appendChild(li);
+            }
+            return ul;
+        }
+        if (value && typeof value === "object") {
+            const box = document.createElement("div");
+            box.className = "json-obj";
+            for (const [k, v] of Object.entries(value)) {
+                const field = document.createElement("div");
+                field.className = "json-field";
+                const key = document.createElement("span");
+                key.className = "json-key";
+                key.textContent = prettifyKey(k);
+                field.appendChild(key);
+                const val = document.createElement("div");
+                val.className = "json-val";
+                val.appendChild(jsonToDom(v));
+                field.appendChild(val);
+                box.appendChild(field);
+            }
+            return box;
+        }
+        const span = document.createElement("span");
+        span.className = "json-scalar";
+        span.textContent = value === null || value === undefined ? "—" : String(value);
+        return span;
+    }
+
+    // Tolerant JSON parse: strict first, then repair the single most common LLM
+    // mistake — raw control chars (unescaped newlines/tabs) inside string values.
+    // Returns the parsed value, or undefined if still not parseable.
+    function looseJsonParse(text) {
+        try { return JSON.parse(text); } catch (e) { /* try repair */ }
+        let out = "", inStr = false, esc = false;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (esc) { out += ch; esc = false; continue; }
+            if (ch === "\\") { out += ch; esc = true; continue; }
+            if (ch === '"') { inStr = !inStr; out += ch; continue; }
+            if (inStr && ch.charCodeAt(0) < 0x20) {
+                out += JSON.stringify(ch).slice(1, -1); // e.g. real \n → escaped \n
+                continue;
+            }
+            out += ch;
+        }
+        try { return JSON.parse(out); } catch (e) { return undefined; }
+    }
+
+    function enhanceJsonBlocks(root) {
+        // Any code block (```json or a plain ``` fence) whose content is a JSON
+        // object/array. Non-JSON code (python, bash, prose) fails the parse and
+        // is skipped; genuinely malformed JSON (missing commas) is skipped too.
+        const codes = root.querySelectorAll("pre > code");
+        for (const code of codes) {
+            const pre = code.parentElement;
+            if (pre.dataset.jsonEnhanced) continue;
+            const data = looseJsonParse(code.textContent);
+            if (data === null || typeof data !== "object") continue;
+            pre.dataset.jsonEnhanced = "1";
+
+            const wrap = document.createElement("div");
+            wrap.className = "json-block";
+            pre.parentNode.insertBefore(wrap, pre);
+            wrap.appendChild(pre);
+
+            const human = document.createElement("div");
+            human.className = "json-human markdown-body";
+            human.style.display = "none";
+            human.appendChild(jsonToDom(data));
+            wrap.appendChild(human);
+
+            const btn = document.createElement("button");
+            btn.className = "json-toggle";
+            btn.type = "button";
+            btn.title = "Umschalten: JSON ⇄ lesbar";
+            btn.textContent = "📖";
+            btn.addEventListener("click", () => {
+                const showingJson = pre.style.display !== "none";
+                pre.style.display = showingJson ? "none" : "";
+                human.style.display = showingJson ? "" : "none";
+                btn.textContent = showingJson ? "{ }" : "📖";
+            });
+            wrap.appendChild(btn);
+        }
     }
 
     // Cheap change signature: message count + total content length. Catches
@@ -501,6 +606,7 @@
 
             $verdictContent.innerHTML = html;
             if (window.Prism) window.Prism.highlightAllUnder($verdictContent);
+            enhanceJsonBlocks($verdictContent);
         } else {
             $verdictBox.style.display = "none";
         }

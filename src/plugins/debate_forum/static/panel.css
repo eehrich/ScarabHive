@@ -474,6 +474,46 @@ body {
 }
 .markdown-body th { background: var(--bg-hover); }
 
+/* ── JSON ⇄ human-readable toggle ──────────────────────────── */
+.json-block { position: relative; }
+.json-toggle {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 2;
+    padding: 1px 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.15s;
+}
+.json-block:hover .json-toggle { opacity: 1; }
+.json-toggle:hover { background: var(--bg-active); color: var(--text-primary); }
+
+/* Human-readable rendering of a JSON object/array */
+.json-human { font-size: 14px; line-height: 1.55; }
+.json-human .json-field { margin: 3px 0; }
+.json-human .json-key { font-weight: 600; color: var(--accent); }
+.json-human .json-key::after { content: ": "; color: var(--text-muted); }
+.json-human .json-val { display: inline; }
+/* Nested object → indented block with a rule under the key */
+.json-human .json-val > .json-obj {
+    display: block;
+    margin: 2px 0 6px 14px;
+    padding-left: 12px;
+    border-left: 2px solid var(--border);
+}
+/* Nested array → bullet list under the key */
+.json-human .json-val > .json-array { display: block; margin: 2px 0 6px 4px; }
+.json-human ul.json-array { list-style: disc; padding-left: 20px; margin: 2px 0; }
+.json-human ul.json-array > li { margin: 2px 0; }
+.json-human .json-scalar { color: var(--text-primary); white-space: pre-wrap; }
+
 /* Role colors — generic palette, assigned dynamically via JS hash */
 .role-moderator  { background: rgba(137, 180, 250, 0.2); color: var(--accent); }
 .role-slot0      { background: rgba(166, 227, 161, 0.2); color: var(--accent-green); }
