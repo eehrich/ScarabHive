@@ -14,7 +14,9 @@ tools:
         Operations: write (create/replace), read (whole doc or 'path'), merge
         (deep-merge object), merge_doc (merge one stored doc 'source' into 'doc',
         no JSON re-typing), set_value (one value at 'path'), delete_keys,
-        delete_doc, list (existing docs), outline (structure without values).
+        delete_doc, undo (revert your LAST change to 'doc' — call again to step
+        further back; use it to recover from a mistake instead of re-typing the
+        old JSON), list (existing docs), outline (structure without values).
         Write protection: a document belongs to whoever created it. You may READ
         every document in the namespace, but only modify your own — write your
         own document (omit 'doc' for a fresh id) and let the owner merge it.
@@ -23,7 +25,7 @@ tools:
         properties:
           operation:
             type: string
-            enum: [write, read, merge, merge_doc, set_value, delete_keys, delete_doc, list, outline]
+            enum: [write, read, merge, merge_doc, set_value, delete_keys, delete_doc, undo, list, outline]
             description: "The action to perform"
           namespace:
             type: string
@@ -81,6 +83,14 @@ config:
       document; every session sharing the namespace may read it. 'shared':
       anyone may modify (pre-0.5 behaviour). Ownership is bound to the
       runtime-injected _session_id, which an LLM cannot forge.
+  undo_depth:
+    type: integer
+    default: 5
+    description: |
+      How many prior versions of each document to keep so the 'undo' operation
+      can revert mistakes (each mutation snapshots the doc first). The interface
+      is single-step; depth lets 'undo' be called repeatedly to walk back a few
+      steps. 0 disables undo (no snapshots kept).
   max_docs:
     type: integer
     default: 50

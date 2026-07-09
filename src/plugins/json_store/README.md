@@ -27,11 +27,34 @@ One tool, `<instance>_manage_json`, dispatched via `operation`
 | `set_value`   | `doc`, `path`, `value`          | set one value, creates intermediate objects |
 | `delete_keys` | `doc`, `paths[]`                | delete paths |
 | `delete_doc`  | `doc`                           | drop document |
+| `undo`        | `doc`                           | revert your LAST change (repeatable; recover from a mistake without re-typing the old JSON) |
 | `list`        | –                               | existing docs |
 | `outline`     | `doc`, `depth?`                 | structure without values (cheap inspection) |
 
 Paths use dot notation with `[i]` for arrays: `key_characters.Nora.age`,
 `milestones[2].label`.
+
+## Undo
+
+Every mutation snapshots the document first, so an agent that made a mistake
+(merged the wrong delta, deleted too much, overwrote a field) can revert it
+with `undo` instead of reconstructing the previous JSON by hand — which would
+mean re-typing JSON through the LLM, the exact corruption this plugin exists to
+avoid.
+
+- The interface is **single-step and parameter-free**: `undo` reverts the LAST
+  mutation on `doc`. An LLM never has to count how many operations to reverse.
+- **Repeatable**: call it again to step further back, up to `undo_depth`
+  (default 5) snapshots.
+- Undoing the operation that *created* a document deletes it again; `undo` after
+  a `delete_doc` recreates the document.
+- Owner-guarded like any mutation (only the owner may undo; a deleted doc can
+  only be undone by its original owner).
+- The result reports what was undone and how many undos remain
+  (`{"undone": "merge_doc", "snapshots_left": 1}`).
+- History is per-namespace, in-memory, and evicted with the namespace TTL.
+  `undo_depth: 0` disables it. Not a redo/version-control system — a short
+  safety net for immediate mistakes.
 
 ## Write protection (owner)
 

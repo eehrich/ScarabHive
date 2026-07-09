@@ -939,6 +939,143 @@ class TestWriteProtection:
                                     "data": {"b": 2}}))["status"] == "ok"
 
 
+class TestUndo:
+    """Single-step, repeatable undo — the recovery path for a mistake, so the
+    agent never has to re-type the previous JSON by hand."""
+
+    @pytest.mark.asyncio
+    async def test_undo_reverts_a_bad_merge(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.merge({**SID, "doc": "d", "data": {"b": 2}})  # oops
+        res = await server.undo({**SID, "doc": "d"})
+        assert res["status"] == "ok" and res["undone"] == "merge"
+        assert json.loads((await server.read({**SID, "doc": "d"}))["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_undo_is_repeatable_across_steps(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.merge({**SID, "doc": "d", "data": {"b": 2}})
+        await server.merge({**SID, "doc": "d", "data": {"c": 3}})
+        await server.undo({**SID, "doc": "d"})   # drop c
+        await server.undo({**SID, "doc": "d"})   # drop b
+        assert json.loads((await server.read({**SID, "doc": "d"}))["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_undo_of_create_deletes_the_doc(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        res = await server.undo({**SID, "doc": "d"})
+        assert res["status"] == "ok" and res["deleted"] is True
+        assert (await server.read({**SID, "doc": "d"}))["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_undo_reverts_replace(self, server):
+        await server.write({**SID, "doc": "d", "data": {"v": 1}})
+        await server.write({**SID, "doc": "d", "data": {"v": 2}, "if_exists": "replace"})
+        await server.undo({**SID, "doc": "d"})
+        assert json.loads((await server.read({**SID, "doc": "d"}))["json"]) == {"v": 1}
+
+    @pytest.mark.asyncio
+    async def test_undo_reverts_set_value(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": {"b": 1}}})
+        await server.set_value({**SID, "doc": "d", "path": "a.b", "value": 99})
+        await server.undo({**SID, "doc": "d"})
+        assert json.loads((await server.read({**SID, "doc": "d"}))["json"]) == {"a": {"b": 1}}
+
+    @pytest.mark.asyncio
+    async def test_undo_reverts_delete_keys(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1, "b": 2}})
+        await server.delete_keys({**SID, "doc": "d", "paths": ["a"]})
+        await server.undo({**SID, "doc": "d"})
+        assert json.loads((await server.read({**SID, "doc": "d"}))["json"]) == {"a": 1, "b": 2}
+
+    @pytest.mark.asyncio
+    async def test_undo_recreates_a_deleted_doc(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.delete_doc({**SID, "doc": "d"})
+        res = await server.undo({**SID, "doc": "d"})
+        assert res["status"] == "ok" and res["undone"] == "delete_doc"
+        assert json.loads((await server.read({**SID, "doc": "d"}))["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_undo_reverts_merge_doc(self, server):
+        await server.write({**SID, "doc": "target", "data": {"a": 1}})
+        await server.write({**SID, "doc": "src", "data": {"b": 2}})
+        await server.merge_doc({**SID, "doc": "target", "source": "src"})
+        await server.undo({**SID, "doc": "target"})
+        assert json.loads((await server.read({**SID, "doc": "target"}))["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_undo(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.undo({**SID, "doc": "d"})   # undo the create
+        res = await server.undo({**SID, "doc": "d"})  # nothing left
+        assert res["status"] == "error" and "Nothing to undo" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_snapshots_left_decreases(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.merge({**SID, "doc": "d", "data": {"b": 2}})
+        r1 = await server.undo({**SID, "doc": "d"})
+        assert r1["snapshots_left"] == 1   # the create snapshot remains
+        r2 = await server.undo({**SID, "doc": "d"})
+        assert r2["snapshots_left"] == 0
+
+    @pytest.mark.asyncio
+    async def test_depth_caps_history(self, mock_system_config):
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True, config={"undo_depth": 2}))
+        await srv.write({**SID, "doc": "d", "data": {"n": 0}})
+        for n in range(1, 5):
+            await srv.merge({**SID, "doc": "d", "data": {"n": n}})
+        # only the last 2 mutations are reversible
+        await srv.undo({**SID, "doc": "d"})   # n=4 -> n=3
+        await srv.undo({**SID, "doc": "d"})   # n=3 -> n=2
+        assert json.loads((await srv.read({**SID, "doc": "d"}))["json"])["n"] == 2
+        assert (await srv.undo({**SID, "doc": "d"}))["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_undo_disabled(self, mock_system_config):
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True, config={"undo_depth": 0}))
+        await srv.write({**SID, "doc": "d", "data": {"a": 1}})
+        await srv.merge({**SID, "doc": "d", "data": {"b": 2}})
+        res = await srv.undo({**SID, "doc": "d"})
+        assert res["status"] == "error" and "disabled" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_foreign_agent_cannot_undo(self, server):
+        owner = {"_session_id": "owner", "namespace": "grp"}
+        other = {"_session_id": "other", "namespace": "grp"}
+        await server.write({**owner, "doc": "synopsis", "data": {"a": 1}})
+        await server.merge({**owner, "doc": "synopsis", "data": {"b": 2}})
+        res = await server.undo({**other, "doc": "synopsis"})
+        assert res["status"] == "error" and "another agent" in res["error"]
+        # owner still can
+        assert (await server.undo({**owner, "doc": "synopsis"}))["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_foreign_agent_cannot_undo_a_deletion(self, server):
+        owner = {"_session_id": "owner", "namespace": "grp"}
+        other = {"_session_id": "other", "namespace": "grp"}
+        await server.write({**owner, "doc": "d", "data": {"a": 1}})
+        await server.delete_doc({**owner, "doc": "d"})
+        # doc is gone; a foreign agent must not resurrect it
+        res = await server.undo({**other, "doc": "d"})
+        assert res["status"] == "error" and "another agent" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_undo_status_event(self, server):
+        st = RecordingStatus()
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.merge({**SID, "doc": "d", "data": {"b": 2}})
+        res = await server.manage_json({**SID, "_status": st, "operation": "undo",
+                                        "doc": "d"})
+        assert res["status"] == "ok"
+        assert len(st.ended) == 1 and "undid merge" in st.ended[0]
+
+
 class RecordingStatus:
     """Captures the terminal status event the plugin emits."""
 

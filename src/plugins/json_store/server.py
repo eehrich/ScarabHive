@@ -40,6 +40,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from difflib import get_close_matches
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -92,10 +93,21 @@ class JsonStoreServer(SchemaBasedMCPServer):
         self._default_write_access: str = str(
             config_dict.get("default_write_access", "owner")).lower()
 
+        # Undo: each mutation snapshots the document's prior state, so an agent
+        # that made a mistake can revert it ('undo' operation) instead of
+        # re-typing the previous JSON by hand — the exact error class the store
+        # exists to avoid. The interface is single-step ("undo the last change"),
+        # deliberately parameter-free (an LLM must never have to count how many
+        # ops to reverse); depth lets it be called repeatedly to walk a few
+        # steps back. 0 disables.
+        self._undo_depth: int = int(config_dict.get("undo_depth", 5))
+
         # namespace (session id or "global") -> doc name -> Python object
         self._docs: Dict[str, Dict[str, Any]] = {}
         # namespace -> doc name -> owning session id (None = shared)
         self._doc_owners: Dict[str, Dict[str, Optional[str]]] = {}
+        # namespace -> doc name -> bounded stack of pre-mutation snapshots
+        self._doc_history: Dict[str, Dict[str, "deque[Dict[str, Any]]"]] = {}
         self._ns_last_access: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
@@ -121,6 +133,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
             for k in expired:
                 self._docs.pop(k, None)
                 self._doc_owners.pop(k, None)
+                self._doc_history.pop(k, None)
                 self._ns_last_access.pop(k, None)
                 logger.info("json_store: evicted idle namespace '%s' (TTL)", k)
         self._ns_last_access[ns] = now
@@ -165,16 +178,47 @@ class JsonStoreServer(SchemaBasedMCPServer):
                      f"fresh id) and let its owner merge your changes.",
         }
 
-    def _register_owner(self, params: Dict[str, Any], name: str) -> Optional[str]:
-        """Record ownership of a freshly created document. Returns the error
-        message for an invalid ``write_access`` value, else None."""
-        access = str(params.get("write_access")
-                     or self._default_write_access).lower()
+    def _resolve_write_access(self, params: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """(access, error) — the effective write_access for a create, validated.
+        error is set for an invalid explicit value."""
+        access = str(params.get("write_access") or self._default_write_access).lower()
         if access not in ("owner", "shared"):
-            return "write_access must be 'owner' or 'shared'"
+            return None, "write_access must be 'owner' or 'shared'"
+        return access, None
+
+    def _register_owner(self, params: Dict[str, Any], name: str,
+                        access: str) -> None:
+        """Record ownership of a freshly created document (access pre-validated)."""
         self._owners(params)[name] = (
             self._caller(params) if access == "owner" else None)
-        return None
+
+    # ------------------------------------------------------------------
+    # Undo history (snapshot before every mutation)
+    # ------------------------------------------------------------------
+
+    def _history(self, params: Dict[str, Any]) -> Dict[str, "deque[Dict[str, Any]]"]:
+        return self._doc_history.setdefault(self._ns(params), {})
+
+    def _snapshot(self, params: Dict[str, Any], name: str, op: str) -> None:
+        """Capture a document's state BEFORE a mutation so ``undo`` can revert
+        exactly this operation. Records existence, a deep copy of the value, and
+        the owner (so undo restores ownership, and undo of a deleted doc knows
+        who may do it). No-op when undo is disabled."""
+        if self._undo_depth <= 0:
+            return
+        bucket = self._bucket(params)
+        hist = self._history(params)
+        stack = hist.get(name)
+        if stack is None:
+            stack = deque(maxlen=self._undo_depth)
+            hist[name] = stack
+        existed = name in bucket
+        stack.append({
+            "op": op,
+            "existed": existed,
+            "value": copy.deepcopy(bucket[name]) if existed else None,
+            "owner": self._owners(params).get(name),
+        })
 
     @staticmethod
     def _new_doc_id(bucket: Dict[str, Any]) -> str:
@@ -474,10 +518,11 @@ class JsonStoreServer(SchemaBasedMCPServer):
         }
 
     def _commit(self, params: Dict[str, Any], name: str, value: Any,
-                **extra: Any) -> Dict[str, Any]:
+                op: str = "write", **extra: Any) -> Dict[str, Any]:
         """Single gate for every store: write protection, max_docs (new docs),
         size limit and key model are enforced here, and a failed check never
-        touches the stored document (callers pass fully-built candidate values)."""
+        touches the stored document (callers pass fully-built candidate values).
+        ``op`` labels the mutation for the undo history."""
         bucket = self._bucket(params)
         denied = self._write_guard(params, name)
         if denied:
@@ -486,6 +531,10 @@ class JsonStoreServer(SchemaBasedMCPServer):
         if created and len(bucket) >= self._max_docs:
             return {"status": "error",
                     "error": f"Too many documents ({self._max_docs}). Delete unused ones."}
+        access, access_error = (self._resolve_write_access(params)
+                                if created else (None, None))
+        if access_error:
+            return {"status": "error", "error": access_error}
         # Key model: auto-remap known/typo'd keys, reject the rest.
         value, remaps, violations = self._apply_key_model(name, value)
         if violations:
@@ -495,10 +544,10 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return {"status": "error",
                     "error": f"Document too large ({size} chars > limit "
                              f"{self._max_doc_bytes})."}
+        # All checks passed — snapshot the prior state, then apply.
+        self._snapshot(params, name, op)
         if created:
-            access_error = self._register_owner(params, name)
-            if access_error:
-                return {"status": "error", "error": access_error}
+            self._register_owner(params, name, access)
         bucket[name] = value
         if remaps:
             extra["remapped"] = remaps
@@ -570,6 +619,12 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return f"listed {result.get('count', 0)} doc(s)"
         if operation == "outline":
             return f"outline of '{doc}'"
+        if operation == "undo":
+            left = result.get("snapshots_left", 0)
+            undone = result.get("undone", "?")
+            if result.get("deleted"):
+                return f"undid {undone} → deleted '{doc}' ({left} undo(s) left)"
+            return f"undid {undone} → '{doc}'{size} ({left} undo(s) left)"
         return f"{operation} '{doc}'"  # pragma: no cover - future operations
 
     async def manage_json(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -583,6 +638,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
             "set_value": self.set_value,
             "delete_keys": self.delete_keys,
             "delete_doc": self.delete_doc,
+            "undo": self.undo,
             "list": self.list_docs,
             "outline": self.outline,
         }
@@ -649,7 +705,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
         except ValueError as e:
             return {"status": "error", "error": str(e)}
 
-        return self._commit(params, name, value, replaced=exists,
+        return self._commit(params, name, value, op="write", replaced=exists,
                             **({"repairs": repairs} if repairs else {}))
 
     async def read(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -696,7 +752,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
                              f"{type(incoming).__name__} — use write to replace."}
         merged = self._deep_merge(base, incoming, array_mode) if existed else incoming
         merged_keys = list(incoming.keys()) if isinstance(incoming, dict) else None
-        return self._commit(params, name, merged, created=not existed,
+        return self._commit(params, name, merged, op="merge", created=not existed,
                             merged_keys=merged_keys,
                             **({"repairs": repairs} if repairs else {}))
 
@@ -737,7 +793,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
                              f"{type(incoming).__name__} — use write to replace."}
         merged = self._deep_merge(base, incoming, array_mode) if existed else incoming
         merged_keys = list(incoming.keys()) if isinstance(incoming, dict) else None
-        return self._commit(params, name, merged, created=not existed,
+        return self._commit(params, name, merged, op="merge_doc", created=not existed,
                             merged_from=source, merged_keys=merged_keys)
 
     async def set_value(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -795,7 +851,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
                 parent[last] = value
         except (ValueError, IndexError, KeyError, TypeError) as e:
             return {"status": "error", "error": f"set_value failed at path '{path}': {e}"}
-        return self._commit(params, name, doc, set_path=path)
+        return self._commit(params, name, doc, op="set_value", set_path=path)
 
     async def delete_keys(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Delete one or more paths from a document. Each path is applied
@@ -809,6 +865,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
         denied = self._write_guard(params, name)
         if denied:
             return denied
+        self._snapshot(params, name, "delete_keys")   # before in-place deletion
         deleted, missing = [], []
         for path in paths:
             try:
@@ -839,9 +896,55 @@ class JsonStoreServer(SchemaBasedMCPServer):
         denied = self._write_guard(params, name)
         if denied:
             return denied
+        self._snapshot(params, name, "delete_doc")   # so undo can recreate it
         del bucket[name]
         self._owners(params).pop(name, None)
         return {"status": "ok", "deleted": name, "remaining": list(bucket.keys())}
+
+    async def undo(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Revert the LAST mutation on a document (repeatable up to the history
+        depth). Parameter-free by design — the agent never has to count how many
+        operations to reverse; call it again to step further back. Reverts write/
+        replace/merge/merge_doc/set_value/delete_keys/delete_doc; undoing the
+        operation that created a document deletes it again. Owner-guarded like
+        any mutation. This is the recovery path for a mistake, so the agent
+        doesn't have to reconstruct the previous JSON by hand."""
+        name = (params.get("doc") or "").strip()
+        if not name:
+            return {"status": "error", "error": "'doc' (document name) is required"}
+        if self._undo_depth <= 0:
+            return {"status": "error", "error": "undo is disabled for this store"}
+        stack = self._history(params).get(name)
+        if not stack:
+            return {"status": "error",
+                    "error": f"Nothing to undo for '{name}' (no recorded history)."}
+
+        bucket = self._bucket(params)
+        top = stack[-1]
+        # Authorize against the current owner, or the snapshot's owner when the
+        # document was deleted (so only its owner may undo the deletion).
+        owner = self._owners(params).get(name, top.get("owner"))
+        if owner is not None and owner != self._caller(params):
+            return {"status": "error",
+                    "error": f"Document '{name}' belongs to another agent — you "
+                             f"cannot undo changes to it."}
+
+        snap = stack.pop()
+        owners = self._owners(params)
+        if snap["existed"]:
+            bucket[name] = snap["value"]
+            owners[name] = snap["owner"]
+            size = self._size(snap["value"])
+            return {"status": "ok", "doc": name, "undone": snap["op"],
+                    "restored": True, "chars": size,
+                    "top_level": self._top_level(snap["value"]),
+                    "snapshots_left": len(stack)}
+        # The undone operation had created the document → remove it again.
+        bucket.pop(name, None)
+        owners.pop(name, None)
+        return {"status": "ok", "doc": name, "undone": snap["op"],
+                "restored": False, "deleted": True,
+                "snapshots_left": len(stack)}
 
     async def list_docs(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List the caller's documents with size and top-level keys."""
