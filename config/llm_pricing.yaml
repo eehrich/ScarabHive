@@ -238,8 +238,9 @@ minimax/minimax-m3:
   output: 2.40
   cached_input: 0.12
 
-# Zhipu GLM via OpenRouter — cached_input not listed, defaults to input price.
+# Zhipu GLM via OpenRouter
 # Source: https://openrouter.ai/z-ai/glm-5.2
 z-ai/glm-5.2:
   input: 0.93
   output: 3.00
+  cached_input: 0.182
