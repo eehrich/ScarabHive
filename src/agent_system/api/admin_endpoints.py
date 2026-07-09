@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List, Optional, Any, Dict
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from pydantic import BaseModel
 
 from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole
@@ -33,6 +33,53 @@ class MessageResponse(BaseModel):
     """Generic message response."""
     message: str
     detail: Optional[str] = None
+
+
+class ReloadConfigResponse(BaseModel):
+    """Result of a deliberate config reload."""
+    status: str
+    report: Dict[str, Any]
+
+
+@router.post("/reload-config", response_model=ReloadConfigResponse)
+async def reload_config_endpoint(
+    request: Request,
+    current_user: User = Depends(require_admin),
+):
+    """Deliberately re-read the on-disk config and refresh live plugin instances
+    (no restart, no dropped sessions/jobs).
+
+    Only servers implementing ``reload_config()`` are refreshed (e.g. a sub-agent
+    manager's ``allowed_agents`` / limits). Adding a brand-new agent/plugin
+    definition still requires a restart. There is no file watcher — this is the
+    explicit trigger (also reachable via ``agent-cli reload``).
+    """
+    cfg_service = getattr(request.app.state, "config_service", None)
+    cfg_path = getattr(request.app.state, "config_path", None)
+    if cfg_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="config reload unavailable (no config service in app state)",
+        )
+
+    try:
+        fresh = cfg_service.load_config(config_path=cfg_path, force_reload=True)
+    except Exception as e:
+        # Bad edit on disk: keep the running config untouched, report the error.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"config failed to parse, nothing reloaded: {e}",
+        )
+
+    from agent_system.services.config_reload import reload_plugin_configs
+
+    report = reload_plugin_configs(fresh)
+    request.app.state.config = fresh  # subsequent reads see the fresh config
+    logger.info(
+        "Admin '%s' reloaded config: %d server(s) refreshed",
+        getattr(current_user, "username", "?"), len(report.get("refreshed", [])),
+    )
+    return ReloadConfigResponse(status="ok", report=report)
 
 
 @router.get("/users", response_model=UserListResponse)

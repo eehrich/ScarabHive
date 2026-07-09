@@ -819,6 +819,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     app.state.agent = agent
     app.state.mcp_registry = registry
     app.state.config = config
+    # For the deliberate config reload (POST /admin/reload-config, `agent-cli
+    # reload`): the service + path let the endpoint re-parse the on-disk config.
+    app.state.config_service = _config_service
+    app.state.config_path = cfg_path
     logger.info("Default agent, registry, and config stored in app.state for dependency injection")
 
     # Store registry and config globally

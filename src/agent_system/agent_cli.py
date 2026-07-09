@@ -561,7 +561,7 @@ def main() -> None:
         pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
-    known = ("plugins", "mcp", "hooks", "run", "status", "users", "-h", "--help")
+    known = ("plugins", "mcp", "hooks", "run", "status", "users", "reload", "-h", "--help")
     if rest:
         if not rest[0].startswith("-") and rest[0] not in known:
             rest.insert(0, "run")
@@ -628,6 +628,21 @@ def main() -> None:
     plugins_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for plugin listing")
     plugins_parser.add_argument("--show-metadata", dest="show_metadata", action="store_true", help="Also display plugin._plugin_metadata in listing (JSON output only)")
     plugins_parser.add_argument("--raw", dest="raw", action="store_true", help="Show raw factory information for 'info' action")
+
+    # reload subcommand: deliberately tell the RUNNING server to re-read the
+    # on-disk config and refresh live plugin instances (no restart). agent-cli
+    # itself is in-process (fresh config each run), so this targets the server
+    # via its admin endpoint.
+    reload_parser = subparsers.add_parser(
+        "reload", help="Reload the running server's config (no restart)")
+    reload_parser.add_argument("--url", dest="reload_url", default=None,
+                               help="Server base URL (default: http://127.0.0.1:8000 or AGENT_SERVER_URL)")
+    reload_parser.add_argument("--api-key", dest="reload_api_key", default=None,
+                               help="Admin API key (default: AGENT_ADMIN_API_KEY / AGENT_API_KEY env)")
+    reload_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table",
+                               help="Output format")
+    reload_parser.add_argument("--timeout", dest="timeout", type=float, default=None,
+                               help="Request timeout seconds (default: network.cli_request_timeout or 30)")
 
     # mcp subcommand for external server management (use subparsers so each
     # action can provide its own help output). We keep argument names that
@@ -758,6 +773,70 @@ def main() -> None:
     vprint(f"[cli] loading config: {args.config}")
     config = load_settings(args.config)
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
+    if args.subcommand == "reload":
+        import os
+        try:
+            import httpx
+        except ImportError:
+            print(json.dumps({"error": "httpx library not installed",
+                              "message": "Install with: pip install httpx"}, indent=2))
+            return
+
+        base_url = (args.reload_url or os.environ.get("AGENT_SERVER_URL")
+                    or "http://127.0.0.1:8000").rstrip("/")
+        api_key = (args.reload_api_key or os.environ.get("AGENT_ADMIN_API_KEY")
+                   or os.environ.get("AGENT_API_KEY"))
+        timeout = args.timeout if args.timeout is not None else (
+            config.network.cli_request_timeout if config and config.network else 30.0)
+        url = f"{base_url}/admin/reload-config"
+        headers = {"X-API-Key": api_key} if api_key else {}
+
+        async def _do_reload():
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                return await client.post(url, headers=headers)
+
+        try:
+            resp = asyncio.run(_do_reload())
+        except httpx.ConnectError:
+            print(json.dumps({"error": "cannot connect to server", "url": url,
+                              "hint": "is the server running? set --url / AGENT_SERVER_URL"}, indent=2))
+            return
+        except Exception as e:
+            print(json.dumps({"error": str(e), "url": url}, indent=2))
+            return
+
+        if resp.status_code in (401, 403):
+            print(json.dumps({"error": f"auth failed (HTTP {resp.status_code})",
+                              "hint": "pass --api-key or set AGENT_ADMIN_API_KEY to an admin user's API key"}, indent=2))
+            return
+        if resp.status_code != 200:
+            print(json.dumps({"error": f"server returned HTTP {resp.status_code}",
+                              "body": resp.text[:500]}, indent=2))
+            return
+
+        data = resp.json()
+        report = data.get("report", {})
+        if args.out_format == "json":
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return
+
+        refreshed = report.get("refreshed", [])
+        print("\nConfig reload:")
+        if not refreshed:
+            print("  No live server changed (already up to date, or the change needs a restart).")
+        for item in refreshed:
+            changes = item.get("changes", {})
+            print(f"  [ok] {item.get('server')}: {', '.join(sorted(changes.keys()))}")
+            for field, ch in changes.items():
+                print(f"       {field}: {ch.get('old')!r} -> {ch.get('new')!r}")
+        unsupported = report.get("unsupported", [])
+        if unsupported:
+            print(f"  ({len(unsupported)} server(s) without hot-reload support — a new/changed "
+                  f"definition there needs a restart)")
+        for err in report.get("errors", []):
+            print(f"  [ERR] {err.get('server')}: {err.get('error')}")
+        return
+
     if args.subcommand == "plugins":
         # Use the configured plugin_dirs from the loaded settings. The
         # `load_settings()` call resolves relative paths against the

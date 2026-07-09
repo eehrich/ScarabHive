@@ -104,6 +104,53 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self._async_jobs: dict[str, dict[str, Any]] = {}
         self._async_jobs_lock = __import__('asyncio').Lock()
 
+    def reload_config(self, mcp_config: Any) -> dict:
+        """Hot-reload the mutable, config-derived fields from a freshly parsed
+        MCPConfig — WITHOUT tearing down this instance or its running sub-agents.
+
+        Called by the deliberate config-reload flow (POST /admin/reload-config,
+        `agent-cli reload`). Only the plain filter/limit knobs are refreshed;
+        running jobs, sessions and history are untouched. Adding a brand-new
+        agent *definition* still needs a restart (the agent must be registered),
+        but changing this manager's ``allowed_agents`` / limits / phase filtering
+        now takes effect live.
+
+        Returns a dict of the fields that actually changed ({} if nothing did),
+        so the caller can report exactly what the reload updated.
+        """
+        changes: dict[str, dict] = {}
+
+        def _upd(attr: str, new_value: Any) -> None:
+            old_value = getattr(self, attr, None)
+            if old_value != new_value:
+                changes[attr] = {"old": old_value, "new": new_value}
+                setattr(self, attr, new_value)
+
+        _upd("allowed_agents", list(getattr(mcp_config, 'allowed_agents', ['*'])))
+        _upd("blocked_agents", list(getattr(mcp_config, 'blocked_agents', [])))
+        _upd("max_sub_agents", int(getattr(mcp_config, 'max_sub_agents_per_session', 10)))
+        _upd("max_nesting_depth", int(getattr(mcp_config, 'max_nesting_depth', 5)))
+        _upd("max_sub_agents_per_type", int(getattr(mcp_config, 'max_sub_agents_per_type', 3)))
+        _upd("max_history", int(getattr(mcp_config, 'max_message_history', 100)))
+        _upd("auto_archive_on_limit", bool(getattr(mcp_config, 'auto_archive_on_limit', False)))
+        _upd("default_wait_timeout", int(getattr(mcp_config, 'default_wait_timeout', 3600)))
+
+        phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
+        _upd("phase_filtering_enabled", phase_config.get('enabled', False))
+        _upd("phase_variable", phase_config.get('phase_variable', 'workflow_phase'))
+        _upd("phase_agents", phase_config.get('phase_agents', {}))
+
+        _upd("_min_result_length_by_agent",
+             dict(getattr(mcp_config, 'min_result_length_by_agent', {}) or {}))
+        _upd("_min_result_retries", int(getattr(mcp_config, 'min_result_retries', 2)))
+
+        if changes:
+            logger.info(
+                "SubAgentManager '%s' config reloaded: %s",
+                getattr(self, 'name', '?'), ", ".join(sorted(changes.keys())),
+            )
+        return changes
+
     def is_agent_running(self, instance_id: str) -> bool:
         """Check if sub-agent is actually running (has active async task OR synchronous execution).
         
