@@ -13,19 +13,28 @@ def make(enabled=True, rounds=2, max_calls=6):
     return StuckEscalator(enabled=enabled, rounds=rounds, max_calls=max_calls)
 
 
+def step(esc) -> bool:
+    """Mimic the run loop's happy path: a step runs advanced iff a window is
+    open, and consumes a budget round only then."""
+    advanced = esc.active
+    if advanced:
+        esc.consume()
+    return advanced
+
+
 class TestWindow:
     def test_no_escalation_without_trigger(self):
         esc = make()
         assert not esc.active
-        assert esc.begin_step() is False
+        assert step(esc) is False
 
     def test_trigger_opens_a_window_of_rounds(self):
         esc = make(rounds=2)
         assert esc.trigger("loop") == "loop"      # reason returned once
         assert esc.active
-        assert esc.begin_step() is True           # step 1 advanced
-        assert esc.begin_step() is True           # step 2 advanced
-        assert esc.begin_step() is False          # window closed
+        assert step(esc) is True           # step 1 advanced
+        assert step(esc) is True           # step 2 advanced
+        assert step(esc) is False          # window closed
         assert not esc.active
 
     def test_trigger_ignored_while_window_open(self):
@@ -33,43 +42,67 @@ class TestWindow:
         assert esc.trigger("loop") == "loop"
         assert esc.trigger("loop again") is None   # already escalated → no reset
         # still exactly 3 advanced steps, not extended
-        assert [esc.begin_step() for _ in range(4)] == [True, True, True, False]
+        assert [step(esc) for _ in range(4)] == [True, True, True, False]
 
     def test_retrigger_after_window_closes(self):
         esc = make(rounds=1, max_calls=6)
         assert esc.trigger("loop") == "loop"
-        assert esc.begin_step() is True
-        assert esc.begin_step() is False           # window closed
+        assert step(esc) is True
+        assert step(esc) is False           # window closed
         # stuck again → new window
         assert esc.trigger("loop2") == "loop2"
-        assert esc.begin_step() is True
+        assert step(esc) is True
+
+    def test_open_window_not_wasted_when_advanced_not_used(self):
+        # A step that does NOT use the advanced model (rate-limit fallback /
+        # client unavailable) must not consume the window: peek active, skip
+        # consume() -> the round survives for the next real advanced call.
+        esc = make(rounds=2)
+        esc.trigger("loop")
+        assert esc.active            # window open
+        # ... step runs on a fallback: we peek but never call consume()
+        assert esc.active            # still open, nothing spent
+        assert esc.calls_used == 0
+        assert step(esc) is True     # next real advanced step consumes
+        assert esc.calls_used == 1
 
 
 class TestBudget:
     def test_budget_caps_total_advanced_calls(self):
         esc = make(rounds=3, max_calls=4)
         esc.trigger("a")
-        used = sum(esc.begin_step() for _ in range(3))     # 3 advanced
+        used = sum(step(esc) for _ in range(3))     # 3 advanced
         esc.trigger("b")                                    # window = min(3, 4-3)=1
-        used += sum(esc.begin_step() for _ in range(3))     # only 1 more
+        used += sum(step(esc) for _ in range(3))     # only 1 more
         assert used == 4
         assert esc.calls_used == 4
         # budget exhausted → no more windows
         assert esc.trigger("c") is None
-        assert esc.begin_step() is False
+        assert step(esc) is False
 
     def test_window_never_exceeds_remaining_budget(self):
         esc = make(rounds=10, max_calls=3)
         esc.trigger("a")
-        assert sum(esc.begin_step() for _ in range(10)) == 3
+        assert sum(step(esc) for _ in range(10)) == 3
 
 
 class TestDisabled:
     def test_disabled_never_escalates(self):
         for esc in (make(enabled=False), make(rounds=0), make(max_calls=0)):
             assert esc.trigger("loop") is None
-            assert esc.begin_step() is False
+            assert step(esc) is False
             assert not esc.enabled
+
+    def test_disable_closes_window_and_stops_escalating(self):
+        # When the advanced client can't be built the caller disables the
+        # escalator so the (never-consumed) window doesn't stay open forever.
+        esc = make(rounds=3)
+        esc.trigger("loop")
+        assert esc.active
+        esc.disable()
+        assert not esc.active
+        assert not esc.enabled
+        assert esc.trigger("loop again") is None   # stays off for the run
 
 
 class TestToolMessageErrorClassifier:

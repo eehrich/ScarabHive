@@ -40,18 +40,30 @@ class StuckEscalator:
         """Whether an escalation window is currently open."""
         return self._remaining > 0
 
+    def disable(self) -> None:
+        """Turn escalation off for the rest of this run and close any open
+        window. Called when the advanced client cannot be built, so the run
+        loop stops re-attempting it every step (the window would otherwise stay
+        open forever, since consume() only runs on an actual advanced call)."""
+        self.enabled = False
+        self._remaining = 0
+
     @property
     def calls_used(self) -> int:
         return self._used
 
-    def begin_step(self) -> bool:
-        """Call at the top of a step. Returns True if this step should run on the
-        advanced model, consuming one advanced call from the budget."""
+    def consume(self) -> None:
+        """Spend one advanced call from the current window. Call when the advanced
+        client is actually SELECTED for the step's LLM call — i.e. the budget
+        counts advanced calls issued. A step where no advanced client could be
+        built spends nothing (the caller skips consume). A step where the advanced
+        call is issued but then rate-limited into a fallback still counts (the
+        advanced endpoint was hit); this is self-limiting, since the persistent
+        fallback then suppresses escalation on following steps. No-op when no
+        window is open."""
         if self._remaining > 0:
             self._remaining -= 1
             self._used += 1
-            return True
-        return False
 
     def trigger(self, reason: str) -> Optional[str]:
         """Report a stuck signal. Opens an escalation window for the next

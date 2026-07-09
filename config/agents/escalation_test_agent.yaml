@@ -6,13 +6,17 @@ plugins:
       enabled: true
       description: "escalation test store"
 
-    # Test agent for auto_escalate_on_stuck: standard profile gpt-5-nano,
-    # advanced profile gpt-5-mini. A deliberately repetitive task trips the
-    # loop detector, which must swap the next steps onto the advanced model.
+    # Dev harness for auto_escalate_on_stuck. Standard profile = turbo
+    # (gpt-5-nano), advanced = chat (deepseek-chat). This validates the
+    # ESCALATION MECHANISM (the model swap fires on stuck signals), not that the
+    # advanced model is stronger. Run explicitly with `agent-cli run --agent
+    # escalation_test_agent` and a deliberately repetitive task.
+    # `visibility: private` keeps it out of the general UI agent list; it still
+    # makes real (cheap) API calls, so keep it a dev-only harness.
     escalation_test_agent:
       type: basic_agent
       enabled: true
-      description: "Test agent for stuck auto-escalation (loop detector + tool errors)"
+      description: "Dev harness for stuck auto-escalation (loop detector + tool errors)"
 
       agent_config:
         llm_profile: [turbo, chat]   # [standard=gpt-5-nano, advanced=deepseek-chat]
@@ -37,4 +41,4 @@ plugins:
         version: "1.0.0"
         tags: ["test", "escalation"]
         category: "development"
-        visibility: "both"
+        visibility: "private"

@@ -333,31 +333,36 @@ class Agent(MCPServer):
         """The advanced-profile LLM client used for auto-escalation, built once
         and cached (same profile use_advanced_model picks: the last, most
         capable, of llm_profile). Hooks are wired so cost/debugger tracking
-        captures escalated calls too. Returns None if it cannot be built."""
-        cached = getattr(self, "_escalation_llm_cached", "unset")
-        if cached != "unset":
+        captures escalated calls too. Returns None if it cannot be built.
+
+        Only a SUCCESSFUL client is cached: a transient build failure is not
+        remembered on this process-wide singleton, so a later run can retry
+        (within a run, the caller disables the escalator on None to avoid
+        re-attempting every step)."""
+        cached = getattr(self, "_escalation_llm_cached", None)
+        if cached is not None:
             return cached
-        client = None
         try:
             profiles = self.agent_config.available_llm_profiles if self.agent_config else []
-            if len(profiles) > 1:
-                from ...llm.factory import create_llm_from_profile
-                ssl_verify = getattr(self.system_config, "network", None)
-                ssl_verify = ssl_verify.ssl_verify if ssl_verify else None
-                client = create_llm_from_profile(
-                    config=self.system_config, llm_profile=profiles[-1],
-                    ssl_verify=ssl_verify)
-                if hasattr(client, "set_app_title"):
-                    client.set_app_title(self.name)
-                if self._hook_manager:
-                    self._hook_manager.wire_llm_hooks(client)
-                logger.info("[%s] built escalation (advanced) LLM: %s",
-                            self.name, profiles[-1])
+            if len(profiles) <= 1:
+                return None
+            from ...llm.factory import create_llm_from_profile
+            ssl_verify = getattr(self.system_config, "network", None)
+            ssl_verify = ssl_verify.ssl_verify if ssl_verify else None
+            client = create_llm_from_profile(
+                config=self.system_config, llm_profile=profiles[-1],
+                ssl_verify=ssl_verify)
+            if hasattr(client, "set_app_title"):
+                client.set_app_title(self.name)
+            if self._hook_manager:
+                self._hook_manager.wire_llm_hooks(client)
+            logger.info("[%s] built escalation (advanced) LLM: %s",
+                        self.name, profiles[-1])
+            self._escalation_llm_cached = client
+            return client
         except Exception as e:
             logger.warning("[%s] could not build escalation LLM: %s", self.name, e)
-            client = None
-        self._escalation_llm_cached = client
-        return client
+            return None
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
@@ -1782,6 +1787,7 @@ class Agent(MCPServer):
         consecutive_no_tool_calls = 0
         consecutive_empty_responses = 0
         consecutive_tool_error_steps = 0  # steps whose tool calls ALL errored (stuck signal)
+        prev_step_all_errored = False     # was the IMMEDIATELY preceding step an all-error tool step?
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
 
@@ -1808,6 +1814,16 @@ class Agent(MCPServer):
                 yield event
 
         for step in range(max_steps):
+            # Error-streak bookkeeping (auto-escalation): the streak counts
+            # CONSECUTIVE all-error tool steps. Any other step type — text-only,
+            # empty response, blocked-tools, cancelled/timeout, or a step where
+            # some tool succeeded — breaks the run. Deciding this from the
+            # previous step's flag at the top of the loop makes it robust to the
+            # many `continue`/`break` paths below (they can't skip a reset here).
+            if not prev_step_all_errored:
+                consecutive_tool_error_steps = 0
+            prev_step_all_errored = False
+
             # Drain any appended user messages before each step
             messages = await self._drain_appended_messages(request_id, messages)
             # Sync context.messages after draining
@@ -1843,9 +1859,11 @@ class Agent(MCPServer):
             for status_event in yield_pending_status_events():
                 yield status_event
 
-            # Auto-escalation: is this step inside an open escalation window?
-            # begin_step() consumes one advanced call from the run budget.
-            escalated_this_step = escalator.begin_step()
+            # Auto-escalation: run this step on the advanced model when a window
+            # is open — but NOT while a persistent rate-limit fallback is active
+            # (we don't escalate on top of a degraded run). The budget round is
+            # only spent later, when the advanced client is actually used.
+            escalated_this_step = escalator.active and self._active_fallback_llm is None
 
             # Signal LLM call start
             if escalated_this_step:
@@ -1938,6 +1956,13 @@ class Agent(MCPServer):
                     escalation_llm = self._get_escalation_llm()
                     if escalation_llm is not None:
                         current_llm = escalation_llm
+                        escalator.consume()   # budget spent only on an actual advanced call
+                    else:
+                        # Advanced client couldn't be built — ran on standard.
+                        # Disable escalation for this run so we don't retry the
+                        # build every step (the window would never close).
+                        escalated_this_step = False
+                        escalator.disable()
                 fallback_index = 0
                 fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
                 # Bug-Fix: fallback_profiles folgt derselben Convention wie
@@ -2418,6 +2443,7 @@ class Agent(MCPServer):
                 if tool_messages and all(
                         self._tool_message_is_error(m) for m in tool_messages):
                     consecutive_tool_error_steps += 1
+                    prev_step_all_errored = True  # keep the streak alive next step
                     if consecutive_tool_error_steps >= escalate_error_streak:
                         esc_reason = escalator.trigger(
                             f"{consecutive_tool_error_steps} all-error tool steps")
@@ -2429,8 +2455,8 @@ class Agent(MCPServer):
                             await status_worker.progress(
                                 f"auto-escalating to advanced model ({esc_reason})",
                                 meta={"step": step + 1})
-                else:
-                    consecutive_tool_error_steps = 0
+                # A non-all-error tool step leaves prev_step_all_errored False,
+                # so the streak resets at the top of the next iteration.
 
                 # CRITICAL: Check if ANY tool modified the session messages during execution.
                 # Tools can set modified messages via session_tracker.set_compacted_messages()
@@ -2520,6 +2546,8 @@ class Agent(MCPServer):
             # No tool calls - check if we should treat this as the final answer
             # Track consecutive responses without tool calls
             consecutive_no_tool_calls += 1
+            # (prev_step_all_errored stays False → the error streak resets at the
+            #  top of the next iteration; handled centrally, see loop top.)
 
             # === CONTINUATION HOOK SIGNAL ===
             # A post_llm_call hook (e.g. agent_continuation) may set
