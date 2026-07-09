@@ -294,7 +294,21 @@ class TaskSwitchServer(SchemaBasedMCPServer):
         # Get previous values from SESSION-SCOPED template vars (not agent_config!)
         # CRITICAL: This ensures session isolation - multiple sessions won't contaminate each other
         previous_values = {}
-        
+
+        # ORDERING INVARIANT — do NOT introduce an `await` before the tracker
+        # write below.
+        #
+        # An LLM commonly emits set_context and a sub-agent spawn in the SAME
+        # turn, and tool_execution runs those calls as concurrent asyncio tasks.
+        # The spawn inherits the parent's live tracker vars (sub_agent_manager
+        # create_sub_session), so the write here must land first. It does,
+        # because this handler reaches the write with ZERO awaits while any
+        # consumer yields to the loop at least once (the spawn does session I/O
+        # first). Round-robin scheduling then guarantees the order regardless of
+        # which tool call the LLM listed first.
+        #
+        # Add an await above this line and that guarantee silently disappears.
+        # tests/plugins/test_plugin_task_switch_ordering.py pins it.
         if session_id and agent and hasattr(agent, '_session_tracker') and agent._session_tracker:
             session_vars = agent._session_tracker.get_session_template_vars(session_id)
             for key in context_vars:

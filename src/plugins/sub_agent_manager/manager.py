@@ -328,6 +328,11 @@ class SubAgentManager:
 
         if parent_context_vars:
             session_data["context_vars"] = parent_context_vars
+            # Provenance snapshot: remembers WHICH values came from the parent,
+            # so a later continue can tell "the sub-agent changed this itself"
+            # from "this is a stale copy of a parent value". See
+            # merge_parent_context_vars().
+            session_data["context_vars_inherited"] = dict(parent_context_vars)
             logger.debug(
                 f"Inherited context_vars from parent: {list(parent_context_vars.keys())}"
             )
@@ -345,6 +350,97 @@ class SubAgentManager:
         )
 
         return sub_session_id
+
+    @staticmethod
+    def merge_parent_context_vars(
+        sub_session_data: dict,
+        parent_live_vars: Optional[dict],
+    ) -> tuple[dict, dict]:
+        """Refresh a sub-session's context_vars from the parent's LIVE vars.
+
+        A sub-agent inherits the parent's context_vars only ONCE, when its
+        session is created. Without this refresh, a ``continue`` would render
+        the sub-agent's prompt from a frozen snapshot: after the coordinator
+        calls ``set_context(aufgabe=World)`` and continues an existing writer,
+        ``{{ aufgabe }}`` would still say "Idee" while the task text says
+        "World" — two contradicting instructions in one prompt.
+
+        Provenance rule: a key the sub-agent set ITSELF (its value differs from
+        the snapshot it inherited) wins; every other key follows the parent,
+        whose tracker is the live source of truth. Keys only the sub-agent has
+        are kept.
+
+        Legacy sessions have no ``context_vars_inherited``; treating their vars
+        as fully inherited lets the parent's current values through, which is
+        the whole point of the refresh.
+
+        The new snapshot ACCUMULATES (old snapshot updated by the parent's
+        current values) instead of replacing it. Replacing would erase the
+        provenance of keys the parent no longer carries — an unreadable or
+        empty parent tracker would then make every sub var look self-set, and
+        the parent could never update it again.
+
+        Returns:
+            (merged_vars, new_inherited_snapshot)
+        """
+        sub_vars = dict(sub_session_data.get("context_vars") or {})
+        parent_live = dict(parent_live_vars or {})
+
+        if "context_vars_inherited" in sub_session_data:
+            inherited = dict(sub_session_data.get("context_vars_inherited") or {})
+        else:
+            inherited = dict(sub_vars)  # legacy: assume nothing was self-set
+
+        own = {
+            key: value for key, value in sub_vars.items()
+            if key not in inherited or inherited[key] != value
+        }
+        merged = {**sub_vars, **parent_live, **own}
+        new_inherited = {**inherited, **parent_live}
+        return merged, new_inherited
+
+    async def refresh_sub_context_vars(
+        self,
+        user_id: str,
+        sub_session_id: str,
+        sub_session_data: dict,
+        parent_agent: Any,
+        parent_session_id: str,
+    ) -> dict:
+        """Merge the parent's live context_vars into a sub-session and persist.
+
+        Called before continuing a sub-agent so its prompt renders from the
+        CURRENT orchestration state. Mutates ``sub_session_data`` in place and
+        returns the merged vars (empty dict if nothing to apply).
+        """
+        parent_live: dict = {}
+        if parent_agent is not None and hasattr(parent_agent, "_session_tracker"):
+            try:
+                parent_live = parent_agent._session_tracker.get_session_template_vars(
+                    parent_session_id,
+                ) or {}
+            except Exception as e:
+                logger.debug(
+                    "Could not read parent live context_vars for %s: %s",
+                    parent_session_id, e,
+                )
+
+        merged, new_inherited = self.merge_parent_context_vars(
+            sub_session_data, parent_live)
+
+        changed = (
+            merged != (sub_session_data.get("context_vars") or {})
+            or new_inherited != (sub_session_data.get("context_vars_inherited") or {})
+        )
+        if changed:
+            sub_session_data["context_vars"] = merged
+            sub_session_data["context_vars_inherited"] = new_inherited
+            await self._session_service.session_manager.save_session(sub_session_data)
+            logger.debug(
+                "Refreshed context_vars for sub-session %s from parent %s: %s",
+                sub_session_id, parent_session_id, sorted(merged),
+            )
+        return merged
 
     async def _link_sub_to_parent(
         self,

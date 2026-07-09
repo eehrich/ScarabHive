@@ -787,12 +787,24 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 })
                 logger.debug(f"Set session metadata for continued sub-agent {instance_id}: user_id={user_id}")
 
-                # CRITICAL: Restore context_vars from sub-session to agent's template_vars
-                # Same pattern as _handle_create — inherits book_id, workflow_phase, etc.
-                # Without this, Jinja2 template variables in system prompts may be empty
-                # on continued sub-agents (e.g., workflow_phase guard, book_id references)
+                # CRITICAL: Refresh context_vars from the PARENT's live state, then
+                # restore them into the sub-agent's template_vars.
+                #
+                # A sub-agent inherits context_vars only once, at create time.
+                # Re-reading only its own frozen snapshot here would render the
+                # prompt from stale state: after the coordinator calls
+                # set_context(aufgabe=World) and continues this sub-agent,
+                # {{ aufgabe }} would still say the previous task while the task
+                # text says "World" — two contradicting instructions. Vars the
+                # sub-agent set itself survive (see merge_parent_context_vars).
                 try:
-                    context_vars = sub_session_data.get("context_vars", {})
+                    context_vars = await manager.refresh_sub_context_vars(
+                        user_id=user_id,
+                        sub_session_id=instance_id,
+                        sub_session_data=sub_session_data,
+                        parent_agent=params.get("_agent"),
+                        parent_session_id=parent_session_id,
+                    )
                     if context_vars:
                         # Set session-scoped template vars (session-isolated, no global mutation)
                         agent._session_tracker.set_session_template_vars(instance_id, context_vars)
