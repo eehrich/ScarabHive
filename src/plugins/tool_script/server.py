@@ -296,10 +296,17 @@ class ToolScriptServer(SchemaBasedMCPServer):
                     f"reference instead.")
             clean = json.loads(text)
 
-            # Status-error convention -> raised, catchable error.
-            if isinstance(clean, dict) and clean.get("status") == "error":
-                entry["error"] = str(clean.get("error"))
-                raise ToolCallError(f"{name_s} -> {clean.get('error')}")
+            # Tools signal failure by RETURN VALUE, in two shapes:
+            #   {"status": "error", "error": ...}   (json_store, SAM, ...)
+            #   {"error": ...}                      (debate_forum, ...)
+            # Both become a raised, catchable ToolCallError — a failed call must
+            # never look like success to a script.
+            if isinstance(clean, dict):
+                status_val = clean.get("status")
+                error_val = clean.get("error")
+                if status_val == "error" or (error_val and status_val is None):
+                    entry["error"] = str(error_val)
+                    raise ToolCallError(f"{name_s} -> {error_val}")
 
             entry["ok"] = True
             logger.info("Tool %s returned via tool_script (%d chars)",

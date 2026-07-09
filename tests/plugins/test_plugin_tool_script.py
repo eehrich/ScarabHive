@@ -202,6 +202,29 @@ class TestErrorContract:
         assert "committed" in res["committed_side_effects"]
 
     @pytest.mark.asyncio
+    async def test_bare_error_key_raises(self, agent):
+        # debate_forum-style failure: {"error": ...} with NO status key.
+        # Must not look like success to the script.
+        agent.add_tool("forum_strict", lambda p: {"error": "Channel 5 not found"})
+        server = make_server()
+        res = await run(server, agent, 'call_tool("forum_strict")\nresult = "reached"')
+        assert res["status"] == "error"
+        assert "Channel 5 not found" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_non_error_status_with_error_none_is_ok(self, agent):
+        # Success shapes must not be misread as failures.
+        agent.add_tool("forum_ok", lambda p: {"status": "posted", "message_id": 7})
+        agent.add_tool("nullerr", lambda p: {"error": None, "value": 3})
+        server = make_server()
+        res = await run(server, agent, (
+            'a = call_tool("forum_ok")\n'
+            'b = call_tool("nullerr")\n'
+            'result = [a["message_id"], b["value"]]'
+        ))
+        assert res["status"] == "ok" and res["result"] == [7, 3]
+
+    @pytest.mark.asyncio
     async def test_tool_error_catchable_in_script(self, agent):
         server = make_server()
         res = await run(server, agent, (
