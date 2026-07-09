@@ -1066,6 +1066,66 @@ class TestUndo:
         assert res["status"] == "error" and "another agent" in res["error"]
 
     @pytest.mark.asyncio
+    async def test_noop_delete_keys_does_not_consume_undo_depth(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.merge({**SID, "doc": "d", "data": {"b": 2}})   # real change
+        # a no-op delete (all paths missing) must not evict the real snapshot
+        for _ in range(5):
+            r = await server.delete_keys({**SID, "doc": "d", "paths": ["nope"]})
+            assert r["status"] == "ok" and r["missing"] == ["nope"]
+        # undo still reverts the merge, not a no-op
+        u = await server.undo({**SID, "doc": "d"})
+        assert u["undone"] == "merge"
+        assert json.loads((await server.read({**SID, "doc": "d"}))["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_noop_replace_does_not_snapshot(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.merge({**SID, "doc": "d", "data": {"b": 2}})
+        # replace with identical content = no-op
+        await server.write({**SID, "doc": "d", "data": {"a": 1, "b": 2},
+                            "if_exists": "replace"})
+        u = await server.undo({**SID, "doc": "d"})
+        assert u["undone"] == "merge"   # the no-op replace left no snapshot
+
+    @pytest.mark.asyncio
+    async def test_history_bounded_across_name_churn(self, mock_system_config):
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True,
+                      config={"max_docs": 10, "undo_depth": 5}))
+        S = {"_session_id": "s", "namespace": "g"}
+        # churn 200 distinct auto-id docs (create + delete) — history for dead
+        # docs must not grow without bound.
+        for _ in range(200):
+            r = await srv.write({**S, "data": {"x": 1}})
+            await srv.delete_doc({**S, "doc": r["doc"]})
+        assert len(srv._doc_history["g"]) <= 2 * 10   # cap = 2x max_docs
+
+    @pytest.mark.asyncio
+    async def test_live_docs_keep_history_under_churn(self, mock_system_config):
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True,
+                      config={"max_docs": 10, "undo_depth": 5}))
+        S = {"_session_id": "s", "namespace": "g"}
+        await srv.write({**S, "doc": "keep", "data": {"v": 0}})
+        await srv.merge({**S, "doc": "keep", "data": {"w": 1}})
+        # churn many dead docs — pruning must drop DEAD docs first, keep 'keep'
+        for _ in range(100):
+            r = await srv.write({**S, "data": {"x": 1}})
+            await srv.delete_doc({**S, "doc": r["doc"]})
+        u = await srv.undo({**S, "doc": "keep"})
+        assert u["status"] == "ok" and u["undone"] == "merge"
+
+    @pytest.mark.asyncio
+    async def test_empty_history_entry_removed(self, server):
+        await server.write({**SID, "doc": "d", "data": {"a": 1}})
+        await server.undo({**SID, "doc": "d"})     # undo the create, stack empties
+        assert "d" not in server._doc_history.get("grp", {})
+        assert "d" not in server._doc_history.get("sess-1", {})
+
+    @pytest.mark.asyncio
     async def test_undo_status_event(self, server):
         st = RecordingStatus()
         await server.write({**SID, "doc": "d", "data": {"a": 1}})

@@ -52,7 +52,10 @@ avoid.
   only be undone by its original owner).
 - The result reports what was undone and how many undos remain
   (`{"undone": "merge_doc", "snapshots_left": 1}`).
-- History is per-namespace, in-memory, and evicted with the namespace TTL.
+- History is per-namespace and in-memory. It is bounded three ways: `undo_depth`
+  snapshots per doc, at most `2 × max_docs` tracked docs (deleted docs keep their
+  history so a deletion can be undone, but oldest/dead ones are pruned first),
+  and full eviction with the namespace TTL. No-op mutations don't consume depth.
   `undo_depth: 0` disables it. Not a redo/version-control system — a short
   safety net for immediate mistakes.
 

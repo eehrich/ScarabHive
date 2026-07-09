@@ -208,10 +208,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return
         bucket = self._bucket(params)
         hist = self._history(params)
-        stack = hist.get(name)
-        if stack is None:
-            stack = deque(maxlen=self._undo_depth)
-            hist[name] = stack
+        # Re-insert the key at the end so dict order = recency (most-recently
+        # touched last); _prune_history evicts the oldest first.
+        stack = hist.pop(name, None) or deque(maxlen=self._undo_depth)
         existed = name in bucket
         stack.append({
             "op": op,
@@ -219,6 +218,37 @@ class JsonStoreServer(SchemaBasedMCPServer):
             "value": copy.deepcopy(bucket[name]) if existed else None,
             "owner": self._owners(params).get(name),
         })
+        hist[name] = stack
+        self._prune_history(hist, bucket)
+
+    def _pop_snapshot(self, params: Dict[str, Any], name: str) -> None:
+        """Drop the most recent snapshot for ``name`` — used to undo a snapshot
+        taken for a mutation that turned out to change nothing (a no-op), so a
+        no-op never erodes the bounded undo depth. Removes the entry if empty."""
+        hist = self._history(params)
+        stack = hist.get(name)
+        if stack:
+            stack.pop()
+            if not stack:
+                del hist[name]
+
+    def _prune_history(self, hist: Dict[str, "deque[Dict[str, Any]]"],
+                       bucket: Dict[str, Any]) -> None:
+        """Bound per-namespace history. Deleted docs keep their history so their
+        deletion can be undone, but that would otherwise grow forever across
+        doc-name churn (create/delete of ever-new auto-ids). Cap the number of
+        tracked docs at 2x max_docs (room for the live set plus recently-deleted
+        docs), evicting the oldest — dead docs (no longer in the bucket) first,
+        then the least-recently-touched live ones."""
+        cap = max(1, self._max_docs * 2)
+        if len(hist) <= cap:
+            return
+        dead = [n for n in hist if n not in bucket]
+        live = [n for n in hist if n in bucket]
+        for n in dead + live:
+            if len(hist) <= cap:
+                break
+            del hist[n]
 
     @staticmethod
     def _new_doc_id(bucket: Dict[str, Any]) -> str:
@@ -544,8 +574,11 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return {"status": "error",
                     "error": f"Document too large ({size} chars > limit "
                              f"{self._max_doc_bytes})."}
-        # All checks passed — snapshot the prior state, then apply.
-        self._snapshot(params, name, op)
+        # All checks passed — snapshot the prior state, then apply. Skip the
+        # snapshot for a no-op (replace/merge/set_value that yields the same
+        # value), which would only erode the bounded undo depth.
+        if created or bucket.get(name) != value:
+            self._snapshot(params, name, op)
         if created:
             self._register_owner(params, name, access)
         bucket[name] = value
@@ -885,6 +918,8 @@ class JsonStoreServer(SchemaBasedMCPServer):
                 deleted.append(path)
             except (ValueError, IndexError, KeyError, TypeError):
                 missing.append(path)
+        if not deleted:
+            self._pop_snapshot(params, name)   # nothing changed → no-op snapshot
         return self._summary(name, bucket[name], self._size(bucket[name]),
                              deleted=deleted, missing=missing)
 
@@ -930,6 +965,8 @@ class JsonStoreServer(SchemaBasedMCPServer):
                              f"cannot undo changes to it."}
 
         snap = stack.pop()
+        if not stack:
+            self._history(params).pop(name, None)   # don't leave an empty deque
         owners = self._owners(params)
         if snap["existed"]:
             bucket[name] = snap["value"]
