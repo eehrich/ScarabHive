@@ -757,6 +757,50 @@ llm_system:
         streaming: false
         json_mode: true
 
+    # ---------------------------------------------------------------------------
+    # ZHIPU GLM MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
+
+    openrouter-glm-5.2:
+      provider: openai_httpx
+      model: z-ai/glm-5.2
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000
+      request_timeout: 600
+      thinking_level: high        # Reasoning efforts high/xhigh supported (xhigh maps to max reasoning)
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: false  # text only, no image/video input
+
+      # Notes:
+      # - Zhipu GLM 5.2: 1M native context, strong at coding and tool use across long-running tasks
+      # - Text only (no multimodal input)
+      # - Pricing: $0.93 input / $3.00 output per 1M tokens
+      # - https://openrouter.ai/z-ai/glm-5.2
+
+    openrouter-glm-5.2-unlimited:
+      provider: openai_httpx
+      model: z-ai/glm-5.2
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000
+      request_timeout: 600
+      thinking_level: high
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      max_tokens: 0  # No limit - let provider decide
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: false
+
 
   # =============================================================================
   # PROFILES for easy access
@@ -920,5 +964,15 @@ llm_system:
     or-deepseek-pro-unlimited:
       model_ref: openrouter-deepseek-pro-unlimited
       description: "OpenRouter DeepSeek V4 Pro - Flagship, no output token limit"
+      max_steps: 500
+
+    or-glm:
+      model_ref: openrouter-glm-5.2
+      description: "OpenRouter GLM 5.2 - 1M context, strong at coding/tool use, reasoning high/xhigh"
+      max_steps: 500
+
+    or-glm-unlimited:
+      model_ref: openrouter-glm-5.2-unlimited
+      description: "OpenRouter GLM 5.2 - No output token limit"
       max_steps: 500
 
