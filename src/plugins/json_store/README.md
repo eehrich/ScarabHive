@@ -57,6 +57,25 @@ cannot impersonate another agent.
 The denial message tells the agent what to do instead — write your own document
 (omit `doc` for a fresh id) and let the owner merge it.
 
+### Limits (by design)
+
+- **A namespace is a shared capability, not a boundary.** Anyone you hand a
+  `namespace` to can read every document in it and can create (squat) any
+  not-yet-existing name. Ownership only stops *modifying an existing* document.
+  So share a namespace only with cooperating agents of one workflow — which is
+  exactly how it is used (a run's GROUP_ID).
+- **No cross-session takeover.** Ownership is bound to the session id, which
+  does not survive a re-run. If a *new* session reuses a live namespace (e.g. a
+  coordinator restarted with the SAME group id while the old docs are still
+  within `namespace_ttl_hours`), it cannot reset/delete the previous run's
+  owned documents — a full `write(if_exists="replace")` is refused too. The
+  default flow avoids this (each run creates a fresh group id → fresh
+  namespace); an orchestrator that deliberately reuses a namespace across runs
+  should use `default_write_access: shared` for it, or let the TTL expire.
+  Role-based takeover is deliberately NOT offered: a panel runs several
+  sub-agents of the same role in one namespace, so it would reopen exactly the
+  cross-writer clobbering this protects against.
+
 ## Configuration
 
 ```yaml

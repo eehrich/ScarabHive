@@ -132,10 +132,11 @@ class JsonStoreServer(SchemaBasedMCPServer):
 
     @staticmethod
     def _caller(params: Dict[str, Any]) -> str:
-        """The calling agent's identity. Runtime-injected, not LLM-supplied."""
+        """The calling session. Runtime-injected, not LLM-supplied."""
         return str(params.get("_session_id") or "global")
 
     def _owners(self, params: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """doc name -> owning session id (None = shared, anyone may write)."""
         return self._doc_owners.setdefault(self._ns(params), {})
 
     def _write_guard(self, params: Dict[str, Any],
@@ -144,12 +145,18 @@ class JsonStoreServer(SchemaBasedMCPServer):
 
         Returns an error dict, or None when the write may proceed (document is
         new, shared, or owned by the caller). Reads never pass through here.
+
+        Ownership is per SESSION, deliberately not per agent-role: a panel runs
+        several sub-agents of the SAME type (e.g. three v6_synopsis_writer) in
+        one namespace, and role-based takeover would let them overwrite each
+        other's documents — exactly the confused-writer clobbering this guards
+        against.
         """
         if name not in self._bucket(params):
             return None  # creating a new document — ownership is set on commit
         owner = self._owners(params).get(name)
         if owner is None or owner == self._caller(params):
-            return None
+            return None  # shared, or owned by the caller
         return {
             "status": "error",
             "error": f"Document '{name}' belongs to another agent and is "
@@ -617,6 +624,12 @@ class JsonStoreServer(SchemaBasedMCPServer):
         name = (params.get("doc") or "").strip()
         bucket = self._bucket(params)
         if name:
+            # Ownership first: otherwise a foreign doc answers "already exists,
+            # use if_exists='replace'" — an invitation to retry that only then
+            # hits the owner check. One wasted turn and a misleading hint.
+            denied = self._write_guard(params, name)
+            if denied:
+                return denied
             if_exists = (params.get("if_exists") or "error").lower()
             if if_exists not in ("error", "replace"):
                 return {"status": "error", "error": "if_exists must be 'error' or 'replace'"}
@@ -660,6 +673,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
         name = (params.get("doc") or "").strip()
         if not name:
             return {"status": "error", "error": "'doc' (document name) is required"}
+        denied = self._write_guard(params, name)
+        if denied:
+            return denied
         array_mode = params.get("array_mode") or "replace"
         if array_mode not in ("replace", "concat"):
             return {"status": "error", "error": "array_mode must be 'replace' or 'concat'"}
@@ -699,6 +715,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
                     "error": "'doc' (target) and 'source' document names are required"}
         if name == source:
             return {"status": "error", "error": "source and target must differ"}
+        denied = self._write_guard(params, name)   # target only; source is read-only
+        if denied:
+            return denied
         array_mode = params.get("array_mode") or "replace"
         if array_mode not in ("replace", "concat"):
             return {"status": "error", "error": "array_mode must be 'replace' or 'concat'"}
@@ -730,6 +749,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return {"status": "error", "error": "'doc' and 'path' are required"}
         if "value" not in params:
             return {"status": "error", "error": "'value' is required"}
+        denied = self._write_guard(params, name)
+        if denied:
+            return denied
         value = params["value"]
 
         bucket = self._bucket(params)

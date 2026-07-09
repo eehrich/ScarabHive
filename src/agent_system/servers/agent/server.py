@@ -483,6 +483,18 @@ class Agent(MCPServer):
             raise ToolDispatchError(
                 f"Tool '{tool_name}' is blocked for this agent.")
 
+        # SECURITY: strip caller-supplied runtime params BEFORE injecting the
+        # real ones — same guarantee the LLM tool path gives. This path is
+        # driven by tool_script, whose call_tool forwards script-authored params
+        # verbatim; a script could otherwise pass _session_id to impersonate
+        # another agent and defeat json_store's owner-based write protection.
+        forged = [k for k in params if k.startswith("_")]
+        if forged:
+            logger.warning(
+                "Dropping caller-supplied runtime param(s) %s from programmatic "
+                "dispatch of %s", forged, tool_name)
+            params = {k: v for k, v in params.items() if not k.startswith("_")}
+
         params = inject_runtime_params(
             params, session_id=session_id, user_id=user_id,
             request_id=request_id, agent=self)

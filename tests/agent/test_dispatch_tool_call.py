@@ -216,6 +216,24 @@ class TestDispatchToolCall:
         assert params["_request_id"] == "rid_ts01"
         assert params["request_id"] == "rid_ts01"
 
+    @pytest.mark.asyncio
+    async def test_caller_supplied_runtime_params_stripped_without_session(self):
+        # Finding C: inject_runtime_params overwrites _session_id only when one
+        # is set, so WITHOUT a session a forged _session_id would survive and
+        # impersonate another agent (defeating json_store write protection).
+        # dispatch_tool_call must strip caller-supplied _* keys first.
+        srv = FakeServer()
+        agent = make_agent({"v6_json": srv}, allowed=["v6_json/*"])
+        await agent.dispatch_tool_call(
+            "v6_json_manage_json",
+            {"operation": "merge", "_session_id": "victim", "_agent_name": "boss"},
+            session_id=None)
+        _, _, params = srv.calls[0]
+        assert params.get("_session_id") != "victim"
+        assert params.get("_agent_name") != "boss"   # real agent re-injected
+        assert params["_agent"] is agent
+        assert params["operation"] == "merge"        # real args survive
+
 
 class TestInjectRuntimeParams:
     def test_injects_and_overwrites(self):

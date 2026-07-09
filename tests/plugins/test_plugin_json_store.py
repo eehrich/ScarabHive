@@ -822,6 +822,32 @@ class TestWriteProtection:
         assert data == {"a": {"b": 1}}
 
     @pytest.mark.asyncio
+    async def test_foreign_write_reports_ownership_not_collision(self, server):
+        # Ownership must be checked BEFORE if_exists: otherwise a foreign doc
+        # answers "already exists, use if_exists='replace'" — an invitation to
+        # retry that only then hits the owner check (one wasted turn).
+        await server.write({**COORD, "doc": "synopsis", "data": {"a": 1}})
+        res = await server.write({**WRITER_A, "doc": "synopsis", "data": {"b": 2}})
+        assert res["status"] == "error"
+        assert "another agent" in res["error"]
+        assert "already exists" not in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_own_doc_still_reports_collision(self, server):
+        await server.write({**COORD, "doc": "synopsis", "data": {"a": 1}})
+        res = await server.write({**COORD, "doc": "synopsis", "data": {"b": 2}})
+        assert res["status"] == "error" and "already exists" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_foreign_merge_not_masked_by_payload_error(self, server):
+        # The guard runs before payload parsing, so the writer learns the real
+        # reason instead of an "invalid JSON" red herring.
+        await server.write({**COORD, "doc": "synopsis", "data": {"a": 1}})
+        res = await server.merge({**WRITER_A, "doc": "synopsis",
+                                  "json_text": "not json at all {"})
+        assert res["status"] == "error" and "another agent" in res["error"]
+
+    @pytest.mark.asyncio
     async def test_owner_may_do_everything(self, server):
         await server.write({**COORD, "doc": "synopsis", "data": {"a": {"b": 1}}})
         assert (await server.merge({**COORD, "doc": "synopsis",
