@@ -1,0 +1,88 @@
+plugins:
+  servers:
+
+    panel_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "panel moderator subagents"
+
+      max_nesting_depth: 5
+      max_sub_agents_per_type: 20
+      max_sub_agents_per_session: 50
+
+      default_wait_timeout: 600
+
+      allowed_agents:
+        - "panel_participant"
+
+      metadata:
+        tags: ["panel", "sub-agent-manager"]
+
+    panel_moderator:
+      type: basic_agent
+      enabled: true
+      description: "panel spawns x subagents and consolitate the results"
+
+      agent_config:
+        llm_profile: [deepseek-chat-nostream, deepseek-pro-nostream]
+        llm_profile_fallbacks: [or-gmini-flash-unlimited, or-gpt-full-unlimited]
+        max_steps: 100
+        system_template: "./prompts/panel_moderator.md"
+
+        auto_escalate_on_stuck: true
+        escalate_rounds: 2
+        escalate_max_calls: 8
+        escalate_error_streak: 2
+
+        loop_detection:
+          enabled: true
+          exact_match_threshold: 3
+
+        tools:
+          allowed:
+            - "panel_sam/*"
+            - "debate_forum/*"
+            - "context_engineer/*"
+            
+        hooks:
+          enabled: true
+          overrides:
+            context_engineer.engineer_context:
+              enabled: true
+
+        template_vars:
+          panel_size: 3
+          min_rounds: 3
+          max_rounds: 10
+
+      metadata:
+        version: "1.0.0"
+        tags: ["coordination", "panel"]
+        visibility: "both"
+
+
+    panel_participant:
+      type: basic_agent
+      enabled: true
+      description: "panel panel teilnehmer"
+
+      agent_config:        
+        llm_profile: [deepseek-chat-nostream, deepseek-pro-nostream]
+        llm_profile_fallbacks: [or-gmini-flash-unlimited, or-gpt-full-unlimited]
+
+        max_steps: 5
+        system_template: "./prompts/panel_participant.md"
+
+        #tools:
+        #  allowed:
+        #    - "context_engineer/*"
+        #hooks:
+        #  enabled: true
+        #  overrides:
+        #    context_engineer.engineer_context:
+        #      enabled: true
+              
+      metadata:
+        version: "1.0.0"
+        tags: ["creative", "panel"]
+        visibility: "tool"        
