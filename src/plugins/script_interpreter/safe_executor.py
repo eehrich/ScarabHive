@@ -956,8 +956,15 @@ class SafeExecutor:
                 return self.eval_expression(node.orelse)
                 
         elif isinstance(node, ast.Subscript):
-            # Array/list subscript: arr[index]
+            # Array/list subscript: arr[index] — including slices arr[1:3],
+            # s[:100], x[::-1]. Slices only read (bounded by the value's own
+            # size), so no extra guards are needed beyond normal type errors.
             value = self.eval_expression(node.value)
+            if isinstance(node.slice, ast.Slice):
+                lower = self.eval_expression(node.slice.lower) if node.slice.lower else None
+                upper = self.eval_expression(node.slice.upper) if node.slice.upper else None
+                step = self.eval_expression(node.slice.step) if node.slice.step else None
+                return value[slice(lower, upper, step)]
             slice_value = self.eval_expression(node.slice)
             return value[slice_value]
             
