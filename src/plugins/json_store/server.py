@@ -454,6 +454,51 @@ class JsonStoreServer(SchemaBasedMCPServer):
     # agent's tool list small, same pattern as sub_agent_manager)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _status_line(operation: str, params: Dict[str, Any],
+                     result: Dict[str, Any]) -> str:
+        """Human-readable one-liner for the UI's status stream.
+
+        Built centrally so EVERY operation says what it did — a bare
+        "completed" leaves the operator guessing which of nine operations on
+        which document just finished.
+        """
+        doc = result.get("doc") or params.get("doc") or "?"
+        chars = result.get("chars")
+        size = f" ({chars} chars)" if chars is not None else ""
+
+        if operation == "write":
+            verb = "replaced" if result.get("replaced") else "wrote"
+            return f"{verb} '{doc}'{size}"
+        if operation == "read":
+            path = result.get("path")
+            where = f"'{doc}'.{path}" if path else f"'{doc}'"
+            return f"read {where}{size}"
+        if operation in ("merge", "merge_doc"):
+            keys = result.get("merged_keys") or []
+            shown = ", ".join(str(k) for k in keys[:4])
+            more = f" +{len(keys) - 4}" if len(keys) > 4 else ""
+            detail = f" [{shown}{more}]" if shown else ""
+            if operation == "merge_doc":
+                head = f"merged '{result.get('merged_from', params.get('source'))}' → '{doc}'"
+            else:
+                head = f"merged into '{doc}'"
+            created = " (created)" if result.get("created") else ""
+            return f"{head}{created}{detail}{size}"
+        if operation == "set_value":
+            return f"set '{doc}'.{result.get('set_path', params.get('path'))}{size}"
+        if operation == "delete_keys":
+            deleted, missing = result.get("deleted") or [], result.get("missing") or []
+            tail = f", {len(missing)} not found" if missing else ""
+            return f"deleted {len(deleted)} key(s) from '{doc}'{tail}"
+        if operation == "delete_doc":
+            return f"deleted doc '{result.get('deleted', doc)}'"
+        if operation == "list":
+            return f"listed {result.get('count', 0)} doc(s)"
+        if operation == "outline":
+            return f"outline of '{doc}'"
+        return f"{operation} '{doc}'"  # pragma: no cover - future operations
+
     async def manage_json(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Dispatch to the operation handlers below."""
         operation = (params.get("operation") or "").strip()
@@ -473,7 +518,25 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return {"status": "error",
                     "error": f"Unknown or missing operation '{operation}'. "
                              f"Valid: {sorted(handlers)}"}
-        return await handler(params)
+
+        result = await handler(params)
+
+        # Exactly one terminal status event per operation — the handlers never
+        # touch _status, so it can neither go missing nor be emitted twice.
+        # Failures go through error() (ERROR phase) so the UI shows them as
+        # failures, not as a green "completed".
+        status = params.get("_status")
+        if status is not None and isinstance(result, dict):
+            try:
+                if result.get("status") == "error":
+                    doc = params.get("doc") or result.get("doc") or "?"
+                    await status.error(f"{operation} '{doc}' failed: "
+                                       f"{str(result.get('error'))[:150]}")
+                else:
+                    await status.end(self._status_line(operation, params, result))
+            except Exception as e:  # pragma: no cover - status is best-effort
+                logger.debug("json_store: status event failed: %s", e)
+        return result
 
     # ------------------------------------------------------------------
     # Operation handlers
@@ -485,7 +548,6 @@ class JsonStoreServer(SchemaBasedMCPServer):
         own document with no name coordination). ``if_exists`` ('error' default —
         catch a name collision / 'replace' — overwrite on purpose) applies only to
         a named doc; an auto-id is always a fresh create."""
-        status = params.get("_status")
         name = (params.get("doc") or "").strip()
         bucket = self._bucket(params)
         if name:
@@ -508,11 +570,8 @@ class JsonStoreServer(SchemaBasedMCPServer):
         except ValueError as e:
             return {"status": "error", "error": str(e)}
 
-        result = self._commit(params, name, value, replaced=exists,
-                              **({"repairs": repairs} if repairs else {}))
-        if status and result.get("status") == "ok":
-            await status.end(f"json_store: wrote '{name}' ({result['chars']} chars)")
-        return result
+        return self._commit(params, name, value, replaced=exists,
+                            **({"repairs": repairs} if repairs else {}))
 
     async def read(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Read a document (whole or sub-path) as canonical JSON."""
@@ -532,7 +591,6 @@ class JsonStoreServer(SchemaBasedMCPServer):
 
     async def merge(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Deep-merge an object into a document (dicts recurse, scalars overwrite)."""
-        status = params.get("_status")
         name = (params.get("doc") or "").strip()
         if not name:
             return {"status": "error", "error": "'doc' (document name) is required"}
@@ -556,12 +614,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
                              f"{type(incoming).__name__} — use write to replace."}
         merged = self._deep_merge(base, incoming, array_mode) if existed else incoming
         merged_keys = list(incoming.keys()) if isinstance(incoming, dict) else None
-        result = self._commit(params, name, merged, created=not existed,
-                              merged_keys=merged_keys,
-                              **({"repairs": repairs} if repairs else {}))
-        if status and result.get("status") == "ok":
-            await status.end(f"json_store: merged into '{name}' ({result['chars']} chars)")
-        return result
+        return self._commit(params, name, merged, created=not existed,
+                            merged_keys=merged_keys,
+                            **({"repairs": repairs} if repairs else {}))
 
     async def merge_doc(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Deep-merge one stored document into another (``source`` -> ``doc``),
@@ -571,7 +626,6 @@ class JsonStoreServer(SchemaBasedMCPServer):
         arrays replace or concat). The source is deep-copied so the two stored
         documents never share references afterwards. Both docs are in the same
         namespace (pass ``namespace`` to share across sessions)."""
-        status = params.get("_status")
         name = (params.get("doc") or "").strip()          # target
         source = (params.get("source") or "").strip()
         if not name or not source:
@@ -598,12 +652,8 @@ class JsonStoreServer(SchemaBasedMCPServer):
                              f"{type(incoming).__name__} — use write to replace."}
         merged = self._deep_merge(base, incoming, array_mode) if existed else incoming
         merged_keys = list(incoming.keys()) if isinstance(incoming, dict) else None
-        result = self._commit(params, name, merged, created=not existed,
-                              merged_from=source, merged_keys=merged_keys)
-        if status and result.get("status") == "ok":
-            await status.end(f"json_store: merged '{source}' -> '{name}' "
-                             f"({result['chars']} chars)")
-        return result
+        return self._commit(params, name, merged, created=not existed,
+                            merged_from=source, merged_keys=merged_keys)
 
     async def set_value(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Set one value at a path; missing intermediates are created

@@ -769,6 +769,110 @@ class TestKeyModelDefaultAndList:
             {**SID, "doc": "d2", "data": {"milestones": []}}))["status"] == "ok"
 
 
+class RecordingStatus:
+    """Captures the terminal status event the plugin emits."""
+
+    def __init__(self):
+        self.ended = []
+        self.errors = []
+
+    async def progress(self, msg, meta=None):
+        pass
+
+    async def end(self, msg="completed", meta=None):
+        self.ended.append(msg)
+
+    async def error(self, msg, meta=None):
+        self.errors.append(msg)
+
+
+class TestStatusMessages:
+    """Every operation must say WHAT it did — a bare "completed" leaves the
+    operator guessing which of nine operations on which doc just finished."""
+
+    @pytest.mark.asyncio
+    async def test_every_operation_emits_a_descriptive_end(self, server):
+        cases = [
+            ({"operation": "write", "doc": "d", "data": {"a": 1}}, "wrote 'd'"),
+            ({"operation": "read", "doc": "d"}, "read 'd'"),
+            ({"operation": "merge", "doc": "d", "data": {"b": 2}}, "merged into 'd'"),
+            ({"operation": "write", "doc": "src", "data": {"c": 3}}, "wrote 'src'"),
+            ({"operation": "merge_doc", "doc": "d", "source": "src"},
+             "merged 'src' → 'd'"),
+            ({"operation": "set_value", "doc": "d", "path": "x.y", "value": 1},
+             "set 'd'.x.y"),
+            ({"operation": "outline", "doc": "d"}, "outline of 'd'"),
+            ({"operation": "list"}, "listed"),
+            ({"operation": "delete_keys", "doc": "d", "paths": ["a"]},
+             "deleted 1 key(s) from 'd'"),
+            ({"operation": "delete_doc", "doc": "d"}, "deleted doc 'd'"),
+        ]
+        for params, expected in cases:
+            st = RecordingStatus()
+            res = await server.manage_json({**SID, "_status": st, **params})
+            assert res["status"] == "ok", (params, res)
+            assert st.errors == []
+            assert len(st.ended) == 1, f"{params} -> {st.ended}"
+            assert expected in st.ended[0], f"{params} -> {st.ended[0]}"
+
+    @pytest.mark.asyncio
+    async def test_write_reports_replace_and_auto_id(self, server):
+        st = RecordingStatus()
+        res = await server.manage_json({**SID, "_status": st, "operation": "write",
+                                        "data": {"a": 1}})  # no doc -> auto-id
+        assert res["doc"] in st.ended[0] and "wrote" in st.ended[0]
+
+        st2 = RecordingStatus()
+        await server.manage_json({**SID, "_status": st2, "operation": "write",
+                                  "doc": "d", "data": {"a": 1}})
+        st3 = RecordingStatus()
+        await server.manage_json({**SID, "_status": st3, "operation": "write",
+                                  "doc": "d", "data": {"b": 2}, "if_exists": "replace"})
+        assert "replaced 'd'" in st3.ended[0]
+
+    @pytest.mark.asyncio
+    async def test_merge_lists_the_merged_keys(self, server):
+        await server.manage_json({**SID, "operation": "write", "doc": "d",
+                                  "data": {"a": 1}})
+        st = RecordingStatus()
+        await server.manage_json({**SID, "_status": st, "operation": "merge",
+                                  "doc": "d", "data": {"x": 1, "y": 2}})
+        assert "x" in st.ended[0] and "y" in st.ended[0]
+
+    @pytest.mark.asyncio
+    async def test_failure_uses_error_not_end(self, server):
+        # A failed operation must NOT show up as a green "completed".
+        st = RecordingStatus()
+        res = await server.manage_json({**SID, "_status": st, "operation": "read",
+                                        "doc": "missing"})
+        assert res["status"] == "error"
+        assert st.ended == []
+        assert len(st.errors) == 1
+        assert "read 'missing' failed" in st.errors[0]
+        assert "not found" in st.errors[0]
+
+    @pytest.mark.asyncio
+    async def test_unknown_operation_reports_error(self, server):
+        st = RecordingStatus()
+        res = await server.manage_json({**SID, "_status": st, "operation": "explode"})
+        assert res["status"] == "error"
+        assert st.ended == [] and st.errors == []  # no handler ran
+
+    @pytest.mark.asyncio
+    async def test_exactly_one_terminal_event(self, server):
+        # Handlers must not emit their own end() on top of the dispatcher's.
+        st = RecordingStatus()
+        await server.manage_json({**SID, "_status": st, "operation": "write",
+                                  "doc": "d", "data": {"a": 1}})
+        assert len(st.ended) + len(st.errors) == 1
+
+    @pytest.mark.asyncio
+    async def test_works_without_status(self, server):
+        res = await server.manage_json({**SID, "operation": "write", "doc": "d",
+                                        "data": {"a": 1}})
+        assert res["status"] == "ok"
+
+
 class TestKeyAliases:
     @pytest.fixture
     def aliased_server(self, mock_system_config):
