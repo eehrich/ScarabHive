@@ -17,6 +17,48 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def tool_matches_patterns(tool_name: str, server_name: str, patterns: List[str]) -> bool:
+    """Match an individual tool against allow/block patterns — THE single
+    matcher for tool authorization.
+
+    Schema build (what the LLM sees) and programmatic dispatch
+    (``Agent.dispatch_tool_call``, used by tool-scripting) MUST agree on what a
+    pattern matches, otherwise a tool hidden from the LLM could still be
+    dispatched (or a visible one rejected). Both paths therefore call this one
+    function; a parity test asserts the semantics.
+
+    Patterns (identical for allowed and blocked):
+    - ``server/tool``: exact match on the full path
+    - ``server/*``:    every tool of that server
+    - ``server``:      every tool of that server (shorthand, no slash)
+    - ``*tool*``:      fnmatch wildcard on full path or bare tool name
+    """
+    full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
+
+    for pattern in patterns:
+        # Exact match on full path
+        if pattern == full_tool_path:
+            return True
+
+        # Server/* pattern - every tool of that server
+        if pattern.endswith("/*"):
+            if server_name == pattern[:-2]:
+                return True
+
+        # Server-level pattern (no slash) - every tool of that server
+        if "/" not in pattern and pattern == server_name:
+            return True
+
+        # Wildcard matching using fnmatch
+        if "*" in pattern:
+            if fnmatch.fnmatch(full_tool_path, pattern):
+                return True
+            if fnmatch.fnmatch(tool_name, pattern):
+                return True
+
+    return False
+
+
 class ToolSchemaBuilder:
     """Builds OpenAI-compatible tool schemas from MCP servers."""
 
@@ -193,39 +235,12 @@ class ToolSchemaBuilder:
         Returns:
             True if tool should be allowed
         """
-        # Construct full tool path for matching
-        full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
-
-        for pattern in allowed_patterns:
-            # Exact match on full path
-            if pattern == full_tool_path:
-                logger.debug(f"Tool '{tool_name}' allowed by exact pattern '{pattern}'")
-                return True
-
-            # Server/* pattern - allow all tools from server
-            if pattern.endswith("/*"):
-                server_pattern = pattern[:-2]
-                if server_name == server_pattern:
-                    logger.debug(f"Tool '{tool_name}' allowed by server wildcard pattern '{pattern}'")
-                    return True
-
-            # Server-level allow (no slash) - allow entire server
-            if "/" not in pattern and pattern == server_name:
-                logger.debug(f"Tool '{tool_name}' allowed by server pattern '{pattern}'")
-                return True
-
-            # Wildcard matching using fnmatch
-            if "*" in pattern:
-                # Try matching against full path
-                if fnmatch.fnmatch(full_tool_path, pattern):
-                    logger.debug(f"Tool '{tool_name}' allowed by wildcard pattern '{pattern}' (full path)")
-                    return True
-                # Try matching against just tool name
-                if fnmatch.fnmatch(tool_name, pattern):
-                    logger.debug(f"Tool '{tool_name}' allowed by wildcard pattern '{pattern}' (tool name)")
-                    return True
-
-        return False
+        # Single shared matcher — MUST stay in sync with programmatic dispatch
+        # (Agent.dispatch_tool_call); see tool_matches_patterns docstring.
+        allowed = tool_matches_patterns(tool_name, server_name, allowed_patterns)
+        if allowed:
+            logger.debug(f"Tool '{tool_name}' allowed by patterns {allowed_patterns}")
+        return allowed
 
     def _apply_blocked_patterns(
         self,
@@ -314,39 +329,11 @@ class ToolSchemaBuilder:
         Returns:
             True if tool should be blocked
         """
-        # Construct full tool path for matching
-        full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
-
-        for pattern in blocked_patterns:
-            # Exact match on full path
-            if pattern == full_tool_path:
-                logger.debug(f"Tool '{tool_name}' blocked by exact pattern '{pattern}'")
-                return True
-
-            # Server/* pattern - block all tools from server
-            if pattern.endswith("/*"):
-                server_pattern = pattern[:-2]
-                if server_name == server_pattern:
-                    logger.debug(f"Tool '{tool_name}' blocked by server wildcard pattern '{pattern}'")
-                    return True
-
-            # Server-level block (no slash) - block entire server
-            if "/" not in pattern and pattern == server_name:
-                logger.debug(f"Tool '{tool_name}' blocked by server pattern '{pattern}'")
-                return True
-
-            # Wildcard matching using fnmatch
-            if "*" in pattern:
-                # Try matching against full path
-                if fnmatch.fnmatch(full_tool_path, pattern):
-                    logger.debug(f"Tool '{tool_name}' blocked by wildcard pattern '{pattern}' (full path)")
-                    return True
-                # Try matching against just tool name
-                if fnmatch.fnmatch(tool_name, pattern):
-                    logger.debug(f"Tool '{tool_name}' blocked by wildcard pattern '{pattern}' (tool name)")
-                    return True
-
-        return False
+        # Single shared matcher — same semantics as allow (see tool_matches_patterns).
+        blocked = tool_matches_patterns(tool_name, server_name, blocked_patterns)
+        if blocked:
+            logger.debug(f"Tool '{tool_name}' blocked by patterns {blocked_patterns}")
+        return blocked
 
     async def _build_internal_tool_schemas(
         self,

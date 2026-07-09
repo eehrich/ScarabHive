@@ -25,6 +25,56 @@ from ....utils.json_utils import repair_json
 logger = logging.getLogger(__name__)
 
 
+class ToolDispatchError(Exception):
+    """Programmatic tool dispatch failed (unknown tool, not allowed, unsupported
+    tool type). The message is agent-actionable — callers (e.g. the tool_script
+    plugin) surface it verbatim to the LLM."""
+
+
+def inject_runtime_params(params: Dict[str, Any], *,
+                          session_id: Optional[str] = None,
+                          user_id: Optional[str] = None,
+                          request_id: Optional[str] = None,
+                          agent: Optional["Agent"] = None) -> Dict[str, Any]:
+    """Return a copy of ``params`` with the runtime context params injected.
+
+    THE single place that defines which runtime params a tool call receives
+    (_session_id, _user_id, _request_id, _agent_name, _agent). Used by the LLM
+    tool path (_execute_plugin_tool) and by programmatic dispatch
+    (Agent.dispatch_tool_call, e.g. tool-scripting) so the two can never drift.
+
+    Injection happens unconditionally for present values and OVERWRITES any
+    caller-supplied keys of the same name — callers outside the trusted path
+    (e.g. script-provided params) must not be able to forge runtime context.
+    """
+    params = params.copy()
+
+    if session_id:
+        params["_session_id"] = session_id
+
+    if user_id:
+        params["_user_id"] = user_id
+        # Register user_id for this request_id so sub-agents can find it:
+        # when a tool spawns a sub-agent, the sub-agent generates a new
+        # session and needs to know the user_id.
+        if request_id:
+            from agent_system.app import _request_user_map
+            _request_user_map[request_id] = user_id
+
+    if request_id:
+        params["_request_id"] = request_id
+
+    if agent is not None and hasattr(agent, 'name'):
+        params["_agent_name"] = agent.name
+
+    # Inject the agent instance itself for tools that need it
+    # (session service, registry access, programmatic dispatch, ...)
+    if agent is not None:
+        params["_agent"] = agent
+
+    return params
+
+
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
@@ -708,34 +758,11 @@ class ToolExecutionManager:
         try:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
 
-            # Inject session context from parameters (passed through call chain to avoid race conditions)
-            if session_id or user_id or request_id or (self._agent and hasattr(self._agent, 'name')) or (self._agent and hasattr(self._agent, 'registry')):
-                params = params.copy()  # Don't mutate original
-
-                if session_id:
-                    params["_session_id"] = session_id
-                    logger.debug(f"[TOOL_EXEC] Injected _session_id={session_id} into tool params for {openai_tool_name}")
-
-                if user_id:
-                    params["_user_id"] = user_id
-                    
-                    # CRITICAL: Register user_id for this request_id so sub-agents can find it
-                    # When a tool spawns a sub-agent (e.g., meta_web_research_agent), the sub-agent
-                    # generates a new session and needs to know the user_id
-                    if request_id:
-                        from agent_system.app import _request_user_map
-                        _request_user_map[request_id] = user_id
-
-                if request_id:
-                    params["_request_id"] = request_id
-
-                if self._agent and hasattr(self._agent, 'name'):
-                    params["_agent_name"] = self._agent.name
-
-                # Inject the agent instance itself for tools that need it
-                # Tools can access agent._session_service, agent.registry, etc.
-                if self._agent:
-                    params["_agent"] = self._agent
+            # Inject session context (shared with Agent.dispatch_tool_call — see
+            # inject_runtime_params; passed through the call chain to avoid races)
+            params = inject_runtime_params(
+                params, session_id=session_id, user_id=user_id,
+                request_id=request_id, agent=self._agent)
 
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)

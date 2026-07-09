@@ -405,6 +405,102 @@ class Agent(MCPServer):
         return None
 
     # ------------------------------------------------------------------
+    # Programmatic tool dispatch (used by tool_script and other in-process
+    # callers that execute tools on the agent's behalf)
+    # ------------------------------------------------------------------
+
+    def _resolve_flat_tool_name(self, tool_name: str):
+        """Resolve a flat tool name (e.g. 'v6_json_manage_json') to
+        (server, server_name). Returns (None, None) if nothing matches.
+
+        Order: exact server-name match (config agents / single-name servers),
+        then longest-prefix match over '_'-joined segments (plugin tools), then
+        the agent's own-tool prefix — mirroring ToolExecutionManager's paths.
+        """
+        server = self._get_server_from_any_registry(tool_name)
+        if server:
+            return server, tool_name
+        parts = tool_name.split("_")
+        for i in range(len(parts) - 1, 0, -1):
+            candidate = "_".join(parts[:i])
+            server = self._get_server_from_any_registry(candidate)
+            if server:
+                return server, candidate
+        if tool_name.startswith(f"{self.name}_"):
+            return self, self.name
+        return None, None
+
+    async def dispatch_tool_call(self, tool_name: str, params: Dict[str, Any], *,
+                                 session_id: Optional[str] = None,
+                                 user_id: Optional[str] = None,
+                                 request_id: Optional[str] = None) -> Any:
+        """Execute one tool call programmatically with THIS agent's authorization.
+
+        The in-process counterpart of the LLM tool path: same server resolution,
+        same allowed/blocked pattern semantics as schema build (shared matcher
+        ``tool_matches_patterns`` — what the LLM cannot see cannot be dispatched,
+        in both directions), same runtime-param injection (shared
+        ``inject_runtime_params``), same call_with_status/call dispatch.
+
+        Used by the tool_script plugin ("scripted tool chains"); any future
+        in-process caller (hooks, schedulers) should go through here as well.
+
+        Raises ToolDispatchError with an agent-actionable message for unknown
+        tools, unsupported tool types and authorization failures. Tool-level
+        errors are returned as the tool's normal result (callers interpret the
+        status convention themselves).
+        """
+        from .components.tool_execution import ToolDispatchError, inject_runtime_params
+        from .tool_schema_builder import tool_matches_patterns
+
+        # External MCP tools (dotted names) take a different execution branch
+        # (MCP client sessions) that programmatic dispatch does not replicate.
+        if "." in tool_name:
+            raise ToolDispatchError(
+                f"Tool '{tool_name}' is an external MCP tool — not supported in "
+                f"programmatic dispatch (v1). Call it directly instead.")
+
+        server, server_name = self._resolve_flat_tool_name(tool_name)
+        if server is None:
+            raise ToolDispatchError(
+                f"Unknown tool: '{tool_name}'. Use the exact tool name from your "
+                f"tool list.")
+
+        # Authorization — full fidelity to schema build: allowed first, then
+        # blocked, both matched on the same server/tool path by the SAME matcher
+        # schema build uses. No allowlist configured -> deny (schema build shows
+        # zero tools in that case too).
+        tools_config = getattr(self.agent_config, "tools", None) if getattr(
+            self, "agent_config", None) else None
+        allowed_patterns = list(getattr(tools_config, "allowed", None) or [])
+        blocked_patterns = list(getattr(tools_config, "blocked", None) or [])
+        if not allowed_patterns or not tool_matches_patterns(
+                tool_name, server_name, allowed_patterns):
+            raise ToolDispatchError(
+                f"Tool '{tool_name}' is not in this agent's allowed tools.")
+        if blocked_patterns and tool_matches_patterns(
+                tool_name, server_name, blocked_patterns):
+            raise ToolDispatchError(
+                f"Tool '{tool_name}' is blocked for this agent.")
+
+        params = inject_runtime_params(
+            params, session_id=session_id, user_id=user_id,
+            request_id=request_id, agent=self)
+        if request_id:
+            params.setdefault("request_id", request_id)
+            params.setdefault("requestId", request_id)
+
+        logger.info("Invoking tool %s via programmatic dispatch (agent=%s)",
+                    tool_name, self.name)
+        if hasattr(server, 'call_with_status'):
+            result = await server.call_with_status(tool_name, params)
+        else:
+            result = await server.call(tool_name, params)
+        logger.info("Tool %s returned (programmatic dispatch): %s",
+                    tool_name, str(result)[:500])
+        return result
+
+    # ------------------------------------------------------------------
     # Prompt customization hook
     # ------------------------------------------------------------------
     def get_custom_system_prompt(self, context: Dict[str, Any]) -> Optional[str]:  # pragma: no cover - default noop
