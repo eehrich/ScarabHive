@@ -1,0 +1,83 @@
+# JSON Store Plugin - validated JSON working documents for agents
+# Single tool with 'operation' arg (like sub_agent_manager) to save tool slots.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_manage_json"
+      description: |
+        Validated JSON working documents — select the action via 'operation'.
+        The document lives server-side as a data structure: input is parsed and
+        validated (invalid JSON → precise error; code fences and raw newlines in
+        strings are auto-repaired), 'merge' deep-merges IN CODE (never re-type
+        the whole JSON yourself), 'read' returns guaranteed-valid canonical JSON.
+        Operations: write (create/replace), read (whole doc or 'path'), merge
+        (deep-merge object), set_value (one value at 'path'), delete_keys,
+        delete_doc, list (existing docs), outline (structure without values).
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: [write, read, merge, set_value, delete_keys, delete_doc, list, outline]
+            description: "The action to perform"
+          doc:
+            type: string
+            description: "Document name/id (required for everything except 'list')"
+          data:
+            type: object
+            description: "write/merge: the JSON as structured object (preferred)"
+          json_text:
+            type: string
+            description: "write/merge: alternative — the JSON as string"
+          path:
+            type: string
+            description: "read/set_value: dot path, [i] for arrays (e.g. 'milestones[2].label')"
+          value:
+            description: "set_value: the value to set (any JSON type)"
+          paths:
+            type: array
+            items:
+              type: string
+            description: "delete_keys: paths to delete"
+          array_mode:
+            type: string
+            enum: [replace, concat]
+            description: "merge: array handling (default replace)"
+          depth:
+            type: integer
+            description: "outline: nesting depth (default 3)"
+        required: [operation]
+
+config:
+  session_scoped:
+    type: boolean
+    default: true
+    description: "Isolate documents per agent session (false = shared process-wide)"
+  max_docs:
+    type: integer
+    default: 50
+    description: "Maximum documents per session/namespace"
+  max_doc_bytes:
+    type: integer
+    default: 2097152
+    description: "Maximum serialized size per document (chars)"
+  namespace_ttl_hours:
+    type: number
+    default: 48
+    description: "Evict a session namespace after this many idle hours (0 = never). Prevents unbounded memory growth in long-running server processes."
+  key_models:
+    type: object
+    default: {}
+    description: |
+      Optional allowed-key model per document name. Nested dict of allowed keys;
+      "*" allows any key at that level (dynamic names, e.g. character names);
+      {} means free subtree (no further enforcement). Writes/merges/set_value
+      introducing keys outside the model are rejected with an error listing the
+      allowed keys. Example:
+        key_models:
+          synopsis:
+            synopsis: {}
+            genre: {}
+            key_characters:
+              "*": { age: {}, role: {}, arc: {} }
