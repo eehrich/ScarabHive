@@ -88,6 +88,11 @@ class JsonStoreServer(SchemaBasedMCPServer):
     # ------------------------------------------------------------------
 
     def _ns(self, params: Dict[str, Any]) -> str:
+        # Explicit namespace wins — lets a coordinator and its (separately
+        # sessioned) sub-agents share one document by passing the same id.
+        explicit = params.get("namespace")
+        if explicit not in (None, ""):
+            return str(explicit)
         if self._session_scoped:
             return str(params.get("_session_id") or "global")
         return "global"
@@ -375,6 +380,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
             "write": self.write,
             "read": self.read,
             "merge": self.merge,
+            "merge_doc": self.merge_doc,
             "set_value": self.set_value,
             "delete_keys": self.delete_keys,
             "delete_doc": self.delete_doc,
@@ -393,18 +399,28 @@ class JsonStoreServer(SchemaBasedMCPServer):
     # ------------------------------------------------------------------
 
     async def write(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Create or fully replace a document."""
+        """Create a document. ``if_exists``: 'error' (default — fail if it
+        exists) or 'replace' (overwrite on purpose). Default is error so a name
+        collision between agents is caught, not silently clobbered."""
         status = params.get("_status")
         name = (params.get("doc") or "").strip()
         if not name:
             return {"status": "error", "error": "'doc' (document name) is required"}
+        if_exists = (params.get("if_exists") or "error").lower()
+        if if_exists not in ("error", "replace"):
+            return {"status": "error", "error": "if_exists must be 'error' or 'replace'"}
+
+        exists = name in self._bucket(params)
+        if exists and if_exists == "error":
+            return {"status": "error",
+                    "error": f"Document '{name}' already exists. Use a unique doc id, "
+                             f"or if_exists='replace' to overwrite on purpose."}
         try:
             value, repairs = self._extract_payload(params)
         except ValueError as e:
             return {"status": "error", "error": str(e)}
 
-        replaced = name in self._bucket(params)
-        result = self._commit(params, name, value, replaced=replaced,
+        result = self._commit(params, name, value, replaced=exists,
                               **({"repairs": repairs} if repairs else {}))
         if status and result.get("status") == "ok":
             await status.end(f"json_store: wrote '{name}' ({result['chars']} chars)")
@@ -457,6 +473,48 @@ class JsonStoreServer(SchemaBasedMCPServer):
                               **({"repairs": repairs} if repairs else {}))
         if status and result.get("status") == "ok":
             await status.end(f"json_store: merged into '{name}' ({result['chars']} chars)")
+        return result
+
+    async def merge_doc(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep-merge one stored document into another (``source`` -> ``doc``),
+        entirely in code — the moderator/coordinator never re-types the JSON.
+
+        Same semantics as merge (dicts recurse, scalars/new keys overwrite,
+        arrays replace or concat). The source is deep-copied so the two stored
+        documents never share references afterwards. Both docs are in the same
+        namespace (pass ``namespace`` to share across sessions)."""
+        status = params.get("_status")
+        name = (params.get("doc") or "").strip()          # target
+        source = (params.get("source") or "").strip()
+        if not name or not source:
+            return {"status": "error",
+                    "error": "'doc' (target) and 'source' document names are required"}
+        if name == source:
+            return {"status": "error", "error": "source and target must differ"}
+        array_mode = params.get("array_mode") or "replace"
+        if array_mode not in ("replace", "concat"):
+            return {"status": "error", "error": "array_mode must be 'replace' or 'concat'"}
+
+        bucket = self._bucket(params)
+        if source not in bucket:
+            return {"status": "error",
+                    "error": f"Source document '{source}' not found. "
+                             f"Existing: {list(bucket.keys())}"}
+        incoming = copy.deepcopy(bucket[source])  # decouple the two stored docs
+        existed = name in bucket
+        base = bucket.get(name)
+        if existed and isinstance(base, dict) != isinstance(incoming, dict):
+            return {"status": "error",
+                    "error": f"Root type mismatch: target '{name}' is "
+                             f"{type(base).__name__}, source '{source}' is "
+                             f"{type(incoming).__name__} — use write to replace."}
+        merged = self._deep_merge(base, incoming, array_mode) if existed else incoming
+        merged_keys = list(incoming.keys()) if isinstance(incoming, dict) else None
+        result = self._commit(params, name, merged, created=not existed,
+                              merged_from=source, merged_keys=merged_keys)
+        if status and result.get("status") == "ok":
+            await status.end(f"json_store: merged '{source}' -> '{name}' "
+                             f"({result['chars']} chars)")
         return result
 
     async def set_value(self, params: Dict[str, Any]) -> Dict[str, Any]:

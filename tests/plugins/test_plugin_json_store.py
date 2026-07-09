@@ -101,12 +101,25 @@ class TestWrite:
         assert (await server.write({**SID, "doc": "x"}))["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_write_replace_flag(self, server):
+    async def test_write_collision_errors_by_default(self, server):
         await server.write({**SID, "doc": "syn", "data": {"a": 1}})
-        res = await server.write({**SID, "doc": "syn", "data": {"b": 2}})
-        assert res["replaced"] is True
-        read = await server.read({**SID, "doc": "syn"})
-        assert json.loads(read["json"]) == {"b": 2}
+        res = await server.write({**SID, "doc": "syn", "data": {"b": 2}})  # no if_exists
+        assert res["status"] == "error" and "already exists" in res["error"]
+        # original untouched
+        assert json.loads((await server.read({**SID, "doc": "syn"}))["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_write_if_exists_replace_overwrites(self, server):
+        await server.write({**SID, "doc": "syn", "data": {"a": 1}})
+        res = await server.write(
+            {**SID, "doc": "syn", "data": {"b": 2}, "if_exists": "replace"})
+        assert res["status"] == "ok" and res["replaced"] is True
+        assert json.loads((await server.read({**SID, "doc": "syn"}))["json"]) == {"b": 2}
+
+    @pytest.mark.asyncio
+    async def test_write_fresh_doc_succeeds(self, server):
+        res = await server.write({**SID, "doc": "fresh", "data": {"a": 1}})
+        assert res["status"] == "ok" and res["replaced"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +228,67 @@ class TestMerge:
         assert res["merged_keys"] == ["b", "c"]
 
 
+class TestMergeDoc:
+    @pytest.mark.asyncio
+    async def test_merge_doc_into_target(self, server):
+        # writer produced a delta doc; moderator merges it into the main synopsis
+        await server.write({**SID, "doc": "synopsis",
+                            "data": {"genre": "SciFi", "chars": {"Nora": {"age": 34}}}})
+        await server.write({**SID, "doc": "writer_delta",
+                            "data": {"genre": "YA-SciFi", "chars": {"Erik": {"age": 42}}}})
+        res = await server.manage_json(
+            {**SID, "operation": "merge_doc", "source": "writer_delta", "doc": "synopsis"})
+        assert res["status"] == "ok" and res["merged_from"] == "writer_delta"
+        data = json.loads((await server.read({**SID, "doc": "synopsis"}))["json"])
+        assert data["genre"] == "YA-SciFi"            # scalar overwritten
+        assert data["chars"]["Nora"]["age"] == 34     # sibling preserved
+        assert data["chars"]["Erik"]["age"] == 42     # delta added
+
+    @pytest.mark.asyncio
+    async def test_merge_doc_decouples_references(self, server):
+        # after merge_doc the two stored docs must not alias (deepcopy'd source)
+        await server.write({**SID, "doc": "tgt", "data": {"x": 1}})
+        await server.write({**SID, "doc": "src", "data": {"list": [1, 2]}})
+        await server.manage_json(
+            {**SID, "operation": "merge_doc", "source": "src", "doc": "tgt"})
+        # mutate the target's merged-in array; source must be unaffected
+        await server.set_value({**SID, "doc": "tgt", "path": "list[0]", "value": 99})
+        src = json.loads((await server.read({**SID, "doc": "src"}))["json"])
+        assert src["list"] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_merge_doc_missing_source_and_self(self, server):
+        await server.write({**SID, "doc": "tgt", "data": {"a": 1}})
+        r = await server.manage_json(
+            {**SID, "operation": "merge_doc", "source": "ghost", "doc": "tgt"})
+        assert r["status"] == "error" and "not found" in r["error"]
+        r = await server.manage_json(
+            {**SID, "operation": "merge_doc", "source": "tgt", "doc": "tgt"})
+        assert r["status"] == "error" and "differ" in r["error"]
+
+    @pytest.mark.asyncio
+    async def test_merge_doc_creates_target(self, server):
+        await server.write({**SID, "doc": "src", "data": {"a": 1}})
+        res = await server.manage_json(
+            {**SID, "operation": "merge_doc", "source": "src", "doc": "fresh"})
+        assert res["status"] == "ok" and res["created"] is True
+        assert json.loads((await server.read({**SID, "doc": "fresh"}))["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_merge_doc_respects_key_model(self, mock_system_config):
+        srv = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True,
+                      config={"key_models": {"synopsis": {"genre": {}}}}))
+        await srv.write({**SID, "doc": "synopsis", "data": {"genre": "X"}})
+        await srv.write({**SID, "doc": "delta", "data": {"erfunden": 1}})
+        res = await srv.manage_json(
+            {**SID, "operation": "merge_doc", "source": "delta", "doc": "synopsis"})
+        assert res["status"] == "error"  # target's key model rejects the bad key
+        # target unchanged
+        assert json.loads((await srv.read({**SID, "doc": "synopsis"}))["json"]) == {"genre": "X"}
+
+
 # ---------------------------------------------------------------------------
 # set_value / delete
 # ---------------------------------------------------------------------------
@@ -311,6 +385,18 @@ class TestMisc:
         await server.write({"_session_id": "s1", "doc": "syn", "data": {"a": 1}})
         res = await server.read({"_session_id": "s2", "doc": "syn"})
         assert res["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_explicit_namespace_shared_across_sessions(self, server):
+        # coordinator (session c) writes to a shared namespace...
+        await server.write({"_session_id": "c", "namespace": "run-7",
+                            "doc": "syn", "data": {"a": 1}})
+        # ...a sub-agent in a DIFFERENT session reads it via the same namespace
+        res = await server.read({"_session_id": "sub", "namespace": "run-7", "doc": "syn"})
+        assert res["status"] == "ok"
+        assert json.loads(res["json"]) == {"a": 1}
+        # without the namespace, the sub-agent's own session sees nothing
+        assert (await server.read({"_session_id": "sub", "doc": "syn"}))["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_namespace_ttl_eviction(self, server):

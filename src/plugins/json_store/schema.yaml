@@ -12,24 +12,35 @@ tools:
         strings are auto-repaired), 'merge' deep-merges IN CODE (never re-type
         the whole JSON yourself), 'read' returns guaranteed-valid canonical JSON.
         Operations: write (create/replace), read (whole doc or 'path'), merge
-        (deep-merge object), set_value (one value at 'path'), delete_keys,
+        (deep-merge object), merge_doc (merge one stored doc 'source' into 'doc',
+        no JSON re-typing), set_value (one value at 'path'), delete_keys,
         delete_doc, list (existing docs), outline (structure without values).
       parameters:
         type: object
         properties:
           operation:
             type: string
-            enum: [write, read, merge, set_value, delete_keys, delete_doc, list, outline]
+            enum: [write, read, merge, merge_doc, set_value, delete_keys, delete_doc, list, outline]
             description: "The action to perform"
+          namespace:
+            type: string
+            description: "Optional shared store id — pass the same value in different agents/sessions to share the document (else scoped to your session)."
           doc:
             type: string
-            description: "Document name/id (required for everything except 'list')"
+            description: "Document name/id. For merge_doc this is the TARGET. Required for everything except 'list'."
+          source:
+            type: string
+            description: "merge_doc: the source document to merge FROM (its values overwrite the target's, deep). Both docs are in the same namespace."
           data:
             type: object
             description: "write/merge: the JSON as structured object (preferred)"
           json_text:
             type: string
             description: "write/merge: alternative — the JSON as string"
+          if_exists:
+            type: string
+            enum: [error, replace]
+            description: "write only: what to do if the doc already exists — error (default, catches collisions) or replace (overwrite on purpose)."
           path:
             type: string
             description: "read/set_value: dot path, [i] for arrays (e.g. 'milestones[2].label')"

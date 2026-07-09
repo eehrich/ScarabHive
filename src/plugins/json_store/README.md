@@ -20,9 +20,10 @@ One tool, `<instance>_manage_json`, dispatched via `operation`
 
 | operation     | params                          | effect |
 |---------------|---------------------------------|--------|
-| `write`       | `doc`, `data`\|`json_text`      | create / fully replace |
+| `write`       | `doc`, `data`\|`json_text`, `if_exists?` | create a doc (`if_exists`: `error` default = catch collisions, `replace` = overwrite on purpose) |
 | `read`        | `doc`, `path?`                  | canonical JSON (whole or sub-path) |
 | `merge`       | `doc`, `data`\|`json_text`, `array_mode?` | deep-merge (dicts recurse, scalars overwrite, arrays replace/concat) |
+| `merge_doc`   | `doc` (target), `source`, `array_mode?` | deep-merge one stored doc into another, in code (no JSON re-typing) |
 | `set_value`   | `doc`, `path`, `value`          | set one value, creates intermediate objects |
 | `delete_keys` | `doc`, `paths[]`                | delete paths |
 | `delete_doc`  | `doc`                           | drop document |
@@ -68,4 +69,7 @@ independently and reports unknown ones in `missing`.
 
 - Documents are in-memory working state, not durable storage. Idle session
   namespaces are evicted after `namespace_ttl_hours` (default 48h).
+- The plugin instance is a process-wide singleton, so passing the same
+  `namespace` from different agents/sessions (e.g. a coordinator and its
+  sub-agents) shares one document — no need to pass the JSON between them.
 - Key models are a KEY whitelist, not a type schema — scalars/values are free.
