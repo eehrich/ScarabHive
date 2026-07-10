@@ -212,6 +212,50 @@ class TestUnifiedHandler:
         assert "Missing 'operation'" in result["error"]
 
 
+class TestOperationInference:
+    """Safe inference of `operation` when the model omits it (saves a turn)."""
+
+    def test_infer_create_from_agent_type(self, server):
+        assert server._infer_operation({"agent_type": "coding_agent"}) == "create"
+        assert server._infer_operation({"agent_type": "coding_agent", "task": "go"}) == "create"
+
+    def test_infer_continue_from_id_and_message(self, server):
+        assert server._infer_operation({"instance_id": "sub_1", "message": "weiter"}) == "continue"
+
+    def test_infer_continue_accepts_task_as_prompt(self, server):
+        # model used the wrong field name (task) for the follow-up prompt
+        assert server._infer_operation({"instance_id": "sub_1", "task": "weiter"}) == "continue"
+
+    def test_no_infer_when_ambiguous(self, server):
+        assert server._infer_operation({"instance_id": "sub_1"}) is None            # poll/info/cancel/delete unknowable
+        assert server._infer_operation({"agent_type": "a", "instance_id": "b"}) is None
+        assert server._infer_operation({}) is None
+
+    @pytest.mark.asyncio
+    async def test_missing_operation_infers_create(self, server):
+        server._handle_create = AsyncMock(return_value={"status": "completed"})
+        result = await server.manage_sub_agent(params={
+            "agent_type": "coding_agent", "task": "Write code",  # no 'operation'
+        })
+        server._handle_create.assert_called_once()
+        assert result["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_missing_operation_infers_continue(self, server):
+        server._handle_continue = AsyncMock(return_value={"status": "completed"})
+        result = await server.manage_sub_agent(params={
+            "instance_id": "sub_1", "message": "weiter",  # no 'operation'
+        })
+        server._handle_continue.assert_called_once()
+        assert result["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_missing_operation_ambiguous_still_errors(self, server):
+        result = await server.manage_sub_agent(params={"instance_id": "sub_1"})
+        assert result["status"] == "error"
+        assert "operation" in result["error"].lower()
+
+
 class TestConcurrentExecutionPrevention:
     """Test that concurrent execution of same sub-agent is prevented."""
 

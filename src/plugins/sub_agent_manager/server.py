@@ -316,6 +316,32 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             "This tool must be called from an agent."
         )
 
+    def _infer_operation(self, params: dict[str, Any]) -> Optional[str]:
+        """Best-effort, SAFE inference when the model omits ``operation`` — a
+        common, turn-wasting mistake (especially forgetting it on ``continue``).
+
+        Only the two unambiguous argument shapes are inferred; anything else
+        returns None so the caller still gets the explicit "Missing operation"
+        error rather than a silently wrong action:
+        - ``agent_type`` present, no ``instance_id`` -> ``create`` (agent_type
+          exists ONLY to spawn a new agent).
+        - ``instance_id`` + a prompt (``message``/``task``), no ``agent_type`` ->
+          ``continue`` (a follow-up to an existing instance; the read-only ops
+          poll/wait/info/cancel/delete never carry a prompt).
+
+        Deliberately NOT inferred (ambiguous -> explicit error): ``instance_id``
+        alone (poll vs info vs cancel vs delete is unknowable), or both
+        ``agent_type`` and ``instance_id`` together.
+        """
+        has_type = bool(params.get("agent_type"))
+        has_id = bool(params.get("instance_id"))
+        has_prompt = bool(params.get("message") or params.get("task"))
+        if has_type and not has_id:
+            return "create"
+        if has_id and has_prompt and not has_type:
+            return "continue"
+        return None
+
     async def manage_sub_agent(self, params: dict[str, Any]) -> dict[str, Any]:
         """Unified handler for all sub-agent operations.
 
@@ -323,6 +349,17 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         """
         operation = params.get("operation")
         status = params.get("_status")  # Get status early for error reporting
+
+        if not operation:
+            # Safety net: the model often forgets `operation` (esp. on continue).
+            # Infer it from the argument shape when unambiguous — saves the retry
+            # turn — but only for the two safe cases; otherwise error as before.
+            operation = self._infer_operation(params)
+            if operation:
+                logger.info(
+                    "SubAgentManager: no 'operation' given — inferred '%s' from the arguments",
+                    operation,
+                )
 
         if not operation:
             if status:
@@ -760,7 +797,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     await status.error("Continue: 'instance_id' is required")
                 return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
             
-            message = params.get("message")
+            # Accept `task` as a fallback for `message`: when the model omits
+            # `operation` and this call is inferred as a continue, it often put
+            # the follow-up prompt in `task` (the create field) by habit.
+            message = params.get("message") or params.get("task")
             if not message:
                 if status:
                     await status.error("Continue: 'message' is required")
