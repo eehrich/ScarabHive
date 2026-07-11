@@ -418,12 +418,6 @@ llm_system:
         json_mode: true
         multimodal: true
 
-      # Notes:
-      # - OpenAI's flagship frontier model, unified Codex+GPT
-      # - 1M+ context (922K input, 128K output), text + image input
-      # - Pricing (≤272K): $2.50 input / $15.00 output / $0.25 cached per 1M tokens
-      # - Pricing (>272K): $5.00 input / $22.50 output / $0.50 cached per 1M tokens
-
     openrouter-gpt-5.4-unlimited:
       provider: openai_httpx
       model: openai/gpt-5.4
@@ -460,11 +454,6 @@ llm_system:
         json_mode: true
         multimodal: true
 
-      # Notes:
-      # - GPT-5.4 core capabilities in a faster, cheaper model
-      # - 400K context, text + image input
-      # - Pricing: $0.75 input / $4.50 output / $0.075 cached per 1M tokens
-
     openrouter-gpt-5.4-mini-unlimited:
       provider: openai_httpx
       model: openai/gpt-5.4-mini
@@ -483,31 +472,10 @@ llm_system:
         json_mode: true
         multimodal: true
 
-    openrouter-gpt-5-mini-unlimited:
-      provider: openai_httpx
-      model: openai/gpt-5-mini
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-      api_key: "***REMOVED***"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 400000
-      request_timeout: 600
-      service_tier: flex
-      max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
-      # Notes:
-      # - GPT-5 mini (older, cheaper variant of gpt-5.4-mini)
-      # - 400K context, text + image input
-
-    openrouter-gpt-5:
+    openrouter-gpt-5.6-sol:
       provider: openai_httpx
-      model: openai/gpt-5
+      model: openai/gpt-5.6-sol
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
       api_key: "***REMOVED***"
@@ -523,15 +491,9 @@ llm_system:
         json_mode: true
         multimodal: true
 
-      # Notes:
-      # - GPT-5 predecessor to GPT-5.4, still very capable
-      # - 400K context, text + image input, adaptive reasoning
-      # - Pricing: $1.25 input / $10.00 output / $0.125 cached per 1M tokens
-      # - ~50% cheaper than GPT-5.4 (≤272K tier)
-
-    openrouter-gpt-5-unlimited:
+    openrouter-gpt-5.6-sol-unlimited:
       provider: openai_httpx
-      model: openai/gpt-5
+      model: openai/gpt-5.6-sol
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
       api_key: "***REMOVED***"
@@ -546,6 +508,45 @@ llm_system:
         streaming: false
         json_mode: true
         multimodal: true
+
+    openrouter-gpt-5.6-terra:
+      provider: openai_httpx
+      model: openai/gpt-5.6-terra
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000
+      request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+    openrouter-gpt-5.6-luna-unlimited:
+      provider: openai_httpx
+      model: openai/gpt-5.6-luna
+      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
+        order: ["openai", "azure"]
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000
+      request_timeout: 600
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      max_tokens: 0
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+
+
 
     openrouter-gpt-oss-120b:
       provider: openai_httpx
@@ -892,38 +893,23 @@ llm_system:
       max_steps: 500
 
     or-gpt-full:
-      model_ref: openrouter-gpt-5.4
-      description: "OpenRouter GPT-5.4 - Flagship model, best allrounder for prose + coding"
+      model_ref: openrouter-gpt-5.6-terra
+      description: "OpenRouter GPT-5.6 Terra - Flagship model, best allrounder for prose + coding"
       max_steps: 500
 
     or-gpt-full-unlimited:
-      model_ref: openrouter-gpt-5.4-unlimited
-      description: "OpenRouter GPT-5.4 - No output token limit"
+      model_ref: openrouter-gpt-5.6-terra-unlimited
+      description: "OpenRouter GPT-5.6 Terra - No output token limit"
       max_steps: 500
 
     or-gpt-mini:
-      model_ref: openrouter-gpt-5.4-mini
-      description: "OpenRouter GPT-5.4 Mini - Fast, cheap, near-full quality"
+      model_ref: openrouter-gpt-5.6-luna
+      description: "OpenRouter GPT-5.6 Luna - Fast, cheap, near-full quality"
       max_steps: 500
 
     or-gpt-mini-unlimited:
-      model_ref: openrouter-gpt-5.4-mini-unlimited
-      description: "OpenRouter GPT-5.4 Mini - No output token limit"
-      max_steps: 500
-
-    or-gpt-5-mini-unlimited:
-      model_ref: openrouter-gpt-5-mini-unlimited
-      description: "OpenRouter GPT-5 Mini (older, cheaper than 5.4-mini)"
-      max_steps: 500
-
-    or-gpt-5:
-      model_ref: openrouter-gpt-5
-      description: "OpenRouter GPT-5 - Cheaper predecessor, ~50% less than GPT-5.4"
-      max_steps: 500
-
-    or-gpt-5-unlimited:
-      model_ref: openrouter-gpt-5-unlimited
-      description: "OpenRouter GPT-5 - No output token limit"
+      model_ref: openrouter-gpt-5.6-luna-unlimited
+      description: "OpenRouter GPT-5.6 Luna - No output token limit"
       max_steps: 500
 
     or-gpt-oss-120b:

@@ -183,19 +183,16 @@ openai/gpt-5.6-luna:
   input: 1
   output: 6.00
   cached_input: 0.10
-  batch_discount: 0.5
 
 openai/gpt-5.6-terra:
   input: 2.50
   output: 15.00
   cached_input: 0.25
-  batch_discount: 0.5
 
 openai/gpt-5.6-sol:
   input: 5
   output: 30.00
   cached_input: 0.50
-  batch_discount: 0.5
 
 # Anthropic via OpenRouter — cache read = 0.1x of input price
 anthropic/claude-sonnet-4-6:
