@@ -16,6 +16,13 @@ def mock_system_config():
     return config
 
 
+@pytest.fixture(autouse=True)
+def _isolated_storage(tmp_path, monkeypatch):
+    """Persistence is on by default and its storage_path is CWD-relative —
+    run every test in a tmp CWD so no test ever writes into the repo's data/."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def server(mock_system_config):
     return JsonStoreServer(
@@ -425,8 +432,13 @@ class TestMisc:
         assert (await server.read({"_session_id": "sub", "doc": "syn"}))["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_namespace_ttl_eviction(self, server):
+    async def test_namespace_ttl_eviction(self, mock_system_config):
         import time as _time
+        # persist off → eviction is final (the pure memory-bound semantics;
+        # with persistence the doc would reload from disk, see TestPersistence)
+        server = JsonStoreServer(
+            "json_store", mock_system_config,
+            MCPConfig(type="json_store", enabled=True, config={"persist": False}))
         await server.write({"_session_id": "old", "doc": "syn", "data": {"a": 1}})
         # backdate the old namespace beyond the TTL, then touch another namespace
         server._ns_last_access["old"] = _time.time() - server._namespace_ttl_s - 1
@@ -1302,3 +1314,171 @@ class TestSynopsisWorkflow:
         assert set(data.keys()) == {"synopsis", "genre", "world_setting", "key_characters"}
         assert data["synopsis"] == "verfeinert"
         assert data["genre"] == "SciFi"
+
+
+# ---------------------------------------------------------------------------
+# disk persistence (abort + continue / server restart)
+# ---------------------------------------------------------------------------
+
+def _restartable(mock_system_config, tmp_path, **cfg):
+    """A server whose storage survives into the next instance (same path)."""
+    cfg.setdefault("storage_path", str(tmp_path / "jsstore"))
+    return JsonStoreServer(
+        "json_store", mock_system_config,
+        MCPConfig(type="json_store", enabled=True, config=cfg))
+
+
+class TestPersistence:
+    @pytest.mark.asyncio
+    async def test_docs_survive_restart(self, mock_system_config, tmp_path):
+        # The live failure: CLI abort + continue = new process = new instance.
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "doc": "synopsis", "data": {"genre": "Krimi"}})
+        await a.merge({**COORD, "doc": "synopsis",
+                       "data": {"key_characters": {"Nora": {"age": 34}}}})
+        b = _restartable(mock_system_config, tmp_path)
+        res = await b.read({**COORD, "doc": "synopsis"})
+        assert res["status"] == "ok"
+        assert json.loads(res["json"]) == {
+            "genre": "Krimi", "key_characters": {"Nora": {"age": 34}}}
+
+    @pytest.mark.asyncio
+    async def test_owner_survives_restart(self, mock_system_config, tmp_path):
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "doc": "synopsis", "data": {"a": 1}})
+        b = _restartable(mock_system_config, tmp_path)
+        # foreign session still read-only after the "restart" ...
+        res = await b.merge({**WRITER_A, "doc": "synopsis", "data": {"b": 2}})
+        assert res["status"] == "error" and "another agent" in res["error"]
+        # ... the owning session (restored on continue) may keep writing.
+        assert (await b.merge({**COORD, "doc": "synopsis",
+                               "data": {"b": 2}}))["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_delete_doc_removes_file(self, mock_system_config, tmp_path):
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "doc": "gone", "data": {"a": 1}})
+        await a.delete_doc({**COORD, "doc": "gone"})
+        b = _restartable(mock_system_config, tmp_path)
+        res = await b.read({**COORD, "doc": "gone"})
+        assert res["status"] == "error" and "not found" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_keys_persisted(self, mock_system_config, tmp_path):
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "doc": "beats",
+                       "data": {"B01": {"title": "x"}, "B02": {"title": "y"}}})
+        await a.delete_keys({**COORD, "doc": "beats", "paths": ["B02"]})
+        b = _restartable(mock_system_config, tmp_path)
+        assert json.loads((await b.read({**COORD, "doc": "beats"}))["json"]) == {
+            "B01": {"title": "x"}}
+
+    @pytest.mark.asyncio
+    async def test_unsafe_names_roundtrip_without_escaping_storage(
+            self, mock_system_config, tmp_path):
+        # Namespace and doc names are LLM-supplied — path traversal must be
+        # neutralized, and the original names must still round-trip.
+        a = _restartable(mock_system_config, tmp_path)
+        nasty = {"_session_id": "s1", "namespace": "../../und /zurück"}
+        await a.write({**nasty, "doc": "syn:opsis?", "data": {"ok": True}})
+        files = [p for p in tmp_path.rglob("*.json")]
+        assert files and all(
+            (tmp_path / "jsstore") in p.parents for p in files)
+        b = _restartable(mock_system_config, tmp_path)
+        res = await b.read({**nasty, "doc": "syn:opsis?"})
+        assert json.loads(res["json"]) == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_persist_false_writes_nothing(self, mock_system_config, tmp_path):
+        srv = _restartable(mock_system_config, tmp_path, persist=False)
+        await srv.write({**COORD, "doc": "d", "data": {"a": 1}})
+        assert not (tmp_path / "jsstore").exists()
+
+    @pytest.mark.asyncio
+    async def test_case_only_name_variants_get_distinct_files(
+            self, mock_system_config, tmp_path):
+        # NTFS/macOS paths are case-INsensitive: 'Run7' and 'run7' are two
+        # namespaces in memory but would be ONE directory without the hash
+        # suffix — the second write would clobber the first's file.
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({"_session_id": "s1", "namespace": "Run7",
+                       "doc": "d", "data": {"who": "upper"}})
+        await a.write({"_session_id": "s2", "namespace": "run7",
+                       "doc": "d", "data": {"who": "lower"}})
+        # same for doc names within one namespace
+        await a.write({**COORD, "doc": "Beat1", "data": {"who": "upper"}})
+        await a.write({**COORD, "doc": "beat1", "data": {"who": "lower"}})
+        b = _restartable(mock_system_config, tmp_path)
+        for ns, who in (("Run7", "upper"), ("run7", "lower")):
+            res = await b.read({"_session_id": "sx", "namespace": ns, "doc": "d"})
+            assert json.loads(res["json"]) == {"who": who}
+        for doc, who in (("Beat1", "upper"), ("beat1", "lower")):
+            res = await b.read({**COORD, "doc": doc})
+            assert json.loads(res["json"]) == {"who": who}
+
+    @pytest.mark.asyncio
+    async def test_ttl_evicts_memory_but_reloads_from_disk(
+            self, mock_system_config, tmp_path):
+        import time as _time
+        srv = _restartable(mock_system_config, tmp_path)
+        await srv.write({"_session_id": "s1", "namespace": "A",
+                         "doc": "d", "data": {"a": 1}})
+        # backdate 'A' past the TTL, then touch another namespace → evicted
+        srv._ns_last_access["A"] = _time.time() - srv._namespace_ttl_s - 1
+        await srv.write({"_session_id": "s1", "namespace": "B",
+                         "doc": "d", "data": {"b": 2}})
+        assert "A" not in srv._docs
+        res = await srv.read({"_session_id": "s1", "namespace": "A", "doc": "d"})
+        assert res["status"] == "ok" and json.loads(res["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_retention_sweep_drops_old_namespaces(
+            self, mock_system_config, tmp_path):
+        import os as _os
+        import time as _time
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "doc": "old", "data": {"a": 1}})
+        old = _time.time() - 2 * 3600
+        for f in (tmp_path / "jsstore").rglob("*.json"):
+            _os.utime(f, (old, old))
+        b = _restartable(mock_system_config, tmp_path, file_retention_hours=1)
+        res = await b.read({**COORD, "doc": "old"})
+        assert res["status"] == "error" and "not found" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_foreign_malformed_file_never_fatal(
+            self, mock_system_config, tmp_path):
+        # A hand-placed / drifted file (valid JSON, but not our dict payload)
+        # must be skipped with a warning — not take the namespace down.
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "doc": "good", "data": {"a": 1}})
+        ns_dir = next(d for d in (tmp_path / "jsstore" / "json_store").iterdir()
+                      if d.is_dir())
+        (ns_dir / "bad.json").write_text("null", encoding="utf-8")
+        (ns_dir / "worse.json").write_text("[1, 2", encoding="utf-8")
+        b = _restartable(mock_system_config, tmp_path)
+        res = await b.read({**COORD, "doc": "good"})
+        assert res["status"] == "ok" and json.loads(res["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_lone_surrogates_roundtrip(self, mock_system_config, tmp_path):
+        # Parsed LLM JSON can carry lone surrogates in names and values —
+        # persistence must neither raise nor silently stay memory-only.
+        a = _restartable(mock_system_config, tmp_path)
+        res = await a.write({"_session_id": "s1", "namespace": "ns\ud800x",
+                             "doc": "d\ud800c", "data": {"t": "a\ud800b"}})
+        assert res["status"] == "ok" and "persist_error" not in res
+        b = _restartable(mock_system_config, tmp_path)
+        res = await b.read({"_session_id": "s1", "namespace": "ns\ud800x",
+                            "doc": "d\ud800c"})
+        assert res["status"] == "ok"
+        assert json.loads(res["json"]) == {"t": "a\ud800b"}
+
+    @pytest.mark.asyncio
+    async def test_undo_history_is_volatile(self, mock_system_config, tmp_path):
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "doc": "d", "data": {"a": 1}})
+        await a.merge({**COORD, "doc": "d", "data": {"b": 2}})
+        b = _restartable(mock_system_config, tmp_path)
+        res = await b.undo({**COORD, "doc": "d"})
+        assert res["status"] == "error" and "Nothing to undo" in res["error"]

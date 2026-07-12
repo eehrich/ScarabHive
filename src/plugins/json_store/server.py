@@ -26,23 +26,31 @@ strip_markdown_fences``) and, when strict parsing fails, repaired via
 commas, truncation, ...). Unrecoverable input is rejected with a precise
 error so the agent can fix its call. Repairs are reported in the result.
 
-Documents are held in memory, scoped per agent session by default
-(``session_scoped: false`` shares them process-wide; calls without a
-session id share the "global" namespace). Idle namespaces are evicted
-after ``namespace_ttl_hours`` (long-running server processes must not
-accumulate state forever). This is working state, not durable storage.
+Documents are scoped per agent session by default (``session_scoped:
+false`` shares them process-wide; calls without a session id share the
+"global" namespace). They live in memory AND — like the todo/memory
+plugins — are persisted per namespace to disk
+(``data/json_store/<server>/<namespace>/<doc>.json``, incl. the owning
+session), so a CLI abort + continue or a server restart does not lose
+the working documents. Idle namespaces are evicted from MEMORY after
+``namespace_ttl_hours`` (reloaded from disk on next access); files are
+removed only by ``file_retention_hours``. Undo history stays volatile.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import time
 from collections import deque
 from difflib import get_close_matches
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.utils.id import short_id
@@ -102,6 +110,22 @@ class JsonStoreServer(SchemaBasedMCPServer):
         # steps back. 0 disables.
         self._undo_depth: int = int(config_dict.get("undo_depth", 5))
 
+        # Disk persistence (like the todo/memory plugins, but per NAMESPACE —
+        # a coordinator and its sub-agents share documents via the namespace,
+        # so that is the durable unit, not the session): every mutation writes
+        # the touched document to <storage_path>/<server>/<namespace>/<doc>.json
+        # (atomic tmp+rename), including its owner session id — the read-only
+        # write protection survives a restart because session ids are restored
+        # on continue. A namespace missing from memory is lazily reloaded from
+        # disk in _bucket(). Undo history stays volatile by design.
+        self._persist: bool = bool(config_dict.get("persist", True))
+        self._storage_dir: Path = (
+            Path(str(config_dict.get("storage_path", "data/json_store")))
+            / self._safe_filename(name))
+        # Files (not memory) are cleaned by this retention; 0 keeps them forever.
+        self._file_retention_s: float = float(
+            config_dict.get("file_retention_hours", 14 * 24)) * 3600.0
+
         # namespace (session id or "global") -> doc name -> Python object
         self._docs: Dict[str, Dict[str, Any]] = {}
         # namespace -> doc name -> owning session id (None = shared)
@@ -109,6 +133,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
         # namespace -> doc name -> bounded stack of pre-mutation snapshots
         self._doc_history: Dict[str, Dict[str, "deque[Dict[str, Any]]"]] = {}
         self._ns_last_access: Dict[str, float] = {}
+
+        if self._persist:
+            self._sweep_expired_files()
 
     # ------------------------------------------------------------------
     # Namespaces
@@ -128,6 +155,8 @@ class JsonStoreServer(SchemaBasedMCPServer):
         ns = self._ns(params)
         now = time.time()
         if self._namespace_ttl_s > 0:
+            # Memory-only eviction: the files stay and are lazily reloaded on
+            # the next access — durable cleanup is file_retention_hours' job.
             expired = [k for k, ts in self._ns_last_access.items()
                        if k != ns and now - ts > self._namespace_ttl_s]
             for k in expired:
@@ -137,7 +166,126 @@ class JsonStoreServer(SchemaBasedMCPServer):
                 self._ns_last_access.pop(k, None)
                 logger.info("json_store: evicted idle namespace '%s' (TTL)", k)
         self._ns_last_access[ns] = now
+        if ns not in self._docs and self._persist:
+            docs, owners = self._load_namespace(ns)
+            if docs:
+                self._docs[ns] = docs
+                self._doc_owners[ns] = owners
         return self._docs.setdefault(ns, {})
+
+    # ------------------------------------------------------------------
+    # Disk persistence (per namespace, one file per document)
+    # ------------------------------------------------------------------
+
+    _WIN_RESERVED: Set[str] = {"CON", "PRN", "AUX", "NUL",
+                               *{f"COM{i}" for i in range(1, 10)},
+                               *{f"LPT{i}" for i in range(1, 10)}}
+
+    @classmethod
+    def _safe_filename(cls, raw: str) -> str:
+        """Deterministic filesystem-safe name. Namespace and doc names are
+        LLM-supplied, so they must not be able to escape the storage dir or
+        hit Windows-invalid names — and distinct raws must never share a file.
+        Only a pure-lowercase safe name maps to itself; everything else (incl.
+        anything with uppercase — NTFS/macOS paths are case-INsensitive, so
+        'Run7' and 'run7' would otherwise be the same file) gets a '~<sha1>'
+        suffix of the exact raw. '~' is outside the safe charset, so the two
+        forms can never collide with each other."""
+        s = re.sub(r"[^A-Za-z0-9_.-]", "_", raw)[:60]  # keep Windows MAX_PATH headroom
+        reserved = s.split(".")[0].upper() in cls._WIN_RESERVED
+        if s != raw or s != s.lower() or reserved or not s.strip("._-"):
+            # surrogatepass: names come from parsed LLM JSON, which can carry
+            # lone surrogates — hashing must never raise on them.
+            digest = hashlib.sha1(
+                raw.encode("utf-8", "surrogatepass")).hexdigest()[:10]
+            s = f"{s.strip('._-')[:48].lower() or 'x'}~{digest}"
+        return s
+
+    def _doc_file(self, ns: str, doc: str) -> Path:
+        return self._storage_dir / self._safe_filename(ns) / (
+            self._safe_filename(doc) + ".json")
+
+    def _persist_doc(self, params: Dict[str, Any], name: str) -> Optional[str]:
+        """Write one document (value + owner + original names) to disk,
+        atomically. Returns an error string instead of raising — persistence
+        failure must not roll back the in-memory mutation, but it must be
+        VISIBLE (logged + surfaced in the result), never silent."""
+        if not self._persist:
+            return None
+        ns = self._ns(params)
+        try:
+            payload = {"namespace": ns, "doc": name,
+                       "owner": self._doc_owners.get(ns, {}).get(name),
+                       "data": self._docs.get(ns, {}).get(name)}
+            path = self._doc_file(ns, name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.parent / (path.name + ".tmp")
+            # surrogatepass mirrors _load_namespace's read: document values come
+            # from parsed LLM JSON and may contain lone surrogates — strict
+            # utf-8 would raise and the doc would silently stay memory-only.
+            tmp.write_text(json.dumps(payload, ensure_ascii=False),
+                           encoding="utf-8", errors="surrogatepass")
+            os.replace(tmp, path)
+            return None
+        except (OSError, UnicodeError, ValueError, TypeError) as e:
+            logger.error("json_store: persisting '%s' (ns '%s') failed: %s",
+                         name, ns, e)
+            return f"document saved in memory, but writing it to disk failed: {e}"
+
+    def _unpersist_doc(self, params: Dict[str, Any], name: str) -> None:
+        if not self._persist:
+            return
+        try:
+            self._doc_file(self._ns(params), name).unlink(missing_ok=True)
+        except OSError as e:  # pragma: no cover - unlink race
+            logger.error("json_store: removing persisted '%s' failed: %s", name, e)
+
+    def _load_namespace(self, ns: str) -> Tuple[Dict[str, Any],
+                                                Dict[str, Optional[str]]]:
+        """Read all persisted documents of a namespace (empty dicts if none).
+        A corrupt file is skipped with a warning, never fatal."""
+        docs: Dict[str, Any] = {}
+        owners: Dict[str, Optional[str]] = {}
+        ns_dir = self._storage_dir / self._safe_filename(ns)
+        if not ns_dir.is_dir():
+            return docs, owners
+        for f in sorted(ns_dir.glob("*.json")):
+            try:
+                payload = json.loads(f.read_text(encoding="utf-8",
+                                                 errors="surrogatepass"))
+                if not isinstance(payload, dict):
+                    logger.warning("json_store: skipping malformed persisted "
+                                   "doc %s (not an object)", f)
+                    continue
+                name = str(payload.get("doc") or f.stem)
+                docs[name] = payload.get("data")
+                owners[name] = payload.get("owner")
+            except (OSError, ValueError, UnicodeError) as e:
+                logger.warning("json_store: skipping corrupt persisted doc %s: %s",
+                               f, e)
+        if docs:
+            logger.info("json_store: reloaded %d doc(s) for namespace '%s' "
+                        "from disk", len(docs), ns)
+        return docs, owners
+
+    def _sweep_expired_files(self) -> None:
+        """Drop namespace dirs whose NEWEST file is past the retention —
+        run once at startup so abandoned working state doesn't pile up."""
+        if self._file_retention_s <= 0 or not self._storage_dir.is_dir():
+            return
+        cutoff = time.time() - self._file_retention_s
+        try:
+            for ns_dir in self._storage_dir.iterdir():
+                if not ns_dir.is_dir():
+                    continue
+                newest = max((f.stat().st_mtime for f in ns_dir.glob("*.json")),
+                             default=ns_dir.stat().st_mtime)
+                if newest < cutoff:
+                    shutil.rmtree(ns_dir, ignore_errors=True)
+                    logger.info("json_store: removed expired namespace dir %s",
+                                ns_dir)
+        except OSError as e:  # pragma: no cover - startup sweep is best-effort
+            logger.warning("json_store: retention sweep failed: %s", e)
 
     # ------------------------------------------------------------------
     # Write protection (owner = creating session)
@@ -584,6 +732,9 @@ class JsonStoreServer(SchemaBasedMCPServer):
         bucket[name] = value
         if remaps:
             extra["remapped"] = remaps
+        persist_error = self._persist_doc(params, name)
+        if persist_error:
+            extra["persist_error"] = persist_error
         return self._summary(name, value, size, **extra)
 
     @classmethod
@@ -918,10 +1069,15 @@ class JsonStoreServer(SchemaBasedMCPServer):
                 deleted.append(path)
             except (ValueError, IndexError, KeyError, TypeError):
                 missing.append(path)
-        if not deleted:
+        extra: Dict[str, Any] = {}
+        if deleted:
+            persist_error = self._persist_doc(params, name)
+            if persist_error:
+                extra["persist_error"] = persist_error
+        else:
             self._pop_snapshot(params, name)   # nothing changed → no-op snapshot
         return self._summary(name, bucket[name], self._size(bucket[name]),
-                             deleted=deleted, missing=missing)
+                             deleted=deleted, missing=missing, **extra)
 
     async def delete_doc(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Delete a whole document."""
@@ -934,6 +1090,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
         self._snapshot(params, name, "delete_doc")   # so undo can recreate it
         del bucket[name]
         self._owners(params).pop(name, None)
+        self._unpersist_doc(params, name)
         return {"status": "ok", "deleted": name, "remaining": list(bucket.keys())}
 
     async def undo(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -972,13 +1129,18 @@ class JsonStoreServer(SchemaBasedMCPServer):
             bucket[name] = snap["value"]
             owners[name] = snap["owner"]
             size = self._size(snap["value"])
-            return {"status": "ok", "doc": name, "undone": snap["op"],
-                    "restored": True, "chars": size,
-                    "top_level": self._top_level(snap["value"]),
-                    "snapshots_left": len(stack)}
+            result = {"status": "ok", "doc": name, "undone": snap["op"],
+                      "restored": True, "chars": size,
+                      "top_level": self._top_level(snap["value"]),
+                      "snapshots_left": len(stack)}
+            persist_error = self._persist_doc(params, name)
+            if persist_error:
+                result["persist_error"] = persist_error
+            return result
         # The undone operation had created the document → remove it again.
         bucket.pop(name, None)
         owners.pop(name, None)
+        self._unpersist_doc(params, name)
         return {"status": "ok", "doc": name, "undone": snap["op"],
                 "restored": False, "deleted": True,
                 "snapshots_left": len(stack)}

@@ -53,6 +53,7 @@ data/writer/
 data/context_engineer/
 data/message_debugger/
 data/batch_jobs/
+data/json_store/
 data/batch/
 data/comfyui/
 data/debate_forum/

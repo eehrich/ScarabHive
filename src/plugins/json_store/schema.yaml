@@ -102,7 +102,25 @@ config:
   namespace_ttl_hours:
     type: number
     default: 48
-    description: "Evict a session namespace after this many idle hours (0 = never). Prevents unbounded memory growth in long-running server processes."
+    description: "Evict a session namespace from MEMORY after this many idle hours (0 = never). With persistence the files stay and are lazily reloaded on the next access — this only bounds memory in long-running server processes."
+  persist:
+    type: boolean
+    default: true
+    description: |
+      Persist documents to disk per NAMESPACE (one file per document, incl. its
+      owning session id, written atomically on every mutation; lazily reloaded
+      when a namespace is not in memory). Like the todo/memory plugins, this
+      makes the working documents survive a CLI abort + continue and server
+      restarts; the owner-based write protection keeps working because session
+      ids are restored on continue. Undo history stays in memory only.
+  storage_path:
+    type: string
+    default: data/json_store
+    description: "Root directory for persisted documents; the server name and namespace are appended (<storage_path>/<server>/<namespace>/<doc>.json)."
+  file_retention_hours:
+    type: number
+    default: 336
+    description: "Delete a namespace's files after this many idle hours (checked once at startup, against the newest file; 0 = keep forever). Independent of the memory TTL."
   key_aliases:
     type: object
     default: {}

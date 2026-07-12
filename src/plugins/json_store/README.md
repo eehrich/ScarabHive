@@ -97,7 +97,9 @@ The denial message tells the agent what to do instead — write your own documen
   owned documents — a full `write(if_exists="replace")` is refused too. The
   default flow avoids this (each run creates a fresh group id → fresh
   namespace); an orchestrator that deliberately reuses a namespace across runs
-  should use `default_write_access: shared` for it, or let the TTL expire.
+  should use `default_write_access: shared` for it (with persistence, the
+  memory TTL no longer frees a namespace — its files outlive it until
+  `file_retention_hours`).
   Role-based takeover is deliberately NOT offered: a panel runs several
   sub-agents of the same role in one namespace, so it would reopen exactly the
   cross-writer clobbering this protects against.
@@ -114,7 +116,15 @@ my_json:
     default_write_access: owner   # 'shared' restores the pre-0.5 free-for-all
     max_docs: 50
     max_doc_bytes: 2097152
-    namespace_ttl_hours: 48   # evict idle session namespaces (0 = never)
+    namespace_ttl_hours: 48   # evict idle namespaces from MEMORY (0 = never);
+                              # persisted files stay and reload on next access
+    persist: true             # per-namespace disk persistence (default on):
+                              # <storage_path>/<server>/<namespace>/<doc>.json,
+                              # written atomically on every mutation, incl. the
+                              # owning session — survives CLI abort + continue
+                              # and server restarts. Undo history stays in RAM.
+    storage_path: data/json_store
+    file_retention_hours: 336 # delete idle namespace FILES (startup sweep, 0 = never)
     # Optional wrong->right remaps for semantic renames (applied before fuzzy).
     key_aliases:
       synopsis: synopsis_text
@@ -144,8 +154,12 @@ independently and reports unknown ones in `missing`.
 
 ## Notes
 
-- Documents are in-memory working state, not durable storage. Idle session
-  namespaces are evicted after `namespace_ttl_hours` (default 48h).
+- Documents are working state held in memory AND persisted per namespace to
+  disk (like the todo/memory plugins), so a CLI abort + `continue` or a server
+  restart does not lose them; ownership survives too because session ids are
+  restored on continue. `namespace_ttl_hours` (default 48h) only bounds MEMORY
+  — evicted namespaces reload lazily from disk; files are removed by the
+  startup sweep after `file_retention_hours` (default 14 days).
 - The plugin instance is a process-wide singleton, so passing the same
   `namespace` from different agents/sessions (e.g. a coordinator and its
   sub-agents) shares one document — no need to pass the JSON between them.
