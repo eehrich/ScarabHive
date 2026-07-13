@@ -480,7 +480,7 @@ llm_system:
         order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 400000
+      context_window: 272000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
@@ -498,7 +498,7 @@ llm_system:
         order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 400000
+      context_window: 272000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
@@ -516,7 +516,7 @@ llm_system:
         order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 400000
+      context_window: 272000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 16384
@@ -534,7 +534,7 @@ llm_system:
         order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 400000
+      context_window: 272000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
@@ -552,7 +552,7 @@ llm_system:
         order: ["openai", "azure"]
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 400000
+      context_window: 272000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
       max_tokens: 0
