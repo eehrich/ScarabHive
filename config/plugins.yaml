@@ -28,7 +28,9 @@ plugins:
         overrides:  # by default disable html formatting of markdown
           markdown_formatter.format_markdown_output:
              enabled: false
-
+          markdown_formatter.inject_markdown_system_prompt:
+             enabled: false
+             
       timeouts:
         # Queue handler timeouts (prevent cross-session blocking)
         status_queue_put_timeout: 5.0  # seconds
