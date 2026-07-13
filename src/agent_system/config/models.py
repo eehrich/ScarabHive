@@ -118,7 +118,7 @@ class LLMModelConfig(BaseModel):
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
     thinking_budget: Optional[int] = None  # Token budget for thinking (Gemini 2.5: 1-24576, default 8192)
-    thinking_level: Optional[Literal["minimal", "low", "medium", "high"]] = None  # Thinking level (Gemini 3 only)
+    thinking_level: Optional[Literal["minimal", "low", "medium", "high", "max", "ultra"]] = None  # Thinking level. Gemini 3: minimal-high; OpenAI/OpenRouter reasoning.effort (gpt-5.6-Familie): zusätzlich max/ultra
     modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
     max_tokens: Optional[int] = None  # Maximum output tokens (limits response length, reduces costs)
     safety_settings: Optional[Dict[str, str]] = None  # Gemini safety settings: {HarmCategory: HarmBlockThreshold}
