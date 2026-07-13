@@ -144,3 +144,27 @@ async def test_reset_sandbox(server, mock_status):
     code2 = "print(test_var)"
     result = await server.call("script_interpreter_execute", {"code": code2, "_status": mock_status})
     assert "error" in result  # Variable should not exist after reset
+
+@pytest.mark.asyncio
+async def test_bool_op_and_or_short_circuit(server, mock_status):
+    """and/or with Python semantics — the live v6 DB-transfer script failed
+    on `isinstance(x, dict) and x.get(...)` with UnsupportedFeatureError."""
+    code = """
+d = {"a": 1}
+r1 = isinstance(d, dict) and d.get("a")
+r2 = d.get("missing") or "fallback"
+r3 = d.get("a") or "fallback"
+# short-circuit: the right side must never run
+def boom():
+    raise RuntimeError("must not evaluate")
+r4 = False and boom()
+r5 = True or boom()
+count = 0
+for k, v in d.items():
+    if isinstance(v, int) and v > 0:
+        count = count + 1
+print(r1, r2, r3, r4, r5, count)
+"""
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
+    assert "error" not in result, result
+    assert "1 fallback 1 False True 1" in result["result"]

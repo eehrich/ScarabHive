@@ -848,6 +848,24 @@ class SafeExecutor:
                 return not operand
             else:
                 raise RuntimeError(f"Unsupported unary operator: {type(node.op).__name__}")
+
+        elif isinstance(node, ast.BoolOp):
+            # and/or with Python short-circuit semantics: return the deciding
+            # operand's VALUE (not a bool), later operands stay unevaluated.
+            if isinstance(node.op, ast.And):
+                value = True
+                for operand in node.values:
+                    value = self.eval_expression(operand)
+                    if not value:
+                        return value
+                return value
+            else:  # ast.Or
+                value = False
+                for operand in node.values:
+                    value = self.eval_expression(operand)
+                    if value:
+                        return value
+                return value
                 
         elif isinstance(node, ast.Compare):
             left = self.eval_expression(node.left)
