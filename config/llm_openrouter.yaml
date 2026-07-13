@@ -482,8 +482,9 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      service_tier: flex
       max_tokens: 16384
+      thinking_level: medium
       capabilities:
         tools: true
         function_calling: true
@@ -500,8 +501,9 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      service_tier: flex 
       max_tokens: 0
+      thinking_level: max
       capabilities:
         tools: true
         function_calling: true
@@ -518,8 +520,9 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      service_tier: flex
       max_tokens: 16384
+      thinking_level: medium
       capabilities:
         tools: true
         function_calling: true
@@ -536,8 +539,9 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      service_tier: flex   
       max_tokens: 0
+      thinking_level: max
       capabilities:
         tools: true
         function_calling: true
@@ -545,7 +549,8 @@ llm_system:
         json_mode: true
         multimodal: true        
 
-    openrouter-gpt-5.6-luna-unlimited:
+
+    openrouter-gpt-5.6-luna:
       provider: openai_httpx
       model: openai/gpt-5.6-luna
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
@@ -554,8 +559,28 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      service_tier: flex         
+      max_tokens: 16384
+      thinking_level: medium
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true
+
+    openrouter-gpt-5.6-luna-unlimited:
+      provider: openai_httpx
+      model: openai/gpt-5.6-luna
+      provider_routing:           
+        order: ["openai", "azure"]
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 272000
+      request_timeout: 600
+      service_tier: flex        
       max_tokens: 0
+      thinking_level: max
       capabilities:
         tools: true
         function_calling: true
