@@ -910,6 +910,16 @@ llm_system:
       description: "OpenRouter Llama 4 Maverick - 400B MoE, good for creative writing"
       max_steps: 500
 
+    or-gpt-pro:
+      model_ref: openrouter-gpt-5.6-sol
+      description: "OpenRouter GPT-5.6 Sol - Flagship model, best allrounder for prose + coding"
+      max_steps: 500
+
+    or-gpt-pro-unlimited:
+      model_ref: openrouter-gpt-5.6-sol-unlimited
+      description: "OpenRouter GPT-5.6 Sol - No output token limit"
+      max_steps: 500
+
     or-gpt-full:
       model_ref: openrouter-gpt-5.6-terra
       description: "OpenRouter GPT-5.6 Terra - Flagship model, best allrounder for prose + coding"
