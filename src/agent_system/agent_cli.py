@@ -774,7 +774,9 @@ def main() -> None:
     config = load_settings(args.config)
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
     if args.subcommand == "reload":
-        import os
+        # NB: kein lokales `import os` hier — das würde `os` zu einer lokalen
+        # Variable von main() machen und den Modul-Import fuer ALLE nested
+        # Funktionen shadowen (NameError bei jedem anderen Subcommand).
         try:
             import httpx
         except ImportError:
