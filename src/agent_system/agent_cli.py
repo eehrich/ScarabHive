@@ -1518,7 +1518,8 @@ def main() -> None:
                 else:
                     # Session ID provided but doesn't exist - create it
                     logger.info(f"Session '{session_id}' not found, creating new session with this ID")
-                    print(f"Creating new session '{session_id}'")
+                    # stderr: stdout traegt das Task-Ergebnis (Redirects sauber halten)
+                    print(f"Creating new session '{session_id}'", file=sys.stderr)
                     was_new_session = True  # Will be saved at end
                     # Initialize empty session in agent ONLY when it doesn't exist.
                     # MUST stay inside the else: when the session WAS restored,
@@ -1733,9 +1734,12 @@ def main() -> None:
                             logger.debug(f"Failed to JSON dump MCP result: {e}")
                             print(str(res))
                 elif t == "thinking_delta":
-                    # Show thinking/reasoning content as it streams (like WebUI)
+                    # Show thinking/reasoning content as it streams (like WebUI).
+                    # Gated auf show_status: bei --no-status traegt stdout NUR das
+                    # Ergebnis (`>out.json` bleibt sauber, gleiche Klasse wie
+                    # die Session-saved-Zeile).
                     delta = ev.get("delta", "")
-                    if delta:
+                    if delta and show_status:
                         thinking_streamed = True
                         # Print without newline for streaming effect
                         if _supports_color():
@@ -1957,7 +1961,9 @@ def main() -> None:
                     else:
                         vprint(f"[cli] created new session: {actual_session_id}")
                         logger.info(f"Created new session {actual_session_id}")
-                        print(f"\nSession saved: {actual_session_id}")
+                        # stderr: stdout traegt das Ergebnis (`>out.json` darf
+                        # keine Meta-Zeilen einsammeln); im Terminal weiter sichtbar.
+                        print(f"\nSession saved: {actual_session_id}", file=sys.stderr)
                 else:
                     logger.warning("Session save returned False")
             except Exception as e:
