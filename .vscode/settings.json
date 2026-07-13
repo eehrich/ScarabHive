@@ -3,6 +3,7 @@
   "python.testing.pytestArgs": [
     "tests"
   ],
+  "editor.wordWrap": "on",
   "python.testing.unittestEnabled": false,
   "terminal.integrated.defaultProfile.windows": "Git Bash",
   "yaml.schemas": {
