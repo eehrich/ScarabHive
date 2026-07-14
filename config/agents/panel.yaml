@@ -25,7 +25,7 @@ plugins:
 
       agent_config:
         llm_profile: [deepseek-chat-nostream, or-gmini-flash-unlimited]
-        llm_profile_advanced: [deepseek-pro-nostream, or-gpt-full-unlimited]
+        llm_profile_advanced: [deepseek-pro-nostream, or-gpt-full]
         max_steps: 100
         system_template: "./prompts/panel_moderator.md"
 
@@ -68,7 +68,7 @@ plugins:
 
       agent_config:        
         llm_profile: [deepseek-chat-nostream, or-gmini-flash-unlimited]
-        llm_profile_advanced: [deepseek-pro-nostream, or-gpt-full-unlimited]
+        llm_profile_advanced: [deepseek-pro-nostream, or-gpt-full]
 
         max_steps: 5
         system_template: "./prompts/panel_participant.md"
