@@ -69,7 +69,7 @@ class TestBasicAgentMultiProfile:
 
     def test_multi_profile_schema_includes_llm_profile_enum(self, mock_system_config, mock_registry):
         """Test that multi-profile agent includes llm_profile with enum in schema."""
-        agent_config = AgentConfig(llm_profile=["normal", "think", "fast"])
+        agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -106,8 +106,8 @@ class TestBasicAgentMultiProfile:
         assert props["use_advanced_model"]["type"] == "boolean"
 
     def test_multi_profile_default_profile(self, mock_system_config, mock_registry):
-        """Test that first profile in list is default."""
-        agent_config = AgentConfig(llm_profile=["normal", "think", "fast"])
+        """Test that first profile in list is default; available = Union beider Ketten."""
+        agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -176,8 +176,8 @@ class TestBasicAgentMultiProfile:
 
     @pytest.mark.asyncio
     async def test_execute_task_with_use_advanced_model(self, mock_system_config, mock_registry):
-        """Test execute_task with use_advanced_model=True uses last profile."""
-        agent_config = AgentConfig(llm_profile=["normal", "think", "fast"])
+        """Test execute_task with use_advanced_model=True uses llm_profile_advanced[0]."""
+        agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -202,15 +202,17 @@ class TestBasicAgentMultiProfile:
 
         assert result["status"] == "success"
 
-        # Verify run_events was called with llm_override (for "fast", the last profile)
+        # execute_task mappt use_advanced_model NICHT selbst — das Flag geht
+        # an run_events durch (dort zentrales Advanced-Mapping + Fallback-Kette)
         assert mock_run_events_spy.called
         call_kwargs = mock_run_events_spy.call_args[1]
-        assert call_kwargs["llm_override"] is not None
+        assert call_kwargs["use_advanced_model"] is True
+        assert call_kwargs["llm_override"] is None
 
     @pytest.mark.asyncio
     async def test_llm_profile_takes_precedence_over_use_advanced_model(self, mock_system_config, mock_registry):
         """Test that explicit llm_profile takes precedence over use_advanced_model."""
-        agent_config = AgentConfig(llm_profile=["normal", "think", "fast"])
+        agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -235,6 +237,11 @@ class TestBasicAgentMultiProfile:
         })
 
         assert result["status"] == "success"
+
+        # Explizites llm_profile gewinnt: Override gebaut, Flag NICHT durchgereicht
+        call_kwargs = mock_run_events_spy.call_args[1]
+        assert call_kwargs["llm_override"] is not None
+        assert call_kwargs["use_advanced_model"] is False
 
 
 class TestBasicAgentSingleProfile:
@@ -273,7 +280,7 @@ class TestBasicAgentSingleProfile:
 
         # Should still have use_advanced_model (but with note that it has no effect)
         assert "use_advanced_model" in props
-        assert "one profile" in props["use_advanced_model"]["description"]
+        assert "no advanced profile" in props["use_advanced_model"]["description"]
 
     def test_single_profile_default(self, mock_system_config, mock_registry):
         """Test single profile configuration."""
@@ -327,7 +334,7 @@ class TestAgentRunEventsLLMOverride:
     @pytest.mark.asyncio
     async def test_run_events_use_advanced_model_creates_override(self, mock_system_config, mock_registry):
         """Test that run_events with use_advanced_model=True creates LLM override."""
-        agent_config = AgentConfig(llm_profile=["normal", "think"])
+        agent_config = AgentConfig(llm_profile=["normal"], llm_profile_advanced=["think"])
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -357,7 +364,7 @@ class TestAgentRunEventsLLMOverride:
     @pytest.mark.asyncio
     async def test_run_events_explicit_llm_override_takes_precedence(self, mock_system_config, mock_registry):
         """Test that explicit llm_override takes precedence over use_advanced_model."""
-        agent_config = AgentConfig(llm_profile=["normal", "think"])
+        agent_config = AgentConfig(llm_profile=["normal"], llm_profile_advanced=["think"])
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -395,8 +402,8 @@ class TestTemplateVariableInjection:
     """Test template variable injection for schema rendering."""
 
     def test_get_template_vars_includes_llm_profiles(self, mock_system_config, mock_registry):
-        """Test that get_template_vars includes llm_profiles for schema rendering."""
-        agent_config = AgentConfig(llm_profile=["normal", "think", "fast"])
+        """Test that get_template_vars includes llm_profiles (Union) + has_advanced."""
+        agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -412,6 +419,7 @@ class TestTemplateVariableInjection:
 
         assert "llm_profiles" in template_vars
         assert template_vars["llm_profiles"] == ["normal", "think", "fast"]
+        assert template_vars["has_advanced"] is True
 
     def test_get_template_vars_single_profile(self, mock_system_config, mock_registry):
         """Test template vars for single-profile agent."""
@@ -428,3 +436,4 @@ class TestTemplateVariableInjection:
 
         assert "llm_profiles" in template_vars
         assert template_vars["llm_profiles"] == ["normal"]
+        assert template_vars["has_advanced"] is False

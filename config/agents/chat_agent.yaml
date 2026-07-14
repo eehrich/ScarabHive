@@ -7,7 +7,8 @@ plugins:
       description: "Simple chat agent"
       
       agent_config:
-        llm_profile: chat
+        llm_profile: [chat]
+        llm_profile_advanced: []
         max_steps: 30
                 
         hooks:

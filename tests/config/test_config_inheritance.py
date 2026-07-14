@@ -454,21 +454,21 @@ class TestListMergeSyntax:
         # b should not be duplicated
         assert result["items"] == ["a", "b", "c", "d"]
 
-    def test_llm_profile_fallbacks_still_replaced(self):
+    def test_llm_profile_advanced_still_replaced(self):
         """Test that lists without +/! syntax are still replaced."""
         base = {
             "agent_config": {
-                "llm_profile_fallbacks": ["profile_a", "profile_b"]
+                "llm_profile_advanced": ["profile_a", "profile_b"]
             }
         }
         override = {
             "agent_config": {
-                "llm_profile_fallbacks": ["profile_c"]  # No +/! = replace
+                "llm_profile_advanced": ["profile_c"]  # No +/! = replace
             }
         }
         result = _deep_merge_dict(base, override)
-        
-        assert result["agent_config"]["llm_profile_fallbacks"] == ["profile_c"]
+
+        assert result["agent_config"]["llm_profile_advanced"] == ["profile_c"]
 
     def test_realistic_gemini_batch_scenario(self):
         """Test realistic scenario like book_architect_gemini_batch."""

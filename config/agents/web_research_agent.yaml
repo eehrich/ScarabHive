@@ -17,7 +17,8 @@ plugins:
       max_steps: 20
 
       agent_config:
-        llm_profile: chat
+        llm_profile: [chat]
+        llm_profile_advanced: []
         system_template: ""  # Use plugin's own system prompt template (empty string to override default)
         tools:
           allowed:
@@ -41,7 +42,8 @@ plugins:
           meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
 
         agent_config:
-          llm_profile: normal
+          llm_profile: [normal]
+          llm_profile_advanced: []
           max_steps: 10
           system_template: "./prompts/meta_web_research_agent.yaml"
 

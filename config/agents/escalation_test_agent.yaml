@@ -19,7 +19,8 @@ plugins:
       description: "Dev harness for stuck auto-escalation (loop detector + tool errors)"
 
       agent_config:
-        llm_profile: [turbo, chat]   # [standard=gpt-5-nano, advanced=deepseek-chat]
+        llm_profile: [turbo]  # [standard=gpt-5-nano, advanced=deepseek-chat]
+        llm_profile_advanced: [chat]
         max_steps: 8
         system_template: "./prompts/escalation_test_prompt.md"
 

@@ -6,7 +6,8 @@ plugins:
       description: "Meta Agent for orchestrating other agents and managing complex tasks"
 
       agent_config:
-        llm_profile: normal
+        llm_profile: [normal]
+        llm_profile_advanced: []
         max_steps: 50
 
         system_template: "./prompts/meta_agent_prompt.yaml"

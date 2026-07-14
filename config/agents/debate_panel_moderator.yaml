@@ -58,8 +58,8 @@ plugins:
       description: "Moderates multi-participant panel debates (5 agents) with diverse roles and parallel execution"
 
       agent_config:
-        llm_profile: [or-gemini-flash]
-        llm_profile_fallbacks: [chat]
+        llm_profile: [or-gemini-flash, chat]
+        llm_profile_advanced: []
         max_steps: 500
 
         system_template: "./prompts/debate_panel_moderator_prompt.md"

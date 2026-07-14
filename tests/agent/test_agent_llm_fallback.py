@@ -51,26 +51,51 @@ def system_config_with_profiles():
 
 @pytest.fixture
 def agent_config_with_fallbacks():
-    """Create agent config with fallback profiles."""
+    """Create agent config with fallback profiles (Ketten-Semantik)."""
     return AgentConfig(
-        llm_profile="gemini",
-        llm_profile_fallbacks=["openai", "openai_secondary"],
+        llm_profile=["gemini", "openai", "openai_secondary"],
         max_steps=5
     )
 
 
 def test_agent_config_fallback_profiles():
-    """Test that AgentConfig correctly exposes fallback_profiles property."""
+    """Ketten-Semantik: llm_profile = [primär, fallback1, ...]."""
     # No fallbacks
     config = AgentConfig(llm_profile="gemini")
     assert config.fallback_profiles == []
-    
-    # With fallbacks
-    config = AgentConfig(
-        llm_profile="gemini",
-        llm_profile_fallbacks=["openai", "openai_secondary"]
-    )
+    assert config.advanced_llm_profile is None
+
+    # With fallbacks (Kette)
+    config = AgentConfig(llm_profile=["gemini", "openai", "openai_secondary"])
+    assert config.default_llm_profile == "gemini"
     assert config.fallback_profiles == ["openai", "openai_secondary"]
+
+
+def test_agent_config_advanced_chain():
+    """Advanced-Kette + Sicherheitsnetz-Fallback-Reihenfolge."""
+    config = AgentConfig(
+        llm_profile=["gemini", "openai"],
+        llm_profile_advanced=["openai_secondary", "openai"],
+    )
+    assert config.advanced_llm_profile == "openai_secondary"
+    # normal: eigene Rest-Kette + komplette Advanced-Kette als Netz (dedupliziert)
+    assert config.fallback_chain(False) == ["openai", "openai_secondary"]
+    # advanced: eigene Rest-Kette + komplette normale Kette als Netz (dedupliziert)
+    assert config.fallback_chain(True) == ["openai", "gemini"]
+    # ohne Advanced-Kette ist use_advanced ein No-Op → normale Fallbacks
+    config2 = AgentConfig(llm_profile=["gemini", "openai"], llm_profile_advanced=[])
+    assert config2.advanced_llm_profile is None
+    assert config2.fallback_chain(True) == ["openai"]
+    # exclude: tatsächlich aktives Modell (Eskalation/Override) fliegt aus
+    # der Kette — sonst würde es als sein eigener Fallback erneut versucht
+    assert config.fallback_chain(False, exclude="openai_secondary") == ["openai"]
+    assert config.fallback_chain(True, exclude="gemini") == ["openai"]
+
+
+def test_agent_config_legacy_fallbacks_rejected():
+    """Altes llm_profile_fallbacks muss laut scheitern (Migrations-Hinweis)."""
+    with pytest.raises(Exception, match="migrate_llm_profiles"):
+        AgentConfig(llm_profile="gemini", llm_profile_fallbacks=["openai"])
 
 
 def test_llm_rate_limit_error_attributes():
@@ -236,8 +261,7 @@ def test_agent_check_fallback_recovery_no_fallback(system_config_with_profiles, 
 def test_agent_check_fallback_recovery_not_elapsed(system_config_with_profiles):
     """Test _check_fallback_recovery returns False when recovery period not elapsed."""
     agent_config = AgentConfig(
-        llm_profile="gemini",
-        llm_profile_fallbacks=["openai"],
+        llm_profile=["gemini", "openai"],
         fallback_recovery_seconds=60  # 1 minute
     )
     mcp_config = MCPConfig(
@@ -271,8 +295,7 @@ def test_agent_check_fallback_recovery_not_elapsed(system_config_with_profiles):
 def test_agent_check_fallback_recovery_elapsed(system_config_with_profiles):
     """Test _check_fallback_recovery returns True and resets when recovery period elapsed."""
     agent_config = AgentConfig(
-        llm_profile="gemini",
-        llm_profile_fallbacks=["openai"],
+        llm_profile=["gemini", "openai"],
         fallback_recovery_seconds=1  # 1 second for testing
     )
     mcp_config = MCPConfig(

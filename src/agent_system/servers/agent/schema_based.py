@@ -78,11 +78,21 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
         """Override to provide llm_profiles for schema rendering."""
         vars = super().get_template_vars()
 
-        # Add available LLM profiles if agent_config exists
+        # Add available LLM profiles if agent_config exists.
+        # llm_profiles = Union beider Ketten (Auswahl-Enum im Schema);
+        # has_advanced gated die use_advanced_model-Beschreibung — ohne
+        # llm_profile_advanced (oder wenn advanced == default, also kein
+        # echtes Upgrade möglich) ist der Parameter ein No-Op und soll
+        # nicht als Upgrade beworben werden.
         if hasattr(self, 'agent_config') and self.agent_config:
-            vars['llm_profiles'] = self.agent_config.available_llm_profiles
+            ac = self.agent_config
+            vars['llm_profiles'] = ac.available_llm_profiles
+            vars['has_advanced'] = bool(
+                ac.advanced_llm_profile
+                and ac.advanced_llm_profile != ac.default_llm_profile)
         else:
             vars['llm_profiles'] = []
+            vars['has_advanced'] = False
 
         return vars
 

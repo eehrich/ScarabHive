@@ -302,7 +302,11 @@ class Agent(MCPServer):
         config flag is off, no advanced profile exists, or the run is already on
         the advanced model (nothing to escalate to)."""
         cfg = self.agent_config
-        has_advanced = bool(cfg and len(cfg.available_llm_profiles) > 1)
+        # Gleichheits-Guard spiegelt _get_escalation_llm: advanced == default
+        # kann keinen anderen Client bauen — Escalator wäre ein toter Trigger.
+        has_advanced = bool(
+            cfg and cfg.advanced_llm_profile
+            and cfg.advanced_llm_profile != cfg.default_llm_profile)
         enabled = bool(
             cfg and getattr(cfg, "auto_escalate_on_stuck", False)
             and has_advanced and not already_advanced)
@@ -344,14 +348,14 @@ class Agent(MCPServer):
         if cached is not None:
             return cached
         try:
-            profiles = self.agent_config.available_llm_profiles if self.agent_config else []
-            if len(profiles) <= 1:
+            advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
+            if not advanced_profile or advanced_profile == self.agent_config.default_llm_profile:
                 return None
             from ...llm.factory import create_llm_from_profile
             ssl_verify = getattr(self.system_config, "network", None)
             ssl_verify = ssl_verify.ssl_verify if ssl_verify else None
             client = create_llm_from_profile(
-                config=self.system_config, llm_profile=profiles[-1],
+                config=self.system_config, llm_profile=advanced_profile,
                 ssl_verify=ssl_verify,
                 llm_params=self.agent_config.llm_params if self.agent_config else None)
             if hasattr(client, "set_app_title"):
@@ -359,7 +363,7 @@ class Agent(MCPServer):
             if self._hook_manager:
                 self._hook_manager.wire_llm_hooks(client)
             logger.info("[%s] built escalation (advanced) LLM: %s",
-                        self.name, profiles[-1])
+                        self.name, advanced_profile)
             self._escalation_llm_cached = client
             return client
         except Exception as e:
@@ -1170,11 +1174,14 @@ class Agent(MCPServer):
         if use_advanced_model and not llm_override:
             from agent_system.llm.factory import create_llm_from_profile
 
-            available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
-            if available_profiles and len(available_profiles) > 1:
-                # Use last profile (most capable)
-                advanced_profile = available_profiles[-1]
-
+            # Ketten-Semantik: Advanced-Modell = llm_profile_advanced[0].
+            # Keine Advanced-Kette konfiguriert oder advanced == default
+            # (kein echtes Upgrade) → no-op (normale Kette läuft).
+            advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
+            if advanced_profile and self.agent_config and \
+                    advanced_profile == self.agent_config.default_llm_profile:
+                advanced_profile = None
+            if advanced_profile:
                 try:
                     # Get SSL verify setting
                     ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
@@ -1959,10 +1966,22 @@ class Agent(MCPServer):
                 # run's normal LLM. A persistent fallback (rate-limit path above)
                 # takes precedence — we don't escalate on top of a degraded run.
                 current_llm = active_llm
+                # Profil des TATSÄCHLICH aktiven Modells, wenn es vom Config-
+                # Primär abweicht: Eskalations-Swap oder explizites Override
+                # (llm_profile_info_override = "profil:provider/model"). Wird
+                # aus der Fallback-Kette exkludiert, sonst würde das gerade
+                # fehlschlagende Modell als sein eigener Fallback erneut laufen.
+                active_profile_override = None
+                if llm_override is not None and llm_profile_info_override:
+                    active_profile_override = llm_profile_info_override.split(":", 1)[0]
                 if escalated_this_step:
                     escalation_llm = self._get_escalation_llm()
                     if escalation_llm is not None:
                         current_llm = escalation_llm
+                        active_profile_override = (
+                            self.agent_config.advanced_llm_profile
+                            if self.agent_config else None
+                        )
                         escalator.consume()   # budget spent only on an actual advanced call
                     else:
                         # Advanced client couldn't be built — ran on standard.
@@ -1971,22 +1990,19 @@ class Agent(MCPServer):
                         escalated_this_step = False
                         escalator.disable()
                 fallback_index = 0
-                fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
-                # Bug-Fix: fallback_profiles folgt derselben Convention wie
-                # llm_profile — Position 0 = Standard, Position 1 = Advanced.
-                # Wenn use_advanced_model=True, soll der Fallback ebenfalls
-                # auf den Advanced-Slot greifen, sonst fällt der Agent von
-                # gpt-5.4 (advanced primary) direkt auf gemini-flash (standard
-                # fallback) statt auf gemini-pro (advanced fallback).
-                if use_advanced_model and len(fallback_profiles) >= 2:
-                    fallback_profiles = [
-                        fallback_profiles[1],
-                        fallback_profiles[0],
-                        *fallback_profiles[2:],
-                    ]
-                    logger.info(
+                # Ketten-Semantik: llm_profile = [primär, fallback1, ...],
+                # llm_profile_advanced analog. fallback_chain() liefert die
+                # passende Reihenfolge (advanced-Kette zuerst, dann die
+                # normale Kette als letztes Sicherheitsnetz).
+                fallback_profiles = (
+                    self.agent_config.fallback_chain(
+                        use_advanced_model, exclude=active_profile_override)
+                    if self.agent_config else []
+                )
+                if use_advanced_model and fallback_profiles:
+                    logger.debug(
                         f"[{self.name}] use_advanced_model=True — fallback "
-                        f"order swapped: advanced-slot first ({fallback_profiles[0]})"
+                        f"chain: {fallback_profiles}"
                     )
             
             while True:  # Retry loop for fallbacks (rate limits + upstream errors)

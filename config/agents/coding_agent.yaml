@@ -11,7 +11,8 @@ plugins:
         code_reviewer_agent_list_available_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
       
       agent_config:
-        llm_profile: normal
+        llm_profile: [normal]
+        llm_profile_advanced: []
         max_steps: 15
         system_template: "./prompts/coding_agent_prompt.md"
         

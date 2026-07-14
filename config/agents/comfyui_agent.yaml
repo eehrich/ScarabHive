@@ -9,7 +9,8 @@ plugins:
       description: "Generate images, audio, and video using ComfyUI workflows"
       
       agent_config:
-        llm_profile: chat
+        llm_profile: [chat]
+        llm_profile_advanced: []
         max_steps: 30
         
         system_prompt: |

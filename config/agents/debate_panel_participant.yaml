@@ -9,8 +9,8 @@ plugins:
       description: "Panel debate participant with flexible role — context injected via hook"
 
       agent_config:
-        llm_profile: [or-gemini-flash]
-        llm_profile_fallbacks: [gemini-flash]
+        llm_profile: [or-gemini-flash, gemini-flash]
+        llm_profile_advanced: []
         max_steps: 30
 
         system_template: "./prompts/debate_panel_participant_prompt.md"
@@ -41,9 +41,11 @@ plugins:
       enabled: true
       agent_config:
         llm_profile: [gpt-mini]
+        llm_profile_advanced: []
 
     debate_panel_participant_chat:
       type: debate_panel_participant_flash
       enabled: true
       agent_config:
         llm_profile: [chat]
+        llm_profile_advanced: []

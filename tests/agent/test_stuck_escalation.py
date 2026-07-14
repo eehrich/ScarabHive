@@ -133,11 +133,11 @@ class TestCreateStuckEscalatorGating:
 
     def _agent(self, **cfg):
         a = Agent.__new__(Agent)  # skip heavy __init__
+        # Ketten-Semantik: Advanced-Modell kommt aus llm_profile_advanced[0]
         a.agent_config = SimpleNamespace(
-            llm_profile=cfg.get("llm_profile", ["std", "advanced"]),
-            available_llm_profiles=(cfg.get("llm_profile", ["std", "advanced"])
-                                    if isinstance(cfg.get("llm_profile", ["std", "advanced"]), list)
-                                    else [cfg.get("llm_profile")]),
+            llm_profile=cfg.get("llm_profile", ["std"]),
+            default_llm_profile=cfg.get("default_llm_profile", "std"),
+            advanced_llm_profile=cfg.get("advanced_llm_profile", "advanced"),
             auto_escalate_on_stuck=cfg.get("auto_escalate_on_stuck", True),
             escalate_rounds=cfg.get("escalate_rounds", 2),
             escalate_max_calls=cfg.get("escalate_max_calls", 6),
@@ -149,7 +149,13 @@ class TestCreateStuckEscalatorGating:
         assert esc.enabled
 
     def test_disabled_without_advanced_profile(self):
-        esc = self._agent(llm_profile=["only_one"])._create_stuck_escalator(already_advanced=False)
+        esc = self._agent(advanced_llm_profile=None)._create_stuck_escalator(already_advanced=False)
+        assert not esc.enabled
+
+    def test_disabled_when_advanced_equals_default(self):
+        # advanced == default kann keinen anderen Client bauen (Guard
+        # spiegelt _get_escalation_llm) — Escalator wäre ein toter Trigger.
+        esc = self._agent(advanced_llm_profile="std")._create_stuck_escalator(already_advanced=False)
         assert not esc.enabled
 
     def test_disabled_when_already_advanced(self):

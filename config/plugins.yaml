@@ -18,8 +18,8 @@ plugins:
     enabled: false
 
     agent_config:
-      llm_profile: normal
-      llm_profile_fallbacks: [chat]
+      llm_profile: [normal, chat]
+      llm_profile_advanced: []
       max_steps: 20
       system_template: "config/prompts/system_prompt.yaml"
 
@@ -57,7 +57,12 @@ plugins:
       type: basic_agent
       enabled: true
       agent_config:
-        llm_profile: ["think", "normal", "turbo", "chat"]  # First is default, rest are available options
+        # Kette: [0] = Default, Rest = Fallback-Reihenfolge. ALLE Einträge
+        # (Union mit llm_profile_advanced) bleiben als llm_profile-Parameter
+        # im Tool-Schema wählbar. Advanced leer: "think" ist bereits das
+        # stärkste Profil — use_advanced_model wäre hier ein Downgrade.
+        llm_profile: [think, normal, turbo, chat]
+        llm_profile_advanced: []
         
         timeouts:
           # Queue handler timeouts (prevent cross-session blocking)

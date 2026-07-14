@@ -13,13 +13,13 @@ tools:
             type: string
             description: "Optional LLM profile to use. If not specified, uses the agent's default profile."
             enum: {{ llm_profiles | tojson }}
-          use_advanced_model:
+          {% endif %}{% if has_advanced %}use_advanced_model:
             type: boolean
-            description: "Use most capable LLM profile (alternative to llm_profile parameter). If both are set, llm_profile takes precedence."
+            description: "Use the agent's advanced LLM profile (alternative to llm_profile parameter). If both are set, llm_profile takes precedence."
             default: false
           {% else %}use_advanced_model:
             type: boolean
-            description: "Use most capable LLM profile. Note: This agent has only one profile configured, so this has no effect."
+            description: "Use the agent's advanced LLM profile. Note: This agent has no advanced profile configured, so this has no effect."
             default: false
           {% endif %}
         required: ["task"]

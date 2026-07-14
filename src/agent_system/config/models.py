@@ -244,8 +244,20 @@ LLM_PARAMS_PROTECTED_FIELDS = frozenset({
 
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
-    llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, position 0 = standard, position 1 = advanced (used via use_advanced_model=True)
-    llm_profile_fallbacks: Optional[List[str]] = None  # Fallback profiles on rate limit/errors. Same convention as llm_profile: position 0 = standard fallback, position 1 = advanced fallback (auto-picked when use_advanced_model=True)
+    # LLM-KETTE (seit 2026-07: neue Semantik!): Liste = [primär, fallback1, fallback2, ...]
+    # — Position 0 ist das Standard-Modell, ALLE weiteren Einträge sind Fallbacks
+    # in Reihenfolge (Rate-Limit/Upstream-Fehler). String = nur Primär, keine Fallbacks.
+    llm_profile: str | List[str] = "normal"
+    # Advanced-KETTE (use_advanced_model=True): gleiche Struktur — [primär_adv,
+    # fallback1_adv, ...]. Leer/fehlend = KEIN Advanced-Modell (use_advanced_model
+    # läuft dann auf der normalen Kette weiter). Die Ketten sind FÜREINANDER das
+    # letzte Sicherheitsnetz: ist die eigene Kette bei Fallbacks erschöpft, wird
+    # die jeweils andere Kette komplett durchprobiert (fallback_chain()).
+    llm_profile_advanced: Optional[List[str]] = None
+    # ENTFERNT (alte Semantik [std_fallback, adv_fallback]) — Migration:
+    # scripts/migrate_llm_profiles.py. Absichtlich als Feld behalten, damit
+    # unmigrierte yamls LAUT beim Laden scheitern statt still falsch zu laufen.
+    llm_profile_fallbacks: Optional[List[str]] = None
     # Per-Agent LLM-Parameter-Overrides: werden beim Aufloesen der llm_profile-
     # Modelle (default/advanced/escalation) ueber den referenzierten
     # llm_system.models-Eintrag gelegt — statt fuer jede Kombination
@@ -253,9 +265,11 @@ class AgentConfig(BaseModel):
     # anzulegen. Erlaubt sind alle LLMModelConfig-Felder AUSSER den
     # Identitaets-Feldern (provider/model/api_key/base_url/batch_provider/
     # ollama_mode — die definieren WELCHES Modell und gehoeren in llm.yaml).
-    # Gilt bewusst NICHT fuer llm_profile_fallbacks (Fallbacks muessen mit
-    # ihrer eigenen, robusten Tuning-Config laufen — z.B. kennt Gemini kein
-    # thinking_level=max) und nicht fuer explizite --llm-profile-Overrides.
+    # Gilt fuer die PRIMÄR-Modelle beider Ketten (llm_profile[0],
+    # llm_profile_advanced[0], Eskalation) — bewusst NICHT fuer die
+    # Fallback-Eintraege (Fallbacks sind oft ein anderer Provider und muessen
+    # mit ihrer eigenen, robusten Tuning-Config laufen — z.B. kennt Gemini
+    # kein thinking_level=max) und nicht fuer explizite --llm-profile-Overrides.
     # Beispiel:  llm_params: { thinking_level: low, max_tokens: 8000 }
     llm_params: Optional[Dict[str, Any]] = None
     fallback_recovery_seconds: int = 3600  # Seconds before trying original LLM again after rate limit (default: 1 hour)
@@ -268,10 +282,10 @@ class AgentConfig(BaseModel):
     template_vars: Optional[Dict[str, Any]] = None  # Custom variables for Jinja2 template rendering
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)  # Timeout configuration for deadlock prevention
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)  # Tool call loop detection
-    # Auto-escalate to the advanced llm_profile (llm_profile[1]) when the run
+    # Auto-escalate to the advanced model (llm_profile_advanced[0]) when the run
     # loop observes the agent is stuck (loop detector, or repeated all-error tool
-    # steps). Time-boxed + budget-capped; needs llm_profile to be a [std, advanced]
-    # list. No-op when already running advanced (use_advanced_model).
+    # steps). Time-boxed + budget-capped; needs a non-empty llm_profile_advanced
+    # (distinct from the default). No-op when already running advanced.
     auto_escalate_on_stuck: bool = False
     escalate_rounds: int = 2          # steps to stay on the advanced model per trigger
     escalate_max_calls: int = 6       # total advanced calls allowed per run (budget)
@@ -294,24 +308,83 @@ class AgentConfig(BaseModel):
         LLMModelConfig.model_validate({"model": "_llm_params_probe_", **v})
         return v
 
+    @model_validator(mode="after")
+    def _reject_legacy_fallbacks(self) -> "AgentConfig":
+        # Alte [std, adv]-Positions-Semantik ist entfernt. Ein gesetztes
+        # llm_profile_fallbacks bedeutet: yaml wurde nicht migriert — laut
+        # scheitern statt still falsch laufen (llm_profile[1] wäre sonst
+        # plötzlich Fallback statt Advanced).
+        if self.llm_profile_fallbacks:
+            raise ValueError(
+                "llm_profile_fallbacks wurde entfernt. Neue Semantik: "
+                "llm_profile = [primär, fallback1, ...] (Kette) und "
+                "llm_profile_advanced = [primär_adv, fallback1_adv, ...]. "
+                "Migration: python scripts/migrate_llm_profiles.py"
+            )
+        return self
+
     @property
     def default_llm_profile(self) -> str:
-        """Get the default LLM profile (first in list if list, otherwise the string)."""
+        """Primäres LLM-Profil (Position 0 der Kette bzw. der String)."""
         if isinstance(self.llm_profile, list):
             return self.llm_profile[0] if self.llm_profile else "normal"
         return self.llm_profile
 
     @property
     def available_llm_profiles(self) -> List[str]:
-        """Get all available LLM profiles."""
-        if isinstance(self.llm_profile, list):
-            return self.llm_profile
-        return [self.llm_profile]
-    
+        """ALLE dem Agent zugeordneten Profile (normale + Advanced-Kette,
+        dedupliziert, Reihenfolge stabil) — für Auswahl-Enums (schema_based)
+        und Validierung expliziter llm_profile-Parameter."""
+        base = list(self.llm_profile) if isinstance(self.llm_profile, list) else [self.llm_profile]
+        seen: list[str] = []
+        for p in base + (self.llm_profile_advanced or []):
+            if p not in seen:
+                seen.append(p)
+        return seen
+
+    @property
+    def advanced_llm_profile(self) -> Optional[str]:
+        """Primäres Advanced-Profil (use_advanced_model=True) — None wenn
+        keine Advanced-Kette konfiguriert ist (dann läuft advanced = normal)."""
+        adv = self.llm_profile_advanced or []
+        return adv[0] if adv else None
+
     @property
     def fallback_profiles(self) -> List[str]:
-        """Get fallback profiles for rate limit/error recovery."""
-        return self.llm_profile_fallbacks or []
+        """Fallback-Kette des NORMALEN Modus: llm_profile[1:]."""
+        if isinstance(self.llm_profile, list):
+            return self.llm_profile[1:]
+        return []
+
+    def fallback_chain(self, use_advanced_model: bool = False,
+                       exclude: Optional[str] = None) -> List[str]:
+        """Fallback-Reihenfolge für den Retry-Loop (ohne das aktive Primär-Modell).
+
+        Die Ketten sind FÜREINANDER das letzte Sicherheitsnetz (symmetrisch):
+        - normal:   llm_profile[1:]           + komplette Advanced-Kette
+        - advanced: llm_profile_advanced[1:]  + komplette normale Kette
+        Erhält die alte Resilienz („Ultimate-Fallback wenn beide Provider down"):
+        ein Lauf fällt nie ins Leere, solange IRGENDEINE Kette noch ein Modell
+        hat. Dedupliziert, Reihenfolge stabil, aktives Primär-Modell exkludiert.
+
+        exclude: Profil-Name des TATSÄCHLICH aktiven Modells, wenn es vom
+        Config-Primär abweicht (Eskalations-Swap, explizites llm_profile-
+        Override) — sonst würde das gerade fehlschlagende Modell als sein
+        eigener Fallback erneut versucht (Doppel-Retry).
+        """
+        base = list(self.llm_profile) if isinstance(self.llm_profile, list) else [self.llm_profile]
+        adv = list(self.llm_profile_advanced or [])
+        if use_advanced_model and self.advanced_llm_profile:
+            chain = adv[1:] + base
+            active = self.advanced_llm_profile
+        else:
+            chain = base[1:] + adv
+            active = self.default_llm_profile
+        seen: list[str] = []
+        for p in chain:
+            if p not in seen and p != active and p != exclude:
+                seen.append(p)
+        return seen
 
 
 class AgentMetadata(BaseModel):

@@ -1849,7 +1849,7 @@ class HTTPXOpenAIClient(LLMClient):
 
                     # Content-filter block (Gemini PROHIBITED_CONTENT etc.) — surface
                     # as upstream-body-error so the server-side fallback-profile
-                    # mechanism switches to llm_profile_fallbacks. Retrying the same
+                    # mechanism switches to the llm_profile fallback chain. Retrying the same
                     # model is pointless: the filter is deterministic per content,
                     # not transient like MALFORMED_FUNCTION_CALL.
                     if finish_reason == "content_filter":
