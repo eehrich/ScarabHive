@@ -187,6 +187,7 @@ class Agent(MCPServer):
                         config=system_config,
                         llm_profile=self.agent_config.default_llm_profile,
                         ssl_verify=ssl_verify,
+                        llm_params=self.agent_config.llm_params,
                     )
                 except Exception as e:
                     # Missing API key is an expected situation in test/dev
@@ -351,7 +352,8 @@ class Agent(MCPServer):
             ssl_verify = ssl_verify.ssl_verify if ssl_verify else None
             client = create_llm_from_profile(
                 config=self.system_config, llm_profile=profiles[-1],
-                ssl_verify=ssl_verify)
+                ssl_verify=ssl_verify,
+                llm_params=self.agent_config.llm_params if self.agent_config else None)
             if hasattr(client, "set_app_title"):
                 client.set_app_title(self.name)
             if self._hook_manager:
@@ -409,6 +411,10 @@ class Agent(MCPServer):
             
             ssl_verify = getattr(self.system_config, "network").ssl_verify if getattr(self.system_config, "network", None) else None
             
+            # Bewusst OHNE agent_config.llm_params: Fallbacks sind oft ein
+            # anderer Provider (Cross-Provider-Pflicht) und muessen mit ihrer
+            # eigenen, robusten Tuning-Config laufen — z.B. wuerde ein
+            # gpt-thinking_level=max einen Gemini-Fallback hart brechen.
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,
@@ -1178,6 +1184,7 @@ class Agent(MCPServer):
                         config=self.system_config,
                         llm_profile=advanced_profile,
                         ssl_verify=ssl_verify,
+                        llm_params=self.agent_config.llm_params if self.agent_config else None,
                     )
 
                     # Create profile info for logging

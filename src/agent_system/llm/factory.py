@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from ..config.models import AgentSystemConfig, AgentConfig
+from ..config.models import AgentSystemConfig, AgentConfig, LLMModelConfig
 from .clients import make_llm, LLMClient
 
 if TYPE_CHECKING:
@@ -94,24 +94,29 @@ def create_llm_from_profile(
     config: AgentSystemConfig,
     llm_profile: str,
     ssl_verify: Optional[bool] = None,
+    llm_params: Optional[dict] = None,
 ) -> LLMClient:
     """Create an LLM client from a profile name.
-    
+
     This is the recommended way to create LLM clients when you need to
     override the default profile. It properly handles batch mode wrapping.
-    
+
     Args:
         config: The system configuration
         llm_profile: Name of the LLM profile to use
         ssl_verify: Optional SSL verification override
-        
+        llm_params: Optional per-agent LLM parameter overrides
+            (agent_config.llm_params) — applied over the resolved model
+            config, see resolve_llm_config_for_agent().
+
     Returns:
         LLMClient (possibly wrapped with BatchLLMClient if batch mode enabled)
     """
     from .clients import make_llm
-    
-    # Create temporary agent config with override profile
-    temp_agent_config = AgentConfig(llm_profile=llm_profile)
+
+    # Create temporary agent config with override profile (+ optional per-agent
+    # llm_params so callers with agent context propagate their overrides)
+    temp_agent_config = AgentConfig(llm_profile=llm_profile, llm_params=llm_params)
     llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
     
     # Extract batch info before passing to make_llm
@@ -224,6 +229,21 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
         raise ValueError(f"Model reference '{model_ref}' not found in LLM system models")
 
     model_config = config.llm_system.models[model_ref]
+
+    # Per-Agent LLM-Parameter-Overrides (agent_config.llm_params): über den
+    # referenzierten Model-Config-Eintrag legen, statt für jede Kombination
+    # (Modell × thinking_level × max_tokens …) einen eigenen models-Eintrag in
+    # llm.yaml anzulegen. Re-Validierung über LLMModelConfig hält die
+    # Typ-Garantien; Identitäts-Felder sind durch den AgentConfig-Validator
+    # gesperrt. Greift für ALLE Profile, die über diese agent_config aufgelöst
+    # werden (default/advanced/escalation) — Fallback-Profile laufen bewusst
+    # ohne (deren Call-Sites reichen keine llm_params durch).
+    llm_params = getattr(agent_config, "llm_params", None)
+    if llm_params:
+        model_config = LLMModelConfig.model_validate(
+            {**model_config.model_dump(), **llm_params}
+        )
+        logger.debug("Applied agent llm_params on model_ref=%s: %s", model_ref, llm_params)
 
     # Determine the actual provider for make_llm()
     # If provider is "batch", we use batch_provider to determine the underlying provider
@@ -361,6 +381,21 @@ class LLMFactory:
 
         if llm_kwargs.get("include_thoughts") is not None:
             make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
+
+        # Parität zu create_llm_from_profile: diese Felder gingen hier
+        # verloren (thinking_level/-budget, max_tokens, safety_settings) —
+        # der über die Factory gebaute Default-Client ignorierte sie sonst.
+        if llm_kwargs.get("thinking_budget") is not None:
+            make_kwargs["thinking_budget"] = llm_kwargs.get("thinking_budget")
+
+        if llm_kwargs.get("thinking_level") is not None:
+            make_kwargs["thinking_level"] = llm_kwargs.get("thinking_level")
+
+        if llm_kwargs.get("max_tokens") is not None:
+            make_kwargs["max_tokens"] = llm_kwargs.get("max_tokens")
+
+        if llm_kwargs.get("safety_settings") is not None:
+            make_kwargs["safety_settings"] = llm_kwargs.get("safety_settings")
 
         if llm_kwargs.get("modalities") is not None:
             make_kwargs["modalities"] = llm_kwargs.get("modalities")

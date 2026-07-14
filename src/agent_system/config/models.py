@@ -235,10 +235,29 @@ class LoopDetectionConfig(BaseModel):
     auto_unblock_after_steps: int = 3  # Unblock tools after N steps
 
 
+# Nicht per agent_config.llm_params ueberschreibbar: diese Felder definieren
+# die IDENTITAET des Modells (dafuer gibt es llm_profile / llm.yaml).
+LLM_PARAMS_PROTECTED_FIELDS = frozenset({
+    "provider", "model", "api_key", "base_url", "batch_provider", "ollama_mode",
+})
+
+
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, position 0 = standard, position 1 = advanced (used via use_advanced_model=True)
     llm_profile_fallbacks: Optional[List[str]] = None  # Fallback profiles on rate limit/errors. Same convention as llm_profile: position 0 = standard fallback, position 1 = advanced fallback (auto-picked when use_advanced_model=True)
+    # Per-Agent LLM-Parameter-Overrides: werden beim Aufloesen der llm_profile-
+    # Modelle (default/advanced/escalation) ueber den referenzierten
+    # llm_system.models-Eintrag gelegt — statt fuer jede Kombination
+    # (Modell x thinking_level x max_tokens ...) einen eigenen Model-Eintrag
+    # anzulegen. Erlaubt sind alle LLMModelConfig-Felder AUSSER den
+    # Identitaets-Feldern (provider/model/api_key/base_url/batch_provider/
+    # ollama_mode — die definieren WELCHES Modell und gehoeren in llm.yaml).
+    # Gilt bewusst NICHT fuer llm_profile_fallbacks (Fallbacks muessen mit
+    # ihrer eigenen, robusten Tuning-Config laufen — z.B. kennt Gemini kein
+    # thinking_level=max) und nicht fuer explizite --llm-profile-Overrides.
+    # Beispiel:  llm_params: { thinking_level: low, max_tokens: 8000 }
+    llm_params: Optional[Dict[str, Any]] = None
     fallback_recovery_seconds: int = 3600  # Seconds before trying original LLM again after rate limit (default: 1 hour)
     fallback_recovery_jitter_percent: float = 20.0  # Random jitter ±X% to prevent thundering herd when multiple agents recover
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning (default: 20, used if not set in config)
@@ -257,6 +276,23 @@ class AgentConfig(BaseModel):
     escalate_rounds: int = 2          # steps to stay on the advanced model per trigger
     escalate_max_calls: int = 6       # total advanced calls allowed per run (budget)
     escalate_error_streak: int = 2    # trigger after N consecutive all-error tool steps
+
+    @field_validator("llm_params")
+    @classmethod
+    def _validate_llm_params(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not v:
+            return v or None
+        allowed = set(LLMModelConfig.model_fields.keys()) - LLM_PARAMS_PROTECTED_FIELDS
+        unknown = set(v) - allowed
+        if unknown:
+            raise ValueError(
+                f"llm_params: nicht erlaubte Keys {sorted(unknown)} — "
+                f"erlaubt sind: {sorted(allowed)}"
+            )
+        # Typ-/Wert-Validierung gegen das echte Modell-Schema (fail fast beim
+        # Config-Load statt erst beim ersten LLM-Call).
+        LLMModelConfig.model_validate({"model": "_llm_params_probe_", **v})
+        return v
 
     @property
     def default_llm_profile(self) -> str:

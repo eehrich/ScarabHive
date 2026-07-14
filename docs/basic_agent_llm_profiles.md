@@ -72,7 +72,39 @@ llm_system:
       model_ref: gpt-5.1
       description: "Advanced model for complex reasoning"
       max_steps: 100
-```## Implementation Details
+```
+
+#### Per-Agent LLM Parameter Overrides (`agent_config.llm_params`)
+
+Agents can override LLM model parameters (e.g. `thinking_level`, `max_tokens`,
+`service_tier`) on top of the referenced model config — instead of creating a
+separate `llm_system.models` entry for every combination:
+
+```yaml
+my_agent:
+  agent_config:
+    llm_profile: [deepseek-chat, or-gpt-terra-unlimited]
+    llm_params:
+      thinking_level: low
+      max_tokens: 8000
+```
+
+**Semantics:**
+- Applied centrally in `resolve_llm_config_for_agent()` over the resolved
+  model config — for **all** `llm_profile` models of this agent (default,
+  `use_advanced_model`, auto-escalation). The shared `llm_system.models`
+  entry is never mutated (a derived config is built per agent).
+- **Not** applied to `llm_profile_fallbacks` (fallbacks are often a different
+  provider and must run with their own robust tuning — e.g. Gemini rejects
+  `thinking_level: max`) and not to explicit `--llm-profile` request overrides.
+- Allowed keys: all `LLMModelConfig` fields **except** the identity fields
+  `provider`, `model`, `api_key`, `base_url`, `batch_provider`, `ollama_mode`
+  (those define WHICH model — that is what `llm_profile`/`llm.yaml` is for).
+- Validated at config load (unknown keys and invalid values fail fast with a
+  clear error, not at the first LLM call). Setting a key to `null` clears the
+  base model's value.
+
+## Implementation Details
 
 ### Configuration Model (`AgentConfig`)
 

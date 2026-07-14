@@ -76,6 +76,12 @@ agents:
     base_type: basic_agent
     agent_config:
       llm_profile: turbo
+      # Optional: override LLM parameters on top of the referenced model
+      # config (applies to all llm_profile models of this agent, not to
+      # fallbacks) — see docs/basic_agent_llm_profiles.md
+      llm_params:
+        thinking_level: low
+        max_tokens: 8000
       max_steps: 20
       system_template: "config/prompts/financial_analyst_prompt.yaml"
       tools:
