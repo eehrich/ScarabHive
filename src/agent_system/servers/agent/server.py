@@ -5,6 +5,7 @@ Supports multiple tool calls per conversation turn for better efficiency
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from dataclasses import dataclass
@@ -28,11 +29,12 @@ from .components.tool_execution import ToolExecutionManager
 from .components.status_forwarding import StatusEventForwarder
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
+from .components.server_resolution import resolve_registry_server, resolve_longest_prefix
 from .prompt_strategies import PromptRenderer, PromptContext
 from .loop_detection import ToolCallLoopDetector
 from .escalation import StuckEscalator
 from .tool_discovery import ToolDiscoveryService
-from .tool_schema_builder import ToolSchemaBuilder
+from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
 
 
 logger = logging.getLogger(__name__)
@@ -436,6 +438,70 @@ class Agent(MCPServer):
             logger.warning(f"[{self.name}] Failed to create fallback LLM for profile '{fallback_profile}': {e}")
             return None
 
+    def _switch_to_fallback_llm(self, fallback_profile: str, *, persistent: bool) -> Optional[Any]:
+        """Create a fallback client and update the shared fallback state — THE
+        single mutation point for the three retry paths in the LLM loop
+        (upstream body error / rate limit + quota / 5xx server error). The
+        paths differ in loop control, logging and persistence, but the state
+        fields they touch must never drift apart again.
+
+        persistent=True additionally remembers the fallback across requests and
+        starts the recovery clock (rate limit/quota — the original model stays
+        broken for a while). persistent=False only updates the display info
+        (5xx — transient outage, next request should retry the original).
+
+        Returns the client, or None when it could not be built (caller decides
+        whether that is a raise or an error event).
+        """
+        fallback_llm = self._create_fallback_llm(fallback_profile)
+        if not fallback_llm:
+            return None
+        self.llm_profile_info = f"{fallback_profile}:fallback"
+        if persistent:
+            import time
+            self._active_fallback_llm = fallback_llm
+            self._active_fallback_profile = fallback_profile
+            self._fallback_activated_at = time.time()
+        return fallback_llm
+
+    async def _save_session_to_disk(self, session_id: str) -> None:
+        """Persist a session to disk via SessionService (no-op without service
+        or metadata). Shared by the turn-persistence helper and the
+        compacted-messages branch in _finalize_request."""
+        if not self._session_service:
+            logger.debug("No session_service available, skipping disk save")
+            return
+        session_meta = self._session_tracker.get_session_metadata(session_id)
+        if not session_meta:
+            logger.warning(f"No session metadata found for {session_id}, skipping disk save")
+            return
+        await self._session_service.save_session(
+            agent=self,
+            user_id=session_meta.get("user_id", "anonymous"),
+            session_id=session_id,
+            agent_name=session_meta.get("agent_name", self.name),
+            llm_profile=session_meta.get("llm_profile", self.agent_config.default_llm_profile),
+            was_new_session=False  # Always update for intermediate/final saves
+        )
+        logger.debug(f"Saved session {session_id} to disk")
+
+    async def _persist_conversation(self, session_id: str, messages: List[ChatMessage],
+                                    *, to_disk: bool, note: str) -> None:
+        """Persist the conversation (non-system messages) to the in-memory
+        tracker and optionally to disk — THE single implementation of the
+        'filter system → set_session_messages → save_session' sequence that was
+        copied at three points of the request lifecycle (after LLM response,
+        after a completed tool turn, at request finalization). Never raises:
+        persistence failures must not kill a running request."""
+        try:
+            conversation_msgs = [msg for msg in messages if msg.role != "system"]
+            self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
+            logger.debug(f"Persisted session {session_id} ({note}) with {len(conversation_msgs)} messages")
+            if to_disk:
+                await self._save_session_to_disk(session_id)
+        except Exception as e:
+            logger.warning(f"Failed to persist session {session_id} ({note}): {e}", exc_info=True)
+
     async def next_internal_tool_request_id(self, base_request_id: str) -> str:
         """Return the next internal tool request id with a 3-digit suffix.
 
@@ -465,25 +531,8 @@ class Agent(MCPServer):
         Returns:
             The server instance or None if not found
         """
-        # First, try local registry (contains all servers)
-        if hasattr(self, 'registry') and self.registry:
-            try:
-                server = self.registry.get(server_name)
-                if server:
-                    return server
-            except Exception as e:
-                logger.debug(f"Failed to get server '{server_name}' from local registry: {e}")
-
-        # Fallback: try plugin registry (for plugin adapters)
-        if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
-            try:
-                plugin_adapter = self._mcp_integration_manager.mcp_integration.plugin_registry.get_server(server_name)
-                if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                    return plugin_adapter.plugin_server
-            except Exception as e:
-                logger.debug(f"Failed to get server '{server_name}' from plugin registry: {e}")
-
-        return None
+        registry = self.registry if hasattr(self, 'registry') else None
+        return resolve_registry_server(registry, self._mcp_integration_manager, server_name)
 
     # ------------------------------------------------------------------
     # Programmatic tool dispatch (used by tool_script and other in-process
@@ -501,12 +550,10 @@ class Agent(MCPServer):
         server = self._get_server_from_any_registry(tool_name)
         if server:
             return server, tool_name
-        parts = tool_name.split("_")
-        for i in range(len(parts) - 1, 0, -1):
-            candidate = "_".join(parts[:i])
-            server = self._get_server_from_any_registry(candidate)
-            if server:
-                return server, candidate
+        server, candidate = resolve_longest_prefix(
+            self._get_server_from_any_registry, tool_name)
+        if server:
+            return server, candidate
         if tool_name.startswith(f"{self.name}_"):
             return self, self.name
         return None, None
@@ -948,48 +995,15 @@ class Agent(MCPServer):
     # Tool filtering helpers
     # ------------------------------------------------------------------
     def _is_tool_allowed(self, tool_name: str, patterns: list[str]) -> bool:
-        """Return True if tool_name matches any allowed pattern.
+        """Return True if the discovery-stage name matches any allowed pattern.
 
-        Patterns may be:
-          plugin            -> matches exact tool/plugin name
-          plugin/*          -> matches all functions of plugin and plugin itself
-          plugin/function   -> matches one function inside multi-tool plugin (also matches plugin server name for discovery)
-          external.tool     -> exact external tool name
-          external.*        -> all tools of an external server (dot form)
-        Uses fnmatch for flexible wildcard support.
+        Thin delegate to the SINGLE shared discovery-stage matcher
+        ``tool_schema_builder.server_matches_patterns`` (see its docstring for
+        pattern semantics). Kept as a method for existing callers/tests.
+        NOTE: empty patterns now mean deny-all (security by default) — all
+        production callers guard for non-empty patterns before calling.
         """
-        if not patterns:
-            return True
-        # Fast path: global wildcard grants all
-        if '*' in patterns:
-            return True
-        from fnmatch import fnmatch
-        for pat in patterns:
-            # Normalize common shorthand
-            if pat.endswith('/*'):
-                base = pat[:-2]
-                if tool_name == base or tool_name.startswith(base + '.'):
-                    return True
-            # Allow pattern "plugin" to match plugin and any function (added later) via startswith
-            if '/' not in pat and '*' not in pat and '.' not in pat:
-                if tool_name == pat or tool_name.startswith(pat + '.'):
-                    return True
-            # Support dot wildcards: external_server.*
-            if pat.endswith('.*'):
-                base = pat[:-2]
-                if tool_name.startswith(base + '.'):
-                    return True
-            # Special case: If pattern is "server_name/tool_name" (specific tool pattern),
-            # also match the server name itself. This allows server names to pass through
-            # discovery so tools can be expanded later and filtered at the tool level.
-            if '/' in pat and '*' not in pat:
-                server_name = pat.split('/')[0]
-                if tool_name == server_name:
-                    return True
-            # Direct fnmatch (covers explicit names and wildcards)
-            if fnmatch(tool_name, pat):
-                return True
-        return False
+        return server_matches_patterns(tool_name, patterns)
 
     def _filter_usable_tools(self, tools: list[str], patterns: list[str]) -> list[str]:
         """Filter list of tools by allow patterns.
@@ -1128,10 +1142,10 @@ class Agent(MCPServer):
         if self._session_tracker:
             existing_metadata = self._session_tracker.get_session_metadata(session_id)
             if not existing_metadata:
-                # Extract user_id from request_user_map (populated by API/tool execution)
-                # Import at use-site to avoid circular dependency
-                from agent_system.app import _request_user_map
-                user_id = _request_user_map.get(request_id, "anonymous")
+                # Extract user_id from the request ownership map
+                # (populated by API layer / tool execution / sub_agent_manager)
+                from ...core.request_context import get_request_user
+                user_id = get_request_user(request_id)
                 
                 # Use agent's default llm_profile for metadata
                 effective_llm_profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
@@ -1523,44 +1537,24 @@ class Agent(MCPServer):
                 # Check if ANY tool modified the session messages during this request
                 # Tools can call session_tracker.set_compacted_messages() to replace the history
                 compacted_msgs = self._session_tracker.get_compacted_messages(sid)
-                
+
                 if compacted_msgs is not None:
-                    # A tool replaced the message history - use those messages for persistence
+                    # A tool replaced the message history - use those messages for
+                    # persistence (already conversation-only, no filtering needed)
                     logger.debug(
                         f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
                         f"(request had {len(messages)} messages)"
                     )
                     self._session_tracker.set_session_messages(sid, compacted_msgs)
                     self._session_tracker.clear_compacted_messages(sid)
-                    logger.debug("Persisted session %s with %d modified messages", sid, len(compacted_msgs))
+                    # Save to disk even if no SSE client is connected
+                    # (e.g., browser disconnected during background job execution)
+                    await self._save_session_to_disk(sid)
                 else:
-                    # Normal case: no tool modified messages, persist request's messages
-                    # Filter out system messages - only persist conversation history
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    # Update the persistent session with conversation state (no system messages)
-                    self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
-                    logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
-                
-                # CRITICAL: Also save to disk at end of request
-                # This ensures the session is saved even if no SSE client is connected
-                # (e.g., browser disconnected during background job execution)
-                if self._session_service:
-                    session_meta = self._session_tracker.get_session_metadata(sid)
-                    if session_meta:
-                        save_user_id = session_meta.get("user_id", "anonymous")
-                        save_agent_name = session_meta.get("agent_name", self.name)
-                        save_llm_profile = session_meta.get("llm_profile", self.agent_config.default_llm_profile)
-                        
-                        await self._session_service.save_session(
-                            agent=self,
-                            user_id=save_user_id,
-                            session_id=sid,
-                            agent_name=save_agent_name,
-                            llm_profile=save_llm_profile,
-                            was_new_session=False
-                        )
-                        logger.debug(f"Saved session {sid} to disk at end of request")
-                
+                    # Normal case: persist the request's conversation messages
+                    await self._persist_conversation(
+                        sid, messages, to_disk=True, note="at end of request")
+
                 # Keep the request->session mapping (don't pop it immediately)
                 # This allows append requests that arrive shortly after completion to find the session
             except Exception as e:
@@ -2032,7 +2026,6 @@ class Agent(MCPServer):
                             # CRITICAL: Make a deep copy of assistant dict to prevent
                             # format_output hooks in app.py from modifying the stored message!
                             # app.py formats events for display, but we need raw Markdown in messages
-                            import copy
                             llm_out = {"assistant": copy.deepcopy(event["assistant"])}
                             # Preserve usage data if present in event
                             if "usage" in event:
@@ -2063,15 +2056,19 @@ class Agent(MCPServer):
                                 f"LLM error ({error_type}), switching to {fallback_profile}",
                                 meta={"step": step + 1, "fallback": fallback_profile}
                             )
-                            fallback_llm = self._create_fallback_llm(fallback_profile)
+                            fallback_llm = self._switch_to_fallback_llm(
+                                fallback_profile, persistent=True)
                             if fallback_llm:
                                 current_llm = fallback_llm
+                                # Also swap the run's base LLM so hooks use the
+                                # fallback too. The rate-limit path deliberately
+                                # does NOT swap active_llm: mid-run fallback
+                                # recovery (_check_fallback_recovery on long
+                                # runs) must be able to return to the original
+                                # client via `current_llm = active_llm`. The
+                                # post-loop final-answer call selects the
+                                # persistent fallback itself (see final_llm).
                                 active_llm = fallback_llm
-                                self.llm_profile_info = f"{fallback_profile}:fallback"
-                                import time as _fb_time
-                                self._active_fallback_llm = fallback_llm
-                                self._active_fallback_profile = fallback_profile
-                                self._fallback_activated_at = _fb_time.time()
                                 continue  # Retry LLM call with fallback in same step
                             else:
                                 logger.error(
@@ -2102,21 +2099,16 @@ class Agent(MCPServer):
                             f"{'Quota exhausted' if is_quota_exhausted else 'Rate limit hit'}, switching to {fallback_profile}",
                             meta={"step": step + 1, "fallback": fallback_profile}
                         )
-                        
-                        fallback_llm = self._create_fallback_llm(fallback_profile)
+
+                        # PERSISTENT for both rate limit and quota exhausted:
+                        # the original model stays broken for a while, so the
+                        # fallback is remembered across requests until the
+                        # recovery period elapses.
+                        fallback_llm = self._switch_to_fallback_llm(
+                            fallback_profile, persistent=True)
                         if fallback_llm:
                             current_llm = fallback_llm
-                            # Update profile info for status display
-                            self.llm_profile_info = f"{fallback_profile}:fallback"
-                            
-                            # Make fallback PERSISTENT for both rate limit and quota exhausted
-                            # Rate limit: temporary, will try original again after recovery period
-                            # Quota exhausted: permanent until recovery period (usually longer)
-                            import time
-                            self._active_fallback_llm = fallback_llm
-                            self._active_fallback_profile = fallback_profile
-                            self._fallback_activated_at = time.time()
-                            
+
                             recovery_seconds = 3600  # Default
                             if self.agent_config:
                                 recovery_seconds = self.agent_config.fallback_recovery_seconds
@@ -2154,10 +2146,12 @@ class Agent(MCPServer):
                             f"Server error {e.status_code}, switching to {fallback_profile}",
                             meta={"step": step + 1, "fallback": fallback_profile}
                         )
-                        fallback_llm = self._create_fallback_llm(fallback_profile)
+                        # NON-persistent: 5xx is a transient outage — the next
+                        # request should retry the original model directly.
+                        fallback_llm = self._switch_to_fallback_llm(
+                            fallback_profile, persistent=False)
                         if fallback_llm:
                             current_llm = fallback_llm
-                            self.llm_profile_info = f"{fallback_profile}:fallback"
                             continue  # Retry with fallback (non-persistent)
                         else:
                             logger.error(f"[{self.name}] Failed to create fallback LLM for server error")
@@ -2224,6 +2218,11 @@ class Agent(MCPServer):
             # Execute post-LLM hooks to transform the response
             # NOTE: Using same polling pattern as pre_llm_hooks to support
             # future hooks that may emit status messages during execution.
+            # Init per step: the continuation check below reads hook_metadata even
+            # when the hook block fails — without this a first-step hook failure
+            # raises NameError, and later steps would reuse the PREVIOUS step's
+            # metadata (stale continuation signal).
+            hook_metadata: Dict[str, Any] = {}
             try:
                 # Create async task for hook execution
                 hook_task = asyncio.create_task(
@@ -2333,12 +2332,9 @@ class Agent(MCPServer):
                 
                 # Persist session after each valid (non-empty) LLM response to preserve progress on cancellation
                 # NOTE: We only persist non-empty responses to avoid accumulating useless empty messages
-                try:
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
-                    logger.debug(f"Persisted session {session_id} after LLM response (step {step}) with {len(conversation_msgs)} messages")
-                except Exception as e:
-                    logger.warning(f"Failed to persist session {session_id} after LLM response: {e}", exc_info=True)
+                await self._persist_conversation(
+                    session_id, messages, to_disk=False,
+                    note=f"after LLM response (step {step})")
 
             # Check if we have tool calls to execute
             if tool_calls:
@@ -2526,38 +2522,13 @@ class Agent(MCPServer):
                 # Update tracked messages after tool execution
                 self._set_live_messages(session_id, messages.copy())
 
-                # Persist session after complete turn (tool calls + results processed)
-                # This avoids orphaned tool calls that would occur if we saved after each tool execution
-                try:
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
-                    logger.debug(f"Persisted session {session_id} to in-memory tracker after completing turn (step {step}) with {len(conversation_msgs)} messages")
-                    
-                    # CRITICAL: Also save to disk via SessionService after complete turn
-                    # This ensures progress is preserved after all tools from one LLM request are processed
-                    # Avoids orphaned tool calls (assistant calls tool, but response not yet processed)
-                    if self._session_service:
-                        session_meta = self._session_tracker.get_session_metadata(session_id)
-                        if session_meta:
-                            save_user_id = session_meta.get("user_id", "anonymous")
-                            save_agent_name = session_meta.get("agent_name", self.name)
-                            save_llm_profile = session_meta.get("llm_profile", self.agent_config.default_llm_profile)
-                            
-                            await self._session_service.save_session(
-                                agent=self,
-                                user_id=save_user_id,
-                                session_id=session_id,
-                                agent_name=save_agent_name,
-                                llm_profile=save_llm_profile,
-                                was_new_session=False  # Always update for intermediate saves
-                            )
-                            logger.debug(f"Saved session {session_id} to disk after completing turn with all tool results")
-                        else:
-                            logger.warning(f"No session metadata found for {session_id}, skipping disk save")
-                    else:
-                        logger.debug("No session_service available, skipping disk save")
-                except Exception as e:
-                    logger.warning(f"Failed to persist session {session_id} after completing turn: {e}", exc_info=True)
+                # Persist session after complete turn (tool calls + results processed).
+                # Saving only at the turn boundary (not after each tool) avoids
+                # orphaned tool calls; the disk save preserves progress even if
+                # no SSE client is connected.
+                await self._persist_conversation(
+                    session_id, messages, to_disk=True,
+                    note=f"after completing turn (step {step})")
 
                 # Yield pending status events after tool execution
                 for status_event in yield_pending_status_events():
@@ -2674,9 +2645,15 @@ class Agent(MCPServer):
         )
         messages.append(final_user_message)
 
-        # Try final call with tools still available (but instructed not to use them)
+        # Try final call with tools still available (but instructed not to use them).
+        # Use the persistent fallback if one is active: active_llm may still be
+        # the rate-limited/quota-exhausted original (the per-step selection at
+        # the top of the loop doesn't cover this post-loop call), and calling
+        # the broken client here would fail the whole request in its last step
+        # despite a working fallback.
+        final_llm = self._active_fallback_llm or active_llm
         try:
-            final_llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
+            final_llm_out = await final_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
             final_assistant = final_llm_out.get("assistant", {})
             final_content = final_assistant.get("content")
             final_tool_calls = final_assistant.get("tool_calls", [])

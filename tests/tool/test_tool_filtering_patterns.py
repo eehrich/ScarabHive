@@ -73,10 +73,39 @@ class TestToolFilteringPatterns:
             ["web_scraper/*", "duckduckgo_search/*"],
             mock_mcp_integration_manager
         )
-        
+
         assert service._matches_any_pattern("web_scraper/web_scraper", ["web_scraper/*", "duckduckgo_search/*"])
         assert service._matches_any_pattern("duckduckgo_search/search", ["web_scraper/*", "duckduckgo_search/*"])
         assert not service._matches_any_pattern("weather/get_forecast", ["web_scraper/*", "duckduckgo_search/*"])
+
+    def test_dotted_external_requires_dot_form(self, mock_mcp_integration_manager):
+        """Discovery-Gate STRIKT: dotted External-Tool-Namen ('server.tool')
+        passieren NUR über die Dot-Form ('server.*' / exakt) — nicht über
+        'server/*' oder den bare Server-Namen. Regressionstest gegen ein
+        Aufweichen des Security-Gates bei Matcher-Änderungen."""
+        service = self.create_discovery_service(
+            ["weather.*"], mock_mcp_integration_manager
+        )
+        # Slash-Form und bare Name decken dotted Externals NICHT
+        assert not service._matches_any_pattern("weather.get_forecast", ["weather/*"])
+        assert not service._matches_any_pattern("weather.get_forecast", ["weather"])
+        # Dot-Form und Exakt-Match decken sie
+        assert service._matches_any_pattern("weather.get_forecast", ["weather.*"])
+        assert service._matches_any_pattern("weather.get_forecast", ["weather.get_forecast"])
+        # Der Server selbst passiert weiterhin (Pass-Through zur Tool-Filterung)
+        assert service._matches_any_pattern("weather", ["weather/*"])
+        assert service._matches_any_pattern("weather", ["weather"])
+        assert service._matches_any_pattern("weather", ["weather/get_forecast"])
+
+    def test_question_mark_and_seq_globs(self, mock_mcp_integration_manager):
+        """'?'- und '[seq]'-Globs matchen (fnmatch läuft für alle Glob-Metazeichen,
+        nicht nur '*')."""
+        service = self.create_discovery_service(
+            ["ssh_control_v?"], mock_mcp_integration_manager
+        )
+        assert service._matches_any_pattern("ssh_control_v2", ["ssh_control_v?"])
+        assert not service._matches_any_pattern("ssh_control_v22", ["ssh_control_v?"])
+        assert service._matches_any_pattern("worker_3", ["worker_[0-9]"])
     
     def test_global_wildcard(self, mock_mcp_integration_manager):
         """Test global wildcard matches everything."""

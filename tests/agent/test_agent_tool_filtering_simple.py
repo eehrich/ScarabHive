@@ -56,7 +56,10 @@ async def test_filter_patterns():
     effective = agent._filter_usable_tools(tools, agent_config.tools.allowed)  # type: ignore[attr-defined]
     assert "duckduckgo_search" in effective
     assert "web_scraper" in effective
-    assert "web_scraper.scrape" in effective
+    # STRIKT: dotted External-Namen brauchen die Dot-Form ("web_scraper.*");
+    # "server/*" deckt nur den Server selbst (Pass-Through), nicht dessen
+    # dotted Externals — Discovery-Gate-Semantik (siehe server_matches_patterns).
+    assert "web_scraper.scrape" not in effective
     assert "weather.get_forecast" in effective
     assert "weather.get_temperature" not in effective
     assert "datetime.get_time" in effective and "datetime.other" in effective

@@ -522,7 +522,8 @@ async def list_active_sessions(
         List of active sessions with details
     """
     # Import here to avoid circular imports
-    from agent_system.app import _request_user_map, _app_registry
+    from agent_system.app import _app_registry
+    from agent_system.core.request_context import request_user_map as _request_user_map
     from agent_system.servers.agent.server import Agent
     
     sessions = []

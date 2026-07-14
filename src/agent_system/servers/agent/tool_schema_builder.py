@@ -59,6 +59,64 @@ def tool_matches_patterns(tool_name: str, server_name: str, patterns: List[str])
     return False
 
 
+def server_matches_patterns(name: str, patterns: List[str]) -> bool:
+    """Match a DISCOVERY-STAGE name against allow/block patterns — THE single
+    matcher for the server-level filtering pass.
+
+    Two-stage filtering: discovery first selects which SERVERS (and external
+    dotted tool names) are considered at all; schema build then filters the
+    EXPANDED individual tools with ``tool_matches_patterns``. This function owns
+    the first stage; it deliberately lets a server PASS THROUGH when a pattern
+    targets one of its tools (``server/tool``), so the tool-level filter can
+    decide after expansion. Callers: ``ToolDiscoveryService`` (the execution
+    path), ``Agent._is_tool_allowed`` (details listing) and the
+    ``/agents/debug/*/allowed-tools`` endpoint — one semantic for all three
+    (historically two diverging copies lived in server.py and tool_discovery.py).
+
+    ``name`` is either a server name (``web_scraper``), an external dotted tool
+    name (``weather.get_forecast``) or — in diagnostics — a ``server/tool`` path.
+
+    Patterns:
+    - ``*``:            everything
+    - exact:            ``name == pattern``
+    - ``server/*``:     the server itself (pass-through; tools expand later)
+    - ``server/tool``:  the server itself (pass-through; tool filter decides)
+    - bare ``server``:  exactly that server
+    - ``ext.*``:        all dotted tools of an external server
+    - globs:            fnmatch on the full name (``*``, ``?``, ``[seq]``)
+
+    STRICT for dotted externals: ``server/*`` and bare ``server`` deliberately
+    do NOT admit ``server.tool`` names — external MCP tools are selected with
+    the dot form (``server.*`` / exact). This keeps the discovery security
+    gate as strict as it historically was; the looser dot-prefix matching that
+    once lived in server.py's copy was never a production gate.
+
+    Empty/None patterns → deny-all (security by default; same policy as
+    ``ToolDiscoveryService.discover_allowed_tools``).
+    """
+    if not patterns:
+        return False
+    if "*" in patterns:
+        return True
+    for pat in patterns:
+        if name == pat:
+            return True
+        # "server/*" → the server itself (pass-through for later expansion)
+        if pat.endswith("/*") and name == pat[:-2]:
+            return True
+        # "ext.*" (dot wildcard) → all dotted tools of an external server
+        if pat.endswith(".*") and name.startswith(pat[:-2] + "."):
+            return True
+        # "server/tool" → let the SERVER pass through for later tool-level filtering
+        if "/" in pat and "*" not in pat and name == pat.split("/", 1)[0]:
+            return True
+        # glob metachars → fnmatch on the full name ('?' and '[seq]' included,
+        # matching the historical unconditional fnmatch in server.py's matcher)
+        if any(ch in pat for ch in "*?[") and fnmatch.fnmatch(name, pat):
+            return True
+    return False
+
+
 class ToolSchemaBuilder:
     """Builds OpenAI-compatible tool schemas from MCP servers."""
 

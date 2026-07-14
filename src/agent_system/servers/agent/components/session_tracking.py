@@ -30,7 +30,10 @@ class SessionTracker:
     - Allow appending messages directly to sessions
     - Drain pending appended messages during execution loops
 
-    Thread-safety: All public methods use asyncio.Lock for concurrent access.
+    Concurrency: the append/drain/session-lock paths guard their check-then-act
+    sequences with an asyncio.Lock; the remaining accessors are plain dict
+    operations (atomic per event-loop step, no lock needed as long as callers
+    don't await between check and act).
 
     Note: The _active_requests dict is shared with AgentRequestManager to ensure
     both components work with the same request entries.
@@ -74,10 +77,7 @@ class SessionTracker:
         # The agent will use these instead of the request's local messages when persisting.
         self._compacted_messages: Dict[str, List[ChatMessage]] = {}
 
-        # Appended messages for append-mode requests: request_id -> List[ChatMessage]
-        self._appended_messages: Dict[str, List[ChatMessage]] = {}
-
-        # Lock for thread-safe access to internal data structures
+        # Lock for concurrent access (appends/drains/lock bookkeeping)
         self._lock = asyncio.Lock()
 
     async def is_request_active(self, request_id: str) -> bool:
@@ -516,7 +516,6 @@ class SessionTracker:
         """
         self._sessions.clear()
         self._request_to_session.clear()
-        self._appended_messages.clear()
         self._compacted_messages.clear()
         self._session_metadata.clear()
         self._session_template_vars.clear()

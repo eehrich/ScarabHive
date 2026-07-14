@@ -557,18 +557,22 @@ The Agent system includes built-in resilience for LLM provider failures through 
 
 ### Configuration
 
-Agents can specify fallback LLM profiles in their configuration:
+Fallbacks are expressed as a **chain** directly in `llm_profile` (since 2026-07:
+list = `[primary, fallback1, fallback2, ...]`; the removed key
+`llm_profile_fallbacks` causes a config load error):
 
 ```yaml
 my_agent:
   type: basic_agent
   agent_config:
-    llm_profile: "gemini"                    # Primary LLM
-    llm_profile_fallbacks:                   # Fallback chain
-      - "openai"                             # First fallback
-      - "anthropic"                          # Second fallback
-    fallback_recovery_seconds: 1800          # Try primary again after 30min (default: 3600)
+    llm_profile: ["gemini", "openai", "anthropic"]   # primary + fallback chain
+    llm_profile_advanced: ["gpt-large", "claude"]    # optional: advanced chain (use_advanced_model / auto-escalation)
+    fallback_recovery_seconds: 1800                  # Try primary again after 30min (default: 3600)
+    fallback_recovery_jitter_percent: 20.0           # ±X% jitter against thundering herd (default: 20)
 ```
+
+See `docs/basic_agent_llm_profiles.md` for full chain semantics (advanced chain,
+`llm_params`, migration script `scripts/migrate_llm_profiles.py`).
 
 ### Fallback Behavior
 
@@ -678,18 +682,26 @@ The `Agent` class has been refactored into a modular component-based architectur
 
 ```
 src/agent_system/servers/agent/
-├── server.py (1,421 LOC - core agent orchestration)
+├── server.py (core agent orchestration: request lifecycle, LLM loop, fallback chain)
+├── schema_based.py (SchemaBasedAgent - schema.yaml tool loading)
 ├── components/
-│   ├── session_tracking.py (231 LOC - session & message management)
-│   ├── request_manager.py (169 LOC - request lifecycle & cancellation)
-│   ├── mcp_integration.py (existing - MCP protocol handling)
-│   ├── tool_execution.py (existing - tool call execution)
-│   └── status_forwarding.py (existing - status event streaming)
-├── prompt_strategies.py (prompt rendering)
-├── tool_discovery.py (tool enumeration)
-├── tool_schema_builder.py (tool schema generation)
+│   ├── session_tracking.py (session & message management, session locks, compaction marker)
+│   ├── request_manager.py (request lifecycle & cancellation)
+│   ├── hook_integration.py (hook execution at all lifecycle points, LLM transport hooks)
+│   ├── mcp_integration.py (MCP protocol handling, external tool schemas)
+│   ├── tool_execution.py (tool call execution: parallel, cancellable, streaming)
+│   ├── server_resolution.py (shared server/tool-name resolution building blocks)
+│   └── status_forwarding.py (status event streaming)
+├── prompt_strategies.py (prompt rendering, strategy pattern)
+├── tool_discovery.py (tool enumeration & discovery-stage filtering)
+├── tool_schema_builder.py (tool schema generation + THE shared pattern matchers)
+├── loop_detection.py (tool-call loop detection, per-request)
+├── escalation.py (stuck-triggered auto-escalation to advanced profile)
 └── result_utils.py (result extraction & formatting)
 ```
+
+> Architektur-Befunde und offene Verbesserungen: see
+> `docs/agent_package_architecture_review.md`.
 
 ### Core Components
 

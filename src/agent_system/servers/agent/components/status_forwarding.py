@@ -82,7 +82,7 @@ class StatusEventForwarder:
 
     async def drain_pending_events(self, max_wait_ms: float = 100) -> List[Dict[str, Any]]:
         """Drain all pending events.
-        
+
         With the direct handler design, events are immediately available.
         This method is kept for API compatibility but simply returns get_pending_events().
         """
@@ -90,12 +90,3 @@ class StatusEventForwarder:
         import asyncio
         await asyncio.sleep(0.001)
         return self.get_pending_events()
-        # CRITICAL: Unsubscribe from status bus to prevent queue buildup
-        if self.status_queue:
-            try:
-                status_bus.unsubscribe(self.status_queue)
-                logger.debug("Unsubscribed from status bus")
-            except Exception as e:
-                logger.warning("Error unsubscribing from status bus: %s", e)
-            finally:
-                self.status_queue = None

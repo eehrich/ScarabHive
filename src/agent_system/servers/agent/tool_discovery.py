@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple, TYPE_CHECKING
 import logging
-import fnmatch
+
+from .tool_schema_builder import server_matches_patterns
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentConfig
@@ -289,77 +290,10 @@ class ToolDiscoveryService:
     
     def _matches_any_pattern(self, tool: str, patterns: List[str]) -> bool:
         """
-        Check if tool matches any pattern.
-        
-        Supports:
-        - Exact matches
-        - Wildcards with '*'
-        - Dot notation patterns
-        - Server name matching for wildcard patterns (e.g., "ssh_control" matches "ssh_control/*")
-        - Server name matching for specific tool patterns (e.g., "writer_content" matches "writer_content/writer_content_book")
-        
-        Args:
-            tool: Tool name to check
-            pattern: Pattern to match against
-            
-        Returns:
-            True if tool matches any pattern
+        Check if a discovery-stage name matches any pattern.
+
+        Thin delegate to the SINGLE shared discovery-stage matcher
+        ``tool_schema_builder.server_matches_patterns`` (see its docstring for
+        pattern semantics). Kept as a method for existing callers/tests.
         """
-        for pattern in patterns:
-            # Exact match
-            if tool == pattern:
-                return True
-            
-            # Wildcard match
-            if '*' in pattern:
-                if fnmatch.fnmatch(tool, pattern):
-                    return True
-                
-                # Special case: If pattern is "server_name/*", also match "server_name"
-                # This allows server names to pass through for later expansion
-                if pattern.endswith('/*'):
-                    server_name = pattern[:-2]  # Remove "/*"
-                    if tool == server_name:
-                        return True
-            
-            # Special case: If pattern is "server_name/tool_name", match "server_name"
-            # This allows server names to pass through for later tool-level filtering
-            if '/' in pattern and '*' not in pattern:
-                server_name = pattern.split('/')[0]
-                if tool == server_name:
-                    return True
-            
-            # Dot notation match (e.g., "plugin.tool" matches "plugin.*")
-            if '.' in pattern and '.' in tool:
-                pattern_parts = pattern.split('.')
-                tool_parts = tool.split('.')
-                if self._matches_dot_pattern(tool_parts, pattern_parts):
-                    return True
-        
-        return False
-    
-    def _matches_dot_pattern(self, tool_parts: List[str], pattern_parts: List[str]) -> bool:
-        """
-        Match dot-separated patterns.
-        
-        Examples:
-        - "plugin.*" matches "plugin.tool1", "plugin.tool2"
-        - "plugin.sub.*" matches "plugin.sub.tool1"
-        
-        Args:
-            tool_parts: Tool name split by '.'
-            pattern_parts: Pattern split by '.'
-            
-        Returns:
-            True if pattern matches
-        """
-        if len(pattern_parts) > len(tool_parts):
-            return False
-        
-        for i, pattern_part in enumerate(pattern_parts):
-            if pattern_part == '*':
-                return True  # Wildcard matches rest
-            if i >= len(tool_parts) or tool_parts[i] != pattern_part:
-                return False
-        
-        return True
+        return server_matches_patterns(tool, patterns)

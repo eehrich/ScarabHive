@@ -111,6 +111,13 @@ async def on_post_llm_call(self, context: HookContext) -> HookResult:
 
 ### PRE_TOOL_CALL
 
+> ⚠️ **Not wired yet:** The hook type, registry routing and
+> `HookIntegrationManager.execute_pre_tool_hooks` all exist, but the agent's
+> tool-execution loop does not call them — hooks of this type currently
+> **never fire**. Same for POST_TOOL_CALL. Kept deliberately as a planned
+> extension point (see `docs/agent_package_architecture_review.md`, Befund E);
+> do not build plugins on it until it is wired into `ToolExecutionManager`.
+
 **Trigger:** Before executing a tool
 **Use Cases:** Parameter validation, access control, logging
 **Can Modify:** Tool parameters, execution decision

@@ -20,17 +20,13 @@ logger = logging.getLogger(__name__)
 
 def _register_request_user(request_id: str, user_id: str) -> None:
     """Register sub-agent request_id -> user_id mapping.
-    
+
     This ensures sub-agent requests are properly associated with their user
     in the admin dashboard and other user-aware features.
     """
-    try:
-        from agent_system.app import _request_user_map
-        _request_user_map[request_id] = user_id
-        logger.debug(f"Registered sub-request {request_id} for user {user_id}")
-    except ImportError:
-        # app not available (e.g., in tests without full app context)
-        logger.debug("Could not register request user mapping: app not available")
+    from agent_system.core.request_context import register_request_user
+    register_request_user(request_id, user_id)
+    logger.debug(f"Registered sub-request {request_id} for user {user_id}")
 
 
 class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):

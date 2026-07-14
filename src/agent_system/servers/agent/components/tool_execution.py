@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from .status_forwarding import StatusEventForwarder
 
 from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
+from ....core.request_context import register_request_user
+from .server_resolution import resolve_longest_prefix
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....mcp.integration import get_mcp_integration
@@ -58,8 +60,7 @@ def inject_runtime_params(params: Dict[str, Any], *,
         # when a tool spawns a sub-agent, the sub-agent generates a new
         # session and needs to know the user_id.
         if request_id:
-            from agent_system.app import _request_user_map
-            _request_user_map[request_id] = user_id
+            register_request_user(request_id, user_id)
 
     if request_id:
         params["_request_id"] = request_id
@@ -82,9 +83,9 @@ class ToolExecutionManager:
         self.registry = registry  # Legacy registry (empty for now)
         # Optional Agent instance for centralized counters and MCP integration access
         self._agent = agent
-        # Current session ID and user ID for tool execution context
-        self._current_session_id: Optional[str] = None
-        self._current_user_id: Optional[str] = None
+        # NOTE: session_id/user_id are deliberately NOT instance state — they are
+        # passed through the call chain per request (see execute_tools_streaming)
+        # to avoid races when concurrent requests share this manager.
 
     def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create a JSON-serializable copy of params by excluding non-serializable objects.
@@ -121,18 +122,14 @@ class ToolExecutionManager:
                 if mcp_integration.initialized:  # type: ignore[unreachable]
                     # First try exact match (legacy behavior)
                     plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
-                    
-                    # If not found, try to extract server name from tool name
-                    # Tool names are typically: servername_toolname (e.g. writer_content_production_status)
+
+                    # If not found, resolve the server name embedded in the flat
+                    # tool name (servername_toolname) via the shared prefix walk.
                     if not plugin_adapter:
-                        # Try progressively shorter prefixes
-                        parts = tool_name.split('_')
-                        for i in range(len(parts) - 1, 0, -1):
-                            server_name = '_'.join(parts[:i])
-                            plugin_adapter = mcp_integration.plugin_registry.get_server(server_name)
-                            if plugin_adapter:
-                                logger.debug(f"Found plugin adapter for {tool_name} via server name {server_name}")
-                                break
+                        plugin_adapter, adapter_server_name = resolve_longest_prefix(
+                            mcp_integration.plugin_registry.get_server, tool_name)
+                        if plugin_adapter:
+                            logger.debug(f"Found plugin adapter for {tool_name} via server name {adapter_server_name}")
 
         if plugin_adapter:
             # Use the PluginMCPAdapter which handles tool routing and status forwarding correctly

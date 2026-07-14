@@ -54,8 +54,13 @@ _initialization_service: Optional[Any] = None  # InitializationService
 _session_manager: Optional[SessionManager] = None
 _session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
 
-# Security: Track request_id -> user_id mapping for status stream authorization
-_request_user_map: dict[str, str] = {}  # request_id -> user_id
+# Security: Track request_id -> user_id mapping for status stream authorization.
+# Owner is core.request_context (usable from agent layer without upward import);
+# re-exported here under the historical name for existing importers.
+from .core.request_context import (  # noqa: E402
+    request_user_map as _request_user_map,
+    release_request_user_tree,
+)
 
 # Shutdown event for graceful stream termination
 _shutdown_event: Optional[asyncio.Event] = None
@@ -1277,12 +1282,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
             
             # Phase 1: Server-level diagnostics (which servers matched which patterns)
+            # Uses the SAME shared matcher as discovery/details listing.
+            from .servers.agent.tool_schema_builder import server_matches_patterns
             server_diagnostics = []
             if patterns:
                 for tool in available:
                     matched_by = []
                     for pat in patterns:
-                        if srv._is_tool_allowed(tool, [pat]):  # type: ignore[attr-defined]
+                        if server_matches_patterns(tool, [pat]):
                             matched_by.append(pat)
                     server_diagnostics.append({"server": tool, "matched_patterns": matched_by})
             else:
@@ -1597,8 +1604,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 return result
             finally:
-                # Cleanup: Remove request_id from ownership map
-                _request_user_map.pop(request_id, None)
+                # Cleanup: release request + derived sub-request ids (tool
+                # suffixes, sub-agents) from the ownership map
+                release_request_user_tree(request_id)
 
         # Process uploaded files for multimodal input
         from .llm.capabilities import get_model_capabilities
@@ -1753,8 +1761,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             was_new_session
                         )
 
-                    # Cleanup: Remove request_id from ownership map
-                    _request_user_map.pop(request_id, None)
+                    # Cleanup: release request + derived sub-request ids
+                    release_request_user_tree(request_id)
 
                     # Cleanup temp files after streaming completes
                     for temp_file in temp_files:
@@ -2072,9 +2080,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             was_new_session
                         )
 
-                # Cleanup: Remove request_id from ownership map only if job is done
+                # Cleanup: release ownership only if job is done (a running
+                # job's stream may reconnect and must keep its mapping)
                 if job.status != JobStatus.RUNNING:
-                    _request_user_map.pop(request_id, None)
+                    release_request_user_tree(request_id)
 
         return StreamingResponse(
             event_stream(),
