@@ -22,6 +22,7 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
+    resolve_llm_params,
 )
 from agent_system.llm.factory import resolve_llm_config_for_agent
 
@@ -133,3 +134,126 @@ class TestAgentConfigValidation:
     def test_empty_dict_normalized_to_none(self):
         a = AgentConfig(llm_profile="x", llm_params={})
         assert a.llm_params is None
+
+
+class TestKeyedLlmParams:
+    """Profil-gekeyte Form: {profil: {param: wert}} — Params kleben am
+    Modell, nicht am Slot. "*" gilt für beide Ketten-Primärmodelle,
+    der spezifische Eintrag gewinnt."""
+
+    KEYED = {
+        "*": {"max_tokens": 8000, "thinking_level": "low"},
+        "advanced-profile": {"thinking_level": "ultra"},
+    }
+
+    def test_resolve_star_merges_specific_wins(self):
+        assert resolve_llm_params(self.KEYED, "advanced-profile") == {
+            "max_tokens": 8000, "thinking_level": "ultra",
+        }
+        assert resolve_llm_params(self.KEYED, "test-profile") == {
+            "max_tokens": 8000, "thinking_level": "low",
+        }
+
+    def test_resolve_no_entry_no_star_is_none(self):
+        params = {"advanced-profile": {"thinking_level": "ultra"}}
+        assert resolve_llm_params(params, "test-profile") is None
+
+    def test_resolve_flat_form_passthrough(self):
+        flat = {"thinking_level": "low", "max_tokens": 8000}
+        assert resolve_llm_params(flat, "irgendein-profil") == flat
+        assert resolve_llm_params(None, "x") is None
+
+    def test_keyed_applies_only_to_matching_primary(self):
+        cfg = _system_config()
+        agent = AgentConfig(
+            llm_profile=["test-profile"],
+            llm_profile_advanced=["advanced-profile"],
+            llm_params={"advanced-profile": {"thinking_level": "ultra"}},
+        )
+        # resolve löst das Default-Profil auf → Advanced-Params greifen NICHT
+        kwargs = resolve_llm_config_for_agent(cfg, agent)
+        assert kwargs["thinking_level"] == "high"  # Basis-Modell unverändert
+
+    def test_keyed_star_applies_to_default(self):
+        cfg = _system_config()
+        agent = AgentConfig(
+            llm_profile=["test-profile"],
+            llm_profile_advanced=["advanced-profile"],
+            llm_params=self.KEYED,
+        )
+        kwargs = resolve_llm_config_for_agent(cfg, agent)
+        assert kwargs["thinking_level"] == "low"
+        assert kwargs["max_tokens"] == 8000
+
+    def test_resolved_keyed_valid_as_temp_config(self):
+        # create_llm_from_profile reduziert gekeyte Params VOR der temp-
+        # AgentConfig — das Ergebnis muss als Flat-Form validieren.
+        flat = resolve_llm_params(self.KEYED, "advanced-profile")
+        a = AgentConfig(llm_profile="advanced-profile", llm_params=flat)
+        assert a.llm_params["thinking_level"] == "ultra"
+
+
+class TestKeyedLlmParamsValidation:
+    def test_mixed_form_rejected(self):
+        with pytest.raises(ValidationError, match="Mischform"):
+            AgentConfig(
+                llm_profile="x",
+                llm_params={"thinking_level": "low", "x": {"max_tokens": 1}},
+            )
+
+    def test_unknown_profile_key_rejected(self):
+        # Fallback-Einträge sind KEINE gültigen Keys (liefen als stiller No-Op)
+        with pytest.raises(ValidationError, match="Primärmodelle"):
+            AgentConfig(
+                llm_profile=["test-profile", "fallback-profile"],
+                llm_profile_advanced=["advanced-profile"],
+                llm_params={"fallback-profile": {"max_tokens": 100}},
+            )
+
+    def test_primary_and_star_keys_accepted(self):
+        a = AgentConfig(
+            llm_profile=["test-profile", "fallback-profile"],
+            llm_profile_advanced=["advanced-profile"],
+            llm_params={
+                "*": {"max_tokens": 8000},
+                "test-profile": {"thinking_level": "low"},
+                "advanced-profile": {"thinking_level": "ultra"},
+            },
+        )
+        assert set(a.llm_params) == {"*", "test-profile", "advanced-profile"}
+
+    def test_keyed_subdict_protected_field_rejected(self):
+        with pytest.raises(ValidationError, match="gesperrt"):
+            AgentConfig(
+                llm_profile=["test-profile"],
+                llm_params={"*": {"provider": "hijack"}},
+            )
+
+    def test_keyed_subdict_bad_value_rejected(self):
+        with pytest.raises(ValidationError):
+            AgentConfig(
+                llm_profile=["test-profile"],
+                llm_params={"test-profile": {"thinking_level": "mega"}},
+            )
+
+    def test_keyed_scalar_value_rejected(self):
+        with pytest.raises(ValidationError, match="nicht erlaubte Keys"):
+            AgentConfig(llm_profile="x", llm_params={"totally_unknown": 1})
+
+    def test_flat_typo_next_to_valid_param_gets_precise_message(self):
+        # Tippfehler neben gültigem Param darf NICHT als "Mischform"
+        # fehldiagnostiziert werden — präzise Unknown-Key-Meldung
+        with pytest.raises(ValidationError, match="nicht erlaubte Keys.*max_toknes"):
+            AgentConfig(
+                llm_profile="x",
+                llm_params={"thinking_level": "low", "max_toknes": 8000},
+            )
+
+    def test_profile_names_must_not_shadow_model_fields(self):
+        # Profilnamen sind llm_params-Keys — Kollision mit Feldnamen wäre
+        # dort unadressierbar → an der Wurzel (llm_system.profiles) verboten
+        with pytest.raises(ValidationError, match="kollidieren"):
+            LLMSystemConfig(
+                profiles={"max_tokens": LLMProfile(model_ref="test-model")},
+                models={"test-model": LLMModelConfig(provider="mock", model="m")},
+            )

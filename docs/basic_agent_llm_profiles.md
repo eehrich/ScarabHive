@@ -95,9 +95,23 @@ my_agent:
   agent_config:
     llm_profile: [deepseek-chat]
     llm_profile_advanced: [or-gpt-terra-unlimited]
+    # Flat form: applies to BOTH chain primaries (same as "*")
     llm_params:
-      thinking_level: low
       max_tokens: 8000
+```
+
+Different models know different parameter keys (a GPT `thinking_level` would
+break on deepseek). For that, key the params **by profile name** — params
+stick to the *model*, not the slot:
+
+```yaml
+    llm_params:
+      "*":                          # optional: both chain primaries
+        max_tokens: 8000
+      or-gpt-terra-unlimited:       # only when exactly this profile runs
+        thinking_level: high
+      deepseek-chat:
+        include_thoughts: true
 ```
 
 **Semantics:**
@@ -105,12 +119,27 @@ my_agent:
   model config — for the **primary** models (chain position 0: default,
   `use_advanced_model`, auto-escalation). The shared `llm_system.models`
   entry is never mutated (a derived config is built per agent).
+- Keyed form resolves per profile as `merge("*", params[profile])` — the
+  specific entry wins. Flat form behaves like a single `"*"` entry. The two
+  forms are auto-detected (flat keys are `LLMModelConfig` field names);
+  mixing them in one dict fails at config load.
+- Valid profile keys: `llm_profile[0]`, `llm_profile_advanced[0]`, `"*"`.
+  A key for a fallback entry (or a typo) would be a silent no-op and is
+  rejected at load.
+- **Type inheritance** (`type: <parent_server>`) deep-merges the parent's
+  `agent_config` into the child, and `null` cannot clear inherited keys. Two
+  traps fail loudly at load with a fix hint: parent *flat* + child *keyed*
+  → mixed-form error (fix: express the parent's flat params as `"*"` — same
+  semantics); parent *keyed to its primaries* + child overriding the chains
+  → stale profile-key error (fix: parent uses `"*"`, or move the keyed
+  params down into the child).
 - **Not** applied to fallback entries of the chains (fallbacks are often a
   different provider and must run with their own robust tuning — e.g. Gemini
   rejects `thinking_level: max`) and not to explicit `--llm-profile` request
   overrides.
-- Allowed keys: all `LLMModelConfig` fields **except** the identity fields
-  `provider`, `model`, `api_key`, `base_url`, `batch_provider`, `ollama_mode`
+- Allowed keys inside a params dict: all `LLMModelConfig` fields **except**
+  the identity fields `provider`, `model`, `api_key`, `base_url`,
+  `batch_provider`, `ollama_mode`
   (those define WHICH model — that is what `llm_profile`/`llm.yaml` is for).
 - Validated at config load (unknown keys and invalid values fail fast with a
   clear error, not at the first LLM call). Setting a key to `null` clears the

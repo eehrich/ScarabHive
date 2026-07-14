@@ -11,7 +11,9 @@ import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from ..config.models import AgentSystemConfig, AgentConfig, LLMModelConfig
+from ..config.models import (
+    AgentSystemConfig, AgentConfig, LLMModelConfig, resolve_llm_params,
+)
 from .clients import make_llm, LLMClient
 
 if TYPE_CHECKING:
@@ -106,8 +108,8 @@ def create_llm_from_profile(
         llm_profile: Name of the LLM profile to use
         ssl_verify: Optional SSL verification override
         llm_params: Optional per-agent LLM parameter overrides
-            (agent_config.llm_params) — applied over the resolved model
-            config, see resolve_llm_config_for_agent().
+            (agent_config.llm_params, flat ODER profil-gekeyt) — applied over
+            the resolved model config, see resolve_llm_config_for_agent().
 
     Returns:
         LLMClient (possibly wrapped with BatchLLMClient if batch mode enabled)
@@ -115,8 +117,14 @@ def create_llm_from_profile(
     from .clients import make_llm
 
     # Create temporary agent config with override profile (+ optional per-agent
-    # llm_params so callers with agent context propagate their overrides)
-    temp_agent_config = AgentConfig(llm_profile=llm_profile, llm_params=llm_params)
+    # llm_params so callers with agent context propagate their overrides).
+    # Profil-gekeyte Params werden HIER auf das Zielprofil aufgeloest — die
+    # temp-Config kennt die Ketten des Original-Agents nicht und wuerde
+    # fremde Profil-Keys sonst (zu Recht) ablehnen.
+    temp_agent_config = AgentConfig(
+        llm_profile=llm_profile,
+        llm_params=resolve_llm_params(llm_params, llm_profile),
+    )
     llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
     
     # Extract batch info before passing to make_llm
@@ -238,7 +246,11 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     # gesperrt. Greift für ALLE Profile, die über diese agent_config aufgelöst
     # werden (default/advanced/escalation) — Fallback-Profile laufen bewusst
     # ohne (deren Call-Sites reichen keine llm_params durch).
-    llm_params = getattr(agent_config, "llm_params", None)
+    # Profil-gekeyte Form wird auf das hier aufgelöste Profil reduziert
+    # (merge("*", params[profil])); Flat-Form gilt unverändert.
+    llm_params = resolve_llm_params(
+        getattr(agent_config, "llm_params", None), profile_name
+    )
     if llm_params:
         model_config = LLMModelConfig.model_validate(
             {**model_config.model_dump(), **llm_params}

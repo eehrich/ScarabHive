@@ -167,6 +167,25 @@ class LLMSystemConfig(BaseModel):
     models: Dict[str, LLMModelConfig] = {}
     profiles: Dict[str, LLMProfile] = {}
     default_profile: Optional[str] = "normal"  # Default LLM profile to use
+
+    @field_validator("profiles")
+    @classmethod
+    def _profile_names_must_not_shadow_model_fields(
+        cls, v: Dict[str, "LLMProfile"]
+    ) -> Dict[str, "LLMProfile"]:
+        # Profilnamen sind Keys der profil-gekeyten agent_config.llm_params —
+        # die Formerkennung (flat vs. gekeyt) unterscheidet Param-Namen von
+        # Profilnamen. Ein Profil, das wie ein LLMModelConfig-Feld heisst
+        # (z.B. "max_tokens"), waere dort unadressierbar → an der Wurzel
+        # verbieten statt spaeter still fehlzuinterpretieren.
+        shadowed = set(v) & set(LLMModelConfig.model_fields)
+        if shadowed:
+            raise ValueError(
+                f"llm_system.profiles: Profilnamen {sorted(shadowed)} kollidieren "
+                f"mit LLMModelConfig-Feldnamen (reserviert fuer llm_params) — "
+                f"bitte umbenennen"
+            )
+        return v
     # TTS (Text-to-Speech) configuration
     tts_models: Dict[str, TTSModelConfig] = {}
     tts_profiles: Dict[str, TTSProfile] = {}
@@ -242,6 +261,26 @@ LLM_PARAMS_PROTECTED_FIELDS = frozenset({
 })
 
 
+def resolve_llm_params(
+    params: Optional[Dict[str, Any]], profile: str
+) -> Optional[Dict[str, Any]]:
+    """Effektive flache LLM-Params fuer EIN Profil.
+
+    Flat-Form ({param: wert}) gilt unveraendert fuer jedes Profil, auf das
+    der Aufrufer sie anwendet. Profil-gekeyte Form ({profil: {param: wert}})
+    loest zu merge("*", params[profil]) auf — der spezifische Eintrag
+    gewinnt. Erkennung ist eindeutig: Flat-Keys sind LLMModelConfig-
+    Feldnamen, Profil-Keys nicht (Mischformen lehnt der AgentConfig-
+    Validator beim Config-Load ab).
+    """
+    if not params:
+        return None
+    if any(k in LLMModelConfig.model_fields for k in params):
+        return params  # Flat-Form
+    merged = {**(params.get("*") or {}), **(params.get(profile) or {})}
+    return merged or None
+
+
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     # LLM-KETTE (seit 2026-07: neue Semantik!): Liste = [primär, fallback1, fallback2, ...]
@@ -270,7 +309,18 @@ class AgentConfig(BaseModel):
     # Fallback-Eintraege (Fallbacks sind oft ein anderer Provider und muessen
     # mit ihrer eigenen, robusten Tuning-Config laufen — z.B. kennt Gemini
     # kein thinking_level=max) und nicht fuer explizite --llm-profile-Overrides.
-    # Beispiel:  llm_params: { thinking_level: low, max_tokens: 8000 }
+    #
+    # ZWEI Formen (unterschiedliche Modelle kennen unterschiedliche Keys):
+    #   flat  — gilt fuer BEIDE Ketten-Primärmodelle (wie "*"):
+    #     llm_params: { max_tokens: 8000 }
+    #   profil-gekeyt — Params kleben am Modell, nicht am Slot;
+    #     "*" gilt fuer beide Primärmodelle, spezifischer Eintrag gewinnt:
+    #     llm_params:
+    #       "*": { max_tokens: 8000 }
+    #       or-gpt-full-unlimited: { thinking_level: high }
+    #   Erlaubte Profil-Keys: llm_profile[0], llm_profile_advanced[0], "*"
+    #   (Fallback-Profile laufen bewusst ohne Params — Key dafuer waere
+    #   ein stiller No-Op und wird abgelehnt). Mischformen sind ungueltig.
     llm_params: Optional[Dict[str, Any]] = None
     fallback_recovery_seconds: int = 3600  # Seconds before trying original LLM again after rate limit (default: 1 hour)
     fallback_recovery_jitter_percent: float = 20.0  # Random jitter ±X% to prevent thundering herd when multiple agents recover
@@ -296,16 +346,58 @@ class AgentConfig(BaseModel):
     def _validate_llm_params(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not v:
             return v or None
-        allowed = set(LLMModelConfig.model_fields.keys()) - LLM_PARAMS_PROTECTED_FIELDS
-        unknown = set(v) - allowed
-        if unknown:
+        model_fields = set(LLMModelConfig.model_fields.keys())
+        allowed = model_fields - LLM_PARAMS_PROTECTED_FIELDS
+
+        def _check_flat(params: Dict[str, Any], where: str) -> None:
+            protected = set(params) & LLM_PARAMS_PROTECTED_FIELDS
+            if protected:
+                raise ValueError(
+                    f"llm_params{where}: Identitaets-Felder {sorted(protected)} sind "
+                    f"gesperrt (nicht erlaubte Keys — dafuer gibt es llm_profile/llm.yaml)"
+                )
+            unknown = set(params) - allowed
+            if unknown:
+                raise ValueError(
+                    f"llm_params{where}: nicht erlaubte Keys {sorted(unknown)} — "
+                    f"erlaubt sind: {sorted(allowed)}"
+                )
+            # Typ-/Wert-Validierung gegen das echte Modell-Schema (fail fast
+            # beim Config-Load statt erst beim ersten LLM-Call).
+            LLMModelConfig.model_validate({"model": "_llm_params_probe_", **params})
+
+        # Form-Erkennung: Param-Namen (LLMModelConfig-Felder) = Flat-Eintrag,
+        # alles andere ("*", Profilnamen) = Profil-Key. Mischformen ungueltig.
+        flat_keys = [k for k in v if k in model_fields]
+        profile_keys = [k for k in v if k not in model_fields]
+        if flat_keys and profile_keys:
+            # Skalare Werte unter Nicht-Feld-Keys koennen keine Profil-
+            # Eintraege sein → das ist ein Tippfehler in flat-Params, keine
+            # Mischform. Praezise Meldung mit erlaubten Keys statt Form-Rüge.
+            typo_keys = [k for k in profile_keys if not isinstance(v[k], dict)]
+            if typo_keys:
+                raise ValueError(
+                    f"llm_params: nicht erlaubte Keys {sorted(typo_keys)} — "
+                    f"erlaubt sind: {sorted(allowed)}"
+                )
             raise ValueError(
-                f"llm_params: nicht erlaubte Keys {sorted(unknown)} — "
-                f"erlaubt sind: {sorted(allowed)}"
+                f"llm_params: Mischform aus Params {sorted(flat_keys)} und "
+                f"Profil-Keys {sorted(profile_keys)} — entweder flat "
+                f"({{param: wert}}) ODER profil-gekeyt ({{profil: {{param: wert}}}}). "
+                f"Entsteht auch durch Typ-Vererbung (Parent flat + Kind gekeyt): "
+                f"dann im Parent die flat-Params semantikgleich unter '*' legen."
             )
-        # Typ-/Wert-Validierung gegen das echte Modell-Schema (fail fast beim
-        # Config-Load statt erst beim ersten LLM-Call).
-        LLMModelConfig.model_validate({"model": "_llm_params_probe_", **v})
+        if profile_keys:
+            for pk, sub in v.items():
+                if not isinstance(sub, dict):
+                    raise ValueError(
+                        f"llm_params: nicht erlaubte Keys ['{pk}'] — weder "
+                        f"LLM-Param (erlaubt: {sorted(allowed)}) noch "
+                        f"Profil-Key mit Param-Dict als Wert"
+                    )
+                _check_flat(sub, f"['{pk}']")
+            return v
+        _check_flat(v, "")
         return v
 
     @model_validator(mode="after")
@@ -321,6 +413,30 @@ class AgentConfig(BaseModel):
                 "llm_profile_advanced = [primär_adv, fallback1_adv, ...]. "
                 "Migration: python scripts/migrate_llm_profiles.py"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_llm_params_profile_keys(self) -> "AgentConfig":
+        # Profil-gekeyte llm_params: nur die Primärmodelle beider Ketten
+        # (+ "*") sind gueltige Keys. Fallback-Profile laufen bewusst ohne
+        # llm_params — ein Key dafuer (oder ein Tippfehler) waere ein
+        # stiller No-Op und soll beim Config-Load knallen.
+        p = self.llm_params
+        if p and not any(k in LLMModelConfig.model_fields for k in p):
+            valid = {"*", self.default_llm_profile}
+            if self.advanced_llm_profile:
+                valid.add(self.advanced_llm_profile)
+            unknown = set(p) - valid
+            if unknown:
+                raise ValueError(
+                    f"llm_params: Profil-Keys {sorted(unknown)} sind keine "
+                    f"Primärmodelle dieses Agents — gueltig: {sorted(valid)} "
+                    f"(Fallback-Einträge laufen bewusst ohne llm_params). "
+                    f"Entsteht auch durch Typ-Vererbung, wenn das Kind die "
+                    f"Ketten des Parents ueberschreibt: dann die gekeyten "
+                    f"llm_params im Parent auf '*' umstellen oder mit den "
+                    f"Ketten ins Kind verschieben."
+                )
         return self
 
     @property
