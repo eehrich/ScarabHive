@@ -246,6 +246,46 @@ class TestPluginMCPRegistry:
         assert "plugin2" in registry.list_servers()
 
     @pytest.mark.asyncio
+    async def test_plugins_mcp_registry_register_from_config_key_ne_type(self, registry):
+        """Config-Agent-Fall: Server-Key != Plugin-Typ (z.B. 'slovak_tutor' mit
+        type='basic_agent'). Die Factory MUSS über den Typ aufgelöst werden —
+        der alte Key-Lookup errorte für jeden Config-Agenten, sobald der
+        Integration-Fallback lief (Startreihenfolge), und konnte ihn nie
+        registrieren."""
+        def mock_factory(name, system_config, mcp_config):
+            return MockPluginServer(name)
+
+        registry.plugin_factories["basic_agent"] = mock_factory
+
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        system_config = AgentSystemConfig()
+        servers_config = {
+            "slovak_tutor": MCPConfig(
+                type="basic_agent", enabled=True, agent_config=AgentConfig()),
+        }
+
+        await registry.register_from_config(
+            ["slovak_tutor"], servers_config, system_config)
+
+        assert "slovak_tutor" in registry.list_servers()
+        assert registry.get_server("slovak_tutor") is not None
+
+    @pytest.mark.asyncio
+    async def test_plugins_mcp_registry_register_from_config_unknown_type_skips(self, registry):
+        """Unbekannter TYP wird geloggt und übersprungen — kein Abbruch,
+        keine Registrierung (Fehlermeldung nennt Typ UND Server-Key)."""
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        system_config = AgentSystemConfig()
+        servers_config = {
+            "ghost": MCPConfig(
+                type="does_not_exist", enabled=True, agent_config=AgentConfig()),
+        }
+
+        await registry.register_from_config(["ghost"], servers_config, system_config)
+
+        assert "ghost" not in registry.list_servers()
+
+    @pytest.mark.asyncio
     async def test_plugins_mcp_registry_get_all_tools(self, registry):
         # Mock factory
         def mock_factory(name, config, ssl_verify=True):

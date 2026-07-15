@@ -337,20 +337,17 @@ class PluginMCPRegistry:
         logger.debug(f"MCP register_from_config - servers_config keys: {list(servers_config.keys())}")
 
         for server_name in enabled_servers:
-            if server_name not in self.plugin_factories:
-                logger.error(
-                    f"Plugin '{server_name}' is enabled in config but not found in discovered plugins. "
-                    f"Available plugins: {list(self.plugin_factories.keys())}. "
-                    f"Check plugin.yaml 'name' field matches config key."
-                )
-                continue
-            
-            # Get MCPConfig for this server
+            # Get MCPConfig for this server FIRST — the factory is resolved via
+            # the server's TYPE, not its key. Config agents use arbitrary keys
+            # with e.g. type=basic_agent (same rule as servers/bootstrap.py);
+            # the old key-based lookup errored for every such server whenever
+            # this fallback path ran (broken startup ordering flooded the log
+            # with one error per config agent).
             server_config = servers_config.get(server_name)
-            
+
             # Import MCPConfig here to avoid circular dependency
             from agent_system.config.models import MCPConfig as MCPConfigClass, AgentConfig
-            
+
             # Convert dict to MCPConfig if necessary
             if isinstance(server_config, dict):
                 # Build MCPConfig from dict
@@ -358,7 +355,7 @@ class PluginMCPRegistry:
                 config_type = config_dict.pop('type', server_name)
                 enabled = config_dict.pop('enabled', True)
                 agent_config = AgentConfig()  # Default agent config
-                
+
                 # Create MCPConfig with extra fields allowed
                 server_mcp_config = MCPConfigClass(
                     type=config_type,
@@ -371,7 +368,17 @@ class PluginMCPRegistry:
             else:
                 logger.error(f"Plugin {server_name} config is invalid type: {type(server_config)}")
                 continue
-                
+
+            plugin_type = server_mcp_config.type or server_name
+            if plugin_type not in self.plugin_factories:
+                logger.error(
+                    f"Plugin type '{plugin_type}' (server '{server_name}') is enabled "
+                    f"in config but not found in discovered plugins. "
+                    f"Available plugins: {list(self.plugin_factories.keys())}. "
+                    f"Check plugin.yaml 'name' field matches the config 'type'."
+                )
+                continue
+
             logger.debug(f"MCP register_from_config - plugin {server_name} type: {server_mcp_config.type}")
 
             try:
@@ -383,12 +390,17 @@ class PluginMCPRegistry:
         """SIMPLIFIED: Register a plugin with system_config and mcp_config (modern signature).
         
         Args:
-            name: Plugin name
+            name: Server key (instance name; may differ from the plugin type)
             system_config: Complete AgentSystemConfig with LLM, network, context, etc.
             mcp_config: MCPConfig with agent_config, enabled, type, etc.
         """
-        if name not in self.plugin_factories:
-            raise Exception(f"Unknown plugin: {name}")
+        # Factory is keyed by plugin TYPE (mcp_config.type); the server key is
+        # the instance name. For classic plugins key == type; config agents
+        # (e.g. key 'slovak_tutor' with type 'basic_agent') differ — same
+        # resolution rule as servers/bootstrap.py.
+        plugin_type = getattr(mcp_config, "type", None) or name
+        if plugin_type not in self.plugin_factories:
+            raise Exception(f"Unknown plugin type: {plugin_type} (server '{name}')")
 
         # Check if already registered (by bootstrap_servers)
         if name in self.plugin_servers:
@@ -396,14 +408,30 @@ class PluginMCPRegistry:
             return  # CRITICAL: Don't re-instantiate! Bootstrap already created it.
 
         # Create plugin instance with modern factory signature: (name, system_config, mcp_config)
-        factory = self.plugin_factories[name]
+        factory = self.plugin_factories[plugin_type]
 
         try:
-            logger.info(f"MCP registry creating plugin {name} with AgentSystemConfig and MCPConfig")
+            logger.info(f"MCP registry creating plugin {name} (type={plugin_type}) with AgentSystemConfig and MCPConfig")
             plugin_server = factory(name, system_config, mcp_config)  # Modern call - clean interface
         except Exception as e:
             logger.error(f"Failed to create plugin instance {name}: {e}")
             raise
+
+        # Sichtbarer Degraded-Mode statt stillem Drift: Agenten, die ueber
+        # diesen FALLBACK-Pfad entstehen (statt ueber bootstrap_servers),
+        # bekommen keine shared MCPRegistry injiziert — Tool-Zugriff laeuft
+        # dann nur ueber die Plugin-Registry. Der Primaerpfad bleibt bootstrap.
+        if plugin_type != name:
+            try:
+                from agent_system.servers.agent.server import Agent as _Agent
+                if isinstance(plugin_server, _Agent):
+                    logger.warning(
+                        f"Config agent '{name}' (type={plugin_type}) registered via "
+                        f"MCP-integration fallback WITHOUT shared agent registry — "
+                        f"normally bootstrap_servers registers it first. Check startup order."
+                    )
+            except Exception:
+                pass
 
         # Load schema if available
         schema = None
