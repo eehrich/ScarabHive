@@ -468,3 +468,62 @@ def test_agent_reset_fallback_clears_jitter(system_config_with_profiles, agent_c
     
     # Jitter should be cleared
     assert agent._jittered_recovery_seconds is None
+
+
+class _ScriptedLLM:
+    """Fake-Client: Call 1 → Tool-Call (verbraucht den Step), Call 2 → finale Antwort."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.call_count = 0
+
+    def supports_streaming(self):
+        return False
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        self.call_count += 1
+        if self.call_count == 1:
+            return {"assistant": {"role": "assistant", "content": "",
+                                  "tool_calls": [{"id": "c1", "function": {
+                                      "name": "some_tool", "arguments": "{}"}}]}}
+        return {"assistant": {"role": "assistant",
+                              "content": f"FINAL-{self.name}", "tool_calls": None}}
+
+
+@pytest.mark.asyncio
+async def test_max_steps_final_call_uses_persistent_fallback(system_config_with_profiles):
+    """R1-Regression: Der Final-Answer-Call NACH max_steps muss den persistenten
+    Fallback nutzen, nicht das (rate-limitierte) Original — sonst scheitert der
+    Request im letzten Schritt trotz funktionierendem Fallback.
+
+    Aufbau: max_steps=1; Step 1 liefert einen Tool-Call (Loop erschöpft),
+    danach macht der Agent den Final-Call. Mit aktivem persistentem Fallback
+    müssen BEIDE Calls (Step + Final) auf dem Fallback laufen; das Original
+    darf gar nicht angefasst werden."""
+    agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=1)
+    agent_config.tools.allowed = ["*"]
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+
+    original = _ScriptedLLM("original")
+    fallback = _ScriptedLLM("fallback")
+
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=original)
+    # Persistenten Fallback simulieren (Zustand wie nach LLMRateLimitError)
+    agent._active_fallback_llm = fallback
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time()  # Recovery-Fenster frisch -> kein Reset
+
+    events = []
+    async for event in agent.run_events("test task"):
+        events.append(event)
+        if event.get("type") == "end":
+            break
+
+    final_events = [e for e in events if e.get("type") == "final"]
+    assert final_events, f"kein final-Event; events={[e.get('type') for e in events]}"
+    assert "FINAL-fallback" in str(final_events[-1].get("summary"))
+    # Step 1 UND Final-Call liefen auf dem Fallback; Original blieb unberuehrt
+    # (alter Bug: Final-Call ging an active_llm = Original -> call_count 1/1)
+    assert fallback.call_count == 2
+    assert original.call_count == 0

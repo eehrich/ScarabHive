@@ -170,14 +170,17 @@ agents:
 ### 1. Execution Flow
 
 ```python
-async def execute_tools(
+# Produktions-Interface ist der Streaming-Generator; der fruehere
+# execute_tools()-Wrapper wurde entfernt (Review G5). Der Flow darunter
+# beschreibt die Logik von execute_tools_streaming().
+async def execute_tools_streaming(
     tool_calls: List[Dict],           # Tool calls vom LLM
     tool_name_mapping: Dict[str, str], # OpenAI names → original names
     available_tools: List[str],        # Verfügbare Tools
     step: int,                         # Aktueller Step
     request_id: str | None = None      # Request ID für Tracking
-) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
-    """Execute all tool calls and return results."""
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Execute all tool calls, streaming status/tool events + final results."""
     
     # 1. Parse und validiere Tool-Calls
     valid_tool_executions = []
@@ -628,8 +631,9 @@ tool_calls = [
     }
 ]
 
-# Agent führt Tool aus
-messages, events, results = await tool_execution_manager.execute_tools(
+# Ergebnis einsammeln (Tests: shared Helper; Produktion konsumiert den Stream)
+from tool_execution_test_helpers import execute_tools_collect
+messages, events, results = await execute_tools_collect(tool_execution_manager,
     tool_calls=tool_calls,
     tool_name_mapping={"backlog_get_status": "backlog"},
     available_tools=["backlog"],
@@ -656,7 +660,7 @@ tool_calls = [
 ]
 
 # Alle Tools werden parallel ausgeführt
-messages, events, results = await tool_execution_manager.execute_tools(
+messages, events, results = await execute_tools_collect(tool_execution_manager,
     tool_calls=tool_calls,
     tool_name_mapping={...},
     available_tools=["backlog", "web_research", "context7.resolve-library-id"],
@@ -690,7 +694,7 @@ tool_name_mapping = {
 }
 
 # Ausführung über MCP integration
-messages, events, results = await tool_execution_manager.execute_tools(...)
+messages, events, results = await execute_tools_collect(tool_execution_manager, ...)
 
 # Intern wird aufgerufen:
 # mcp_integration.call_tool(

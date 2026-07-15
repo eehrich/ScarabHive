@@ -62,6 +62,19 @@ from .core.request_context import (  # noqa: E402
     release_request_user_tree,
 )
 
+
+async def _parse_json_body(request: Request) -> Any:
+    """Parse the request's JSON body — THE single place mapping malformed
+    input to HTTP 400 (client error) instead of an unhandled 500. Used by
+    every endpoint that reads a JSON body (/run, /events, session appends)."""
+    try:
+        return await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON body: could not be parsed"
+        )
+
 # Shutdown event for graceful stream termination
 _shutdown_event: Optional[asyncio.Event] = None
 
@@ -1423,7 +1436,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # JSON body: {"task": "...", "session_id": "...", "agent_name": "...", "llm_profile": "...", "request_id": "..."}
         if content_type.startswith('application/json'):
-            body = await request.json()
+            body = await _parse_json_body(request)
             logger.debug("/run parsed JSON body: %s", body)
             if isinstance(body, dict):
                 task = body.get('task')
@@ -1439,7 +1452,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # multipart/form-data: parse form and files
         elif content_type.startswith('multipart/form-data'):
-            form = await request.form()
+            try:
+                form = await request.form()
+            except Exception:
+                # Malformed multipart body is a client error, not a 500
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid multipart form data: could not be parsed"
+                )
             try:
                 logger.debug("/run parsed form keys: %s", list(form.keys()))
             except Exception as e:
@@ -2137,7 +2157,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         This endpoint avoids URL length limits that affect GET /events
         when sending long task texts.
         """
-        body = await request.json()
+        body = await _parse_json_body(request)
         task = body.get("task")
         if not task:
             raise HTTPException(status_code=400, detail="Missing 'task' in request body")
@@ -2313,11 +2333,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         current_user = await _enforce_endpoint_security(request)
         user_id = current_user.username if current_user else "anonymous"
         
-        try:
-            body = await request.json()
-        except Exception as e:
-            logger.debug("Invalid JSON body for append to %s: %s", request_id, e)
-            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        body = await _parse_json_body(request)
 
         content = body.get('content')
         if not content:
@@ -2412,11 +2428,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         current_user = await _enforce_endpoint_security(request)
         user_id = current_user.username if current_user else "anonymous"
         
+        body = await _parse_json_body(request)
         try:
-            body = await request.json()
             content = body.get('content')
             if not content:
-                from fastapi import HTTPException
                 raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
             logger.debug("Session append request for session_id=%s: %.120s", session_id, content)
@@ -2427,7 +2442,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # First, append to in-memory session
             success = await agent.append_to_session(session_id, content)
             if not success:
-                from fastapi import HTTPException
                 raise HTTPException(status_code=404, detail="Session not found")
 
             # Persist the session to disk
@@ -2448,9 +2462,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.debug("Session %s persisted to disk after append", session_id)
 
             return {"status": "appended", "session_id": session_id}
+        except HTTPException:
+            # Client errors (400 missing content, 403 ownership, 404) must
+            # keep their status — the generic handler below turned them
+            # into 500s.
+            raise
         except Exception as e:
             logger.exception("Failed to append to session %s: %s", session_id, e)
-            from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/sessions/{session_id}/force_optimize")

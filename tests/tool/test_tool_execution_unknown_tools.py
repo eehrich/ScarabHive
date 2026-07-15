@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
 from agent_system.llm.models import ChatMessage
+from tool_execution_test_helpers import execute_tools_collect
 
 
 @pytest.fixture
@@ -74,7 +75,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_123"
         
         # Execute tools - should NOT raise exception
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -136,7 +137,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_multi"
         
         # Execute tools - should NOT raise exception
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -172,7 +173,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_not_available"
         
         # Execute tools - should NOT raise exception
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -228,7 +229,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_mixed"
         
         # Execute tools
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -296,7 +297,7 @@ class TestUnknownToolHandling:
         step = 1
         request_id = "test_request_format"
         
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         

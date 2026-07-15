@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry
+from tool_execution_test_helpers import execute_tools_collect
 
 
 def create_test_config():
@@ -167,7 +168,7 @@ class TestAgentSanitizationIntegration:
         tool_name_mapping = {}
         available_tools = ["test_tool"]
 
-        tool_messages, events, results = await agent._tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(agent._tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step=0, request_id="req1"
         )
 

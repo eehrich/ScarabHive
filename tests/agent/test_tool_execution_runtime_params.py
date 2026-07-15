@@ -22,6 +22,7 @@ from agent_system.servers.agent.components.tool_execution import (
     ToolExecutionManager,
     inject_runtime_params,
 )
+from tool_execution_test_helpers import execute_tools_collect
 
 
 class CapturingServer:
@@ -56,7 +57,7 @@ class TestForgedRuntimeParamsAreStripped:
         # No session_id passed -> injection would NOT overwrite a forged value.
         server = CapturingServer()
         manager = _manager(server)
-        await manager.execute_tools(
+        await execute_tools_collect(manager,
             [_tool_call("store_manage_json",
                         {"operation": "merge", "doc": "synopsis",
                          "_session_id": "coordinator"})],
@@ -72,7 +73,7 @@ class TestForgedRuntimeParamsAreStripped:
     async def test_real_session_id_wins_over_forged_one(self):
         server = CapturingServer()
         manager = _manager(server)
-        await manager.execute_tools(
+        await execute_tools_collect(manager,
             [_tool_call("store_manage_json", {"_session_id": "victim", "a": 1})],
             tool_name_mapping={"store_manage_json": "store_manage_json"},
             available_tools=["store_manage_json"],
@@ -86,7 +87,7 @@ class TestForgedRuntimeParamsAreStripped:
     async def test_other_underscore_params_stripped_too(self):
         server = CapturingServer()
         manager = _manager(server)
-        await manager.execute_tools(
+        await execute_tools_collect(manager,
             [_tool_call("store_manage_json",
                         {"_agent": "fake", "_user_id": "root",
                          "_request_id": "spoof", "doc": "d"})],

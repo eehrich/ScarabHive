@@ -197,27 +197,46 @@ def get_cancellation_manager() -> CancellationManager:
 
 
 def configure_cancellation_manager(cleanup_timeout: float = 10.0, monitor_interval: float = 1.0) -> None:
-    """Configure the global cancellation manager with custom timeouts."""
+    """Configure the global cancellation manager with custom timeouts.
+
+    Call once at process bootstrap (bootstrap_servers). Idempotent for
+    unchanged values: replacing the manager orphans every token/task
+    registered in the old instance (their cancellation silently stops
+    working), so a re-call with identical settings must NOT swap it —
+    historically this ran in every Agent.__init__ and did exactly that.
+    """
     global _cancellation_manager
-    
-    # If manager already exists and running, shut it down first
+
     if _cancellation_manager is not None:
+        # Same settings → keep the live manager and all its registered tokens.
+        if (_cancellation_manager.default_cleanup_timeout == cleanup_timeout
+                and _cancellation_manager.monitor_interval == monitor_interval):
+            return
+        # Changed settings → shut the old manager down gracefully first.
+        # Loud warning when live tokens exist: replacing the manager orphans
+        # them (their cancellation silently stops firing) — if this appears in
+        # logs outside process bootstrap, something reconfigures too late.
+        live_tokens = len(getattr(_cancellation_manager, "_tokens", {}))
+        if live_tokens:
+            logger.warning(
+                "Replacing cancellation manager with %d live token(s) — their "
+                "cancellation will no longer fire (reconfigure after bootstrap?)",
+                live_tokens)
         import asyncio
         try:
-            # Try to shutdown existing manager gracefully
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # Schedule shutdown for later if we're in an event loop
                 loop.create_task(_cancellation_manager.shutdown())
         except Exception:
             pass  # Ignore shutdown errors during reconfiguration
-    
+
     # Create new manager with updated configuration
     _cancellation_manager = CancellationManager(
         default_cleanup_timeout=cleanup_timeout,
         monitor_interval=monitor_interval
     )
-    logger.info("Configured cancellation manager: cleanup_timeout=%.1fs, monitor_interval=%.1fs", 
+    logger.info("Configured cancellation manager: cleanup_timeout=%.1fs, monitor_interval=%.1fs",
                 cleanup_timeout, monitor_interval)
 
 

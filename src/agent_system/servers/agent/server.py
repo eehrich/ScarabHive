@@ -10,13 +10,16 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from ...services.session_service import SessionService
 
 from ...config.models import AgentSystemConfig, MCPConfig
-from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager, CancellationToken
+from ...core.cancellation import get_cancellation_manager, CancellationToken
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
-from ...llm.models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
+from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...mcp.status import (
     status_scope,
@@ -84,8 +87,8 @@ class Agent(MCPServer):
 
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
                  registry: MCPRegistry | None = None,
-                 llm: object | None = None, llm_factory: object | None = None,
-                 session_service: object | None = None) -> None:
+                 llm: LLMClient | None = None, llm_factory: Any = None,
+                 session_service: "SessionService | None" = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
 
@@ -119,7 +122,7 @@ class Agent(MCPServer):
 
         # Store session_service for tools that need session access (e.g., sub-agent manager)
         # This is optional - if None, tools that need it will fail gracefully
-        self._session_service = session_service
+        self._session_service: "SessionService | None" = session_service
 
         # Visibility flags control where the agent appears
         # _mcp_public: Show in UI agent dropdown (GET /agents endpoint)
@@ -130,7 +133,7 @@ class Agent(MCPServer):
 
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
-        self.llm = llm
+        self.llm: LLMClient | None = llm
         self._llm_factory = llm_factory
 
         # Initialize LLM if not provided
@@ -143,7 +146,7 @@ class Agent(MCPServer):
         # Track active fallback LLM (persistent across requests)
         # When rate limit/quota is exhausted, we switch to fallback and stay there
         # until fallback_recovery_seconds has elapsed, then we try original again
-        self._active_fallback_llm: Optional[Any] = None
+        self._active_fallback_llm: Optional[LLMClient] = None
         self._active_fallback_profile: Optional[str] = None
         self._fallback_activated_at: Optional[float] = None  # Timestamp when fallback was activated
         self._jittered_recovery_seconds: Optional[float] = None  # Per-instance jittered recovery time
@@ -212,14 +215,9 @@ class Agent(MCPServer):
 
         # Context management now handled by hook plugins (context_optimizer, context_summarizer)
 
-        # Configure cancellation system with agent config values
-        if hasattr(system_config, 'cancellation') and system_config.cancellation:
-            configure_cancellation_manager(
-                cleanup_timeout=system_config.cancellation.cleanup_timeout,
-                monitor_interval=system_config.cancellation.monitor_interval
-            )
-        else:
-            configure_cancellation_manager()
+        # NOTE: the global cancellation manager is configured ONCE at process
+        # bootstrap (servers/bootstrap.py), not per agent — reconfiguring here
+        # replaced the manager and orphaned tokens of in-flight requests.
 
         # Centralized internal tool-call counter (used to generate per-tool suffixes)
         self._internal_tool_counter = 0
@@ -336,7 +334,7 @@ class Agent(MCPServer):
             return True
         return "status" not in data and bool(data.get("error"))
 
-    def _get_escalation_llm(self):
+    def _get_escalation_llm(self) -> Optional[LLMClient]:
         """The advanced-profile LLM client used for auto-escalation, built once
         and cached (same profile use_advanced_model picks: the last, most
         capable, of llm_profile). Hooks are wired so cost/debugger tracking
@@ -403,7 +401,7 @@ class Agent(MCPServer):
             return f"{profile_name}:{provider}/{model}"
         return f"{provider}/{model}"
 
-    def _create_fallback_llm(self, fallback_profile: str) -> Optional[Any]:
+    def _create_fallback_llm(self, fallback_profile: str) -> Optional[LLMClient]:
         """Create an LLM client for a fallback profile.
         
         Args:
@@ -438,7 +436,7 @@ class Agent(MCPServer):
             logger.warning(f"[{self.name}] Failed to create fallback LLM for profile '{fallback_profile}': {e}")
             return None
 
-    def _switch_to_fallback_llm(self, fallback_profile: str, *, persistent: bool) -> Optional[Any]:
+    def _switch_to_fallback_llm(self, fallback_profile: str, *, persistent: bool) -> Optional[LLMClient]:
         """Create a fallback client and update the shared fallback state — THE
         single mutation point for the three retry paths in the LLM loop
         (upstream body error / rate limit + quota / 5xx server error). The
@@ -1005,27 +1003,6 @@ class Agent(MCPServer):
         """
         return server_matches_patterns(tool_name, patterns)
 
-    def _filter_usable_tools(self, tools: list[str], patterns: list[str]) -> list[str]:
-        """Filter list of tools by allow patterns.
-
-        Logs any pattern that matches nothing for visibility, but continues.
-        """
-        matched = []
-        for t in tools:
-            if self._is_tool_allowed(t, patterns):
-                matched.append(t)
-        # Log patterns with zero matches (diagnostic)
-        unmatched = []
-        if patterns and patterns != ['*'] and not (len(patterns) > 1 and '*' in patterns):
-            for pat in patterns:
-                if pat == '*':
-                    continue
-                if not any(self._is_tool_allowed(t, [pat]) for t in tools):
-                    unmatched.append(pat)
-        if unmatched:
-            logger.debug("Agent %s tools.allowed patterns with no matches: %s", self.name, unmatched)
-        return matched
-
     async def list_usable_tools(self) -> tuple[list[str], list[str] | None, list[str] | None]:
         """Return list of tool names this agent CAN USE (filtered by agent config).
 
@@ -1111,7 +1088,7 @@ class Agent(MCPServer):
         task: Union[str, ChatMessage],
         request_id: Optional[str] = None,
         session_id: Optional[str] = None,
-        llm_override: Optional[object] = None,
+        llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
         use_advanced_model: bool = False
     ):
@@ -1298,7 +1275,7 @@ class Agent(MCPServer):
         request_id: str,
         session_id: str,
         initial_message: Optional[ChatMessage] = None,
-        llm_override: Optional[object] = None,
+        llm_override: Optional[LLMClient] = None,
         status_forwarder: Optional[StatusEventForwarder] = None
     ) -> ConversationContext:
         """Initialize request tracking and build initial conversation context.
@@ -1591,7 +1568,7 @@ class Agent(MCPServer):
 
     async def _call_llm_with_streaming(
         self,
-        llm: Any,
+        llm: LLMClient,
         messages: List[ChatMessage],
         tools_schema: List[Dict[str, Any]],
         cancellation_token: CancellationToken,
@@ -1746,7 +1723,7 @@ class Agent(MCPServer):
         session_id: str,
         status_coordinator: StatusScope,
         status_worker: StatusScope,
-        llm_override: Optional[object] = None,
+        llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
         use_advanced_model: bool = False,
     ):
@@ -1778,8 +1755,12 @@ class Agent(MCPServer):
         Returns:
             Tuple of (messages, results, step) after loop completion
         """
-        # Determine which LLM to use
+        # Determine which LLM to use. Phase 1 already validated availability;
+        # this guard keeps the invariant explicit for direct callers (and
+        # narrows the type from LLMClient|None).
         active_llm = llm_override if llm_override is not None else self.llm
+        if active_llm is None:
+            raise RuntimeError("No LLM available; agent requires an LLM to run")
 
         # Extract from context
         messages = context.messages
@@ -2730,7 +2711,7 @@ class Agent(MCPServer):
         coordinator_request_id: str,
         worker_request_id: str,
         initial_message: Optional[ChatMessage] = None,
-        llm_override: Optional[object] = None,
+        llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
         status_forwarder: Optional[StatusEventForwarder] = None,
         use_advanced_model: bool = False,

@@ -342,29 +342,3 @@ class ToolCallLoopDetector:
             f"NOTICE: You're repeating a sequence of tool calls: {seq_str}. "
             f"This pattern suggests you may be stuck. Please step back and reconsider your approach."
         )
-
-
-def create_loop_detector_from_config(config: Optional[Dict[str, Any]] = None) -> ToolCallLoopDetector:
-    """Create a loop detector with optional config overrides.
-    
-    Args:
-        config: Optional dict with keys:
-            - history_size: int
-            - exact_match_threshold: int
-            - sequence_threshold: int
-            - block_after_threshold: int
-            - auto_unblock_after_steps: int
-            
-    Returns:
-        Configured ToolCallLoopDetector instance
-    """
-    if config is None:
-        config = {}
-    
-    return ToolCallLoopDetector(
-        history_size=config.get("history_size", 20),
-        exact_match_threshold=config.get("exact_match_threshold", 3),
-        sequence_threshold=config.get("sequence_threshold", 2),
-        block_after_threshold=config.get("block_after_threshold", 5),
-        auto_unblock_after_steps=config.get("auto_unblock_after_steps", 3)
-    )

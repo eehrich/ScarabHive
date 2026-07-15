@@ -165,34 +165,10 @@ class ToolExecutionManager:
             logger.exception("Tool %s invocation failed: %s", tool_name, e)
             raise
 
-    async def execute_tools(self, tool_calls: List[Dict], tool_name_mapping: Dict[str, str],
-                          available_tools: List[str], step: int, request_id: str | None = None) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
-        """Execute all tool calls and return tool result messages, events, and results.
-
-        This is a convenience wrapper around execute_tools_streaming() for backward compatibility
-        and testing. It collects all streaming results and returns them as a tuple.
-
-        For production use with real-time status streaming, use execute_tools_streaming() directly.
-
-        Returns:
-            Tuple of (tool_messages, events_to_yield, results_to_add)
-        """
-        tool_messages = []
-        events_to_yield = []
-        results_to_add: List[Dict] = []
-
-        # Collect all results from the streaming version
-        async for item in self.execute_tools_streaming(tool_calls, tool_name_mapping, available_tools, step, request_id):
-            if item["type"] == "status":
-                # Status events are handled by streaming version, ignored here
-                pass
-            elif item["type"] == "tool_events":
-                events_to_yield.extend(item["events"])
-            elif item["type"] == "complete":
-                tool_messages = item["messages"]
-                results_to_add = item["results"]
-
-        return tool_messages, events_to_yield, results_to_add
+    # NOTE: the former execute_tools() convenience wrapper (collect-to-tuple)
+    # was test-only production code and was removed (Review G5). Production
+    # consumes the streaming generator below directly; tests use a shared
+    # collector helper.
 
     async def execute_tools_streaming(
         self,

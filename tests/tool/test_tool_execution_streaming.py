@@ -3,7 +3,7 @@ Tests for streaming tool execution with real-time status events.
 
 These tests verify:
 1. execute_tools_streaming() yields events during execution
-2. execute_tools() wrapper produces same results
+2. execute_tools_collect test helper produces same results
 3. Parallel execution is maintained
 4. Multiple requests work (state reset)
 """
@@ -15,6 +15,7 @@ import pytest
 
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
+from tool_execution_test_helpers import execute_tools_collect
 
 
 @pytest.fixture
@@ -128,7 +129,7 @@ class TestStreamingToolExecution:
     
     @pytest.mark.asyncio
     async def test_wrapper_compatibility(self, manager_with_streaming):
-        """execute_tools() wrapper should produce same results as streaming version"""
+        """execute_tools_collect (Test-Helper) liefert dieselben Ergebnisse wie Streaming"""
         manager, forwarder = manager_with_streaming
         
         tool_calls = [{
@@ -136,8 +137,8 @@ class TestStreamingToolExecution:
             "function": {"name": "test_tool", "arguments": "{}"}
         }]
         
-        # Call wrapper version
-        messages, events, results = await manager.execute_tools(
+        # Call collector helper
+        messages, events, results = await execute_tools_collect(manager,
             tool_calls=tool_calls,
             tool_name_mapping={"test_tool": "test_tool"},
             available_tools=["test_tool"],
@@ -193,7 +194,7 @@ class TestStreamingToolExecution:
     
     @pytest.mark.asyncio
     async def test_wrapper_and_streaming_produce_same_results(self, manager_with_streaming):
-        """Wrapper and streaming version should yield identical results"""
+        """Collector-Helper und Streaming-Version liefern identische Ergebnisse"""
         manager, forwarder = manager_with_streaming
         
         tool_calls = [
@@ -214,8 +215,8 @@ class TestStreamingToolExecution:
             if item["type"] == "complete":
                 streaming_messages = item["messages"]
         
-        # Wrapper version
-        wrapper_messages, _, _ = await manager.execute_tools(
+        # Collector helper
+        wrapper_messages, _, _ = await execute_tools_collect(manager,
             tool_calls=tool_calls,
             tool_name_mapping={"test_tool": "test_tool"},
             available_tools=["test_tool"],

@@ -528,6 +528,31 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
 
 def main() -> None:
     global logger
+    # Windows-Konsolen/Pipes laufen oft mit cp1252 — Unicode in Ausgaben
+    # (Box-Zeichen der Plugin-Tabelle, Emojis in Beschreibungen) crashte dann
+    # mit UnicodeEncodeError.
+    # - Terminal (tty): Encoding beibehalten, nicht darstellbare Zeichen
+    #   ersetzen (Anzeige degradiert sichtbar statt zu crashen).
+    # - Pipe/Datei (non-tty): UTF-8 erzwingen — Maschinen-Konsum (z.B.
+    #   `agent-cli mcp status | jq`) bekommt byte-treue Daten statt stiller
+    #   '?'-Korruption. Gleiche Konvention wie utils/logging.py.
+    # - stdin: nur errors="replace" (kein Encoding-Wechsel) — verhindert
+    #   UnicodeDecodeError bei Paste/Pipe-Input in Chat-Modi.
+    for _stream in (sys.stdout, sys.stderr):
+        if _stream is not None and hasattr(_stream, "reconfigure"):
+            try:
+                if _stream.isatty():
+                    _stream.reconfigure(errors="replace")
+                else:
+                    _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass  # exotische Streams (Tests, Pipes) — Verhalten wie bisher
+    if sys.stdin is not None and hasattr(sys.stdin, "reconfigure"):
+        try:
+            sys.stdin.reconfigure(errors="replace")
+        except Exception:
+            pass
+
     # Backward-compatible: allow calling `agent-cli <task>` without an explicit subcommand.
     # If the first non-option arg isn't a known subcommand, inject an implicit 'run' subcommand.
     # Use a two-stage parse: first extract global options from anywhere using parse_known_args,

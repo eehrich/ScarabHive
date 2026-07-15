@@ -11,7 +11,7 @@ The Agent System implements real-time streaming of status events during parallel
 1. **ToolExecutionManager** (`src/agent_system/servers/agent/components/tool_execution.py`)
    - Manages parallel tool execution
    - Streams status events in real-time via `execute_tools_streaming()`
-   - Provides backward-compatible wrapper `execute_tools()`
+     (the sole production interface; the old `execute_tools()` wrapper was removed)
 
 2. **StatusEventForwarder** (`src/agent_system/servers/agent/components/status_forwarding.py`)
    - Collects status events from `status_bus` in background task
@@ -108,14 +108,12 @@ async def execute_tools_streaming(
     """
 ```
 
-### execute_tools() (Legacy Wrapper)
+### Collected results (tests)
 
-Convenience method that collects all streaming results:
-
-```python
-async def execute_tools(...) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
-    """Backward-compatible wrapper around execute_tools_streaming()"""
-```
+The former `execute_tools()` legacy wrapper was removed (test-only production
+code — see docs/agent_package_architecture_review.md, G5). Tests that want the
+final tuple use the shared collector helper
+`tests/tool_execution_test_helpers.py::execute_tools_collect(manager, ...)`.
 
 ## Usage Example
 
@@ -138,8 +136,9 @@ async for item in tool_execution_manager.execute_tools_streaming(...):
 ### Testing (Collected)
 
 ```python
-# Simple non-streaming interface for tests
-messages, events, results = await tool_execution_manager.execute_tools(...)
+# Shared test helper (tests/tool_execution_test_helpers.py)
+from tool_execution_test_helpers import execute_tools_collect
+messages, events, results = await execute_tools_collect(tool_execution_manager, ...)
 ```
 
 ## Performance

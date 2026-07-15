@@ -22,6 +22,21 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     Uses config.plugins for local plugin servers.
     All plugins use (name, system_config, mcp_config) constructor.
     """
+    # Configure the process-wide cancellation manager ONCE, here at bootstrap.
+    # (Historically this ran in every Agent.__init__, which REPLACED the global
+    # manager per instantiation and orphaned all registered tokens/tasks —
+    # cancellation of in-flight requests silently stopped working. The old code
+    # also read a non-existent top-level `config.cancellation`, so the YAML
+    # values were never honored; CancellationConfig lives under
+    # `logging.cancellation` — see config/models.py LoggingConfig.)
+    from ..core.cancellation import configure_cancellation_manager
+    cancellation_cfg = getattr(getattr(config, "logging", None), "cancellation", None)
+    if cancellation_cfg:
+        configure_cancellation_manager(
+            cleanup_timeout=cancellation_cfg.cleanup_timeout,
+            monitor_interval=cancellation_cfg.monitor_interval,
+        )
+
     # Check for plugins configuration
     if not config.plugins:
         logger.warning("No plugins configuration found, skipping bootstrap")

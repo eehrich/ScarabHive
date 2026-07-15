@@ -8,12 +8,9 @@ Verifies that the ToolCallLoopDetector correctly identifies:
 5. Per-request isolation (no cross-contamination between requests)
 """
 
-import pytest
 from agent_system.servers.agent.loop_detection import (
     ToolCallLoopDetector,
     ToolCallRecord,
-    LoopDetectionResult,
-    create_loop_detector_from_config
 )
 
 
@@ -263,19 +260,20 @@ class TestToolCallLoopDetector:
         assert not result1.is_loop
 
 
-class TestLoopDetectorFactory:
-    """Tests for factory function."""
-    
+class TestLoopDetectorConstruction:
+    """Konstruktion wie im Produktionspfad: Agent._create_loop_detector baut
+    den Detector via ToolCallLoopDetector(**config-dict)."""
+
     def test_default_config(self):
-        """Test creating detector with default config."""
-        detector = create_loop_detector_from_config()
-        
+        """Detector mit Default-Parametern."""
+        detector = ToolCallLoopDetector()
+
         assert detector.exact_match_threshold == 3
         assert detector.sequence_threshold == 2
         assert detector.history_size == 20
-    
+
     def test_custom_config(self):
-        """Test creating detector with custom config."""
+        """Detector aus Config-Dict (Produktions-Pattern: **config)."""
         config = {
             "history_size": 10,
             "exact_match_threshold": 5,
@@ -283,9 +281,9 @@ class TestLoopDetectorFactory:
             "block_after_threshold": 8,
             "auto_unblock_after_steps": 5
         }
-        
-        detector = create_loop_detector_from_config(config)
-        
+
+        detector = ToolCallLoopDetector(**config)
+
         assert detector.exact_match_threshold == 5
         assert detector.sequence_threshold == 3
         assert detector.history_size == 10
@@ -401,7 +399,7 @@ class TestPerRequestIsolation:
 
         # Drive detector A past the block threshold
         for step in range(5):
-            result_a = det_a.record_and_check(call, step=step)
+            det_a.record_and_check(call, step=step)
         assert "write_file" in det_a.get_blocked_tools(), (
             "Detector A should have blocked write_file"
         )
@@ -413,16 +411,17 @@ class TestPerRequestIsolation:
             "Independent detector B must have no blocked tools"
         )
 
-    def test_factory_produces_independent_instances(self):
-        """create_loop_detector_from_config always yields independent objects."""
+    def test_construction_produces_independent_instances(self):
+        """Zwei Detector-Konstruktionen aus demselben Config-Dict teilen keinen
+        Zustand (Produktions-Pattern: per-Request-Detector via **config)."""
         config = {
             "exact_match_threshold": 2,
             "block_after_threshold": 4,
         }
-        det_x = create_loop_detector_from_config(config)
-        det_y = create_loop_detector_from_config(config)
+        det_x = ToolCallLoopDetector(**config)
+        det_y = ToolCallLoopDetector(**config)
 
-        assert det_x is not det_y, "Factory must not return the same object"
+        assert det_x is not det_y, "Construction must not return the same object"
         assert det_x._history is not det_y._history, (
             "Instances must not share the same history deque"
         )

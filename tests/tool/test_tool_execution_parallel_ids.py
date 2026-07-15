@@ -5,6 +5,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
+from tool_execution_test_helpers import execute_tools_collect
 
 
 @pytest.fixture
@@ -66,7 +67,7 @@ async def test_parallel_tool_calls_get_unique_request_id_suffixes(tool_execution
     mock_server.call_with_status.side_effect = capture_call_with_status_params
     
     # Execute the tools
-    tool_messages, events, results = await tool_execution_manager.execute_tools(
+    tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
         tool_calls, tool_name_mapping, available_tools, step
     )
     
@@ -130,7 +131,7 @@ async def test_single_tool_call_gets_consistent_suffix(tool_execution_manager):
     mock_server.call_with_status.side_effect = capture_call_with_status_params
     
     # Execute the tool
-    tool_messages, events, results = await tool_execution_manager.execute_tools(
+    tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
         tool_calls, tool_name_mapping, available_tools, step
     )
     
@@ -178,7 +179,7 @@ async def test_no_request_id_in_params_handles_gracefully(tool_execution_manager
     mock_server.call_with_status.side_effect = capture_call_with_status_params
     
     # Execute the tools
-    tool_messages, events, results = await tool_execution_manager.execute_tools(
+    tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
         tool_calls, tool_name_mapping, available_tools, step
     )
     

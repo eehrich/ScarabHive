@@ -8,6 +8,7 @@ import json
 import pytest
 
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
+from tool_execution_test_helpers import execute_tools_collect
 
 
 @pytest.mark.asyncio
@@ -57,7 +58,7 @@ async def test_hallucinated_tool_example_writer_audio():
     # Before fix: Would crash with RuntimeError("Server not found for tool: writer_audio")
     # After fix: Returns error message to LLM
     try:
-        tool_messages, events, results = await manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -130,7 +131,7 @@ async def test_multiple_hallucinated_tools_no_crash():
     available_tools = ["writer_audio", "fake_tool_xyz", "nonexistent"]
     
     # Should handle all gracefully
-    tool_messages, events, results = await manager.execute_tools(
+    tool_messages, events, results = await execute_tools_collect(manager,
         tool_calls, tool_name_mapping, available_tools, 1, "test_multi"
     )
     
