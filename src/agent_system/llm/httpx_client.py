@@ -800,14 +800,14 @@ class HTTPXOpenAIClient(LLMClient):
                     if response.status_code >= 400:
                         error_text = response.text[:200] if response.text else ""
                         error_msg = f"HTTP {response.status_code}: {error_text}"
-                        logger.error(f"HTTPX non-streaming request failed: {error_msg}")
 
-                        # Self-healing: OpenAI encrypted-reasoning cross-backend
-                        # mismatch (rs_* item undecryptable on the routed backend)
-                        # can arrive as an HTTP-STATUS 400 — not just a body-level
-                        # 400. The body-level retry below only runs after json()
-                        # on a 2xx, so we must also catch it here. Recovery is the
-                        # same: strip reasoning_details and retry once.
+                        # Self-healing: OpenAI encrypted-reasoning 400 (defective
+                        # blob from the OpenRouter bridge) can arrive as an
+                        # HTTP-STATUS 400 — not just a body-level 400. The
+                        # body-level retry below only runs after json() on a 2xx,
+                        # so we must also catch it here. Recovery happens BEFORE
+                        # the ERROR log: the healed case is routine self-repair
+                        # and only logs its own WARNING.
                         if response.status_code == 400 and _enc_retries < 2:
                             _full_body = response.text or ""
                             _enc_hit = ("encrypted content" in _full_body
@@ -833,6 +833,7 @@ class HTTPXOpenAIClient(LLMClient):
                                     )
                                     continue
 
+                        logger.error(f"HTTPX non-streaming request failed: {error_msg}")
                         _duration_ms = (_time.time() - _request_start) * 1000
                         await self._notify_post_response({
                             "provider": "openai_httpx", "model": self.model, "url": url,
@@ -1323,12 +1324,12 @@ class HTTPXOpenAIClient(LLMClient):
                             error_body = await response.aread()
                             error_text = error_body.decode('utf-8', errors='replace')
                             error_msg = f"HTTP {response.status_code}: {error_text[:200]}"
-                            logger.error(f"HTTPX streaming request failed: {error_msg}")
-
                             # Self-healing: OpenAI encrypted-reasoning 400
                             # arriving as an HTTP-status 400 (mirrors the
                             # non-streaming path). Two-stage recovery, heals
-                            # payload AND original session messages.
+                            # payload AND original session messages. Runs BEFORE
+                            # the ERROR log: the healed case is routine
+                            # self-repair and only logs its own WARNING.
                             if response.status_code == 400 and _enc_retries < 2:
                                 if "encrypted content" in error_text and "rs_" in error_text:
                                     recovery = self._recover_encrypted_reasoning(
@@ -1351,6 +1352,7 @@ class HTTPXOpenAIClient(LLMClient):
                                         )
                                         continue
 
+                            logger.error(f"HTTPX streaming request failed: {error_msg}")
                             if response.status_code >= 500:
                                 raise LLMServerError(
                                     error_msg, provider="httpx", model=self.model,
