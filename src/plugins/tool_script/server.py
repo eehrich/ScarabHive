@@ -110,6 +110,44 @@ class ToolScriptServer(SchemaBasedMCPServer):
         # dispatch_tool_call regardless.
         self._allowed_tools: List[str] = list(config_dict.get("allowed_tools") or [])
         self._blocked_tools: List[str] = list(config_dict.get("blocked_tools") or [])
+        # Server-seitige Param-Injection: {tool-pattern: {param: value}}.
+        # Für Secrets (write_key, ...), die NIE durchs LLM fließen sollen —
+        # LLM-getippte Werte sind transpositions-anfällig (v6-Befund: der
+        # Coordinator vertippte den write_key als WC_x9K_mP statt ***REMOVED***).
+        # Config gewinnt IMMER über Script-Werte (ein vertippter Key wird
+        # ersetzt, nicht nur ergänzt); Injection VOR der Schema-Validierung,
+        # damit Scripts den Param komplett weglassen dürfen. Werte kommen aus
+        # der Server-Config → trusted; Patterns wie bei allowed_tools (fnmatch).
+        raw_inject = config_dict.get("inject_params") or {}
+        if not isinstance(raw_inject, dict):
+            logger.warning(
+                "tool_script '%s': inject_params ignored — expected a "
+                "mapping {tool-pattern: {param: value}}, got %s",
+                name, type(raw_inject).__name__,
+            )
+            raw_inject = {}
+        self._inject_params: Dict[str, Dict[str, Any]] = {
+            str(pattern): dict(extra)
+            for pattern, extra in raw_inject.items()
+            if isinstance(extra, dict)
+        }
+        # Review-Befund: still verworfene Einträge machen die Injection
+        # lautlos wirkungslos — Scripts lassen den Param bewusst weg und
+        # scheitern dann erst zur Laufzeit an der Ziel-Tool-Validierung.
+        _dropped = sorted(
+            str(p) for p, e in raw_inject.items() if not isinstance(e, dict)
+        )
+        if _dropped:
+            logger.warning(
+                "tool_script '%s': inject_params entries dropped (value "
+                "must be a mapping {param: value}): %s", name, _dropped,
+            )
+        if self._inject_params:
+            logger.info(
+                "tool_script '%s': param injection configured for %d tool "
+                "pattern(s): %s", name, len(self._inject_params),
+                sorted(self._inject_params),
+            )
 
         # One running script per session — scripts hold a worker thread and
         # per-session serialization bounds pool pressure and state races.
@@ -241,6 +279,12 @@ class ToolScriptServer(SchemaBasedMCPServer):
                     f"config.")
 
             self._ensure_plain_data(tool_params)
+            # Param-Injection (Secrets): NACH dem plain-data-Check der Script-
+            # Params, VOR der Schema-Validierung (Scripts dürfen injizierte
+            # Pflicht-Params weglassen). Config überschreibt Script-Werte.
+            for _pattern, _extra in self._inject_params.items():
+                if fnmatch.fnmatch(name_s, _pattern):
+                    tool_params.update(_extra)
             self._validate_against_tool_schema(agent, name_s, tool_params)
 
             child_rid = (f"{request_id}_ts{ctx.n_calls:02d}"

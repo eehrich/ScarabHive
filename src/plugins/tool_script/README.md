@@ -66,6 +66,21 @@ pipe:
     max_output_length: 4000
     allowed_tools: []             # optional fnmatch narrowing (never widens)
     blocked_tools: []
+    inject_params: {}             # optional: {tool-pattern: {param: value}}
+```
+
+### Param injection (`inject_params`)
+
+Server-side constants merged into matching `call_tool` params — for secrets
+(`write_key`, tokens) that must never flow through the LLM (LLM-typed values
+are transposition-prone). Config values ALWAYS override script-provided
+values, and injection runs BEFORE schema validation so scripts may omit the
+parameter entirely. Patterns use fnmatch like `allowed_tools`.
+
+```yaml
+    inject_params:
+      "writer_content_story": { write_key: "..." }
+      "writer_issues_op": { write_key: "..." }
 ```
 
 Give the agent the tool via its normal allowlist (`- "pipe/*"`). Everything a

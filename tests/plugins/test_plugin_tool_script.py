@@ -477,3 +477,75 @@ class TestDryRun:
         res = await run(server, agent, 'x = (1', dry_run=True)
         assert res["status"] == "error"
         assert "line" in res["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# inject_params: server-seitige Secrets (write_key), nie LLM-typed
+# ---------------------------------------------------------------------------
+
+
+class TestInjectParams:
+    KEY_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "operation": {"type": "string"},
+            "write_key": {"type": "string"},
+        },
+        "required": ["operation", "write_key"],
+    }
+
+    def _agent_with_keyed_tool(self):
+        a = FakeAgent()
+        a.add_tool(
+            "writer_issues_op",
+            lambda p: {"status": "ok", "seen_key": p.get("write_key")},
+            self.KEY_SCHEMA,
+        )
+        a.add_tool(
+            "other_tool", lambda p: {"status": "ok", "seen_key": p.get("write_key")},
+            {"type": "object", "properties": {"write_key": {"type": "string"}}},
+        )
+        return a
+
+    @pytest.mark.asyncio
+    async def test_injects_omitted_required_param(self):
+        # Script laesst write_key weg — Injection VOR Schema-Validierung
+        agent = self._agent_with_keyed_tool()
+        server = make_server(
+            inject_params={"writer_issues_op": {"write_key": "SECRET_OK"}})
+        res = await run(server, agent,
+                        'result = call_tool("writer_issues_op", operation="x")')
+        assert res["status"] == "ok"
+        assert agent.dispatched[0][1]["write_key"] == "SECRET_OK"
+
+    @pytest.mark.asyncio
+    async def test_config_overrides_garbled_script_value(self):
+        # Der v6-Befund: LLM tippt den Key transponiert — Config gewinnt
+        agent = self._agent_with_keyed_tool()
+        server = make_server(
+            inject_params={"writer_issues_op": {"write_key": "SECRET_OK"}})
+        res = await run(
+            server, agent,
+            'result = call_tool("writer_issues_op", operation="x", '
+            'write_key="WC_x9K_mP_falsch")')
+        assert res["status"] == "ok"
+        assert agent.dispatched[0][1]["write_key"] == "SECRET_OK"
+
+    @pytest.mark.asyncio
+    async def test_non_matching_tool_not_injected(self):
+        agent = self._agent_with_keyed_tool()
+        server = make_server(
+            inject_params={"writer_issues_op": {"write_key": "SECRET_OK"}})
+        res = await run(server, agent, 'result = call_tool("other_tool")')
+        assert res["status"] == "ok"
+        assert "write_key" not in agent.dispatched[0][1]
+
+    @pytest.mark.asyncio
+    async def test_fnmatch_pattern(self):
+        agent = self._agent_with_keyed_tool()
+        server = make_server(
+            inject_params={"writer_*": {"write_key": "SECRET_OK"}})
+        res = await run(server, agent,
+                        'result = call_tool("writer_issues_op", operation="x")')
+        assert res["status"] == "ok"
+        assert agent.dispatched[0][1]["write_key"] == "SECRET_OK"
