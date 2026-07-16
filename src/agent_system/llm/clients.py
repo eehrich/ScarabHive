@@ -102,6 +102,46 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             safety_settings=safety_settings,
         )
 
+    if provider == "openai_responses":
+        # OpenAI Responses API via OpenRouter (/responses beta): native item
+        # round-trip, no Chat-Completions bridging — removes the
+        # encrypted-reasoning 400s of that translation layer entirely.
+        # See openai_responses_client.py for the full rationale.
+        if not api_key:
+            api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("An API key is required when provider=openai_responses")
+        from .openai_responses_client import OpenAIResponsesClient
+        if httpx_timeouts:
+            responses_timeouts = HTTPXTimeoutConfig(
+                connect=httpx_timeouts.get('connect', 10.0),
+                read=httpx_timeouts.get('read', float(request_timeout) if request_timeout else 600.0),
+                write=httpx_timeouts.get('write', 30.0),
+                pool=httpx_timeouts.get('pool', 5.0)
+            )
+        else:
+            responses_timeouts = HTTPXTimeoutConfig(
+                connect=10.0,
+                read=float(request_timeout) if request_timeout else 600.0,
+                write=30.0,
+                pool=5.0
+            )
+        return OpenAIResponsesClient(
+            model=model,
+            api_key=api_key,
+            base_url=base_url or "https://openrouter.ai/api/v1",
+            context_window=context_window or 200000,
+            request_timeout=request_timeout or 600,
+            ssl_verify=ssl_verify if ssl_verify is not None else True,
+            timeout_config=responses_timeouts,
+            capabilities=capabilities,
+            parallel_tool_calls=parallel_tool_calls,
+            thinking_level=thinking_level,
+            max_tokens=max_tokens,
+            service_tier=service_tier,
+            provider_routing=provider_routing,
+        )
+
     if provider == "openai" or provider == "openai_httpx":
         if not api_key:
             api_key = os.getenv("OPENAI_API_KEY")

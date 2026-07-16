@@ -106,7 +106,7 @@ class BatchSystemConfig(BaseModel):
 
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
-    provider: Literal["ollama", "openai", "openai_httpx", "anthropic", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
+    provider: Literal["ollama", "openai", "openai_httpx", "openai_responses", "anthropic", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
     model: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # Custom base URL for API endpoint (e.g. Gemini, Ollama, OpenAI-compatible)

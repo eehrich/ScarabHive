@@ -544,6 +544,30 @@ llm_system:
         json_mode: true
         multimodal: true
 
+    openrouter-gpt-5.6-terra-responses-test:
+      # TEST ENTRY for the native Responses-API client (openai_responses_client.py):
+      # no Chat-Completions bridging — model output items round-trip VERBATIM, which
+      # structurally removes the "encrypted content ... could not be verified" 400s
+      # of the bridge. Not referenced by any agent yet; live-testing only.
+      provider: openai_responses
+      model: openai/gpt-5.6-terra
+      provider_routing:
+        order: ["openai"]        # terra has no azure endpoints anyway (404); single-org pin.
+        allow_fallbacks: false
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 272000
+      request_timeout: 600
+      service_tier: flex
+      max_tokens: 16384
+      thinking_level: medium
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false         # client is non-streaming by design; server takes the chat_tools path
+        json_mode: true
+        multimodal: true
+
     openrouter-gpt-5.6-terra-unlimited:
       provider: openai_httpx
       model: openai/gpt-5.6-terra
@@ -975,6 +999,11 @@ llm_system:
     or-gpt-full-unlimited:
       model_ref: openrouter-gpt-5.6-terra-unlimited
       description: "OpenRouter GPT-5.6 Terra - No output token limit"
+      max_steps: 500
+
+    or-gpt-full-responses-test:
+      model_ref: openrouter-gpt-5.6-terra-responses-test
+      description: "TEST: GPT-5.6 Terra via native Responses API (verbatim item round-trip, no bridge 400s) - live-testing only, no agent uses this yet"
       max_steps: 500
 
     or-gpt-mini:
