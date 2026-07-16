@@ -4,7 +4,9 @@ Feature: Agent-yamls können LLM-Parameter (thinking_level, max_tokens, …)
 über den referenzierten llm_system.models-Eintrag legen, statt für jede
 Kombination einen eigenen Model-Eintrag anzulegen. Anwendung zentral in
 resolve_llm_config_for_agent(); Identitäts-Felder (provider/model/…) sind
-gesperrt; Fallback-Profile laufen bewusst ohne Overrides (Call-Site-Ebene).
+gesperrt. Fallback-Profile: Flat-Form/"*" gelten bewusst nicht, EXAKT
+gekeyte Einträge schon (resolve_llm_params_exact, angewandt beim
+Fallback-Switch in _create_fallback_llm).
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from agent_system.config.models import (
     LLMProfile,
     LLMSystemConfig,
     resolve_llm_params,
+    resolve_llm_params_exact,
 )
 from agent_system.llm.factory import resolve_llm_config_for_agent
 
@@ -202,13 +205,27 @@ class TestKeyedLlmParamsValidation:
             )
 
     def test_unknown_profile_key_rejected(self):
-        # Fallback-Einträge sind KEINE gültigen Keys (liefen als stiller No-Op)
-        with pytest.raises(ValidationError, match="Primärmodelle"):
+        # Keys, die in KEINER Kette vorkommen (Tippfehler, verwaiste
+        # Einträge nach Ketten-Umbau), knallen beim Config-Load.
+        with pytest.raises(ValidationError, match="keiner LLM-Kette"):
             AgentConfig(
                 llm_profile=["test-profile", "fallback-profile"],
                 llm_profile_advanced=["advanced-profile"],
-                llm_params={"fallback-profile": {"max_tokens": 100}},
+                llm_params={"typo-profile": {"max_tokens": 100}},
             )
+
+    def test_fallback_profile_key_accepted(self):
+        # Exakt gekeyte Einträge für Fallback-Profile sind gültig — sie
+        # werden beim Fallback-Switch angewandt (resolve_llm_params_exact).
+        a = AgentConfig(
+            llm_profile=["test-profile", "fallback-profile"],
+            llm_profile_advanced=["advanced-profile", "adv-fallback"],
+            llm_params={
+                "fallback-profile": {"max_tokens": 100},
+                "adv-fallback": {"thinking_level": "high"},
+            },
+        )
+        assert set(a.llm_params) == {"fallback-profile", "adv-fallback"}
 
     def test_primary_and_star_keys_accepted(self):
         a = AgentConfig(
@@ -257,3 +274,30 @@ class TestKeyedLlmParamsValidation:
                 profiles={"max_tokens": LLMProfile(model_ref="test-model")},
                 models={"test-model": LLMModelConfig(provider="mock", model="m")},
             )
+
+
+class TestResolveLlmParamsExact:
+    """Fallback-Semantik: NUR der exakt gekeyte Eintrag zaehlt — Flat-Form
+    und "*" sind auf Primaermodelle zugeschnitten (ein pauschales
+    thinking_level=max wuerde einen Cross-Provider-Fallback brechen)."""
+
+    KEYED = {
+        "*": {"max_tokens": 8000, "thinking_level": "max"},
+        "or-gemini-pro": {"thinking_level": "high"},
+    }
+
+    def test_exact_key_applies_without_star_merge(self):
+        assert resolve_llm_params_exact(self.KEYED, "or-gemini-pro") == {
+            "thinking_level": "high",
+        }
+
+    def test_star_does_not_leak_to_fallbacks(self):
+        assert resolve_llm_params_exact(self.KEYED, "anderes-fallback") is None
+
+    def test_flat_form_is_primary_only(self):
+        flat = {"thinking_level": "max"}
+        assert resolve_llm_params_exact(flat, "or-gemini-pro") is None
+
+    def test_none_and_empty(self):
+        assert resolve_llm_params_exact(None, "x") is None
+        assert resolve_llm_params_exact({}, "x") is None

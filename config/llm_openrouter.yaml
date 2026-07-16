@@ -401,12 +401,14 @@ llm_system:
     # ---------------------------------------------------------------------------
 
     openrouter-gpt-5.4:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.4
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000  # 1.05M total, but >272K doubles pricing
@@ -421,12 +423,14 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.4-unlimited:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.4
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -441,12 +445,14 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.4-mini:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.4-mini
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
@@ -461,12 +467,14 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.4-mini-unlimited:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.4-mini
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
@@ -482,12 +490,14 @@ llm_system:
 
 
     openrouter-gpt-5.6-sol:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.6-sol
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -503,12 +513,14 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.6-sol-unlimited:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.6-sol
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -524,12 +536,14 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.6-terra:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.6-terra
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -569,12 +583,14 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.6-terra-unlimited:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.6-terra
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -591,12 +607,14 @@ llm_system:
 
 
     openrouter-gpt-5.6-luna:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.6-luna
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -635,12 +653,14 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.6-luna-unlimited:
-      provider: openai_httpx
+      # Native Responses-API route (openai_responses_client.py): verbatim item
+      # round-trip, no Chat-Completions bridging => no "encrypted content could
+      # not be verified" 400s. Migrated 2026-07-16.
+      provider: openai_responses
       model: openai/gpt-5.6-luna
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      provider_routing:           
-        order: ["openai", "azure"]
-        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
+      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
+        order: ["openai"]
+        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000

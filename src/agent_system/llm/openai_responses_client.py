@@ -563,11 +563,32 @@ class OpenAIResponsesClient(LLMClient):
                     raise
 
                 # Body-level error inside an HTTP 200 (OpenRouter proxies
-                # upstream errors this way on /responses too). The encrypted-
-                # reasoning heal must catch this shape as well — otherwise the
-                # error would surface as assistant.error and trigger an
-                # unnecessary persistent model fallback upstream.
+                # upstream errors this way on /responses too). Two cases are
+                # handled here instead of surfacing as assistant.error (which
+                # would trigger an unnecessary persistent model fallback):
                 body_err = response_data.get("error")
+
+                # 1) Transient upstream rate limit (flex-tier overload sends
+                #    "rate_limit_exceeded ... too many requests" as a body
+                #    error). Backoff and retry like the httpx client does for
+                #    body-429s — the condition clears within seconds.
+                if body_err and attempt < self.max_retries:
+                    err_code = str(body_err.get("code", "")) if isinstance(body_err, dict) else ""
+                    err_msg = str(body_err.get("message", "")) if isinstance(body_err, dict) else str(body_err)
+                    if ("rate_limit" in err_code or err_code == "429"
+                            or "too many requests" in err_msg.lower()):
+                        backoff = self.retry_backoff * (2 ** attempt)
+                        logger.warning(
+                            f"Responses body rate-limit, retry {attempt + 1}/"
+                            f"{self.max_retries} in {backoff:.0f}s: {self.model}")
+                        await self._notify_retry(
+                            "openai_responses", self.model, url, False,
+                            "body rate-limit", attempt, self.max_retries + 1)
+                        await self._cancellable_sleep(backoff, cancellation_token)
+                        attempt += 1
+                        continue
+
+                # 2) Defective encrypted reasoning item reported body-level.
                 if body_err and not _enc_retried and \
                         self._is_encrypted_reasoning_400(json.dumps(body_err, ensure_ascii=False)):
                     _enc_retried = True

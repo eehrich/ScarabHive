@@ -413,17 +413,24 @@ class Agent(MCPServer):
         """
         try:
             from ...llm.factory import create_llm_from_profile
-            
+            from ...config.models import resolve_llm_params_exact
+
             ssl_verify = getattr(self.system_config, "network").ssl_verify if getattr(self.system_config, "network", None) else None
-            
-            # Bewusst OHNE agent_config.llm_params: Fallbacks sind oft ein
-            # anderer Provider (Cross-Provider-Pflicht) und muessen mit ihrer
-            # eigenen, robusten Tuning-Config laufen — z.B. wuerde ein
-            # gpt-thinking_level=max einen Gemini-Fallback hart brechen.
+
+            # Flat-Form/"*" der llm_params gelten bewusst NICHT fuer
+            # Fallbacks (oft anderer Provider — ein gpt-thinking_level=max
+            # wuerde einen Gemini-Fallback hart brechen). Ein EXAKT auf
+            # dieses Fallback-Profil gekeyter Eintrag ist dagegen eine
+            # bewusste Operator-Entscheidung und wird angewandt.
+            fallback_params = resolve_llm_params_exact(
+                self.agent_config.llm_params if self.agent_config else None,
+                fallback_profile,
+            )
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,
                 ssl_verify=ssl_verify,
+                llm_params=fallback_params,
             )
             fallback_llm.set_app_title(self.name)
             # Mirror init/llm_override: wire hooks so debugger + cost tracking
