@@ -413,24 +413,18 @@ class Agent(MCPServer):
         """
         try:
             from ...llm.factory import create_llm_from_profile
-            from ...config.models import resolve_llm_params_exact
 
             ssl_verify = getattr(self.system_config, "network").ssl_verify if getattr(self.system_config, "network", None) else None
 
-            # Flat-Form/"*" der llm_params gelten bewusst NICHT fuer
-            # Fallbacks (oft anderer Provider — ein gpt-thinking_level=max
-            # wuerde einen Gemini-Fallback hart brechen). Ein EXAKT auf
-            # dieses Fallback-Profil gekeyter Eintrag ist dagegen eine
-            # bewusste Operator-Entscheidung und wird angewandt.
-            fallback_params = resolve_llm_params_exact(
-                self.agent_config.llm_params if self.agent_config else None,
-                fallback_profile,
-            )
+            # Fallbacks laufen mit DERSELBEN llm_params-Semantik wie das
+            # Primaermodell — create_llm_from_profile loest die profil-
+            # gekeyten Params selbst auf ("*"/flat fuer die ganze Kette,
+            # exakter Eintrag gewinnt). Keine Sonderbehandlung hier.
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,
                 ssl_verify=ssl_verify,
-                llm_params=fallback_params,
+                llm_params=self.agent_config.llm_params if self.agent_config else None,
             )
             fallback_llm.set_app_title(self.name)
             # Mirror init/llm_override: wire hooks so debugger + cost tracking

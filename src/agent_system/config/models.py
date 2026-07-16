@@ -282,25 +282,12 @@ def resolve_llm_params(
     return merged or None
 
 
-def resolve_llm_params_exact(
-    params: Optional[Dict[str, Any]], profile: str
-) -> Optional[Dict[str, Any]]:
-    """Effektive LLM-Params fuer ein FALLBACK-Profil: NUR der exakt
-    gekeyte Eintrag zaehlt.
-
-    Flat-Form und "*" gelten hier bewusst NICHT — sie sind auf die
-    Primaermodelle zugeschnitten, und Fallbacks sind oft ein anderer
-    Provider (ein pauschales thinking_level=max wuerde einen
-    Gemini-Fallback hart brechen). Ein exakt gekeyter Eintrag dagegen ist
-    eine bewusste Operator-Entscheidung fuer GENAU dieses Modell und wird
-    beim Fallback-Switch angewandt.
-    """
-    if not params:
-        return None
-    if any(k in LLMModelConfig.model_fields for k in params):
-        return None  # Flat-Form: Primaer-only
-    exact = params.get(profile)
-    return dict(exact) if exact else None
+# Fallback-Profile nutzen dieselbe resolve_llm_params-Semantik wie die
+# Primaermodelle: Flat-Form und "*" gelten fuer ALLE Ketten-Mitglieder,
+# der exakt gekeyte Eintrag gewinnt. Wer "*" setzt, entscheidet das
+# bewusst fuer die ganze Kette — Cross-Provider-Vertraeglichkeit der
+# Werte liegt beim Operator (profil-gekeyte Eintraege erlauben die
+# Feinsteuerung pro Modell).
 
 
 class AgentConfig(BaseModel):
@@ -326,21 +313,19 @@ class AgentConfig(BaseModel):
     # anzulegen. Erlaubt sind alle LLMModelConfig-Felder AUSSER den
     # Identitaets-Feldern (provider/model/api_key/base_url/batch_provider/
     # ollama_mode — die definieren WELCHES Modell und gehoeren in llm.yaml).
-    # Flat-Form und "*" gelten fuer die PRIMÄR-Modelle beider Ketten
-    # (llm_profile[0], llm_profile_advanced[0], Eskalation) — bewusst NICHT
-    # pauschal fuer Fallback-Eintraege (Fallbacks sind oft ein anderer
-    # Provider und muessen mit ihrer eigenen, robusten Tuning-Config laufen —
-    # z.B. kennt Gemini kein thinking_level=max). Ein EXAKT gekeyter Eintrag
-    # fuer ein Fallback-Profil ist dagegen eine bewusste Operator-Entscheidung
-    # und wird beim Fallback-Switch angewandt (resolve_llm_params_exact).
-    # Explizite --llm-profile-Overrides laufen weiterhin ohne llm_params.
+    # Gilt einheitlich fuer ALLE Ketten-Mitglieder (Primaer + Fallbacks
+    # beider Ketten, Eskalation): Flat-Form und "*" wirken ueberall, der
+    # exakt gekeyte Eintrag gewinnt. Cross-Provider-Vertraeglichkeit
+    # pauschaler Werte ("*" mit thinking_level=max auf einem Gemini-
+    # Fallback) verantwortet der Operator — profil-gekeyte Eintraege
+    # erlauben die Feinsteuerung pro Modell. Explizite --llm-profile-
+    # Overrides laufen weiterhin ohne llm_params.
     #
     # ZWEI Formen (unterschiedliche Modelle kennen unterschiedliche Keys):
-    #   flat  — gilt fuer BEIDE Ketten-Primärmodelle (wie "*"):
+    #   flat  — gilt fuer die ganze Kette (wie "*"):
     #     llm_params: { max_tokens: 8000 }
     #   profil-gekeyt — Params kleben am Modell, nicht am Slot;
-    #     "*" gilt fuer beide Primärmodelle, spezifischer Eintrag gewinnt;
-    #     exakte Keys duerfen JEDES Ketten-Mitglied (auch Fallbacks) sein:
+    #     "*" gilt fuer alle Ketten-Mitglieder, spezifischer Eintrag gewinnt:
     #     llm_params:
     #       "*": { max_tokens: 8000 }
     #       or-gpt-full-unlimited: { thinking_level: high }
@@ -442,11 +427,11 @@ class AgentConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_llm_params_profile_keys(self) -> "AgentConfig":
         # Profil-gekeyte llm_params: gueltige Keys sind "*" plus ALLE
-        # Mitglieder beider Ketten (Primaer + Fallbacks). "*" und Flat-Form
-        # wirken nur auf die Primaermodelle; ein EXAKT gekeyter Eintrag wirkt
-        # auch beim Fallback-Switch (resolve_llm_params_exact). Unbekannte
-        # Keys (Tippfehler, verwaiste Eintraege nach Ketten-Umbau) waeren
-        # stille No-Ops und sollen beim Config-Load knallen.
+        # Mitglieder beider Ketten (Primaer + Fallbacks) — die Params wirken
+        # einheitlich auf jedes Ketten-Mitglied ("*"/flat ueberall, exakter
+        # Eintrag gewinnt). Unbekannte Keys (Tippfehler, verwaiste Eintraege
+        # nach Ketten-Umbau) waeren stille No-Ops und sollen beim
+        # Config-Load knallen.
         p = self.llm_params
         if p and not any(k in LLMModelConfig.model_fields for k in p):
             valid = {"*"}
