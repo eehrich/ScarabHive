@@ -737,6 +737,39 @@ class HTTPXOpenAIClient(LLMClient):
                         error_text = response.text[:200] if response.text else ""
                         error_msg = f"HTTP {response.status_code}: {error_text}"
                         logger.error(f"HTTPX non-streaming request failed: {error_msg}")
+
+                        # Self-healing: OpenAI encrypted-reasoning cross-backend
+                        # mismatch (rs_* item undecryptable on the routed backend)
+                        # can arrive as an HTTP-STATUS 400 — not just a body-level
+                        # 400. The body-level retry below only runs after json()
+                        # on a 2xx, so we must also catch it here. Recovery is the
+                        # same: strip reasoning_details and retry once.
+                        if response.status_code == 400 and not _enc_retried:
+                            _full_body = response.text or ""
+                            _enc_hit = ("encrypted content" in _full_body
+                                        and "rs_" in _full_body)
+                            if _enc_hit:
+                                n_stripped = self._strip_reasoning_details(payload)
+                                if n_stripped > 0:
+                                    _enc_retried = True
+                                    logger.warning(
+                                        "HTTP-400 retry: stripping reasoning_details "
+                                        "from %d assistant message(s) (OpenAI encrypted-"
+                                        "reasoning cross-backend mismatch). model=%s "
+                                        "detail=%r",
+                                        n_stripped, self.model, _full_body[:200],
+                                    )
+                                    await self._report_status(
+                                        status_scope,
+                                        f"Encrypted-reasoning retry: {self.model}",
+                                    )
+                                    await self._notify_retry(
+                                        "openai_httpx", self.model, url, False,
+                                        "http-400 encrypted-reasoning strip",
+                                        attempt, self.max_retries + 1,
+                                    )
+                                    continue
+
                         _duration_ms = (_time.time() - _request_start) * 1000
                         await self._notify_post_response({
                             "provider": "openai_httpx", "model": self.model, "url": url,
@@ -1221,6 +1254,32 @@ class HTTPXOpenAIClient(LLMClient):
                             error_text = error_body.decode('utf-8', errors='replace')
                             error_msg = f"HTTP {response.status_code}: {error_text[:200]}"
                             logger.error(f"HTTPX streaming request failed: {error_msg}")
+
+                            # Self-healing: OpenAI encrypted-reasoning cross-backend
+                            # 400 arriving as an HTTP-status 400 (mirrors the
+                            # non-streaming path). Strip reasoning_details, retry once.
+                            if response.status_code == 400 and not _enc_retried:
+                                if "encrypted content" in error_text and "rs_" in error_text:
+                                    n_stripped = self._strip_reasoning_details(payload)
+                                    if n_stripped > 0:
+                                        _enc_retried = True
+                                        logger.warning(
+                                            "HTTP-400 stream retry: stripping reasoning_details "
+                                            "from %d assistant message(s) (OpenAI encrypted-"
+                                            "reasoning cross-backend mismatch). model=%s detail=%r",
+                                            n_stripped, self.model, error_text[:200],
+                                        )
+                                        await self._report_status(
+                                            status_scope,
+                                            f"Encrypted-reasoning retry: {self.model}",
+                                        )
+                                        await self._notify_retry(
+                                            "openai_httpx", self.model, url, True,
+                                            "http-400 encrypted-reasoning strip (stream)",
+                                            attempt, self.max_retries + 1,
+                                        )
+                                        continue
+
                             if response.status_code >= 500:
                                 raise LLMServerError(
                                     error_msg, provider="httpx", model=self.model,
