@@ -518,7 +518,7 @@ plugins:
             - name: reference_image
               type: string
               required: true
-              description: "Filename of the reference image in ComfyUI's input folder (from operation='upload_image')"
+              description: "Reference image: LOCAL file path (e.g. output_path from wait_for_completion) or bare filename of a downloaded output — uploaded to the execution server automatically. Filenames already in ComfyUI's input folder also work."
               node_id: "05"
               field: inputs.image
             - name: steps
@@ -611,7 +611,7 @@ plugins:
             - name: reference_image
               type: string
               required: true
-              description: "Filename of the reference image in ComfyUI's input folder (from operation='upload_image')"
+              description: "Reference image: LOCAL file path (e.g. output_path from wait_for_completion) or bare filename of a downloaded output — uploaded to the execution server automatically. Filenames already in ComfyUI's input folder also work."
               node_id: "05"
               field: inputs.image
             - name: weight
@@ -680,7 +680,7 @@ plugins:
             - name: image
               type: string
               required: true
-              description: "Filename of an image previously uploaded via operation='upload_image' (relative to ComfyUI input dir)."
+              description: "Image to describe: LOCAL file path (e.g. output_path from wait_for_completion) or bare filename of a downloaded output — uploaded to the execution server automatically. Filenames already in ComfyUI's input folder also work."
               node_id: "1"
               field: inputs.image
             - name: prompt

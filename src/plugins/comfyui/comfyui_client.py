@@ -100,7 +100,14 @@ class ComfyUIClient:
                     result = await resp.json()
                     if resp.status != 200:
                         logger.error("Failed to queue prompt: %s", result)
-                        return {"status": "error", "error": result.get("error", "Unknown error")}
+                        # Surface node_errors too — they carry the actionable
+                        # detail (e.g. LoadImage "Invalid image file: x.png");
+                        # the top-level error alone ("prompt_outputs_failed_
+                        # validation") leaves the calling agent retrying blind.
+                        err: dict[str, Any] = {"status": "error", "error": result.get("error", "Unknown error")}
+                        if result.get("node_errors"):
+                            err["node_errors"] = result["node_errors"]
+                        return err
                     # Add status field for consistency
                     result["status"] = "queued"
                     return result

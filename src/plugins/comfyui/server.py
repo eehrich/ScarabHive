@@ -780,11 +780,18 @@ class ComfyUIServer(SchemaBasedMCPServer):
             if status:
                 await status.error("parameters must be a JSON object or JSON string")
             return {"error": "parameters must be a JSON object or JSON string"}
+        # Pick the execution server BEFORE parameter injection: LoadImage
+        # auto-uploads must land on the server that will run this workflow
+        # (a manual upload_image goes to the primary — desyncs on multi-server).
+        session_id = params.get("_session_id")
+        exec_output_dir = self._resolve_output_dir(session_id)
+        exec_client = await self._pick_client(exec_output_dir)
+
         for param_def in wf_config.get("parameters", []):
             param_name = param_def["name"]
             node_id = param_def.get("node_id")
             field_path = param_def.get("field", "")
-            
+
             # Get value: user-provided or default
             if param_name in user_params:
                 value = user_params[param_name]
@@ -794,24 +801,43 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 return {"error": f"Required parameter missing: {param_name}"}
             else:
                 value = param_def.get("default")
-            
+
             # Inject into workflow
             if node_id and field_path and value is not None:
+                # LoadImage inputs read ComfyUI's INPUT folder only. When the
+                # value resolves to a local file (fresh outputs are downloaded
+                # locally), upload it to the execution server and inject the
+                # server-side name — no manual upload_image round-trip needed.
+                target_node = workflow_json.get(node_id) or {}
+                if (isinstance(value, str) and field_path == "inputs.image"
+                        and str(target_node.get("class_type", "")).startswith("LoadImage")):
+                    uploaded = await self._ensure_image_on_server(value, exec_client, status)
+                    if uploaded:
+                        value = uploaded
                 self._inject_value(workflow_json, node_id, field_path, value)
-        
+
         if status:
             await status.progress(f"Executing workflow: {wf_config.get('name', workflow_id)}")
 
-        # Queue workflow on the least-loaded server
-        session_id = params.get("_session_id")
-        exec_output_dir = self._resolve_output_dir(session_id)
-        exec_client = await self._pick_client(exec_output_dir)
         queue_result = await exec_client.queue_prompt(workflow_json)
 
         if "error" in queue_result:
+            error_payload: dict[str, Any] = {"error": queue_result["error"]}
+            if queue_result.get("node_errors"):
+                error_payload["node_errors"] = queue_result["node_errors"]
+                # LoadImage validation failure: tell the agent HOW to fix the
+                # call instead of letting it retry the same request blind.
+                node_err_text = json.dumps(queue_result["node_errors"], ensure_ascii=False)
+                if "Invalid image file" in node_err_text:
+                    error_payload["hint"] = (
+                        "The referenced image is not in ComfyUI's input folder and "
+                        "could not be resolved to a local file. Pass the LOCAL path "
+                        "of the image (e.g. the output_path from wait_for_completion) "
+                        "as the image parameter — it will be uploaded automatically."
+                    )
             if status:
                 await status.error(f"Failed to queue workflow: {queue_result['error']}")
-            return {"error": queue_result["error"]}
+            return error_payload
 
         prompt_id = queue_result.get("prompt_id")
         if not prompt_id:
@@ -1633,6 +1659,91 @@ class ComfyUIServer(SchemaBasedMCPServer):
             return True
         except ValueError:
             return False
+
+    def _resolve_local_image_source(self, value: str) -> Path | None:
+        """Resolve an LLM-provided image reference to a local file — safely.
+
+        Accepts a path (absolute or CWD-relative) or a bare filename. Bare
+        filenames are searched inside the upload_source_dirs allowlist (the
+        plugin's own downloaded outputs live there), newest match wins —
+        agents typically reference the file they just generated.
+
+        Same security envelope as _op_upload_image: result must live inside
+        upload_source_dirs and carry an allowed image extension. Returns None
+        when nothing local matches (the value may simply be a filename that
+        already exists in ComfyUI's input folder).
+        """
+        if not value or "\x00" in value or not self._upload_source_dirs:
+            return None
+
+        def _permitted(p: Path) -> bool:
+            if not any(self._is_contained(p, root) for root in self._upload_source_dirs):
+                return False
+            if self._upload_image_extensions and p.suffix.lower() not in self._upload_image_extensions:
+                return False
+            return True
+
+        raw = Path(value)
+        candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / value]
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if resolved.exists() and resolved.is_file() and _permitted(resolved):
+                return resolved
+
+        # Bare filename: search the allowlisted roots (downloaded outputs,
+        # writer assets). Reject values with separators — those were paths
+        # that simply don't exist, not names to hunt for.
+        if raw.name != value:
+            return None
+        matches: list[Path] = []
+        for root in self._upload_source_dirs:
+            if not root.exists():
+                continue
+            try:
+                matches.extend(p for p in root.rglob(value) if p.is_file() and _permitted(p.resolve()))
+            except OSError as e:
+                logger.debug("rglob failed under %s: %s", root, e)
+        if not matches:
+            return None
+        return max(matches, key=lambda p: p.stat().st_mtime)
+
+    async def _ensure_image_on_server(
+        self, value: str, exec_client: "ComfyUIClient", status: Any
+    ) -> str | None:
+        """Auto-upload for LoadImage parameters — the structural fix for the
+        recurring "Invalid image file" failures.
+
+        Agents referenced freshly generated outputs by filename, but
+        LoadImage only reads ComfyUI's INPUT folder — and even a dutiful
+        manual upload_image lands on the PRIMARY server while execute picks
+        the least-loaded one, so multi-server setups desynced. Uploading the
+        locally downloaded copy to the server that will run THIS workflow
+        removes both failure modes.
+
+        Returns the server-side filename to inject, or None to leave the
+        parameter untouched (e.g. already-uploaded input names).
+        """
+        local = self._resolve_local_image_source(value)
+        if local is None:
+            return None
+        try:
+            image_data = local.read_bytes()
+        except OSError as e:
+            logger.warning("Auto-upload: cannot read %s: %s", local, e)
+            return None
+        result = await exec_client.upload_image(
+            image_data=image_data, filename=local.name, overwrite=True)
+        if "error" in result:
+            logger.warning("Auto-upload of %s failed: %s", local.name, result["error"])
+            return None
+        uploaded = result.get("name", local.name)
+        if status:
+            await status.progress(f"Auto-uploaded '{local.name}' to execution server")
+        logger.info("Auto-uploaded %s -> '%s' for LoadImage parameter", local, uploaded)
+        return uploaded
 
     async def _op_upload_image(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
         """Upload a local image file to ComfyUI's input folder.
