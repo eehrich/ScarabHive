@@ -19,6 +19,7 @@ from ...config.models import AgentSystemConfig, MCPConfig
 from ...core.cancellation import get_cancellation_manager, CancellationToken
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
+from ...utils.reasoning_artifacts import strip_all_reasoning_artifacts
 from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...mcp.status import (
@@ -436,7 +437,8 @@ class Agent(MCPServer):
             logger.warning(f"[{self.name}] Failed to create fallback LLM for profile '{fallback_profile}': {e}")
             return None
 
-    def _switch_to_fallback_llm(self, fallback_profile: str, *, persistent: bool) -> Optional[LLMClient]:
+    def _switch_to_fallback_llm(self, fallback_profile: str, *, persistent: bool,
+                                messages: Optional[List[ChatMessage]] = None) -> Optional[LLMClient]:
         """Create a fallback client and update the shared fallback state — THE
         single mutation point for the three retry paths in the LLM loop
         (upstream body error / rate limit + quota / 5xx server error). The
@@ -448,12 +450,25 @@ class Agent(MCPServer):
         broken for a while). persistent=False only updates the display info
         (5xx — transient outage, next request should retry the original).
 
+        When *messages* is given, all provider reasoning artifacts in them are
+        stripped: encrypted reasoning items / thought signatures are bound to
+        the model that produced them — round-tripping them into a DIFFERENT
+        model is useless at best and a hard 400 at worst. For the new model
+        this is simply a fresh start.
+
         Returns the client, or None when it could not be built (caller decides
         whether that is a raise or an error event).
         """
         fallback_llm = self._create_fallback_llm(fallback_profile)
         if not fallback_llm:
             return None
+        if messages:
+            stripped = strip_all_reasoning_artifacts(messages)
+            if stripped:
+                logger.info(
+                    f"[{self.name}] Stripped reasoning artifacts from {stripped} "
+                    f"message(s) on model switch to {fallback_profile}"
+                )
         self.llm_profile_info = f"{fallback_profile}:fallback"
         if persistent:
             import time
@@ -2038,7 +2053,8 @@ class Agent(MCPServer):
                                 meta={"step": step + 1, "fallback": fallback_profile}
                             )
                             fallback_llm = self._switch_to_fallback_llm(
-                                fallback_profile, persistent=True)
+                                fallback_profile, persistent=True,
+                                messages=messages)
                             if fallback_llm:
                                 current_llm = fallback_llm
                                 # Also swap the run's base LLM so hooks use the
@@ -2086,7 +2102,8 @@ class Agent(MCPServer):
                         # fallback is remembered across requests until the
                         # recovery period elapses.
                         fallback_llm = self._switch_to_fallback_llm(
-                            fallback_profile, persistent=True)
+                            fallback_profile, persistent=True,
+                            messages=messages)
                         if fallback_llm:
                             current_llm = fallback_llm
 
@@ -2130,7 +2147,8 @@ class Agent(MCPServer):
                         # NON-persistent: 5xx is a transient outage — the next
                         # request should retry the original model directly.
                         fallback_llm = self._switch_to_fallback_llm(
-                            fallback_profile, persistent=False)
+                            fallback_profile, persistent=False,
+                            messages=messages)
                         if fallback_llm:
                             current_llm = fallback_llm
                             continue  # Retry with fallback (non-persistent)

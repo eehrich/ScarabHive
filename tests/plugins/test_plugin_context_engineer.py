@@ -657,17 +657,61 @@ class TestLayeredCompactionStrategy:
     async def test_compaction_result_stats(self, strategy_components):
         """Test that CompactionResult has correct statistics."""
         strategy = strategy_components["strategy"]
-        
+
         messages = [
             {"role": "user", "content": "Message " * 100}
             for _ in range(10)
         ]
-        
+
         result = await strategy.compact(messages, current_tokens=2000)
-        
+
         assert result.original_tokens == 2000
         assert result.final_tokens <= result.original_tokens
         assert result.tokens_saved >= 0
+
+    async def test_mutation_invalidates_reasoning_artifacts(self, strategy_components):
+        """DIE INVARIANTE: mutiert Compaction die History (Tool-Result→Ref),
+        müssen provider reasoning artifacts invalidiert werden — ältere
+        reasoning_details gestrippt, die letzte Assistant-Message rd_orphaned
+        geflaggt. Sonst 400 'encrypted content could not be verified' später
+        im Lauf (OpenAI-Kette über die exakte History gebrochen)."""
+        strategy = strategy_components["strategy"]
+
+        large1 = "word " * 200
+        large2 = "test " * 200
+        rd = lambda i: [{"type": "reasoning.encrypted", "id": f"rs_{i}", "data": f"blob{i}"}]
+        messages = [
+            {"role": "user", "content": "Read the file"},
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "read"}}],
+             "reasoning_details": rd(1)},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c1", "content": large1},
+            {"role": "assistant", "tool_calls": [{"id": "c2", "function": {"name": "read"}}],
+             "reasoning_details": rd(2)},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c2", "content": large2},
+            {"role": "user", "content": "Latest question"},
+        ]
+
+        result = await strategy.compact(messages, current_tokens=800, force=True)
+        assert result.tool_results_stored >= 1, "Vorbedingung: Mutation ist passiert"
+
+        assistants = [m for m in result.modified_messages if m.get("role") == "assistant"]
+        assert "reasoning_details" not in assistants[0], "ältere Kettenglieder gestrippt"
+        assert assistants[-1].get("reasoning_details"), "letzte behält (Gemini-Roundtrip)"
+        assert assistants[-1].get("rd_orphaned") is True, "letzte als orphaned geflaggt"
+
+    async def test_no_mutation_keeps_reasoning_artifacts(self, strategy_components):
+        """Ohne Mutation bleiben reasoning_details unangetastet — kein
+        unnötiges Re-Reasoning."""
+        strategy = strategy_components["strategy"]
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "",
+             "reasoning_details": [{"type": "reasoning.encrypted", "data": "X"}]},
+        ]
+        result = await strategy.compact(messages, current_tokens=100)
+        assistants = [m for m in result.modified_messages if m.get("role") == "assistant"]
+        assert assistants[0].get("reasoning_details")
+        assert "rd_orphaned" not in assistants[0]
     
     async def test_restoration_context_generation(self, strategy_components):
         """Test generating restoration context for system prompt."""

@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
 from agent_system.llm.models import ChatMessage
+from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.mcp.status import status_bus, StatusScope
 
 logger = logging.getLogger(__name__)
@@ -384,6 +385,19 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             new_messages.append(ChatMessage(**msg_dict))
                         else:
                             new_messages.append(msg_dict)
+
+                    # THE INVARIANT (utils/reasoning_artifacts.py): summarization
+                    # replaced a span of real messages with summaries — provider
+                    # reasoning artifacts (OpenAI encrypted reasoning chains,
+                    # Gemini thought signatures) over the removed span are now
+                    # unverifiable and would 400 on a later turn. Invalidate them
+                    # here so the chain resets deterministically.
+                    invalidated = invalidate_reasoning_artifacts(new_messages)
+                    if invalidated:
+                        logger.info(
+                            f"[ContextSummarizer] History mutated -> invalidated "
+                            f"reasoning artifacts on {invalidated} message(s)"
+                        )
 
                     # Create modified context
                     modified_context = HookContext(

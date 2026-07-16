@@ -120,6 +120,7 @@ class OllamaNativeAsyncClient(LLMClient):
             # Use model_dump() with mode='json' to properly serialize nested Pydantic models and datetime objects
             d = m.model_dump(exclude_none=True, mode='json')
             d.pop('injected_by', None)  # Internal hook metadata
+            d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
 
             # Ollama expects tool_calls.function.arguments to be an object, not a string
             # Convert string arguments to dict if needed

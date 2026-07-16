@@ -28,6 +28,7 @@ from agent_system.hooks import (
     HookResult,
 )
 from agent_system.llm.token_utils import estimate_token_count, estimate_content_tokens
+from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,15 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                         break
             
             modified = count_changed or content_changed
-            
+
+            # THE INVARIANT (utils/reasoning_artifacts.py): truncation,
+            # dedup-removal and token-limit eviction mutate history mid-list —
+            # provider reasoning chains (OpenAI encrypted items) over the
+            # mutated span become unverifiable and would 400 on a later turn.
+            # Invalidate at the mutation site so the chain resets cleanly.
+            if modified:
+                invalidate_reasoning_artifacts(optimized_messages)
+
             if modified:
                 if count_changed:
                     logger.info(

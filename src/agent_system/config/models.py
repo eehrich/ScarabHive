@@ -124,6 +124,7 @@ class LLMModelConfig(BaseModel):
     safety_settings: Optional[Dict[str, str]] = None  # Gemini safety settings: {HarmCategory: HarmBlockThreshold}
     service_tier: Optional[str] = None  # Service tier for OpenAI-compatible APIs (e.g. "flex" = Google Flex Processing via OpenRouter — cheaper, slower)
     provider_routing: Optional[Dict[str, Any]] = None  # OpenRouter "provider" object: {order: [slugs], allow_fallbacks: bool, ...}. Order-only is enough to bias toward a sticky backend (improves implicit cache hit rate); allow_fallbacks: false would hard-pin.
+    reasoning_details_mode: Optional[Literal["keep_last", "keep_all", "strip"]] = None  # How to round-trip provider reasoning blocks across turns: "keep_last" (default, Gemini — current turn's thought signature only), "keep_all" (OpenAI reasoning models — encrypted chain must stay intact), "strip" (drop entirely). Literal: a typo must fail config load, not silently fall back to keep_last.
 
     # Batch provider (only for provider="batch")
     batch_provider: Optional[Literal["gemini", "openai", "anthropic"]] = None  # Which batch API to use

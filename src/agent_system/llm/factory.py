@@ -167,6 +167,12 @@ def create_llm_from_profile(
     if llm_kwargs.get("provider_routing") is not None:
         make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
 
+    if llm_kwargs.get("reasoning_details_mode") is not None:
+        make_kwargs["reasoning_details_mode"] = llm_kwargs.get("reasoning_details_mode")
+
+    if llm_kwargs.get("parallel_tool_calls") is not None:
+        make_kwargs["parallel_tool_calls"] = llm_kwargs.get("parallel_tool_calls")
+
     # Create the underlying LLM client
     underlying_client = make_llm(
         llm_kwargs["provider"],
@@ -313,6 +319,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.provider_routing is not None:
         llm_kwargs["provider_routing"] = model_config.provider_routing
 
+    if model_config.reasoning_details_mode is not None:
+        llm_kwargs["reasoning_details_mode"] = model_config.reasoning_details_mode
+
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)
     httpx_timeouts = None
     if model_config.httpx_timeouts:
@@ -418,6 +427,12 @@ class LLMFactory:
         if llm_kwargs.get("provider_routing") is not None:
             make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
 
+        if llm_kwargs.get("reasoning_details_mode") is not None:
+            make_kwargs["reasoning_details_mode"] = llm_kwargs.get("reasoning_details_mode")
+
+        if llm_kwargs.get("parallel_tool_calls") is not None:
+            make_kwargs["parallel_tool_calls"] = llm_kwargs.get("parallel_tool_calls")
+
         # Create the underlying LLM client
         underlying_client = make_llm(
             llm_kwargs["provider"],
@@ -429,7 +444,7 @@ class LLMFactory:
             llm_kwargs["request_timeout"],
             **make_kwargs,
         )
-        
+
         # Wrap with batch client if this is a batch model
         if is_batch_model and batch_provider:
             queue_manager = get_batch_queue_manager()

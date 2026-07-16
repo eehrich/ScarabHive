@@ -31,6 +31,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
     estimate_content_tokens,
     estimate_inline_data_tokens,
@@ -1905,13 +1906,41 @@ class LayeredCompactionStrategy:
     def _finalize(self, result: CompactionResult) -> CompactionResult:
         """Finalize compaction result."""
         result.tokens_saved = result.original_tokens - result.final_tokens
-        
+
+        # THE INVARIANT (utils/reasoning_artifacts.py): provider reasoning
+        # artifacts (OpenAI encrypted reasoning items, Gemini thought
+        # signatures) are integrity-protected over the EXACT history that
+        # produced them. If this compaction pass mutated the history in ANY
+        # way — tool results swapped for refs, content replaced by variables,
+        # media evicted, messages archived/dropped/pruned — those artifacts
+        # are stale and will fail provider verification on a later turn
+        # (HTTP 400 "encrypted content … could not be verified", deep into a
+        # run). Invalidate them HERE, at the mutation site, so the chain
+        # resets deterministically instead of failing reactively.
+        mutated = (
+            result.tool_results_stored
+            + result.variables_created
+            + result.messages_archived
+            + result.messages_dropped
+            + result.media_deduplicated
+            + result.media_compacted_after_event
+            + result.media_always_compacted
+            + result.messages_pruned
+        ) > 0 or result.media_bytes_saved > 0
+        if mutated:
+            invalidated = invalidate_reasoning_artifacts(result.modified_messages)
+            if invalidated:
+                logger.info(
+                    f"Compaction mutated history -> invalidated reasoning "
+                    f"artifacts on {invalidated} message(s)"
+                )
+
         logger.info(
             f"Compaction complete: {result.original_tokens} -> {result.final_tokens} tokens "
             f"({result.reduction_percent:.1f}% reduction), "
             f"layers applied: {result.layers_applied}"
         )
-        
+
         return result
     
     async def get_restoration_context(self) -> str:

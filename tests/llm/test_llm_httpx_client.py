@@ -1093,6 +1093,100 @@ class TestAnthropicViaOpenRouterCaching:
         non_anthropic_or_client._postprocess_messages_for_provider(msgs)
         assert msgs[2]["reasoning_details"] == [{"type": "reasoning.encrypted", "data": "X"}]
 
+    # --- reasoning_details_mode (config-driven, no model-name detection) ------
+
+    @staticmethod
+    def _rd_client(mode=None):
+        kw = {} if mode is None else {"reasoning_details_mode": mode}
+        return HTTPXOpenAIClient(
+            model="openai/gpt-5.6-terra",
+            api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1",
+            **kw,
+        )
+
+    @staticmethod
+    def _rd_two_assistants():
+        return [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "a", "type": "function", "function": {"name": "f"}}], "reasoning_details": [{"type": "reasoning.encrypted", "id": "rs_1", "data": "X"}]},
+            {"role": "tool", "name": "f", "tool_call_id": "a", "content": "r"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "b", "type": "function", "function": {"name": "g"}}], "reasoning_details": [{"type": "reasoning.encrypted", "id": "rs_2", "data": "Y"}]},
+        ]
+
+    def test_reasoning_mode_default_is_keep_last(self):
+        """No config → keep_last: only the most recent assistant keeps reasoning_details."""
+        c = self._rd_client()
+        assert c.reasoning_details_mode == "keep_last"
+        msgs = self._rd_two_assistants()
+        c._postprocess_messages_for_provider(msgs)
+        assert "reasoning_details" not in msgs[1]   # older stripped
+        assert "reasoning_details" in msgs[3]        # latest kept
+
+    def test_reasoning_mode_keep_all_preserves_chain(self):
+        """keep_all → every assistant message keeps reasoning_details (OpenAI chain)."""
+        c = self._rd_client("keep_all")
+        msgs = self._rd_two_assistants()
+        c._postprocess_messages_for_provider(msgs)
+        assert "reasoning_details" in msgs[1]
+        assert "reasoning_details" in msgs[3]
+
+    def test_reasoning_mode_strip_drops_all(self):
+        """strip → no assistant message keeps reasoning_details."""
+        c = self._rd_client("strip")
+        msgs = self._rd_two_assistants()
+        c._postprocess_messages_for_provider(msgs)
+        assert all("reasoning_details" not in m for m in msgs if m["role"] == "assistant")
+
+    # --- rd_orphaned: history-mutation invalidation (reasoning_artifacts) ----
+
+    def test_keep_all_strips_orphaned_message(self):
+        """keep_all: a message flagged rd_orphaned (its chain predecessors were
+        removed by compaction) must lose its reasoning_details — sending a
+        partial chain is exactly the 'could not be verified' 400. Later,
+        unflagged messages keep theirs (fresh chain)."""
+        c = self._rd_client("keep_all")
+        msgs = self._rd_two_assistants()
+        msgs[1]["rd_orphaned"] = True  # older turn survived a mutation flagged
+        c._postprocess_messages_for_provider(msgs)
+        assert "reasoning_details" not in msgs[1]   # orphaned → stripped
+        assert "reasoning_details" in msgs[3]        # fresh chain → kept
+        # flag must never reach the provider
+        assert all("rd_orphaned" not in m for m in msgs)
+
+    def test_keep_all_without_orphan_keeps_everything(self):
+        c = self._rd_client("keep_all")
+        msgs = self._rd_two_assistants()
+        c._postprocess_messages_for_provider(msgs)
+        assert "reasoning_details" in msgs[1]
+        assert "reasoning_details" in msgs[3]
+
+    def test_keep_last_ignores_orphan_on_latest(self):
+        """keep_last (Gemini): the latest signature is required for the open
+        tool round-trip even right after a mutation — the flag is ignored,
+        only popped."""
+        c = self._rd_client()  # default keep_last
+        msgs = self._rd_two_assistants()
+        msgs[3]["rd_orphaned"] = True
+        c._postprocess_messages_for_provider(msgs)
+        assert "reasoning_details" in msgs[3]        # latest kept despite flag
+        assert "reasoning_details" not in msgs[1]    # older stripped as usual
+        assert all("rd_orphaned" not in m for m in msgs)
+
+    def test_orphan_flag_survives_sanitize_then_popped(self):
+        """rd_orphaned must survive _sanitize_message_for_api (whitelisted) so
+        postprocess — which runs after serialization — can see it, and then be
+        removed."""
+        c = self._rd_client("keep_all")
+        raw = {"role": "assistant", "content": "", "rd_orphaned": True,
+               "reasoning_details": [{"data": "X"}], "estimated_tokens": 42}
+        clean = HTTPXOpenAIClient._sanitize_message_for_api(raw)
+        assert clean.get("rd_orphaned") is True      # whitelisted
+        assert "estimated_tokens" not in clean         # junk still filtered
+        msgs = [clean]
+        c._postprocess_messages_for_provider(msgs)
+        assert "rd_orphaned" not in msgs[0]           # popped before payload
+
     # --- OpenAI encrypted-reasoning cross-backend 400 (A+B fix) ---------------
 
     def test_detect_openai_encrypted_reasoning_400(self, non_anthropic_or_client):
@@ -1242,6 +1336,91 @@ class TestContentFilterFallback:
         result = gemini_client._format_response(response_data)
         assert "error" not in result["assistant"]
         assert result["assistant"]["content"] == "hello"
+
+
+class TestEncryptedReasoningRecovery:
+    """Zweistufige Recovery für den encrypted-reasoning-400.
+
+    Root-Cause (empirisch via Replay gegen gepinnten Provider): OpenRouters
+    Bridge liefert für Turns mit mehreren parallelen tool_calls gelegentlich
+    ein defektes encrypted-Blob — deterministisch abgelehnt, alle anderen
+    Items der Kette verifizieren weiter. Stufe 0 entfernt daher NUR das im
+    Fehler genannte Item (Payload + Original-Session), Stufe 1 strippt voll.
+    """
+
+    @staticmethod
+    def _client():
+        return HTTPXOpenAIClient(
+            model="openai/gpt-5.6-terra", api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1",
+            reasoning_details_mode="keep_all",
+        )
+
+    @staticmethod
+    def _payload_and_session():
+        def mk(rs_id, data):
+            return {"role": "assistant", "content": "",
+                    "tool_calls": [{"id": f"c_{rs_id}", "type": "function", "function": {"name": "f"}}],
+                    "reasoning_details": [
+                        {"type": "reasoning.summary", "format": "openai-responses-v1", "index": 0, "summary": "s"},
+                        {"type": "reasoning.encrypted", "format": "openai-responses-v1", "index": 1, "id": rs_id, "data": data},
+                    ]}
+        session = [
+            {"role": "user", "content": "hi"},
+            mk("rs_aaa", "A"), {"role": "tool", "tool_call_id": "c_rs_aaa", "content": "r"},
+            mk("rs_bbb", "B"), {"role": "tool", "tool_call_id": "c_rs_bbb", "content": "r"},
+            mk("rs_ccc", "C"), {"role": "tool", "tool_call_id": "c_rs_ccc", "content": "r"},
+        ]
+        import copy
+        payload = {"model": "openai/gpt-5.6-terra", "messages": copy.deepcopy(session)}
+        return payload, session
+
+    DETAIL = ('The encrypted content for item rs_bbb could not be verified. '
+              'Reason: Encrypted content could not be decrypted or parsed.')
+
+    def test_stage0_targeted_strip_payload_and_session(self):
+        c = self._client()
+        payload, session = self._payload_and_session()
+        reason = c._recover_encrypted_reasoning(self.DETAIL, payload, session, 0)
+        assert reason and "targeted" in reason and "rs_bbb" in reason
+        # nur die rs_bbb-Message verliert ihre reasoning_details — beidseitig
+        for msgs in (payload["messages"], session):
+            assert "reasoning_details" in msgs[1]      # rs_aaa bleibt
+            assert "reasoning_details" not in msgs[3]  # rs_bbb weg
+            assert "reasoning_details" in msgs[5]      # rs_ccc bleibt
+
+    def test_stage1_full_strip(self):
+        c = self._client()
+        payload, session = self._payload_and_session()
+        reason = c._recover_encrypted_reasoning(self.DETAIL, payload, session, 1)
+        assert reason and "full strip" in reason
+        for msgs in (payload["messages"], session):
+            assert all("reasoning_details" not in m for m in msgs if m.get("role") == "assistant")
+
+    def test_stage2_no_more_recovery(self):
+        c = self._client()
+        payload, session = self._payload_and_session()
+        assert c._recover_encrypted_reasoning(self.DETAIL, payload, session, 2) is None
+
+    def test_missing_item_id_falls_back_to_full_strip(self):
+        c = self._client()
+        payload, session = self._payload_and_session()
+        reason = c._recover_encrypted_reasoning("encrypted content bad", payload, session, 0)
+        assert reason and "full strip" in reason
+
+    def test_unknown_item_id_falls_back_to_full_strip(self):
+        c = self._client()
+        payload, session = self._payload_and_session()
+        detail = "The encrypted content for item rs_zzz could not be verified."
+        reason = c._recover_encrypted_reasoning(detail, payload, session, 0)
+        assert reason and "full strip" in reason
+
+    def test_strip_reasoning_details_by_item_id(self):
+        payload, _ = self._payload_and_session()
+        n = HTTPXOpenAIClient._strip_reasoning_details(payload, item_id="rs_ccc")
+        assert n == 1
+        assert "reasoning_details" in payload["messages"][1]
+        assert "reasoning_details" not in payload["messages"][5]
 
 
 if __name__ == "__main__":

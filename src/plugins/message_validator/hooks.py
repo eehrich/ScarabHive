@@ -32,6 +32,7 @@ from agent_system.hooks import (
     HookResult,
 )
 from agent_system.llm.models import ChatMessage
+from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -794,6 +795,13 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
             # The validator always returns repaired messages (even if identical),
             # so we need to explicitly signal when repairs were made.
             actually_modified = modified or bool(result.issues)
+
+            # THE INVARIANT (utils/reasoning_artifacts.py): repairs reorder,
+            # drop or rewrite messages mid-history — provider reasoning chains
+            # (OpenAI encrypted items) over the repaired span become
+            # unverifiable. Invalidate at the mutation site.
+            if actually_modified:
+                invalidate_reasoning_artifacts(result.repaired_messages)
 
             return HookResult(
                 success=True,

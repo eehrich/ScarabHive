@@ -174,6 +174,12 @@ class ChatMessage(BaseModel):
     # reasoning_details list with format=google-gemini-v1). Dropping it causes
     # MALFORMED_FUNCTION_CALL on the next turn (verified 2026-05-26).
     reasoning_details: Optional[List[Dict[str, Any]]] = None
+    # Set by utils/reasoning_artifacts.invalidate_reasoning_artifacts when a
+    # history mutation (compaction/summarization) removed this message's
+    # reasoning-chain predecessors. Honored per reasoning_details_mode in the
+    # LLM client (keep_all strips the now-unverifiable chain remnant) and
+    # never sent to providers (client pops it before building the payload).
+    rd_orphaned: Optional[bool] = None
     # Hook injection tracking: identifies which plugin injected this message.
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.
