@@ -1093,6 +1093,55 @@ class TestAnthropicViaOpenRouterCaching:
         non_anthropic_or_client._postprocess_messages_for_provider(msgs)
         assert msgs[2]["reasoning_details"] == [{"type": "reasoning.encrypted", "data": "X"}]
 
+    # --- OpenAI encrypted-reasoning cross-backend 400 (A+B fix) ---------------
+
+    def test_detect_openai_encrypted_reasoning_400(self, non_anthropic_or_client):
+        """Detects the OpenAI 'encrypted content for item rs_…' 400, and NOT
+        the Gemini signature 400 / non-400 bodies."""
+        client = non_anthropic_or_client
+        # The real failure shape: OpenRouter wraps OpenAI's message in metadata.raw
+        result = client._detect_openai_encrypted_reasoning_400({
+            "error": {
+                "code": 400,
+                "message": "Provider returned error",
+                "metadata": {"raw": "{\"error\":{\"message\":\"The encrypted content for item rs_0666abc could not be verified.\"}}"},
+            }
+        })
+        assert result is not None
+        assert "encrypted content" in result
+        # message-only form (no metadata.raw)
+        assert client._detect_openai_encrypted_reasoning_400({
+            "error": {"code": 400, "message": "The encrypted content for item rs_9 could not be verified"}
+        }) is not None
+        # Gemini signature 400 must NOT match (different recovery path)
+        assert client._detect_openai_encrypted_reasoning_400({
+            "error": {"code": 400, "message": "Corrupted thought signature"}
+        }) is None
+        # 429 / no-error bodies
+        assert client._detect_openai_encrypted_reasoning_400(
+            {"error": {"code": 429, "message": "rate limit"}}
+        ) is None
+        assert client._detect_openai_encrypted_reasoning_400({"choices": []}) is None
+
+    def test_strip_reasoning_details_removes_from_all_assistants(self, non_anthropic_or_client):
+        """Recovery drops reasoning_details from every assistant message and
+        returns the count; user/tool/system messages are untouched."""
+        client = non_anthropic_or_client
+        payload = {"messages": [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "a1", "reasoning_details": [{"type": "reasoning.encrypted", "data": "X"}]},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "a2", "reasoning_details": [{"type": "reasoning.text", "text": "t"}]},
+            {"role": "tool", "name": "f", "tool_call_id": "a", "content": "r"},
+        ]}
+        n = client._strip_reasoning_details(payload)
+        assert n == 2
+        assert all("reasoning_details" not in m for m in payload["messages"])
+        # No-op when nothing to strip
+        assert client._strip_reasoning_details(
+            {"messages": [{"role": "assistant", "content": "x"}]}
+        ) == 0
+
     def test_openrouter_has_default_app_headers(self, anthropic_or_client):
         """OpenRouter clients get default X-Title and HTTP-Referer at init."""
         assert anthropic_or_client._headers["X-Title"] == "ScarabHive"

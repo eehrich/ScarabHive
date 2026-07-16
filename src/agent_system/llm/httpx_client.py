@@ -671,6 +671,9 @@ class HTTPXOpenAIClient(LLMClient):
         # One-shot self-healing retry for cross-backend thought-signature mismatch.
         # See _detect_body_400_signature_issue for the failure mode.
         _sig_retried = False
+        # One-shot retry for OpenAI encrypted-reasoning cross-backend 400s.
+        # See _detect_openai_encrypted_reasoning_400 for the failure mode.
+        _enc_retried = False
         for attempt in range(_effective_max + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
@@ -859,6 +862,36 @@ class HTTPXOpenAIClient(LLMClient):
                             await self._notify_retry(
                                 "openai_httpx", self.model, url, False,
                                 "body-400 signature bypass",
+                                attempt, self.max_retries + 1,
+                            )
+                            continue
+
+                    # Body-level 400: OpenAI encrypted-reasoning cross-backend
+                    # mismatch (rs_* item undecryptable on the routed backend).
+                    # Recovery: drop reasoning_details and retry once — the model
+                    # re-reasons this turn. No bypass token exists for OpenAI's
+                    # encrypted content (unlike Gemini signatures).
+                    _enc_issue = (
+                        self._detect_openai_encrypted_reasoning_400(response_data)
+                        if not _enc_retried else None
+                    )
+                    if _enc_issue is not None:
+                        n_stripped = self._strip_reasoning_details(payload)
+                        if n_stripped > 0:
+                            _enc_retried = True
+                            logger.warning(
+                                "Body-400 retry: stripping reasoning_details from "
+                                "%d assistant message(s) (OpenAI encrypted-reasoning "
+                                "cross-backend mismatch). model=%s detail=%r",
+                                n_stripped, self.model, _enc_issue[:200],
+                            )
+                            await self._report_status(
+                                status_scope,
+                                f"Encrypted-reasoning retry: {self.model}",
+                            )
+                            await self._notify_retry(
+                                "openai_httpx", self.model, url, False,
+                                "body-400 encrypted-reasoning strip",
                                 attempt, self.max_retries + 1,
                             )
                             continue
@@ -1077,6 +1110,9 @@ class HTTPXOpenAIClient(LLMClient):
         # mismatch (mirrors the non-streaming path). See
         # _detect_body_400_signature_issue + _inject_signature_bypass.
         _sig_retried = False
+        # One-shot retry for OpenAI encrypted-reasoning cross-backend 400s
+        # (mirrors non-streaming). See _detect_openai_encrypted_reasoning_400.
+        _enc_retried = False
         for attempt in range(_effective_max + 1):
             # Accumulators for building the complete response. MUST be reset at
             # the start of every attempt: a stream that drops mid-response
@@ -1107,6 +1143,9 @@ class HTTPXOpenAIClient(LLMClient):
             # Body-level 400 signature-bypass retry signal — same pattern as
             # _body_429_retry_msg, but for cross-backend signature mismatch.
             _body_400_sig_retry_msg: Optional[str] = None
+            # Body-level 400 OpenAI encrypted-reasoning retry signal (same
+            # pattern) — recover by stripping reasoning_details, not a bypass.
+            _body_400_enc_retry_msg: Optional[str] = None
 
             try:
                 # Create fresh client for each request to avoid connection issues
@@ -1284,6 +1323,14 @@ class HTTPXOpenAIClient(LLMClient):
 
                                 # Body-level 400 (Gemini cross-backend signature
                                 # mismatch) - mirror of the non-streaming path.
+                                # Check the OpenAI encrypted-reasoning case FIRST
+                                # (more specific) so the generic signature detector
+                                # doesn't claim it.
+                                if not _enc_retried:
+                                    _enc_err = self._detect_openai_encrypted_reasoning_400(chunk_data)
+                                    if _enc_err:
+                                        _body_400_enc_retry_msg = _enc_err
+                                        break
                                 if not _sig_retried:
                                     _sig_err = self._detect_body_400_signature_issue(chunk_data)
                                     if _sig_err:
@@ -1382,6 +1429,9 @@ class HTTPXOpenAIClient(LLMClient):
                                 break  # exits the outer "while True" chunk fetcher
                             # Body-400 signature-bypass signaled — same pattern.
                             if _body_400_sig_retry_msg:
+                                break
+                            # Body-400 encrypted-reasoning signaled — same pattern.
+                            if _body_400_enc_retry_msg:
                                 break
 
                         # After stream ends, process any remaining data in buffer
@@ -1504,6 +1554,30 @@ class HTTPXOpenAIClient(LLMClient):
                         await self._notify_retry(
                             "openai_httpx", self.model, url, True,
                             "body-400 signature bypass (stream)",
+                            attempt, self.max_retries + 1,
+                        )
+                        continue
+
+                # Body-level 400 OpenAI encrypted-reasoning retry for streaming
+                # (mirrors the non-streaming path). Strip reasoning_details and
+                # retry once. One-shot per request via _enc_retried.
+                if _body_400_enc_retry_msg and not _enc_retried:
+                    n_stripped = self._strip_reasoning_details(payload)
+                    if n_stripped > 0:
+                        _enc_retried = True
+                        logger.warning(
+                            "Body-400 stream retry: stripping reasoning_details "
+                            "from %d assistant message(s) (OpenAI encrypted-"
+                            "reasoning cross-backend mismatch). model=%s detail=%r",
+                            n_stripped, self.model, _body_400_enc_retry_msg[:200],
+                        )
+                        await self._report_status(
+                            status_scope,
+                            f"Encrypted-reasoning retry: {self.model}",
+                        )
+                        await self._notify_retry(
+                            "openai_httpx", self.model, url, True,
+                            "body-400 encrypted-reasoning strip (stream)",
                             attempt, self.max_retries + 1,
                         )
                         continue
@@ -1796,6 +1870,68 @@ class HTTPXOpenAIClient(LLMClient):
                 block["data"] = cls._GEMINI_SIGNATURE_BYPASS
                 patched += 1
         return patched
+
+    @staticmethod
+    def _detect_openai_encrypted_reasoning_400(response_data: dict) -> Optional[str]:
+        """Detect a body-level 400 caused by an unverifiable OpenAI reasoning item.
+
+        OpenAI reasoning models (GPT-5.x, o-series) return reasoning items whose
+        ``encrypted_content`` is bound to the specific backend/org that produced
+        it. When a multi-turn tool-calling conversation is routed to a DIFFERENT
+        backend for a follow-up turn — e.g. OpenRouter load-balancing across
+        ``["openai", "azure"]`` — that backend cannot decrypt the item and
+        rejects the request with
+
+            "The encrypted content for item rs_… could not be verified".
+
+        Unlike Gemini's thought signatures there is NO bypass token: the encrypted
+        content is simply undecryptable elsewhere. The only recovery is to DROP
+        the reasoning items and let the model re-reason (see
+        ``_strip_reasoning_details``).
+
+        provider_routing pins these models to a single backend (allow_fallbacks:
+        false) to prevent this, so this detector is the backstop for the residual
+        cases (backend key rotation, stale item, an outage-forced reroute).
+
+        Returns the underlying error string for a matching 400, else None.
+        """
+        if not isinstance(response_data, dict):
+            return None
+        err = response_data.get("error")
+        if not isinstance(err, dict):
+            return None
+        code = str(err.get("code", ""))
+        if code != "400" and "400" not in code:
+            return None
+        msg = str(err.get("message", ""))
+        meta = err.get("metadata") if isinstance(err.get("metadata"), dict) else {}
+        raw = str(meta.get("raw", "")) if isinstance(meta, dict) else ""
+        haystack = f"{msg} {raw}"
+        # Signature of the OpenAI encrypted-reasoning failure. "rs_" is the
+        # reasoning-item id prefix; the phrase appears verbatim in the upstream
+        # error OpenRouter forwards.
+        if "encrypted content" in haystack and ("rs_" in haystack or "reasoning" in haystack.lower()):
+            return (f"{msg} | raw={raw[:300]}") if raw else (msg or "encrypted reasoning 400")
+        return None
+
+    @staticmethod
+    def _strip_reasoning_details(payload: dict) -> int:
+        """Remove ``reasoning_details`` from every assistant message in *payload*.
+
+        Recovery for ``_detect_openai_encrypted_reasoning_400``: the encrypted
+        reasoning items can't be decrypted by the target backend, so we drop them
+        entirely and retry. The model loses its inter-turn chain of thought but
+        the request succeeds and it re-reasons for the current turn.
+
+        Returns the number of messages that had reasoning_details removed.
+        """
+        stripped = 0
+        for msg in payload.get("messages") or []:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            if msg.pop("reasoning_details", None) is not None:
+                stripped += 1
+        return stripped
 
     def _format_response(self, response_data: dict) -> dict:
         """Format OpenAI API response to our standard format."""

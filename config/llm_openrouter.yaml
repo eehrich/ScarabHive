@@ -405,6 +405,7 @@ llm_system:
       model: openai/gpt-5.4
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000  # 1.05M total, but >272K doubles pricing
@@ -423,6 +424,7 @@ llm_system:
       model: openai/gpt-5.4
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -441,6 +443,7 @@ llm_system:
       model: openai/gpt-5.4-mini
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
@@ -459,6 +462,7 @@ llm_system:
       model: openai/gpt-5.4-mini
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
@@ -478,6 +482,7 @@ llm_system:
       model: openai/gpt-5.6-sol
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -497,6 +502,7 @@ llm_system:
       model: openai/gpt-5.6-sol
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -516,6 +522,7 @@ llm_system:
       model: openai/gpt-5.6-terra
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -535,6 +542,7 @@ llm_system:
       model: openai/gpt-5.6-terra
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -555,6 +563,7 @@ llm_system:
       model: openai/gpt-5.6-luna
       provider_routing:           # Route OpenAI-branded models to OpenAI direct first, then Azure (mirror deployment). Keeps implicit prompt cache warm on a sticky backend.
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
@@ -574,6 +583,7 @@ llm_system:
       model: openai/gpt-5.6-luna
       provider_routing:           
         order: ["openai", "azure"]
+        allow_fallbacks: false   # Pin to openai: reasoning items (rs_*) carry backend-bound encrypted content; a mid-conversation switch to azure => HTTP 400 "encrypted content could not be verified". On openai outage the agent-level fallback chain takes over.
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
