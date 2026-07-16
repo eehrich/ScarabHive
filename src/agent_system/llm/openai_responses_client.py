@@ -317,7 +317,12 @@ class OpenAIResponsesClient(LLMClient):
     @staticmethod
     def _map_usage(usage: Optional[dict]) -> Optional[dict]:
         """Responses usage -> Chat-Completions-shaped usage (what the cost
-        tracking and the rest of the system already understand)."""
+        tracking, session_costs.py and the rest of the system understand).
+
+        OpenRouter extras (``cost``, ``cost_details``, ``is_byok``, …) are
+        passed through untouched — cost accounting prefers the billed
+        OpenRouter cost over recomputing from token counts.
+        """
         if not usage:
             return None
         mapped = {
@@ -332,6 +337,13 @@ class OpenAIResponsesClient(LLMClient):
             mapped["prompt_tokens_details"] = {"cached_tokens": in_details.get("cached_tokens", 0)}
         if out_details.get("reasoning_tokens") is not None:
             mapped["completion_tokens_details"] = {"reasoning_tokens": out_details.get("reasoning_tokens", 0)}
+        # Pass through everything we didn't explicitly map (cost, cost_details,
+        # is_byok, ...) — without clobbering the mapped keys.
+        for k, v in usage.items():
+            if k in ("input_tokens", "output_tokens", "total_tokens",
+                     "input_tokens_details", "output_tokens_details"):
+                continue
+            mapped.setdefault(k, v)
         return mapped
 
     def _format_response(self, response_data: dict) -> dict:
@@ -573,7 +585,11 @@ class OpenAIResponsesClient(LLMClient):
                 await self._notify_post_response({
                     "provider": "openai_responses", "model": self.model, "url": url,
                     "is_streaming": False, "duration_ms": duration_ms,
-                    "response_data": response_data, "usage": response_data.get("usage"),
+                    "response_data": response_data,
+                    # Chat-shaped usage: session_costs.py & co. read
+                    # $.prompt_tokens/$.completion_tokens from the stored
+                    # usage_json — the raw Responses shape would yield 0s.
+                    "usage": self._map_usage(response_data.get("usage")),
                     "timestamp_ms": _time.time() * 1000,
                 })
                 return self._format_response(response_data)

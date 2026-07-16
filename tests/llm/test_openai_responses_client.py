@@ -83,6 +83,19 @@ class TestFormatResponse:
         assert mapped["prompt_tokens_details"]["cached_tokens"] == 8
         assert mapped["completion_tokens_details"]["reasoning_tokens"] == 3
 
+    def test_usage_openrouter_cost_passthrough(self):
+        """session_costs.py bevorzugt das billed-cost-Feld von OpenRouter —
+        _map_usage muss unbekannte Zusatzfelder durchreichen, ohne die
+        gemappten Chat-Keys zu verlieren."""
+        mapped = OpenAIResponsesClient._map_usage({
+            "input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
+            "cost": 0.0123, "cost_details": {"upstream_inference_cost": 0.01},
+            "is_byok": False})
+        assert mapped["prompt_tokens"] == 100
+        assert mapped["completion_tokens"] == 20
+        assert mapped["cost"] == 0.0123
+        assert mapped["cost_details"] == {"upstream_inference_cost": 0.01}
+
 
 class TestMessagesToInput:
     def test_verbatim_round_trip(self):
