@@ -53,6 +53,7 @@ Execute the plan step by step.
 """
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import json
 import logging
 import re
 
@@ -271,25 +272,74 @@ class TaskSwitchServer(SchemaBasedMCPServer):
 
     async def set_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Set runtime context variables (template_vars) for the agent.
-        
+
         This allows setting values like book_id at runtime, which can then be
         used in precondition checks and prompt templates.
-        
+
         Args:
-            params: Dict containing key-value pairs to set in template_vars
-                   Special keys starting with _ are ignored (internal params)
+            params: Either {"vars": <JSON string or dict>} (schema form) or
+                   legacy flat key-value pairs. Keys starting with _ and
+                   framework-injected runtime params are ignored.
         """
         status = params.get("_status")
         agent = params.get("_agent")
         session_id = params.get("_session_id")
-        
-        # Extract user-provided context vars (ignore internal _ params)
-        context_vars = {k: v for k, v in params.items() if not k.startswith('_')}
-        
+
+        # Preferred form: a single `vars` argument carrying the key-value pairs.
+        # Declared as a JSON string in the schema because freeform objects
+        # (properties: {} + additionalProperties: true) get mangled by some
+        # provider tool-call serializers — observed: OpenAI (gpt-5.x) strips
+        # undeclared properties so calls arrive as {}, and Gemini's constrained
+        # decoder used to collapse on freeform objects (same reason
+        # comfyui_workflow.parameters is a JSON string). Dict is accepted too
+        # for internal/test callers.
+        # Framework-injected runtime params are never user context — they
+        # used to pollute the session vars (a bare set_context() call
+        # reported "Set: request_id=…" as success).
+        _injected = {"request_id", "requestId", "vars"}
+
+        def _clean(source: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                k: v for k, v in source.items()
+                if not str(k).startswith('_') and k not in _injected
+            }
+
+        vars_arg = params.get("vars")
+        if vars_arg is not None:
+            if isinstance(vars_arg, str):
+                try:
+                    vars_arg = json.loads(vars_arg) if vars_arg.strip() else {}
+                except json.JSONDecodeError as e:
+                    if status:
+                        await status.error(f"vars is not valid JSON: {e}")
+                    return {"status": "error", "error": f"vars is not valid JSON: {e}"}
+            if not isinstance(vars_arg, dict):
+                if status:
+                    await status.error("vars must be a JSON object or dict")
+                return {"status": "error", "error": "vars must be a JSON object (e.g. '{\"book_id\": 42}')"}
+            # Review-Befund: gleiche Hygiene wie im Legacy-Zweig (keine _-/
+            # Framework-Keys als template_vars — sie erben sonst in alle
+            # Sub-Agents), und flache non-internal Keys neben `vars` nicht
+            # still verwerfen, sondern mitnehmen (`vars` gewinnt bei
+            # Konflikt) — ein Mixed-Form-Call meldete sonst success,
+            # obwohl Werte fehlten.
+            context_vars = {**_clean(params), **_clean(vars_arg)}
+        else:
+            # Legacy flat form: every non-internal top-level key is a
+            # context var.
+            context_vars = _clean(params)
+
         if not context_vars:
             if status:
                 await status.error("No context variables provided")
-            return {"status": "error", "error": "No context variables provided"}
+            return {
+                "status": "error",
+                "error": (
+                    "No context variables provided. Pass them via the `vars` "
+                    "argument as a JSON object string, e.g. "
+                    "vars='{\"book_id\": 42}'."
+                ),
+            }
         
         # Get previous values from SESSION-SCOPED template vars (not agent_config!)
         # CRITICAL: This ensures session isolation - multiple sessions won't contaminate each other

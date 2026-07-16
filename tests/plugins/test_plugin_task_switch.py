@@ -481,6 +481,89 @@ class TestSetContext:
         assert "No context variables" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_set_context_vars_json_string(self, server, mock_agent):
+        """Schema form: vars as JSON object string (robust against provider
+        serializers that strip undeclared properties)."""
+        result = await server.set_context({
+            "vars": '{"book_id": 42, "phase": "review"}',
+            "_agent": mock_agent
+        })
+        assert result["status"] == "success"
+        assert result["updated"] == {"book_id": 42, "phase": "review"}
+        assert mock_agent.agent_config.template_vars["book_id"] == 42
+        assert mock_agent.agent_config.template_vars["phase"] == "review"
+
+    @pytest.mark.asyncio
+    async def test_set_context_vars_dict(self, server, mock_agent):
+        """vars accepts a dict too (internal/test callers)."""
+        result = await server.set_context({
+            "vars": {"book_id": 7},
+            "_agent": mock_agent
+        })
+        assert result["status"] == "success"
+        assert result["updated"] == {"book_id": 7}
+
+    @pytest.mark.asyncio
+    async def test_set_context_vars_invalid_json(self, server, mock_agent):
+        """Malformed JSON in vars must produce a clear error."""
+        result = await server.set_context({
+            "vars": '{book_id: 42',
+            "_agent": mock_agent
+        })
+        assert result["status"] == "error"
+        assert "not valid JSON" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_context_vars_non_object(self, server, mock_agent):
+        """vars JSON that is not an object must error."""
+        result = await server.set_context({
+            "vars": '[1, 2, 3]',
+            "_agent": mock_agent
+        })
+        assert result["status"] == "error"
+        assert "JSON object" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_context_ignores_injected_runtime_params(self, server, mock_agent):
+        """Framework-injected request_id/requestId must not become context vars
+        (a bare call with only injected params used to report success)."""
+        result = await server.set_context({
+            "request_id": "abc_003",
+            "requestId": "abc_003",
+            "_agent": mock_agent
+        })
+        assert result["status"] == "error"
+        assert "No context variables" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_context_vars_payload_is_sanitized(self, server, mock_agent):
+        """Review-Befund: der vars-Zweig braucht dieselbe Hygiene wie der
+        Legacy-Zweig — _-Keys/Framework-Params im vars-Payload dürfen nicht
+        als template_vars landen (sie erben sonst in alle Sub-Agents)."""
+        result = await server.set_context({
+            "vars": '{"_agent": "x", "request_id": "r", "book_id": 42}',
+            "_agent": mock_agent
+        })
+        assert result["status"] == "success"
+        assert result["updated"] == {"book_id": 42}
+        assert "_agent" not in mock_agent.agent_config.template_vars
+        assert "request_id" not in mock_agent.agent_config.template_vars
+
+    @pytest.mark.asyncio
+    async def test_set_context_mixed_form_merges_flat_keys(self, server, mock_agent):
+        """Review-Befund: flache Keys neben vars dürfen nicht still verworfen
+        werden (Mixed-Form-Call meldete success, obwohl Werte fehlten) —
+        vars gewinnt bei Konflikt."""
+        result = await server.set_context({
+            "vars": '{"phase": "review"}',
+            "book_id": 42,
+            "phase": "IGNORED-flat-loses-conflict",
+            "_agent": mock_agent
+        })
+        assert result["status"] == "success"
+        assert result["updated"] == {"book_id": 42, "phase": "review"}
+
+    @pytest.mark.asyncio
     async def test_set_context_no_agent_error(self, server):
         """Should error when no agent provided."""
         result = await server.set_context({

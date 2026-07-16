@@ -46,7 +46,7 @@ Das sichert das Ziel im Langzeitgedächtnis — selbst wenn der Kontext komprimi
 
 **Schritt 3: Context-Variable setzen**
 `debate_switch_set_context` mit:
-- debate_channel_id: (channel_id aus Schritt 1)
+- vars: `'{"debate_channel_id": <channel_id aus Schritt 1>}'` (JSON-Objekt als String)
 
 ### Phase 2: Alle 8 Teilnehmer erstellen
 
