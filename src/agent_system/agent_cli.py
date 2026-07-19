@@ -40,6 +40,69 @@ from .cli_utils.common import (
 from .cli_utils.commands.hooks import handle_hooks_command
 
 
+def _coerce_cli_value(value: str) -> Any:
+    """Auto-type a CLI KEY=VALUE value: int/float/bool/none, sonst String."""
+    v = value.strip()
+    low = v.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if low in ("none", "null"):
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
+
+def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, Any]]:
+    """Parse ``--llm-params KEY=VALUE ...`` into a flat llm_params dict.
+
+    Werte werden auto-getypt (``max_tokens=1000`` → int, ``stream=false`` →
+    bool, ``thinking_level=max`` → str) — die LLM-Params-Validierung
+    (LLMModelConfig-Re-Validierung in ``resolve_llm_config_for_agent``)
+    braucht echte Typen, keine Strings. Leeres Ergebnis → ``None``.
+
+    Zwei harte Fehler (``ValueError``) statt stiller Drift (Review-Befunde):
+    - Eintrag ohne ``=``: das ist fast immer der vom greedy ``nargs='+'``
+      verschluckte TASK-String — still überspringen hieße, der Agent läuft
+      lautlos mit dem Default-Task.
+    - Unbekannter Key (kein ``LLMModelConfig``-Feld): ``resolve_llm_params``
+      würde ein Dict aus lauter Fremd-Keys als profil-gekeyte Form deuten
+      und den Override LAUTLOS zu ``None`` mergen — ein Tippfehler
+      (``temperatur=``) verschwände wirkungslos, während die CLI ihn als
+      angewandt anzeigt.
+    """
+    if not raw_items:
+        return None
+    params: Dict[str, Any] = {}
+    for item in raw_items:
+        if "=" not in item:
+            raise ValueError(
+                f"invalid --llm-params entry (expected KEY=VALUE): {item!r}. "
+                f"Steht --llm-params VOR dem Task? Task zuerst angeben oder "
+                f"--llm-params ans Ende stellen."
+            )
+        key, _, value = item.partition("=")
+        key = key.strip()
+        if key:
+            params[key] = _coerce_cli_value(value)
+    if params:
+        from .config.models import LLMModelConfig
+        valid_keys = set(LLMModelConfig.model_fields.keys())
+        unknown = sorted(set(params) - valid_keys)
+        if unknown:
+            raise ValueError(
+                f"unknown --llm-params key(s): {', '.join(unknown)}. "
+                f"Valid keys: {', '.join(sorted(valid_keys))}"
+            )
+    return params or None
+
+
 def _get_plugins_config(config: AgentSystemConfig):
     """Get plugins configuration."""
     return config.plugins
@@ -635,6 +698,9 @@ def main() -> None:
     run_parser.add_argument("--text", "--files", dest="text_files", nargs="+", metavar="PATH", help="Path(s) to text file(s) to attach to the task (txt, md, py, json, etc.)")
     run_parser.add_argument("--agent", dest="agent_override", help="Override the default agent (use agent name from config)")
     run_parser.add_argument("--llm", dest="llm_profile_override", help="Override the LLM profile (use profile name from llm.yaml)")
+    run_parser.add_argument("--llm-params", dest="llm_params", nargs="+", metavar="KEY=VALUE",
+                            help="Override LLM parameters for this run (e.g. --llm-params thinking_level=max max_tokens=16384). "
+                                 "Values are auto-typed (int/float/bool/none); applies to the --llm profile or the agent's default profile.")
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
     run_parser.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
     run_parser.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List all sessions for the current user")
@@ -1894,16 +1960,25 @@ def main() -> None:
     show_mcp = getattr(args, "show_mcp", False)
     show_status = not getattr(args, "no_status", False)
 
-    # Create LLM override if --llm was specified
+    # Create LLM override if --llm and/or --llm-params was specified
     llm_override = None
     llm_profile_info = None
     llm_profile_override = getattr(args, "llm_profile_override", None)
+    try:
+        llm_params_override = parse_llm_params_args(getattr(args, "llm_params", None))
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return
 
-    if llm_profile_override:
+    if llm_profile_override or llm_params_override:
+        # --llm-params ohne --llm: auf das Default-Profil des Agenten anwenden.
+        effective_profile = (
+            llm_profile_override or agent.agent_config.default_llm_profile
+        )
         if config.llm_system and config.llm_system.profiles:
-            if llm_profile_override not in config.llm_system.profiles:
+            if effective_profile not in config.llm_system.profiles:
                 available_profiles = sorted(config.llm_system.profiles.keys())
-                error_msg = f"ERROR: LLM profile '{llm_profile_override}' not found in configuration."
+                error_msg = f"ERROR: LLM profile '{effective_profile}' not found in configuration."
                 if available_profiles:
                     error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
                 print(error_msg, file=sys.stderr)
@@ -1916,21 +1991,27 @@ def main() -> None:
 
                 llm_override = create_llm_from_profile(
                     config=config,
-                    llm_profile=llm_profile_override,
+                    llm_profile=effective_profile,
+                    llm_params=llm_params_override,
                 )
 
                 # Get profile info for logging
-                temp_agent_config = AgentConfig(llm_profile=llm_profile_override)
+                temp_agent_config = AgentConfig(llm_profile=effective_profile)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
-                llm_profile_info = f"{llm_profile_override}:{provider}/{model}"
+                llm_profile_info = f"{effective_profile}:{provider}/{model}"
+                if llm_params_override:
+                    _params_str = ",".join(
+                        f"{k}={v}" for k, v in llm_params_override.items()
+                    )
+                    llm_profile_info += f" +params({_params_str})"
 
                 logger.info(f"Using LLM override: {llm_profile_info}")
                 vprint(f"[cli] Using LLM profile: {llm_profile_info}")
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
-                print(f"ERROR: Failed to apply LLM profile '{llm_profile_override}': {str(e)}", file=sys.stderr)
+                print(f"ERROR: Failed to apply LLM profile '{effective_profile}': {str(e)}", file=sys.stderr)
                 return
 
     # Set session metadata for tool execution context (enables _user_id, _agent injection)
