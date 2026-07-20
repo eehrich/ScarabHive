@@ -259,3 +259,9 @@ z-ai/glm-5.2:
   input: 0.93
   output: 3.00
   cached_input: 0.182
+
+# Source: https://openrouter.ai/moonshotai/kimi-k3
+moonshotai/kimi-k3:
+  input: 3.00
+  cached_input: 0.30
+  output: 15.00

@@ -911,7 +911,27 @@ llm_system:
         json_mode: true
         multimodal: false
 
+    # ---------------------------------------------------------------------------
+    # MOONSHOT KIMI MODELS via OpenRouter
+    # ---------------------------------------------------------------------------
 
+    openrouter-kimi-k3:
+      provider: openai_httpx
+      model: moonshotai/kimi-k3
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000
+      request_timeout: 600
+      thinking_level: high        # Reasoning-Modell — effort via OpenRouter reasoning.effort
+      service_tier: flex
+      max_tokens: 16384
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true  # multimodal reasoning model per OpenRouter listing
+        
   # =============================================================================
   # PROFILES for easy access
   # =============================================================================
@@ -1079,5 +1099,10 @@ llm_system:
     or-glm-unlimited:
       model_ref: openrouter-glm-5.2-unlimited
       description: "OpenRouter GLM 5.2 - No output token limit"
+      max_steps: 500
+
+    or-kimi-k3:
+      model_ref: openrouter-kimi-k3
+      description: "OpenRouter Kimi K3 - 2.8T multimodal reasoning, 1M context, strong coding/tool use"
       max_steps: 500
 
