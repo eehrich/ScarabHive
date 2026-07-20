@@ -74,6 +74,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
         self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
 
+        # Kosten-Riegel: darf der AUFRUFER use_advanced_model=true setzen?
+        # LLM-Caller setzen das Flag gern aus Eigeninitiative (Prod-Befund
+        # 2026-07-20: der v6-Coordinator spawnte JEDES Panel mit
+        # use_advanced_model=true, ohne dass sein Prompt es verlangt — der
+        # komplette Moderator-Run lief still auf der advanced-Kette).
+        # False = Flag wird ignoriert (mit Log); Default True = Bestand.
+        self.allow_advanced_model = bool(getattr(mcp_config, 'allow_advanced_model', True))
+
         # Phase-based agent filtering (affects both tool schema and create validation)
         # Config is at top-level (same as allowed_agents), not inside hook_config
         phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
@@ -124,6 +132,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         _upd("allowed_agents", list(getattr(mcp_config, 'allowed_agents', ['*'])))
         _upd("blocked_agents", list(getattr(mcp_config, 'blocked_agents', [])))
+        _upd("allow_advanced_model", bool(getattr(mcp_config, 'allow_advanced_model', True)))
         _upd("max_sub_agents", int(getattr(mcp_config, 'max_sub_agents_per_session', 10)))
         _upd("max_nesting_depth", int(getattr(mcp_config, 'max_nesting_depth', 5)))
         _upd("max_sub_agents_per_type", int(getattr(mcp_config, 'max_sub_agents_per_type', 3)))
@@ -146,6 +155,21 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 getattr(self, 'name', '?'), ", ".join(sorted(changes.keys())),
             )
         return changes
+
+    def _effective_use_advanced(self, params: dict[str, Any]) -> bool:
+        """Vom Aufrufer angefordertes ``use_advanced_model`` gegen den
+        Instanz-Riegel ``allow_advanced_model`` prüfen. Unterdrückung wird
+        geloggt (kein stilles Umbiegen) — der Sub-Agent läuft dann auf
+        seiner normalen Profil-Kette."""
+        requested = bool(params.get("use_advanced_model", False))
+        if requested and not self.allow_advanced_model:
+            logger.info(
+                "[%s] use_advanced_model angefordert, aber per Config "
+                "unterdrückt (allow_advanced_model=false) — Standard-Profil.",
+                self.name,
+            )
+            return False
+        return requested
 
     def is_agent_running(self, instance_id: str) -> bool:
         """Check if sub-agent is actually running (has active async task OR synchronous execution).
@@ -430,7 +454,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 }
 
             instance_label = params.get("instance_label")
-            use_advanced_model = params.get("use_advanced_model", False)
+            use_advanced_model = self._effective_use_advanced(params)
             blocking = params.get("blocking", True)  # NEW: default to blocking behavior
             # Note: config_overrides would be used here when Agent.run_events supports them
             # For now, sub-agent uses its default configuration
@@ -801,7 +825,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 if status:
                     await status.error("Continue: 'message' is required")
                 return {"status": "error", "error": "Missing required parameter: 'message'"}
-            use_advanced_model = params.get("use_advanced_model", False)
+            use_advanced_model = self._effective_use_advanced(params)
 
             # Get parent session ID from injected context
             parent_session_id = params.get("_session_id")

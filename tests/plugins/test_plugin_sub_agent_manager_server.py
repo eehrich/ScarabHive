@@ -1527,3 +1527,31 @@ class TestCreateParamValidation:
         assert result["status"] == "error"
         assert result["error_type"] == "missing_parameter"
         assert "agent_type" in result["error"]
+
+
+class TestAllowAdvancedModelGate:
+    """Kosten-Riegel allow_advanced_model: LLM-Caller setzen
+    use_advanced_model gern aus Eigeninitiative (Prod-Befund 2026-07-20:
+    der v6-Coordinator spawnte JEDES Panel mit use_advanced_model=true,
+    ohne dass sein Prompt es verlangt - kompletter Moderator-Run auf der
+    teuren advanced-Kette). Die Instanz-Config muss das hart unterdruecken
+    koennen; Default True = Bestandsverhalten."""
+
+    def _gate(self, allow, params):
+        from types import SimpleNamespace
+        stub = SimpleNamespace(allow_advanced_model=allow, name="test_sam")
+        return SubAgentManagerServer._effective_use_advanced(stub, params)
+
+    def test_default_passthrough(self):
+        assert self._gate(True, {"use_advanced_model": True}) is True
+        assert self._gate(True, {"use_advanced_model": False}) is False
+        assert self._gate(True, {}) is False
+
+    def test_disabled_suppresses_llm_request(self):
+        assert self._gate(False, {"use_advanced_model": True}) is False
+        assert self._gate(False, {"use_advanced_model": False}) is False
+        assert self._gate(False, {}) is False
+
+    def test_server_default_is_true(self, server):
+        # Bestehende Instanzen ohne Config-Eintrag verhalten sich unveraendert.
+        assert server.allow_advanced_model is True
