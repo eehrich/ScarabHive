@@ -98,9 +98,10 @@ plugins:
             - "memory/*"
             #- "sysadmin_agent_manager/*"
             - "tavily_search/*"
-            - "context_engineer/*"      
+            - "context_engineer/*"
             - "file_ops/*"
-            - "terminal/*"            
+            - "terminal/*"
+            - "okf/*"                    # durable infra knowledge base (runbooks, known issues, hosts)
 
         hooks:
           enabled: true
@@ -124,6 +125,14 @@ plugins:
               enabled: true
             sysadmin_agent_manager.inject_sub_agent_context:
               enabled: true
+            # OKF context injection: fold relevant infra knowledge (hosts,
+            # services, runbooks, known issues) from the bundle into the prompt
+            # each turn — lexical hit + its linked concepts.
+            okf.okf_context_injection:
+              enabled: true
+              hook_bundle: "data/okf/infra"
+              hook_max_concepts: 5
+              hook_graph_depth: 1
 
 
       metadata:
