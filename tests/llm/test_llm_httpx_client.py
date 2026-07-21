@@ -967,6 +967,28 @@ class TestAnthropicViaOpenRouterCaching:
         assert "cache_control" not in msgs[0]["content"][0]
         assert msgs[0]["content"][1]["cache_control"] == {"type": "ephemeral"}
 
+    def test_cache_control_only_on_last_system_message(self, anthropic_or_client):
+        """Mehrere System-Messages (context_engineer-Reminder etc.): NUR die
+        letzte bekommt cache_control — sonst sprengt System+System+...+Tool
+        das harte Anthropic-4-Marker-Limit (400, real getroffen 2026-07-21)."""
+        msgs = [
+            {"role": "system", "content": "Base system prompt."},
+            {"role": "system", "content": "Injected reminder A."},
+            {"role": "system", "content": "Injected reminder B."},
+            {"role": "user", "content": "Hi"},
+        ]
+        anthropic_or_client._apply_anthropic_cache_control(msgs)
+        # nur die letzte System-Message ist markiert
+        assert isinstance(msgs[0]["content"], str)
+        assert isinstance(msgs[1]["content"], str)
+        assert isinstance(msgs[2]["content"], list)
+        assert msgs[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        total = sum(
+            1 for m in msgs if isinstance(m.get("content"), list)
+            for p in m["content"] if isinstance(p, dict) and "cache_control" in p
+        )
+        assert total == 1
+
     def test_tool_cache_control_on_last_tool(self, anthropic_or_client):
         """cache_control added to last tool definition."""
         tools = [

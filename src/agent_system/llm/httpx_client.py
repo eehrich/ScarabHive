@@ -475,22 +475,32 @@ class HTTPXOpenAIClient(LLMClient):
         ``cache_control: {"type": "ephemeral"}`` on the last block, enabling
         Anthropic prompt caching for 70-80% cost savings on repeated prefixes.
 
+        Nur die LETZTE System-Message wird markiert: Anthropic cached alles
+        BIS EINSCHLIESSLICH des Markers, ein einzelner Breakpoint am Ende des
+        System-Prefix deckt also den gesamten System-Block ab. Jede
+        System-Message zu markieren (frueheres Verhalten) sprengte bei
+        mehreren System-Bloecken (context_engineer-Reminder, Core-Memory)
+        zusammen mit dem Tool-Marker das harte 4-cache_control-Limit → 400.
+
         Modifies message_dicts in-place.
         """
+        last_system = None
         for msg in message_dicts:
-            if msg.get("role") != "system":
-                continue
-            content = msg.get("content")
-            if isinstance(content, str):
-                msg["content"] = [
-                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-                ]
-            elif isinstance(content, list):
-                # Add cache_control to the last text block
-                for i in range(len(content) - 1, -1, -1):
-                    if isinstance(content[i], dict) and content[i].get("type") == "text":
-                        content[i]["cache_control"] = {"type": "ephemeral"}
-                        break
+            if msg.get("role") == "system":
+                last_system = msg
+        if last_system is None:
+            return
+        content = last_system.get("content")
+        if isinstance(content, str):
+            last_system["content"] = [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ]
+        elif isinstance(content, list):
+            # Add cache_control to the last text block
+            for i in range(len(content) - 1, -1, -1):
+                if isinstance(content[i], dict) and content[i].get("type") == "text":
+                    content[i]["cache_control"] = {"type": "ephemeral"}
+                    break
 
     def _apply_anthropic_tool_cache_control(self, tools: list) -> None:
         """Add cache_control to the last tool definition for Anthropic prompt caching.
