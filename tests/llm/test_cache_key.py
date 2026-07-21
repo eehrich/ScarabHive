@@ -114,6 +114,117 @@ class TestFormats:
         assert a == b and a.startswith("auto-")
 
 
+class TestSegmentLadder:
+    """Kumulative Segment-Leiter: [static]S[append]S[volatile] + Rung-Registry.
+
+    GPT-5.6-Regel (E2E-kartiert): Struktur des Vorgaengers exakt
+    reproduzieren, nur anhaengen; wandernde/entfernte Marker brechen Reads.
+    """
+
+    def _task(self, static, append, volatile):
+        from agent_system.llm.cache_key import CACHE_BP_SENTINEL as S
+        return static + S + append + S + volatile
+
+    def _big(self, tag, n=1):
+        # >= MIN_RUNG_CHARS (4096), damit eine neue Rung entsteht
+        return (tag + " zeile. ") * (600 * n)
+
+    def test_first_call_marks_static_and_first_rung(self):
+        from agent_system.llm.cache_key import (
+            CacheBoundaryRegistry, plan_cache_blocks,
+        )
+        reg = CacheBoundaryRegistry()
+        out = plan_cache_blocks(
+            self._task("STAT", "APP1", "VOL"),
+            mode="task_sequence", key="k1", registry=reg,
+        )
+        # Erste Rung = append-Ende; volatile bleibt unmarkiert
+        assert out == [("STAT", True), ("APP1", True), ("VOL", False)]
+
+    def test_small_growth_repeats_structure(self):
+        # Delta < MIN_RUNG: KEINE neue Rung — der Zuwachs verschmilzt
+        # unmarkiert mit volatile, die Struktur bleibt exakt reproduziert.
+        from agent_system.llm.cache_key import (
+            CacheBoundaryRegistry, plan_cache_blocks,
+        )
+        reg = CacheBoundaryRegistry()
+        plan_cache_blocks(self._task("STAT", "APP1", "VOL"),
+                          mode="task_sequence", key="k1", registry=reg)
+        out = plan_cache_blocks(self._task("STAT", "APP1neu", "VOL2"),
+                                mode="task_sequence", key="k1", registry=reg)
+        assert out == [("STAT", True), ("APP1", True), ("neuVOL2", False)]
+
+    def test_large_growth_appends_new_rung(self):
+        from agent_system.llm.cache_key import (
+            CacheBoundaryRegistry, plan_cache_blocks,
+        )
+        reg = CacheBoundaryRegistry()
+        a1 = self._big("a")
+        plan_cache_blocks(self._task("STAT", a1, "VOL"),
+                          mode="task_sequence", key="k1", registry=reg)
+        delta = self._big("b")
+        out = plan_cache_blocks(self._task("STAT", a1 + delta, "VOL2"),
+                                mode="task_sequence", key="k1", registry=reg)
+        # Alte Rung reproduziert + neue Rung angehaengt
+        assert out == [("STAT", True), (a1, True), (delta, True), ("VOL2", False)]
+        # Call 3 ohne Wachstum: identische Struktur wie Call 2
+        out3 = plan_cache_blocks(self._task("STAT", a1 + delta, "VOL3"),
+                                 mode="task_sequence", key="k1", registry=reg)
+        assert out3 == [("STAT", True), (a1, True), (delta, True), ("VOL3", False)]
+
+    def test_prefix_break_relearns(self):
+        from agent_system.llm.cache_key import (
+            CacheBoundaryRegistry, plan_cache_blocks,
+        )
+        reg = CacheBoundaryRegistry()
+        plan_cache_blocks(self._task("STAT", "APP1", "VOL"),
+                          mode="task_sequence", key="k1", registry=reg)
+        # Bruch: append beginnt anders -> Rung-Liste reset, neue erste Rung
+        out = plan_cache_blocks(self._task("STAT", "ANDERS", "VOL"),
+                                mode="task_sequence", key="k1", registry=reg)
+        assert out == [("STAT", True), ("ANDERS", True), ("VOL", False)]
+
+    def test_other_modes_no_ladder(self):
+        from agent_system.llm.cache_key import (
+            CacheBoundaryRegistry, plan_cache_blocks,
+        )
+        reg = CacheBoundaryRegistry()
+        for mode in ("auto", "multi_turn", "one_shot", None):
+            out = plan_cache_blocks(self._task("STAT", "APP", "VOL"),
+                                    mode=mode, key="k2", registry=reg)
+            assert out == [("STAT", True), ("APP", True), ("VOL", False)], mode
+        # Registry blieb unberuehrt
+        assert reg.rungs_for("k2", "APPx") == []
+
+    def test_budget_caps_declared_markers_without_ladder(self):
+        # Nicht-Leiter-Pfad (z.B. Anthropic): Budget von hinten, BP0 faellt.
+        from agent_system.llm.cache_key import CACHE_BP_SENTINEL as S
+        from agent_system.llm.cache_key import plan_cache_blocks
+        text = "A" + S + "B" + S + "C" + S + "D"
+        out = plan_cache_blocks(text, mode=None, key="k", max_markers=2)
+        assert out == [("A", False), ("B", True), ("C", True), ("D", False)]
+
+    def test_mode_off_strips(self):
+        from agent_system.llm.cache_key import plan_cache_blocks
+        out = plan_cache_blocks(self._task("A", "B", "C"), mode="off", key="k")
+        assert out == [("ABC", False)]
+
+    def test_no_sentinel_returns_none(self):
+        from agent_system.llm.cache_key import plan_cache_blocks
+        assert plan_cache_blocks("plain", mode="task_sequence", key="k") is None
+
+    def test_registry_keys_are_isolated(self):
+        from agent_system.llm.cache_key import (
+            CacheBoundaryRegistry, plan_cache_blocks,
+        )
+        reg = CacheBoundaryRegistry()
+        plan_cache_blocks(self._task("S", "BUCH-A-DIGEST", "V"),
+                          mode="task_sequence", key="buchA", registry=reg)
+        out = plan_cache_blocks(self._task("S", "BUCH-B-DIGEST", "V"),
+                                mode="task_sequence", key="buchB", registry=reg)
+        assert out == [("S", True), ("BUCH-B-DIGEST", True), ("V", False)]
+
+
 class TestBreakpointSplit:
     def test_no_sentinel_passthrough(self):
         assert split_cache_breakpoint_blocks("abc") == ["abc"]

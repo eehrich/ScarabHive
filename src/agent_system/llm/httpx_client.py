@@ -19,8 +19,14 @@ import ssl
 
 from agent_system.llm.cache_key import (
     CACHE_BP_SENTINEL,
+    CACHE_MODE_TASK_SEQUENCE,
+    MARKER_STYLE_ANTHROPIC,
+    MARKER_STYLE_NONE,
+    MARKER_STYLE_OPENAI,
+    MAX_EXPLICIT_BREAKPOINTS,
+    boundary_registry,
     derive_prompt_cache_key,
-    split_cache_breakpoint_blocks,
+    plan_cache_blocks,
     strip_cache_breakpoints,
 )
 from agent_system.llm.clients import LLMClient
@@ -109,6 +115,11 @@ class HTTPXOpenAIClient(LLMClient):
         # prompt_cache_key"). Config-diszipliniert nur auf OpenAI-Profilen
         # setzen — Fremd-Provider koennten den Param ablehnen.
         self.prompt_cache_key: str | None = self.extra_params.pop("prompt_cache_key", None)
+
+        # Cache-Verhalten (Agent, via llm_params "*") + Marker-Stil (Modell) —
+        # docs/prompt_cache_design.md §3/§4.
+        self.prompt_cache_mode: str | None = self.extra_params.pop("prompt_cache_mode", None)
+        self.prompt_cache_marker_style: str | None = self.extra_params.pop("prompt_cache_marker_style", None)
 
         # Provider routing (OpenRouter) — soft preference over the available backends.
         # Example: {"order": ["google-vertex", "google-ai-studio"], "allow_fallbacks": true}
@@ -232,31 +243,96 @@ class HTTPXOpenAIClient(LLMClient):
             self._headers["HTTP-Referer"] = self._openrouter_base_referer
             self._headers["X-Title"] = "ScarabHive"
 
-    def _apply_cache_breakpoints(self, message_dicts: list) -> None:
+    def _apply_cache_breakpoints(
+        self, message_dicts: list, resolved_key: str | None = None,
+    ) -> None:
         """Cache-Breakpoint-Sentinels in Message-Contents verarbeiten (in place).
 
-        Mit prompt_cache_key (= OpenAI-GPT-Profil): String-Content wird an
-        CACHE_BP_SENTINEL in text-Parts gesplittet, alle bis auf den letzten
-        mit prompt_cache_breakpoint markiert (GPT-5.6, s. cache_key.py).
-        Ohne Key (deepseek & andere Fremd-Provider auf diesem Pfad): Sentinel
-        rueckstandsfrei strippen — fremde APIs kennen weder Marker noch Feld.
+        Marker-Stil kommt aus der Modell-Config (prompt_cache_marker_style):
+        "openai" -> prompt_cache_breakpoint-Parts (GPT-5.6+), "anthropic" ->
+        cache_control-Parts, "none"/ohne Key -> Sentinel rueckstandsfrei
+        strippen (deepseek & Co. kennen weder Marker noch Feld).
+        Bei prompt_cache_mode=task_sequence ergaenzt die Segment-Leiter den
+        BP1-Read-Anker aus der Prozess-Registry (s. cache_key.py).
         """
+        style = self.prompt_cache_marker_style
+        if style is None:
+            # Default abgeleitet: Anthropic-Modell -> cache_control; sonst
+            # Key gesetzt -> OpenAI-Stil (Config-Disziplin: Key liegt nur
+            # auf GPT-Profilen); sonst strippen.
+            if getattr(self, "_is_anthropic_via_openrouter", False):
+                style = MARKER_STYLE_ANTHROPIC
+            elif self.prompt_cache_key:
+                style = MARKER_STYLE_OPENAI
+            else:
+                style = MARKER_STYLE_NONE
+        mode = self.prompt_cache_mode
+        # Anthropic: hartes 4-Marker-Limit (System-/Tool-Marker belegen schon
+        # 2 Slots) und nativer Prefix-Match -> KEINE kumulative Leiter,
+        # nur deklarierte Grenzen mit knappem Budget.
+        if style == MARKER_STYLE_ANTHROPIC:
+            # Request-weites Budget: hartes Anthropic-Limit von 4 Markern,
+            # System- + Tool-Marker belegen bereits 2 Slots.
+            marker_budget = 2
+            if mode == "task_sequence":
+                mode = None
+        else:
+            marker_budget = None  # OpenAI: kein hartes Marker-Limit
+        ladder_used = False
         for msg in message_dicts:
             if not isinstance(msg, dict):
                 continue
             content = msg.get("content")
+            # Listen-Content (z.B. System-Message nach _apply_anthropic_
+            # cache_control, Multimodal-Parts): Sentinels in text-Parts
+            # strippen — Marker-Platzierung passiert nur auf String-Content.
+            if isinstance(content, list):
+                for part in content:
+                    if (isinstance(part, dict)
+                            and isinstance(part.get("text"), str)
+                            and CACHE_BP_SENTINEL in part["text"]):
+                        part["text"] = strip_cache_breakpoints(part["text"])
+                continue
             if not isinstance(content, str) or CACHE_BP_SENTINEL not in content:
                 continue
-            if not self.prompt_cache_key:
+            # Leiter nur fuer die ERSTE Sentinel-Message pro Request — zwei
+            # Messages wuerden sonst denselben Registry-Key thrashen.
+            msg_mode = mode
+            if mode == CACHE_MODE_TASK_SEQUENCE:
+                if ladder_used:
+                    msg_mode = None
+                ladder_used = True
+            if style == MARKER_STYLE_NONE or (
+                style == MARKER_STYLE_OPENAI and not self.prompt_cache_key
+            ):
+                # Kein Marker-Feld bzw. OpenAI-Stil ohne Key (5.6 braucht den
+                # Key zum Matching) -> Sentinel rueckstandsfrei strippen.
                 msg["content"] = strip_cache_breakpoints(content)
                 continue
-            blocks = split_cache_breakpoint_blocks(content)
+            if marker_budget is not None and marker_budget <= 0:
+                # Anthropic-Budget aufgebraucht: weitere Sentinel-Messages
+                # nur noch strippen (hartes 4-Marker-Limit, sonst HTTP 400).
+                msg["content"] = strip_cache_breakpoints(content)
+                continue
+            plan = plan_cache_blocks(
+                content, mode=msg_mode, key=resolved_key or self.prompt_cache_key,
+                max_markers=(marker_budget if marker_budget is not None
+                             else MAX_EXPLICIT_BREAKPOINTS),
+                registry=boundary_registry,
+            )
+            if plan is None:
+                continue
             parts = []
-            for bi, block in enumerate(blocks):
+            for block, marked in plan:
                 part: dict = {"type": "text", "text": block}
-                if bi < len(blocks) - 1:
-                    part["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                if marked:
+                    if style == MARKER_STYLE_ANTHROPIC:
+                        part["cache_control"] = {"type": "ephemeral"}
+                    else:
+                        part["prompt_cache_breakpoint"] = {"mode": "explicit"}
                 parts.append(part)
+            if marker_budget is not None:
+                marker_budget -= sum(1 for _, m in plan if m)
             msg["content"] = parts
 
     def set_app_title(self, title: str) -> None:
@@ -695,7 +771,13 @@ class HTTPXOpenAIClient(LLMClient):
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
-        self._apply_cache_breakpoints(message_dicts)
+        # Key VOR dem Block-Split aufloesen: die Segment-Leiter braucht den
+        # aufgeloesten Key fuer die Registry (docs/prompt_cache_design.md).
+        resolved_cache_key = (
+            derive_prompt_cache_key(self.prompt_cache_key, message_dicts)
+            if self.prompt_cache_key else None
+        )
+        self._apply_cache_breakpoints(message_dicts, resolved_cache_key)
 
         payload = {
             "model": self.model,
@@ -719,10 +801,8 @@ class HTTPXOpenAIClient(LLMClient):
 
         # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
         # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
-        if self.prompt_cache_key:
-            payload["prompt_cache_key"] = derive_prompt_cache_key(
-                self.prompt_cache_key, message_dicts
-            )
+        if resolved_cache_key:
+            payload["prompt_cache_key"] = resolved_cache_key
 
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.
@@ -1187,7 +1267,13 @@ class HTTPXOpenAIClient(LLMClient):
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
-        self._apply_cache_breakpoints(message_dicts)
+        # Key VOR dem Block-Split aufloesen: die Segment-Leiter braucht den
+        # aufgeloesten Key fuer die Registry (docs/prompt_cache_design.md).
+        resolved_cache_key = (
+            derive_prompt_cache_key(self.prompt_cache_key, message_dicts)
+            if self.prompt_cache_key else None
+        )
+        self._apply_cache_breakpoints(message_dicts, resolved_cache_key)
 
         payload = {
             "model": self.model,
@@ -1212,10 +1298,8 @@ class HTTPXOpenAIClient(LLMClient):
 
         # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
         # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
-        if self.prompt_cache_key:
-            payload["prompt_cache_key"] = derive_prompt_cache_key(
-                self.prompt_cache_key, message_dicts
-            )
+        if resolved_cache_key:
+            payload["prompt_cache_key"] = resolved_cache_key
 
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.

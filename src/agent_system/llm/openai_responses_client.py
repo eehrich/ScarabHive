@@ -49,8 +49,8 @@ the Chat Completions route, ``google-gemini-v1`` thought signatures) are
 IGNORED when building input — after a provider/route switch the chain restarts
 fresh instead of replaying artifacts that cannot verify here.
 
-STATUS: built 2026-07-16, NOT yet enabled for any configured model
-(``provider: openai_responses`` opts a model in).
+STATUS: built 2026-07-16; seit 3baf994b BREIT AKTIV — alle openai/gpt-5.x-
+Profile in config/llm_openrouter.yaml fahren ``provider: openai_responses``.
 """
 
 from __future__ import annotations
@@ -73,8 +73,12 @@ from agent_system.llm.models import (
 )
 from agent_system.llm.cache_key import (
     CACHE_BP_SENTINEL,
+    CACHE_MODE_TASK_SEQUENCE,
+    MARKER_STYLE_NONE,
+    MARKER_STYLE_OPENAI,
+    boundary_registry,
     derive_prompt_cache_key,
-    split_cache_breakpoint_blocks,
+    plan_cache_blocks,
     strip_cache_breakpoints,
 )
 from agent_system.llm.httpx_client import HTTPXTimeoutConfig
@@ -121,6 +125,8 @@ class OpenAIResponsesClient(LLMClient):
         service_tier: Optional[str] = None,
         provider_routing: Optional[dict] = None,
         prompt_cache_key: Optional[str] = None,
+        prompt_cache_mode: Optional[str] = None,
+        prompt_cache_marker_style: Optional[str] = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
@@ -136,6 +142,8 @@ class OpenAIResponsesClient(LLMClient):
         self.service_tier = service_tier
         self.provider_routing = provider_routing
         self.prompt_cache_key = prompt_cache_key
+        self.prompt_cache_mode = prompt_cache_mode
+        self.prompt_cache_marker_style = prompt_cache_marker_style
         self.timeout_config = timeout_config or HTTPXTimeoutConfig(
             connect=10.0, read=float(request_timeout), write=30.0, pool=5.0
         )
@@ -201,19 +209,9 @@ class OpenAIResponsesClient(LLMClient):
             content = _get(msg, "content")
 
             if role in ("system", "user"):
-                # Cache-Breakpoint-Sentinel im Task-Text -> mehrere input_text-
-                # Parts, alle bis auf den letzten mit prompt_cache_breakpoint
-                # markiert (GPT-5.6-Prefix-Cache, s. cache_key.py).
-                if isinstance(content, str) and CACHE_BP_SENTINEL in content:
-                    blocks = split_cache_breakpoint_blocks(content)
-                    parts = []
-                    for bi, block in enumerate(blocks):
-                        part: dict = {"type": "input_text", "text": block}
-                        if bi < len(blocks) - 1:
-                            part["prompt_cache_breakpoint"] = {"mode": "explicit"}
-                        parts.append(part)
-                    items.append({"type": "message", "role": role, "content": parts})
-                    continue
+                # Cache-Breakpoint-Sentinels bleiben hier im String erhalten —
+                # der Split passiert in _build_payload NACH der Key-Ableitung
+                # (die Segment-Leiter braucht den aufgeloesten Key).
                 items.append({
                     "type": "message",
                     "role": role,
@@ -305,6 +303,46 @@ class OpenAIResponsesClient(LLMClient):
     # Payload / request
     # ------------------------------------------------------------------
 
+    def _apply_cache_blocks(self, items: list, resolved_key: Optional[str]) -> None:
+        """Cache-Breakpoint-Sentinels in input-Items verarbeiten (in place).
+
+        Dieser Client bedient nur OpenAI-Modelle -> Marker-Stil ist openai
+        (prompt_cache_breakpoint), sofern nicht per Config auf none gestellt.
+        Bei prompt_cache_mode=task_sequence ergaenzt die Segment-Leiter den
+        BP1-Read-Anker aus der Prozess-Registry (s. cache_key.py).
+        """
+        style = self.prompt_cache_marker_style or MARKER_STYLE_OPENAI
+        ladder_used = False
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            if not isinstance(content, str) or CACHE_BP_SENTINEL not in content:
+                continue
+            if style == MARKER_STYLE_NONE or not resolved_key:
+                item["content"] = strip_cache_breakpoints(content)
+                continue
+            # Leiter nur fuer die ERSTE Sentinel-Message pro Request — zwei
+            # Messages wuerden sonst denselben Registry-Key thrashen.
+            item_mode = self.prompt_cache_mode
+            if item_mode == CACHE_MODE_TASK_SEQUENCE:
+                if ladder_used:
+                    item_mode = None
+                ladder_used = True
+            plan = plan_cache_blocks(
+                content, mode=item_mode, key=resolved_key,
+                registry=boundary_registry,
+            )
+            if plan is None:
+                continue
+            parts = []
+            for block, marked in plan:
+                part: dict = {"type": "input_text", "text": block}
+                if marked:
+                    part["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                parts.append(part)
+            item["content"] = parts
+
     def _build_payload(self, messages: list, tools: Optional[list]) -> dict:
         payload: dict = {
             "model": self.model,
@@ -323,10 +361,13 @@ class OpenAIResponsesClient(LLMClient):
         # (OpenAI-Doku: "you must set prompt_cache_key ..."). "auto" =
         # Praefix-Hash, kollisionsfrei bei parallelen Buechern
         # (s. cache_key.py); kein Extended-Retention-Opt-in.
+        resolved_key = None
         if self.prompt_cache_key:
-            payload["prompt_cache_key"] = derive_prompt_cache_key(
+            resolved_key = derive_prompt_cache_key(
                 self.prompt_cache_key, payload["input"]
             )
+            payload["prompt_cache_key"] = resolved_key
+        self._apply_cache_blocks(payload["input"], resolved_key)
         converted_tools = self._convert_tools(tools)
         if converted_tools:
             payload["tools"] = converted_tools

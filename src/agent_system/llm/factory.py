@@ -167,6 +167,12 @@ def create_llm_from_profile(
     if llm_kwargs.get("prompt_cache_key") is not None:
         make_kwargs["prompt_cache_key"] = llm_kwargs.get("prompt_cache_key")
 
+    if llm_kwargs.get("prompt_cache_mode") is not None:
+        make_kwargs["prompt_cache_mode"] = llm_kwargs.get("prompt_cache_mode")
+
+    if llm_kwargs.get("prompt_cache_marker_style") is not None:
+        make_kwargs["prompt_cache_marker_style"] = llm_kwargs.get("prompt_cache_marker_style")
+
     if llm_kwargs.get("provider_routing") is not None:
         make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
 
@@ -322,6 +328,12 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.prompt_cache_key is not None:
         llm_kwargs["prompt_cache_key"] = model_config.prompt_cache_key
 
+    if model_config.prompt_cache_mode is not None:
+        llm_kwargs["prompt_cache_mode"] = model_config.prompt_cache_mode
+
+    if model_config.prompt_cache_marker_style is not None:
+        llm_kwargs["prompt_cache_marker_style"] = model_config.prompt_cache_marker_style
+
     if model_config.provider_routing is not None:
         llm_kwargs["provider_routing"] = model_config.provider_routing
 
@@ -432,6 +444,12 @@ class LLMFactory:
 
         if llm_kwargs.get("prompt_cache_key") is not None:
             make_kwargs["prompt_cache_key"] = llm_kwargs.get("prompt_cache_key")
+
+        if llm_kwargs.get("prompt_cache_mode") is not None:
+            make_kwargs["prompt_cache_mode"] = llm_kwargs.get("prompt_cache_mode")
+
+        if llm_kwargs.get("prompt_cache_marker_style") is not None:
+            make_kwargs["prompt_cache_marker_style"] = llm_kwargs.get("prompt_cache_marker_style")
 
         if llm_kwargs.get("provider_routing") is not None:
             make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")

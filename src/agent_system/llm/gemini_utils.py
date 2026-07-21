@@ -622,6 +622,19 @@ def convert_openai_messages_to_gemini(
             "parts": [{"text": "Continue with the task."}]
         })
 
+    # Cache-Breakpoint-Sentinels strippen (Sicherheitsnetz, EIN zentraler
+    # Punkt fuer alle Pfade): Gemini hat kein Inline-Marker-Feld — landet
+    # ein Sentinel-Task hier (Fallback-Routing), darf der Marker-String das
+    # Modell nie erreichen. Strip ergibt exakt den Text ohne Marker.
+    from agent_system.llm.cache_key import CACHE_BP_SENTINEL, strip_cache_breakpoints
+    if system_instruction and CACHE_BP_SENTINEL in system_instruction:
+        system_instruction = strip_cache_breakpoints(system_instruction)
+    for c in contents:
+        for part in c.get("parts", []):
+            t = part.get("text")
+            if isinstance(t, str) and CACHE_BP_SENTINEL in t:
+                part["text"] = strip_cache_breakpoints(t)
+
     return system_instruction, contents
 
 

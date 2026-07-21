@@ -135,10 +135,10 @@ class AnthropicAsyncClient(LLMClient):
         """
         system_prompt: Optional[str] = None
         converted_messages: List[Dict[str, Any]] = []
-        
+
         for msg in messages:
             role = msg.role
-            
+
             # Extract system message(s) - Anthropic only supports a single system param
             if role == "system":
                 text = msg.content if isinstance(msg.content, str) else msg.get_text_content()
@@ -234,12 +234,33 @@ class AnthropicAsyncClient(LLMClient):
                     "content": msg.content or ""
                 })
         
+        # Cache-Breakpoint-Sentinels strippen (Sicherheitsnetz, auf dem
+        # KONVERTIERTEN Output — Session-Messages bleiben unangetastet):
+        # der native Anthropic-Pfad setzt cache_control nur auf System/Tools;
+        # ein Sentinel-Marker darf das Modell nie erreichen (s. cache_key.py).
+        from agent_system.llm.cache_key import CACHE_BP_SENTINEL, strip_cache_breakpoints
+        if isinstance(system_prompt, str) and CACHE_BP_SENTINEL in system_prompt:
+            system_prompt = strip_cache_breakpoints(system_prompt)
+        for cm in converted_messages:
+            content = cm.get("content")
+            if isinstance(content, str) and CACHE_BP_SENTINEL in content:
+                cm["content"] = strip_cache_breakpoints(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    # text-Bloecke tragen "text", tool_result-Bloecke "content"
+                    for key in ("text", "content"):
+                        val = block.get(key)
+                        if isinstance(val, str) and CACHE_BP_SENTINEL in val:
+                            block[key] = strip_cache_breakpoints(val)
+
         # Apply prompt caching: convert system prompt to content blocks with cache_control
         if self.enable_prompt_caching and system_prompt:
             system_prompt = [
                 {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
             ]
-        
+
         return system_prompt, converted_messages
 
     def _convert_tools(self, tools: List[Dict]) -> List[Dict[str, Any]]:

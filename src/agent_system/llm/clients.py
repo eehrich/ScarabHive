@@ -23,7 +23,7 @@ from ..config.models import ModelCapabilitiesConfig
 logger = logging.getLogger(__name__)
 
 
-def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None, provider_routing: Optional[dict] = None, reasoning_details_mode: Optional[str] = None, prompt_cache_key: Optional[str] = None) -> LLMClient:
+def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None, provider_routing: Optional[dict] = None, reasoning_details_mode: Optional[str] = None, prompt_cache_key: Optional[str] = None, prompt_cache_mode: Optional[str] = None, prompt_cache_marker_style: Optional[str] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -143,6 +143,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             service_tier=service_tier,
             provider_routing=provider_routing,
             prompt_cache_key=prompt_cache_key,
+            prompt_cache_mode=prompt_cache_mode,
+            prompt_cache_marker_style=prompt_cache_marker_style,
         )
 
     if provider == "openai" or provider == "openai_httpx":
@@ -185,6 +187,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 provider_routing=provider_routing,
                 reasoning_details_mode=reasoning_details_mode,
                 prompt_cache_key=prompt_cache_key,
+                prompt_cache_mode=prompt_cache_mode,
+                prompt_cache_marker_style=prompt_cache_marker_style,
             )
         else:
             # Build default_extra dict for additional parameters
@@ -192,14 +196,15 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             if modalities:
                 default_extra["modalities"] = modalities
 
-            if prompt_cache_key:
+            if prompt_cache_key or prompt_cache_mode:
                 # Sichtbar statt still verworfen (Review-Finding): der
                 # SDK-Client hat keinen prompt_cache_key-Pfad — wer Caching
                 # keyen will, muss auf openai_httpx/openai_responses.
                 logger.warning(
-                    "prompt_cache_key ist fuer provider=openai (SDK-Client) "
-                    "nicht verdrahtet und wird ignoriert (model=%s) — Profil "
-                    "auf openai_httpx oder openai_responses umstellen.",
+                    "prompt_cache_key/prompt_cache_mode sind fuer "
+                    "provider=openai (SDK-Client) nicht verdrahtet und werden "
+                    "ignoriert (model=%s) — Profil auf openai_httpx oder "
+                    "openai_responses umstellen.",
                     model,
                 )
 
