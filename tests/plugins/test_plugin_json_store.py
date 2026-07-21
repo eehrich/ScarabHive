@@ -1482,3 +1482,111 @@ class TestPersistence:
         b = _restartable(mock_system_config, tmp_path)
         res = await b.undo({**COORD, "doc": "d"})
         assert res["status"] == "error" and "Nothing to undo" in res["error"]
+
+
+# ---------------------------------------------------------------------------
+# stats (Saettigungs-Analyse, writer O9c)
+# ---------------------------------------------------------------------------
+
+class TestStats:
+    async def _seed_beats(self, server):
+        await server.write({**SID, "doc": "beats", "data": {"beats": {
+            "B01": {"summary": "Mila zeigt die Stoffmaus am Fenster",
+                    "key_moments": ["Stoffmaus faellt vom Treppchen"]},
+            "B02": {"summary": "Training mit der Stoffmaus im Hinterhof",
+                    "key_moments": ["Moppel ignoriert die Stoffmaus"]},
+            "B03": {"summary": "Der Baecker spricht ueber den Bauhof",
+                    "key_moments": ["Ein Brief liegt auf der Theke"]},
+        }}})
+
+    @pytest.mark.asyncio
+    async def test_recurring_terms_per_child(self, server):
+        await self._seed_beats(server)
+        res = await server.stats({**SID, "operation": "stats", "doc": "beats",
+                                  "path": "beats"})
+        assert res["status"] == "ok"
+        assert res["n_children"] == 3
+        terms = {e["term"]: e["children"] for e in res["recurring_terms"]}
+        # Stoffmaus traegt B01+B02 (2 Kinder), NICHT B03
+        assert terms.get("stoffmaus") == 2
+        # Einmal-Begriffe erscheinen nicht
+        assert "bauhof" not in terms
+
+    @pytest.mark.asyncio
+    async def test_exclude_filters_names(self, server):
+        await self._seed_beats(server)
+        res = await server.stats({**SID, "operation": "stats", "doc": "beats",
+                                  "path": "beats", "exclude": ["stoffmaus"]})
+        terms = {e["term"] for e in res["recurring_terms"]}
+        assert not any("stoffmaus" in t for t in terms)
+
+    @pytest.mark.asyncio
+    async def test_exclude_accepts_comma_string(self, server):
+        await self._seed_beats(server)
+        res = await server.stats({**SID, "operation": "stats", "doc": "beats",
+                                  "path": "beats", "exclude": "stoffmaus, moppel"})
+        terms = {e["term"] for e in res["recurring_terms"]}
+        assert not any("stoffmaus" in t or "moppel" in t for t in terms)
+
+    @pytest.mark.asyncio
+    async def test_bad_path_and_scalar_path_error(self, server):
+        await self._seed_beats(server)
+        res = await server.stats({**SID, "operation": "stats", "doc": "beats",
+                                  "path": "gibtsnicht"})
+        assert res["status"] == "error"
+        await server.write({**SID, "doc": "flat", "data": {"x": "nur ein string"}})
+        res = await server.stats({**SID, "operation": "stats", "doc": "flat",
+                                  "path": "x"})
+        assert res["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_via_manage_json(self, server):
+        await self._seed_beats(server)
+        res = await server.manage_json({**SID, "operation": "stats",
+                                        "doc": "beats", "path": "beats"})
+        assert res["status"] == "ok"
+        assert any(e["term"] == "stoffmaus" for e in res["recurring_terms"])
+
+    @pytest.mark.asyncio
+    async def test_umlaut_stopwords_filtered(self, server):
+        await server.write({**SID, "doc": "b2", "data": {"beats": {
+            "B01": {"s": "Über die Brücke während der Nacht zur Stoffmaus"},
+            "B02": {"s": "Über den Hof während des Tages zur Stoffmaus"},
+        }}})
+        res = await server.stats({**SID, "operation": "stats", "doc": "b2",
+                                  "path": "beats"})
+        terms = {e["term"] for e in res["recurring_terms"]}
+        assert "über" not in terms and "während" not in terms
+        assert "stoffmaus" in terms
+
+    @pytest.mark.asyncio
+    async def test_exclude_empty_and_short_entries_ignored(self, server):
+        await self._seed_beats(server)
+        res = await server.stats({**SID, "operation": "stats", "doc": "beats",
+                                  "path": "beats", "exclude": ["", "mo"]})
+        # ""/Kurzst-Eintraege duerfen NICHT alles wegfiltern
+        assert any(e["term"] == "stoffmaus" for e in res["recurring_terms"])
+
+    @pytest.mark.asyncio
+    async def test_exclude_scalar_is_param_error(self, server):
+        await self._seed_beats(server)
+        res = await server.stats({**SID, "operation": "stats", "doc": "beats",
+                                  "path": "beats", "exclude": 5})
+        assert res["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_limits_are_param_error(self, server):
+        await self._seed_beats(server)
+        res = await server.stats({**SID, "operation": "stats", "doc": "beats",
+                                  "path": "beats", "min_children": "alle"})
+        assert res["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_path_array_index_syntax(self, server):
+        await server.write({**SID, "doc": "arr", "data": {"phasen": [
+            {"beats": {"X": {"s": "Stoffmaus hier"}, "Y": {"s": "Stoffmaus dort"}}},
+        ]}})
+        res = await server.stats({**SID, "operation": "stats", "doc": "arr",
+                                  "path": "phasen[0].beats"})
+        assert res["status"] == "ok"
+        assert any(e["term"] == "stoffmaus" for e in res["recurring_terms"])

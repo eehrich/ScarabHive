@@ -25,7 +25,7 @@ tools:
         properties:
           operation:
             type: string
-            enum: [write, read, merge, merge_doc, set_value, delete_keys, delete_doc, undo, list, outline]
+            enum: [write, read, merge, merge_doc, set_value, delete_keys, delete_doc, undo, list, outline, stats]
             description: "The action to perform"
           namespace:
             type: string
@@ -67,6 +67,20 @@ tools:
           depth:
             type: integer
             description: "outline: nesting depth (default 3)"
+          path:
+            type: string
+            description: "stats: dot-path to the subtree whose CHILDREN are compared (e.g. 'beats'); empty = whole doc"
+          min_children:
+            type: integer
+            description: "stats: report terms present in at least this many children (default 2)"
+          top:
+            type: integer
+            description: "stats: max number of recurring terms returned (default 12)"
+          exclude:
+            type: array
+            items:
+              type: string
+            description: "stats: terms to filter out (substring match, case-insensitive) — e.g. character/location names that are expected to recur"
         required: [operation]
 
 config:

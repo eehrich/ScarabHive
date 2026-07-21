@@ -803,6 +803,10 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return f"listed {result.get('count', 0)} doc(s)"
         if operation == "outline":
             return f"outline of '{doc}'"
+        if operation == "stats":
+            n_terms = len(result.get("recurring_terms", []))
+            return (f"stats of '{doc}': {n_terms} recurring term(s) across "
+                    f"{result.get('n_children', 0)} children")
         if operation == "undo":
             left = result.get("snapshots_left", 0)
             undone = result.get("undone", "?")
@@ -825,6 +829,7 @@ class JsonStoreServer(SchemaBasedMCPServer):
             "undo": self.undo,
             "list": self.list_docs,
             "outline": self.outline,
+            "stats": self.stats,
         }
         handler = handlers.get(operation)
         if not handler:
@@ -1164,3 +1169,119 @@ class JsonStoreServer(SchemaBasedMCPServer):
         depth_param = params.get("depth")
         depth = 3 if depth_param is None else max(0, int(depth_param))
         return {"status": "ok", "doc": name, "outline": self._outline(bucket[name], depth)}
+
+    #: Haeufige deutsche/englische Funktionswoerter (>=4 Zeichen), die als
+    #: Sättigungs-Signal wertlos sind. Bewusst klein — perfekte Filterung ist
+    #: nicht noetig, der Konsument (LLM) ignoriert Restrauschen selbst.
+    _STATS_STOPWORDS = frozenset((
+        "aber auch beim dann dass dein deine dem den einer einem einen eines "
+        "eine doch dort durch fast hier ihre ihrem ihren ihrer mehr nach nicht "
+        "noch nur ohne schon sein seine seinem seinen seiner sich sind ueber "
+        "unter viel wieder wird wurde zwei zum zur als wenn weil wie was wer "
+        "the and with from that this have will into over "
+        # erzaehlagnostische Allerwelts-Verben/-Woerter — als Saettigungs-
+        # Signal wertlos, verstopfen sonst die Top-Slots
+        "kommt sitzt liegt steht geht sagt sieht legt nimmt macht bleibt "
+        "beginnt haelt laesst zeigt spuert wirkt traegt bringt erste ersten "
+        "zurueck davor danach dabei etwas nichts alles beide diesem dieser "
+        "dieses jetzt heute leser kapitel szene beat "
+        # native Umlaut-Formen (der Tokenizer ist Unicode-aware, .lower()
+        # transliteriert NICHT — beide Schreibweisen abdecken)
+        "über während möchte hält lässt spürt trägt zurück wäre könnte "
+        "müsste hätte würde später früher nächste nächsten für"
+    ).split())
+
+    async def stats(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Per-Kind-Wiederkehr von Begriffen ueber einen Doc-Teilbaum.
+
+        Deterministische Saettigungs-Analyse (docs/prompt_cache_design.md
+        verwandt; primaer fuer writer O9c): fuer jedes Kind unter ``path``
+        (dict-Werte oder Listen-Elemente) werden alle String-Werte rekursiv
+        eingesammelt, in Woerter (>=4 Zeichen, lowercase) und Wort-Bigramme
+        zerlegt, und pro Kind als MENGE gezaehlt. Ergebnis: Begriffe, die in
+        >= ``min_children`` Kindern vorkommen — d.h. wiederkehrende
+        Requisiten/Phrasen/Motive, nicht blosse Haeufigkeit in einem Kind.
+
+        Params: doc (Pflicht), path (z.B. "beats"; leer = ganzes data),
+        min_children (Default 2), top (Default 12).
+        """
+        bucket, name, err = self._require_doc(params)
+        if err:
+            return err
+        node: Any = bucket[name]
+        path = (params.get("path") or "").strip()
+        if path:
+            # Gleiche Pfad-Syntax wie read/set_value (inkl. [i]-Array-Index)
+            try:
+                node = self._resolve(node, self._split_path(path))
+            except (KeyError, IndexError, TypeError, ValueError):
+                return {"status": "error",
+                        "error": f"path '{path}' not found in doc '{name}'"}
+        if isinstance(node, dict):
+            children = list(node.values())
+        elif isinstance(node, list):
+            children = node
+        else:
+            return {"status": "error",
+                    "error": f"path '{path or '.'}' is not a dict/list"}
+        try:
+            min_children = max(2, int(params.get("min_children") or 2))
+            top = max(1, int(params.get("top") or 12))
+        except (TypeError, ValueError):
+            return {"status": "error",
+                    "error": "min_children/top must be integers"}
+        # exclude: erwartbar-haeufige Begriffe (Figuren-/Ortsnamen) rausfiltern,
+        # damit die Top-Slots den echten Saettigungs-Signalen gehoeren.
+        # Leere/Kurzst-Eintraege fallen raus (Substring-Match: "" traefe ALLES,
+        # 1-2 Zeichen wuerden massiv ueberfiltern); Nicht-Listen-Skalare sind
+        # ein Param-Fehler, kein Crash.
+        exclude_raw = params.get("exclude") or []
+        if isinstance(exclude_raw, str):
+            exclude_raw = exclude_raw.split(",")
+        if not isinstance(exclude_raw, list):
+            return {"status": "error",
+                    "error": "exclude must be a list of strings (or comma-string)"}
+        exclude = [s for s in (str(x).strip().lower() for x in exclude_raw)
+                   if len(s) >= 3]
+
+        def collect_strings(obj: Any, out: List[str]) -> None:
+            if isinstance(obj, str):
+                out.append(obj)
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    collect_strings(v, out)
+            elif isinstance(obj, list):
+                for v in obj:
+                    collect_strings(v, out)
+
+        import re as _re
+        term_children: Dict[str, int] = {}
+        for child in children:
+            texts: List[str] = []
+            collect_strings(child, texts)
+            words = [w for w in _re.findall(r"[^\W\d_]{4,}", " ".join(texts).lower())
+                     if w not in self._STATS_STOPWORDS]
+            terms = set(words)
+            terms.update(f"{a} {b}" for a, b in zip(words, words[1:]))
+            for t in terms:
+                term_children[t] = term_children.get(t, 0) + 1
+        recurring = [
+            {"term": t, "children": c}
+            for t, c in term_children.items()
+            if c >= min_children and not any(x in t for x in exclude)
+        ]
+        # Bigramme vor ihren Teil-Wörtern bevorzugen: gleiche Zählung ->
+        # das spezifischere Bigramm behalten, Teilwort unterdruecken.
+        # (Index-Lookup statt Rescan — linear statt O(n^2).)
+        by_count = sorted(recurring, key=lambda x: (-x["children"], -len(x["term"])))
+        count_by_term = {e["term"]: e["children"] for e in by_count}
+        suppressed: set = set()
+        for entry in by_count:
+            if " " in entry["term"]:
+                for part in entry["term"].split(" "):
+                    if count_by_term.get(part) == entry["children"]:
+                        suppressed.add(part)
+        result = [e for e in by_count if e["term"] not in suppressed][:top]
+        return {"status": "ok", "doc": name, "path": path or ".",
+                "n_children": len(children), "min_children": min_children,
+                "recurring_terms": result}
