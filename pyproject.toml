@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "pydantic>=2.11,<3.0",  # chromadb 0.6.3 is compatible with pydantic 2.11+
     "pyyaml>=6.0",
+    "ruamel.yaml>=0.18",  # OKF plugin: formatting-preserving YAML 1.2 round-trip for frontmatter
     "fastapi==0.115.6",  # Pin exact version
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",

@@ -135,6 +135,19 @@ plugins:
       search_n_results: 5
       use_semantic_injection: true
 
+    okf:
+      type: okf
+      enabled: true
+      # Open Knowledge Format bundles (curated markdown knowledge, git-versioned).
+      # Sandbox: tools may only touch bundles under these directories.
+      allowed_directories:
+        - data/okf
+      # Consumer hook (context injection) is opt-in per agent via
+      # hooks.overrides; set hook_bundle on the agent that should use it.
+      # hook_bundle: data/okf/<bundle>
+      hook_max_concepts: 6
+      hook_graph_depth: 1
+
     lessons_learned:
       type: lessons_learned
       enabled: true

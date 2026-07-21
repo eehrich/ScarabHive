@@ -59,6 +59,7 @@ data/comfyui/
 data/debate_forum/
 data/audio_ops/
 data/lessons_learned/
+data/okf/
 data/context_usage_tracker.json
 data/writer_books.db
 tests/data/
