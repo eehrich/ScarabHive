@@ -164,6 +164,9 @@ def create_llm_from_profile(
     if llm_kwargs.get("service_tier") is not None:
         make_kwargs["service_tier"] = llm_kwargs.get("service_tier")
 
+    if llm_kwargs.get("prompt_cache_key") is not None:
+        make_kwargs["prompt_cache_key"] = llm_kwargs.get("prompt_cache_key")
+
     if llm_kwargs.get("provider_routing") is not None:
         make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
 
@@ -316,6 +319,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.service_tier is not None:
         llm_kwargs["service_tier"] = model_config.service_tier
 
+    if model_config.prompt_cache_key is not None:
+        llm_kwargs["prompt_cache_key"] = model_config.prompt_cache_key
+
     if model_config.provider_routing is not None:
         llm_kwargs["provider_routing"] = model_config.provider_routing
 
@@ -423,6 +429,9 @@ class LLMFactory:
 
         if llm_kwargs.get("service_tier") is not None:
             make_kwargs["service_tier"] = llm_kwargs.get("service_tier")
+
+        if llm_kwargs.get("prompt_cache_key") is not None:
+            make_kwargs["prompt_cache_key"] = llm_kwargs.get("prompt_cache_key")
 
         if llm_kwargs.get("provider_routing") is not None:
             make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")

@@ -190,8 +190,27 @@ class TestToolsAndPayload:
                     provider_routing=None, max_tokens=None)
         p = c._build_payload([ChatMessage(role="user", content="hi")], None)
         for absent in ("reasoning", "max_output_tokens", "service_tier", "provider",
-                       "tools", "tool_choice", "parallel_tool_calls"):
+                       "tools", "tool_choice", "parallel_tool_calls",
+                       "prompt_cache_key"):
             assert absent not in p
+
+    def test_payload_carries_prompt_cache_key(self):
+        # GPT-5.6+: ohne prompt_cache_key kein zuverlaessiges Cache-Matching
+        # (belegt Testlauf B936: byte-identischer Prefix, cached_tokens=0).
+        c = _client(prompt_cache_key="v4_scene_planner")
+        p = c._build_payload([ChatMessage(role="user", content="hi")], None)
+        assert p["prompt_cache_key"] == "v4_scene_planner"
+
+    def test_payload_prompt_cache_key_auto_hashes_prefix(self):
+        # "auto" = Praefix-Hash (cache_key.py): gleicher Prompt -> gleicher
+        # Key, frueh divergenter Prompt (anderes Buch) -> anderer Key.
+        c = _client(prompt_cache_key="auto")
+        p1 = c._build_payload([ChatMessage(role="user", content="Buch A")], None)
+        p2 = c._build_payload([ChatMessage(role="user", content="Buch A")], None)
+        p3 = c._build_payload([ChatMessage(role="user", content="Buch B")], None)
+        assert p1["prompt_cache_key"].startswith("auto-")
+        assert p1["prompt_cache_key"] == p2["prompt_cache_key"]
+        assert p1["prompt_cache_key"] != p3["prompt_cache_key"]
 
 
 class TestMakeLLMRegistration:

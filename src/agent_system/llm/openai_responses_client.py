@@ -71,6 +71,7 @@ from agent_system.llm.models import (
     LLMRateLimitError,
     LLMServerError,
 )
+from agent_system.llm.cache_key import derive_prompt_cache_key
 from agent_system.llm.httpx_client import HTTPXTimeoutConfig
 from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
@@ -114,6 +115,7 @@ class OpenAIResponsesClient(LLMClient):
         max_tokens: Optional[int] = None,
         service_tier: Optional[str] = None,
         provider_routing: Optional[dict] = None,
+        prompt_cache_key: Optional[str] = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
@@ -128,6 +130,7 @@ class OpenAIResponsesClient(LLMClient):
         self.max_tokens = max_tokens
         self.service_tier = service_tier
         self.provider_routing = provider_routing
+        self.prompt_cache_key = prompt_cache_key
         self.timeout_config = timeout_config or HTTPXTimeoutConfig(
             connect=10.0, read=float(request_timeout), write=30.0, pool=5.0
         )
@@ -297,6 +300,14 @@ class OpenAIResponsesClient(LLMClient):
             payload["service_tier"] = self.service_tier
         if self.provider_routing:
             payload["provider"] = self.provider_routing
+        # GPT-5.6+: ohne prompt_cache_key praktisch kein Cache-Matching
+        # (OpenAI-Doku: "you must set prompt_cache_key ..."). "auto" =
+        # Praefix-Hash, kollisionsfrei bei parallelen Buechern
+        # (s. cache_key.py); kein Extended-Retention-Opt-in.
+        if self.prompt_cache_key:
+            payload["prompt_cache_key"] = derive_prompt_cache_key(
+                self.prompt_cache_key, payload["input"]
+            )
         converted_tools = self._convert_tools(tools)
         if converted_tools:
             payload["tools"] = converted_tools

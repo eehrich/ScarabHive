@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import httpx
 import ssl
 
+from agent_system.llm.cache_key import derive_prompt_cache_key
 from agent_system.llm.clients import LLMClient
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
 from agent_system.core.cancellation import CancellationToken
@@ -97,6 +98,12 @@ class HTTPXOpenAIClient(LLMClient):
         # Popped out of extra_params so the field gets explicit per-call
         # handling (and a clear log surface) instead of opaque passthrough.
         self.service_tier: str | None = self.extra_params.pop("service_tier", None)
+
+        # OpenAI GPT-5.6+ Cache-Routing-Key: ohne ihn matcht der Prompt-Cache
+        # ab der 5.6-Familie praktisch nie (Doku: "you must set
+        # prompt_cache_key"). Config-diszipliniert nur auf OpenAI-Profilen
+        # setzen — Fremd-Provider koennten den Param ablehnen.
+        self.prompt_cache_key: str | None = self.extra_params.pop("prompt_cache_key", None)
 
         # Provider routing (OpenRouter) — soft preference over the available backends.
         # Example: {"order": ["google-vertex", "google-ai-studio"], "allow_fallbacks": true}
@@ -677,6 +684,13 @@ class HTTPXOpenAIClient(LLMClient):
         if self.service_tier:
             payload["service_tier"] = self.service_tier
 
+        # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
+        # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
+        if self.prompt_cache_key:
+            payload["prompt_cache_key"] = derive_prompt_cache_key(
+                self.prompt_cache_key, message_dicts
+            )
+
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.
         if self.provider_routing and self._is_openrouter:
@@ -1161,6 +1175,13 @@ class HTTPXOpenAIClient(LLMClient):
         # Service tier (e.g. Google Flex via OpenRouter)
         if self.service_tier:
             payload["service_tier"] = self.service_tier
+
+        # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
+        # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
+        if self.prompt_cache_key:
+            payload["prompt_cache_key"] = derive_prompt_cache_key(
+                self.prompt_cache_key, message_dicts
+            )
 
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.

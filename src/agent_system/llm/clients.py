@@ -20,8 +20,10 @@ from .gemini_sdk_client import GeminiSDKClient  # type: ignore
 from .anthropic_client import AnthropicAsyncClient  # type: ignore
 from ..config.models import ModelCapabilitiesConfig
 
+logger = logging.getLogger(__name__)
 
-def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None, provider_routing: Optional[dict] = None, reasoning_details_mode: Optional[str] = None) -> LLMClient:
+
+def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None, provider_routing: Optional[dict] = None, reasoning_details_mode: Optional[str] = None, prompt_cache_key: Optional[str] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -140,6 +142,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             max_tokens=max_tokens,
             service_tier=service_tier,
             provider_routing=provider_routing,
+            prompt_cache_key=prompt_cache_key,
         )
 
     if provider == "openai" or provider == "openai_httpx":
@@ -181,13 +184,25 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 service_tier=service_tier,
                 provider_routing=provider_routing,
                 reasoning_details_mode=reasoning_details_mode,
+                prompt_cache_key=prompt_cache_key,
             )
         else:
             # Build default_extra dict for additional parameters
             default_extra: dict[str, Any] = {}
             if modalities:
                 default_extra["modalities"] = modalities
-            
+
+            if prompt_cache_key:
+                # Sichtbar statt still verworfen (Review-Finding): der
+                # SDK-Client hat keinen prompt_cache_key-Pfad — wer Caching
+                # keyen will, muss auf openai_httpx/openai_responses.
+                logger.warning(
+                    "prompt_cache_key ist fuer provider=openai (SDK-Client) "
+                    "nicht verdrahtet und wird ignoriert (model=%s) — Profil "
+                    "auf openai_httpx oder openai_responses umstellen.",
+                    model,
+                )
+
             return OpenAIAsyncClient(
                 model=model,
                 api_key=api_key,
@@ -222,6 +237,11 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             base = "http://127.0.0.1:11434/v1"
         
         key = api_key or "ollama"
+        if prompt_cache_key:
+            logger.warning(
+                "prompt_cache_key wird fuer provider=ollama ignoriert (model=%s).",
+                model,
+            )
         return OpenAIAsyncClient(
             model=model,
             api_key=key,
