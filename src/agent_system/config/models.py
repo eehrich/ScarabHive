@@ -353,6 +353,21 @@ class AgentConfig(BaseModel):
     escalate_max_calls: int = 6       # total advanced calls allowed per run (budget)
     escalate_error_streak: int = 2    # trigger after N consecutive all-error tool steps
 
+    @field_validator("system_template")
+    @classmethod
+    def _validate_system_template_ext(cls, v: Optional[str]) -> Optional[str]:
+        """Prompt templates are markdown only (the multi-section YAML format was
+        removed). Reject a non-markdown extension at CONFIG LOAD with a migration
+        hint, so a stale/typo'd path fails fast at startup instead of raising
+        mid-run on the first (and every) render step."""
+        if v and not v.lower().endswith((".md", ".txt", ".markdown")):
+            raise ValueError(
+                f"system_template '{v}' must be a markdown file (.md/.txt/"
+                f".markdown). YAML prompt templates are no longer supported — "
+                f"convert it to a single markdown file (Jinja2 variables still "
+                f"work).")
+        return v
+
     @field_validator("llm_params")
     @classmethod
     def _validate_llm_params(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

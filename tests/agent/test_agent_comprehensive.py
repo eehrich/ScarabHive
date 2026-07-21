@@ -154,7 +154,7 @@ class TestAgent:
                 default_profile="normal"
             ),
             context=ContextConfig(auto_datetime=False),  # Disable for testing
-            system_template="config/prompts/system_prompt.yaml",
+            system_template="config/prompts/system_prompt.md",
             max_steps=3,
             servers={}
         )
@@ -233,7 +233,7 @@ class TestAgentEventStream:
                 default_profile="normal"
             ),
             context=ContextConfig(auto_datetime=False),
-            system_template="config/prompts/system_prompt.yaml",
+            system_template="config/prompts/system_prompt.md",
             max_steps=2,
             servers={}
         )

@@ -30,7 +30,7 @@ agents:
     agent_config:
       llm_profile: "turbo"
       max_steps: 20
-      system_template: "config/prompts/financial_analyst_prompt.yaml"
+      system_template: "config/prompts/financial_analyst_prompt.md"
       tools:
         allowed:
           - "yahoo_finance/*"
@@ -54,28 +54,27 @@ agents:
 
 Create the prompt file referenced in `system_template`:
 
-**File:** `config/prompts/financial_analyst_prompt.yaml`
+**File:** `config/prompts/financial_analyst_prompt.md`
 
-```yaml
-system_prompt: |
-  You are a professional financial analyst with expertise in:
-  - Stock market analysis and trends
-  - Company financials and valuation
-  - Market research and data interpretation
-  - Risk assessment and investment strategies
-  
-  Your analysis should be:
-  - Data-driven and factual
-  - Balanced and objective
-  - Clear and actionable
-  - Based on current market information
-  
-  Available tools:
-  - Yahoo Finance for stock data
-  - Web scraping for research
-  - DuckDuckGo search for information gathering
-  
-  Always cite your sources and provide timestamp for data.
+```markdown
+You are a professional financial analyst with expertise in:
+- Stock market analysis and trends
+- Company financials and valuation
+- Market research and data interpretation
+- Risk assessment and investment strategies
+
+Your analysis should be:
+- Data-driven and factual
+- Balanced and objective
+- Clear and actionable
+- Based on current market information
+
+Available tools:
+- Yahoo Finance for stock data
+- Web scraping for research
+- DuckDuckGo search for information gathering
+
+Always cite your sources and provide a timestamp for data.
 ```
 
 ### 3. Validate and Use Your Agent
@@ -277,37 +276,37 @@ agent_config:
 
 ### Template Files
 
-For complex, reusable prompts:
+For complex, reusable prompts, put the prompt in a **markdown file**. The whole
+file is the system prompt and is rendered with Jinja2 (`{{ current_date }}`,
+`{{ tools }}`, `{{ current_step }}`, etc.). (The old multi-section YAML format —
+`system_prompt` / `tools_prompt` / `general_instructions_prompt` keys — has been
+removed; use one markdown file.)
 
-**config/prompts/my_prompt.yaml:**
+**config/prompts/my_prompt.md:**
 
-```yaml
-system_prompt: |
-  You are a {role} with expertise in {domain}.
-  
-  Your responsibilities:
-  - {responsibility_1}
-  - {responsibility_2}
-  
-  Guidelines:
-  - {guideline_1}
-  - {guideline_2}
+```markdown
+You are a {{ role }} with expertise in {{ domain }}.
 
-# Optional: Template variables (if using Jinja2 templating)
-variables:
-  role: "Code Reviewer"
-  domain: "Python and TypeScript"
-  responsibility_1: "Review code for bugs and security issues"
-  responsibility_2: "Suggest improvements and best practices"
-  guideline_1: "Be constructive and specific"
-  guideline_2: "Provide code examples when helpful"
+Your responsibilities:
+- Review code for bugs and security issues
+- Suggest improvements and best practices
+
+## Tools
+Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(none){% endif %}
+
+## Context
+- Current date: {{ current_date }}
+- Current step: {{ current_step }}/{{ max_steps }}
 ```
 
-Reference in agent config:
+Reference in agent config (per-agent variables via `template_vars`):
 
 ```yaml
 agent_config:
-  system_template: "config/prompts/my_prompt.yaml"
+  system_template: "config/prompts/my_prompt.md"
+  template_vars:
+    role: "Code Reviewer"
+    domain: "Python and TypeScript"
 ```
 
 ### Template Variables (Jinja2)
@@ -574,7 +573,7 @@ agents:
     agent_config:
       llm_profile: "deepseek"
       max_steps: 15
-      system_template: "config/prompts/code_reviewer_prompt.yaml"
+      system_template: "config/prompts/code_reviewer_prompt.md"
       tools:
         allowed:
           - "script_interpreter/*"
@@ -605,7 +604,7 @@ agents:
     agent_config:
       llm_profile: "turbo"
       max_steps: 30
-      system_template: "config/prompts/research_assistant_prompt.yaml"
+      system_template: "config/prompts/research_assistant_prompt.md"
       tools:
         allowed:
           - "duckduckgo_search/*"
@@ -669,7 +668,7 @@ Description:  Professional financial analyst for stock market analysis
 Base Type:    agent
 LLM Profile:  turbo
 Max Steps:    20
-Template:     config/prompts/financial_analyst_prompt.yaml
+Template:     config/prompts/financial_analyst_prompt.md
 
 Tools:
   Allowed:  yahoo_finance/*, web_scraper/*, duckduckgo_search/*, basic_operations/wait_for
@@ -750,7 +749,7 @@ GET /api/config-agents/{agent_name}
   "base_type": "agent",
   "llm_profile": "turbo",
   "max_steps": 20,
-  "system_template": "config/prompts/financial_analyst_prompt.yaml",
+  "system_template": "config/prompts/financial_analyst_prompt.md",
   "has_inline_prompt": false,
   "tools": {
     "allowed": ["yahoo_finance/*", "web_scraper/*"],

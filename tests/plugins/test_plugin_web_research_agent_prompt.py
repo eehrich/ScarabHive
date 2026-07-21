@@ -19,7 +19,7 @@ async def test_web_research_agent_uses_plugin_prompt():
     factory = PLUGIN_FACTORY
     agent = factory("web_test", system_config, mcp_config)
 
-    # Get custom system prompt (should load from plugin's prompts/system_prompt.yaml)
+    # Get custom system prompt (should load from plugin's prompts/system_prompt.md)
     custom_prompt = agent.get_custom_system_prompt({})
 
     assert custom_prompt is not None, "Plugin prompt not loaded"
@@ -32,7 +32,7 @@ async def test_web_research_agent_uses_plugin_prompt():
 
 def test_global_prompt_unchanged():
     """Ensure the global prompt file does not contain plugin-specific wording."""
-    p = Path('config/prompts/system_prompt.yaml')
+    p = Path('config/prompts/system_prompt.md')
     assert p.exists()
     txt = p.read_text(encoding='utf-8')
     # Global prompt should not contain web research specific instructions

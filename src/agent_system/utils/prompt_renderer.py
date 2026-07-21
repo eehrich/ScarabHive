@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Dict, Any
 import logging
-import yaml
 from jinja2 import Template
 from datetime import datetime, timedelta
 import pytz
@@ -52,21 +51,8 @@ def get_datetime_context(timezone_str: str = "UTC", location: str = "Unknown") -
         }
 
 
-def render_system_prompt(template_path: str, context: Dict[str, Any]) -> str:
-    with open(template_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    # Template content under key 'template' to keep YAML extensible
-    raw = data.get("template") if isinstance(data, dict) else None
-    if not raw:
-        # If file is plain text, just use it directly
-        f.seek(0)
-        raw = f.read()
-    tmpl = Template(raw)
-    return tmpl.render(**context)
-
-
 def _is_text_template(template_path: str) -> bool:
-    """Check if file is a plain text/markdown template (not YAML)."""
+    """Check if file is a plain text/markdown template."""
     lower_path = template_path.lower()
     return lower_path.endswith(('.md', '.txt', '.markdown'))
 
@@ -97,59 +83,29 @@ def _render_text_template(template_path: str, context: Dict[str, Any]) -> Dict[s
 
 
 def render_prompts(template_path: str, context: Dict[str, Any], auto_datetime: bool = True, timezone: str = "UTC", location: str = "Unknown") -> Dict[str, str]:
-    """Render a template file that may contain multiple sections.
+    """Render a markdown/text prompt template into a single ``system_prompt``.
 
-    This function supports two formats:
-    
-    1. YAML templates (.yaml, .yml): Multi-section prompts where all top-level
-       string keys are treated as sections and rendered separately.
-       Common sections:
-         - system_prompt: Main agent identity and behavior
-         - tools_prompt: Tool usage instructions
-         - general_instructions_prompt: Formatting and context guidelines
-    
-    2. Text/Markdown templates (.md, .txt, .markdown): Single-section prompts
-       where the entire file content is treated as the 'system_prompt' section.
-       Supports Jinja2 template variables (e.g., {{ current_date }}).
-    
+    The entire file is the system prompt, rendered with Jinja2 (e.g.
+    ``{{ current_date }}``, ``{{ tools }}``, ``{{ current_step }}``). Templates
+    are ``.md`` / ``.txt`` / ``.markdown``.
+
+    The former multi-section YAML format (``system_prompt`` / ``tools_prompt`` /
+    ``general_instructions_prompt`` keys) was removed — everything is one
+    markdown document now. A ``.yaml``/``.yml`` path raises a clear error with
+    migration guidance rather than silently embedding raw YAML.
+
     Returns:
-        Dict mapping section_name -> rendered_content (after Jinja2 template rendering)
+        Dict with a single ``system_prompt`` key.
     """
-    # Add automatic datetime context if enabled
     if auto_datetime:
         datetime_context = get_datetime_context(timezone, location)
         context = {**context, **datetime_context}
-    
-    # Check if this is a text/markdown template
-    if _is_text_template(template_path):
-        logger.debug(f"Rendering text/markdown template: {template_path}")
-        return _render_text_template(template_path, context)
-    
-    # Otherwise, treat as YAML template
-    with open(template_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    
-    out: Dict[str, str] = {}
-    
-    if isinstance(data, dict):
-        # Render all string-valued top-level keys as sections
-        for section_name, section_content in data.items():
-            # Skip non-string values and internal keys (starting with _)
-            if not isinstance(section_content, str):
-                continue
-            if section_name.startswith('_'):
-                continue
-            
-            # Render the section with Jinja2
-            try:
-                rendered = Template(section_content).render(**context)
-                out[section_name] = rendered
-            except Exception as e:
-                logger.warning(f"Failed to render section '{section_name}' in template {template_path}: {e}")
-                out[section_name] = section_content  # Fallback to unrendered content
-    else:
-        # Non-dict YAML: treat entire content as system_prompt
-        logger.warning(f"Template {template_path} is not a dict, treating as single system_prompt section")
-        out["system_prompt"] = str(data)
-    
-    return out
+
+    if not _is_text_template(template_path):
+        raise ValueError(
+            f"Prompt template '{template_path}' is not markdown. YAML prompt "
+            f"templates are no longer supported — convert it to a single "
+            f"markdown (.md) file (Jinja2 variables still work).")
+
+    logger.debug(f"Rendering markdown prompt template: {template_path}")
+    return _render_text_template(template_path, context)

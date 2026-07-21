@@ -77,7 +77,7 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
     monkeypatch.setattr('sys.argv', ['agent-cli', '--raw', 'run', 'do it'])
 
     # Make reading the template deterministic: ensure Path.read_text returns the original template
-    original_template = Path('config/prompts/system_prompt.yaml').read_text(encoding='utf-8')
+    original_template = Path('config/prompts/system_prompt.md').read_text(encoding='utf-8')
     monkeypatch.setattr(Path, 'read_text', lambda self, encoding='utf-8': original_template)
 
     cli.main()
@@ -92,7 +92,7 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
 
 def test_global_template_not_modified():
     # Ensure the persisted global prompt file does NOT contain the injected hint
-    p = Path('config/prompts/system_prompt.yaml')
+    p = Path('config/prompts/system_prompt.md')
     assert p.exists(), f"Global prompt file {p} not found"
     txt = p.read_text(encoding='utf-8')
     hint = "Note: No follow-up questions are allowed. Please answer the request directly without asking clarifying questions."

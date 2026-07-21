@@ -10,7 +10,7 @@ plugins:
         llm_profile: [normal]
         llm_profile_advanced: []
         max_steps: 200
-        system_template: "./prompts/file_ops_test_prompt.yaml"
+        system_template: "./prompts/file_ops_test_prompt.md"
         
         tools:
           allowed:

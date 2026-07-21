@@ -1,10 +1,8 @@
 """Tests for prompt_renderer module.
 
-Tests cover:
-- YAML template rendering (existing behavior)
-- Markdown/text template rendering (new feature)
-- Jinja2 variable substitution in both formats
-- File extension detection
+Prompts are markdown-only (whole file = system_prompt, Jinja2-rendered). The
+former multi-section YAML format was removed — a .yaml/.yml path now raises a
+clear error with migration guidance.
 """
 from __future__ import annotations
 
@@ -103,57 +101,21 @@ class TestRenderTextTemplate:
         assert "{{ invalid syntax" in result["system_prompt"]
 
 
-class TestRenderPromptsYaml:
-    """Tests for render_prompts() with YAML templates (existing behavior)."""
+class TestYamlRejected:
+    """YAML prompt templates are no longer supported — they must fail loudly
+    with a migration hint rather than silently embedding raw YAML."""
 
-    def test_yaml_multi_section(self, tmp_path: Path) -> None:
-        """Test YAML template with multiple sections."""
-        yaml_file = tmp_path / "multi.yaml"
-        yaml_file.write_text(
-            "system_prompt: |\n"
-            "  You are an assistant.\n"
-            "tools_prompt: |\n"
-            "  Available tools: {{ tools }}\n"
-            "custom_section: |\n"
-            "  Custom content here.\n",
-            encoding="utf-8"
-        )
-        
-        context = {"tools": "search, calculate"}
-        result = render_prompts(str(yaml_file), context, auto_datetime=False)
-        
-        assert "system_prompt" in result
-        assert "tools_prompt" in result
-        assert "custom_section" in result
-        assert "search, calculate" in result["tools_prompt"]
+    def test_yaml_path_raises(self, tmp_path: Path) -> None:
+        yaml_file = tmp_path / "old.yaml"
+        yaml_file.write_text("system_prompt: |\n  hi\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="no longer supported"):
+            render_prompts(str(yaml_file), {}, auto_datetime=False)
 
-    def test_yaml_single_section(self, tmp_path: Path) -> None:
-        """Test YAML template with single section."""
-        yaml_file = tmp_path / "single.yaml"
-        yaml_file.write_text(
-            "system_prompt: |\n"
-            "  You are a helpful assistant.\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        assert "system_prompt" in result
-        assert len(result) == 1
-
-    def test_yaml_with_auto_datetime(self, tmp_path: Path) -> None:
-        """Test YAML template with auto datetime context."""
-        yaml_file = tmp_path / "datetime.yaml"
-        yaml_file.write_text(
-            "system_prompt: |\n"
-            "  Today is {{ current_date }}.\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=True)
-        
-        # Should contain a date pattern
-        assert "Today is 20" in result["system_prompt"]  # 20XX-XX-XX
+    def test_yml_path_raises(self, tmp_path: Path) -> None:
+        yml_file = tmp_path / "old.yml"
+        yml_file.write_text("system_prompt: hi\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="markdown"):
+            render_prompts(str(yml_file), {}, auto_datetime=False)
 
 
 class TestRenderPromptsMarkdown:
@@ -272,54 +234,9 @@ class TestEdgeCases:
     """Edge case and integration tests."""
 
     def test_file_not_found(self, tmp_path: Path) -> None:
-        """Test that FileNotFoundError is raised for missing files."""
+        """Test that FileNotFoundError is raised for a missing markdown file."""
         with pytest.raises(FileNotFoundError):
-            render_prompts(str(tmp_path / "nonexistent.yaml"), {})
-
-    def test_yaml_with_non_string_values(self, tmp_path: Path) -> None:
-        """Test YAML with non-string values are skipped."""
-        yaml_file = tmp_path / "mixed.yaml"
-        yaml_file.write_text(
-            "system_prompt: You are an assistant.\n"
-            "version: 1.0\n"  # This is a float, should be skipped
-            "enabled: true\n"  # This is a bool, should be skipped
-            "metadata:\n"  # This is a dict, should be skipped
-            "  author: test\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        # Only system_prompt should be in result
-        assert "system_prompt" in result
-        assert "version" not in result
-        assert "enabled" not in result
-        assert "metadata" not in result
-
-    def test_yaml_with_internal_keys(self, tmp_path: Path) -> None:
-        """Test YAML with underscore-prefixed keys are skipped."""
-        yaml_file = tmp_path / "internal.yaml"
-        yaml_file.write_text(
-            "system_prompt: You are an assistant.\n"
-            "_internal: This should be skipped.\n"
-            "_version: Also skipped.\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        assert "system_prompt" in result
-        assert "_internal" not in result
-        assert "_version" not in result
-
-    def test_empty_yaml_file(self, tmp_path: Path) -> None:
-        """Test empty YAML file."""
-        yaml_file = tmp_path / "empty.yaml"
-        yaml_file.write_text("", encoding="utf-8")
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        assert result == {}
+            render_prompts(str(tmp_path / "nonexistent.md"), {})
 
     def test_unicode_content(self, tmp_path: Path) -> None:
         """Test templates with unicode content."""

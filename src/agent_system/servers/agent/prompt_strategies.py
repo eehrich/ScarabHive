@@ -142,75 +142,50 @@ class RawPromptStrategy(PromptStrategy):
 
 
 class TemplateFileStrategy(PromptStrategy):
-    """Render system prompt from template file."""
-    
-    # Section ordering for merged prompt
-    SECTION_ORDER = [
-        'system_prompt',
-        'tools_prompt',
-        'general_instructions_prompt',
-    ]
-    
+    """Render system prompt from a markdown template file (whole file = prompt,
+    Jinja2-rendered)."""
+
     def can_handle(self, context: PromptContext) -> bool:
         """Check if agent has system_template path configured."""
         system_template_path = getattr(context.agent_config, 'system_template', None)
         return bool(system_template_path)
-    
+
     def render(self, context: PromptContext) -> tuple[str, Optional[str]]:
-        """Render template file with context."""
+        """Render the markdown template file with context."""
         system_template_path = context.agent_config.system_template
         context_vals = self._get_context_values(context)
-        
+
         logger.debug(
             "Agent %s rendering system_template from path: %s",
             context.agent_name, system_template_path
         )
-        
-        # Render all sections from template
-        rendered_sections = render_prompts(
+
+        rendered = render_prompts(
             system_template_path,
             context_vals,
             auto_datetime=(
-                context.system_config.context.auto_datetime 
+                context.system_config.context.auto_datetime
                 if hasattr(context.system_config, 'context') else False
             ),
             timezone=(
-                context.system_config.context.timezone 
+                context.system_config.context.timezone
                 if hasattr(context.system_config, 'context') else None
             ),
             location=(
-                context.system_config.context.location 
+                context.system_config.context.location
                 if hasattr(context.system_config, 'context') else None
             )
         )
-        
-        # Merge sections with priority-based ordering
-        merged_prompt = self._merge_sections(rendered_sections)
-        return merged_prompt, None
-    
-    def _merge_sections(self, sections: Dict[str, str]) -> str:
-        """
-        Merge prompt sections in priority order.
-        
-        Matches behavior of config_agent_factory._load_system_prompt()
-        """
-        def sort_key(item):
-            section_name, _ = item
-            try:
-                return (0, self.SECTION_ORDER.index(section_name))
-            except ValueError:
-                # Unknown sections come last, sorted alphabetically
-                return (1, section_name)
-        
-        sorted_sections = sorted(sections.items(), key=sort_key)
-        
-        # Concatenate with separators (except system_prompt which has no header)
-        merged_prompt = "\n\n".join(
-            f"# {section_name}\n{content}" if section_name != "system_prompt" else content
-            for section_name, content in sorted_sections
-        )
-        
-        return merged_prompt
+        system_prompt = rendered.get("system_prompt", "")
+        if not system_prompt.strip():
+            # A configured template that renders empty (empty file, or a body
+            # fully gated behind a false {% if %}) would otherwise fall through
+            # to the generic default prompt silently — surface it.
+            logger.warning(
+                "Agent %s: system_template '%s' rendered to an empty prompt; "
+                "the agent will fall back to the default prompt.",
+                context.agent_name, system_template_path)
+        return system_prompt, None
 
 
 class DefaultPromptStrategy(PromptStrategy):

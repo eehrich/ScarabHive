@@ -31,7 +31,7 @@ agents:
     agent_config:
       llm_profile: turbo
       max_steps: 20
-      system_template: "config/prompts/financial_analyst_prompt.yaml"
+      system_template: "config/prompts/financial_analyst_prompt.md"
       tools:
         allowed:
           - "yahoo_finance/*"

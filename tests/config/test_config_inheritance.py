@@ -266,7 +266,7 @@ class TestInheritanceIntegration:
                     agent_config=AgentConfig(
                         llm_profile="normal",
                         max_steps=20,
-                        system_template="config/prompts/system_prompt.yaml",
+                        system_template="config/prompts/system_prompt.md",
                     )
                 ),
                 servers={

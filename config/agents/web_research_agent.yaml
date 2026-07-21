@@ -45,7 +45,7 @@ plugins:
           llm_profile: [normal]
           llm_profile_advanced: []
           max_steps: 10
-          system_template: "./prompts/meta_web_research_agent.yaml"
+          system_template: "./prompts/meta_web_research_agent.md"
 
           hooks:
             enabled: true

@@ -176,7 +176,7 @@ Please provide:
         Priority order:
         1. If agent_config.system_prompt is set (inline override), return None to use that
         2. If agent_config.system_template is set (custom template), return None to use that
-        3. Otherwise load plugin's default template from prompts/system_prompt.yaml
+        3. Otherwise load plugin's default template from prompts/system_prompt.md
 
         Returning None delegates to Agent._render_prompts() which handles config-based prompts.
         """
@@ -189,22 +189,21 @@ Please provide:
             logger.debug("Agent %s: system_template defined in config, skipping plugin template", self.name)
             return None
         
-        # No config-based prompt, load plugin's default template
+        # No config-based prompt, load plugin's default markdown template
         try:
             from pathlib import Path
-            prompt_file = Path(__file__).parent / "prompts" / "system_prompt.yaml"
+            from jinja2 import Template
+
+            prompt_file = Path(__file__).parent / "prompts" / "system_prompt.md"
             if prompt_file.exists():
-                # We only need the raw system_prompt block; reuse simple YAML parse
-                import yaml  # Local import to avoid global dependency at import time
-                from jinja2 import Template
-                
-                data = yaml.safe_load(prompt_file.read_text(encoding="utf-8")) or {}
-                raw_prompt = data.get("system_prompt")
-                if isinstance(raw_prompt, str) and raw_prompt.strip():
-                    # Render template with context (tools, max_steps, datetime, etc.)
+                raw_prompt = prompt_file.read_text(encoding="utf-8")
+                if raw_prompt.strip():
+                    # Render Jinja2 with context (tools, max_steps, datetime, etc.)
                     rendered_prompt = Template(raw_prompt).render(**context)
                     logger.debug("Agent %s: loaded and rendered plugin template (%d chars)", self.name, len(rendered_prompt))
                     return rendered_prompt
         except Exception as e:  # pragma: no cover - defensive
-            logger.debug("Failed loading custom system_prompt YAML: %s", e)
+            # Warn (not debug): the agent silently degrades to the generic
+            # default prompt if this fails, losing its tool guidance.
+            logger.warning("Failed loading custom system_prompt markdown: %s", e)
         return None

@@ -372,7 +372,7 @@ agents:
     agent_config:
       llm_profile: turbo
       max_steps: 15
-      system_template: "config/prompts/financial_analyst_prompt.yaml"
+      system_template: "config/prompts/financial_analyst_prompt.md"
       
       tools:
         allowed:

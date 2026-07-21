@@ -148,7 +148,7 @@ Description: Professional financial analyst for market analysis
 Configuration:
   LLM Profile:    turbo
   Max Steps:      20
-  System Prompt:  config/prompts/financial_analyst_prompt.yaml
+  System Prompt:  config/prompts/financial_analyst_prompt.md
 
 Tools:
   Allowed:
@@ -544,7 +544,7 @@ agents:
     agent_config:
       llm_profile: "turbo"
       max_steps: 20
-      system_template: "config/prompts/my_agent.yaml"
+      system_template: "config/prompts/my_agent.md"
       tools:
         allowed: ["*"]
 ```

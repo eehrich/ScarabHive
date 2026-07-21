@@ -11,7 +11,7 @@ plugins:
         llm_profile: [normal]
         llm_profile_advanced: []
         max_steps: 60
-        system_template: "./prompts/okf_agent_prompt.yaml"
+        system_template: "./prompts/okf_agent_prompt.md"
 
         tools:
           allowed:

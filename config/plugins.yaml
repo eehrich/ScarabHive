@@ -21,7 +21,7 @@ plugins:
       llm_profile: [normal, chat]
       llm_profile_advanced: []
       max_steps: 20
-      system_template: "config/prompts/system_prompt.yaml"
+      system_template: "config/prompts/system_prompt.md"
 
       hooks:
         enabled: true

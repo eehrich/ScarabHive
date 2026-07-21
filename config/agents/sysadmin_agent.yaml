@@ -86,7 +86,7 @@ plugins:
         llm_profile: [normal]
         llm_profile_advanced: []
         max_steps: 100
-        system_template: "./prompts/system_admin_prompt.yaml"
+        system_template: "./prompts/system_admin_prompt.md"
 
         tools:
           allowed:

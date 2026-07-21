@@ -83,7 +83,7 @@ agents:
         thinking_level: low
         max_tokens: 8000
       max_steps: 20
-      system_template: "config/prompts/financial_analyst_prompt.yaml"
+      system_template: "config/prompts/financial_analyst_prompt.md"
       tools:
         allowed:
           - "yahoo_finance/*"
