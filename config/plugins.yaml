@@ -880,10 +880,17 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction.
-        layer1_threshold: 70000   # Start reversible compaction (tool refs, variables)
-        layer2_threshold: 85000   # Start semi-reversible compaction (archival with summaries)
-        layer3_threshold: 100000  # Start irreversible compaction (drop old messages)
-        target_tokens: 45000      # Target token count after compaction
+        # Cache-Hysterese (docs/prompt_cache_design.md par. 3.5): JEDE Mutation
+        # vor dem Prefix-Ende bricht das Provider-Prompt-Caching komplett.
+        # Deshalb selten und TIEF kuerzen (High-Watermark -> Low-Watermark mit
+        # grossem Hub, ~140k -> 70k), nie inkrementell. Die Schwellen liegen
+        # bewusst hoch: Writer-Profile fahren 200k-1M-Kontexte; kleine Modelle
+        # schuetzt weiterhin max_request_bytes.
+        layer1_threshold: 140000  # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 170000  # Start semi-reversible compaction (archival with summaries)
+        layer3_threshold: 200000  # Start irreversible compaction (drop old messages)
+        target_tokens: 70000      # Target token count after compaction (Low-Watermark, grosser Hub)
+        min_time_between_compactions: 300  # s — verhindert Kompaktions-Dauerlauf dicht ueber der Schwelle
 
         store_media_before_compaction: true  # Aktiviert MediaStore
         media_store_ttl_seconds: 604800      # 7 Tage

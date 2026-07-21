@@ -66,6 +66,9 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self.layer2_threshold = int(config_dict.get("layer2_threshold", 100000))
         self.layer3_threshold = int(config_dict.get("layer3_threshold", 120000))
         self.target_tokens = int(config_dict.get("target_tokens", 60000))
+        # Cache-Hysterese: Mindestabstand zwischen prefix-brechenden
+        # Kompaktionen (docs/prompt_cache_design.md par. 3.5)
+        self.min_time_between_compactions = float(config_dict.get("min_time_between_compactions", 120.0))
         
         # ============================================================
         # CONFIG LOADING - WICHTIG für neue Parameter:
@@ -118,6 +121,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl.layer2_threshold = self.layer2_threshold
         self._hooks_impl.layer3_threshold = self.layer3_threshold
         self._hooks_impl.target_tokens = self.target_tokens
+        self._hooks_impl.min_time_between = self.min_time_between_compactions
         self._hooks_impl.tool_result_min_size = self.tool_result_min_size
         self._hooks_impl.tool_result_keep_last = self.tool_result_keep_last
         self._hooks_impl.tool_result_max_inline_size = self.tool_result_max_inline_size

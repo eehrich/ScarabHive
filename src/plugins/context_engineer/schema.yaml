@@ -301,6 +301,15 @@ config:
     minimum: 0
     description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers. Preserves tool call/result pairs."
 
+  # Cache-Hysterese: Mindestabstand zwischen prefix-brechenden Kompaktionen
+  # (jede History-Mutation bricht das Provider-Prompt-Caching komplett —
+  # selten und tief kuerzen, docs/prompt_cache_design.md par. 3.5)
+  min_time_between_compactions:
+    type: number
+    default: 120.0
+    minimum: 0
+    description: "Minimum seconds between compaction runs per session (anti-thrash; each run breaks the prompt-cache prefix)"
+
   # Compaction Strategy
   compaction_strategy:
     type: string
