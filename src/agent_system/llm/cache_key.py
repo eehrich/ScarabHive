@@ -47,6 +47,50 @@ PREFIX_CHARS = 4096
 
 _SYSTEM_ROLES = {"system", "developer"}
 
+# --- Explizite Cache-Breakpoints (GPT-5.6+) ----------------------------------
+#
+# Empirisch kartiert (2026-07-21, 15 Experimente via OpenRouter /responses):
+# Implizites 5.6-Caching matcht NUR Exakt-Wiederholungen und Konversations-
+# Fortsetzungen — ein Request, der einen langen Prefix teilt und dann mitten
+# im letzten Item divergiert, cached IMMER 0 (auch bei 29k Tokens identischem
+# Prefix). Fix lt. OpenAI-Doku: `prompt_cache_breakpoint` am Content-Part
+# markiert das Ende eines wiederverwendbaren Prefix; Hit = laengster Prefix
+# aus byte-identischen KOMPLETTEN Breakpoint-Bloecken. Max 4 Cache-Writes
+# pro Request (impliziter Breakpoint belegt einen Slot -> max 3 explizite).
+#
+# Pipelines markieren Block-Grenzen im Task-Text mit diesem Sentinel; die
+# OpenAI-faehigen Clients splitten daran in Content-Parts mit Breakpoint-
+# Markern, alle anderen Provider-Pfade STRIPPEN den Sentinel rueckstandsfrei.
+CACHE_BP_SENTINEL = "\n<<<CACHE_BREAKPOINT>>>\n"
+MAX_EXPLICIT_BREAKPOINTS = 3
+
+
+def split_cache_breakpoint_blocks(text: str) -> list[str]:
+    """Text an CACHE_BP_SENTINEL in Bloecke teilen (Sentinel entfaellt).
+
+    Hoechstens MAX_EXPLICIT_BREAKPOINTS Grenzen bleiben erhalten; weitere
+    Sentinels werden in den letzten Block gemergt. Leere Bloecke (Sentinel
+    am Anfang/Ende, Doppel-Sentinel) fallen weg. Ohne Sentinel: [text].
+    """
+    if CACHE_BP_SENTINEL not in text:
+        return [text]
+    raw = text.split(CACHE_BP_SENTINEL)
+    blocks = [b for b in raw if b]
+    if not blocks:
+        return [""]
+    if len(blocks) > MAX_EXPLICIT_BREAKPOINTS + 1:
+        head = blocks[:MAX_EXPLICIT_BREAKPOINTS]
+        tail = "".join(blocks[MAX_EXPLICIT_BREAKPOINTS:])
+        blocks = head + [tail]
+    return blocks
+
+
+def strip_cache_breakpoints(text: str) -> str:
+    """Sentinel rueckstandsfrei entfernen (fuer Provider ohne Breakpoint-Support)."""
+    if CACHE_BP_SENTINEL not in text:
+        return text
+    return "".join(text.split(CACHE_BP_SENTINEL))
+
 
 def _iter_msg_texts(msg: dict) -> Iterator[str]:
     """Textfragmente EINER Message (Rollen-Marker + Text-Parts).

@@ -71,7 +71,12 @@ from agent_system.llm.models import (
     LLMRateLimitError,
     LLMServerError,
 )
-from agent_system.llm.cache_key import derive_prompt_cache_key
+from agent_system.llm.cache_key import (
+    CACHE_BP_SENTINEL,
+    derive_prompt_cache_key,
+    split_cache_breakpoint_blocks,
+    strip_cache_breakpoints,
+)
 from agent_system.llm.httpx_client import HTTPXTimeoutConfig
 from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
@@ -156,7 +161,8 @@ class OpenAIResponsesClient(LLMClient):
                 continue
             ptype = part.get("type")
             if ptype == "text":
-                parts.append({"type": "input_text", "text": part.get("text", "")})
+                parts.append({"type": "input_text",
+                              "text": strip_cache_breakpoints(part.get("text", ""))})
             elif ptype == "image_url":
                 url = part.get("image_url")
                 if isinstance(url, dict):
@@ -195,6 +201,19 @@ class OpenAIResponsesClient(LLMClient):
             content = _get(msg, "content")
 
             if role in ("system", "user"):
+                # Cache-Breakpoint-Sentinel im Task-Text -> mehrere input_text-
+                # Parts, alle bis auf den letzten mit prompt_cache_breakpoint
+                # markiert (GPT-5.6-Prefix-Cache, s. cache_key.py).
+                if isinstance(content, str) and CACHE_BP_SENTINEL in content:
+                    blocks = split_cache_breakpoint_blocks(content)
+                    parts = []
+                    for bi, block in enumerate(blocks):
+                        part: dict = {"type": "input_text", "text": block}
+                        if bi < len(blocks) - 1:
+                            part["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                        parts.append(part)
+                    items.append({"type": "message", "role": role, "content": parts})
+                    continue
                 items.append({
                     "type": "message",
                     "role": role,

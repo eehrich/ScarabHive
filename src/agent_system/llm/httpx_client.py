@@ -17,7 +17,12 @@ from dataclasses import dataclass
 import httpx
 import ssl
 
-from agent_system.llm.cache_key import derive_prompt_cache_key
+from agent_system.llm.cache_key import (
+    CACHE_BP_SENTINEL,
+    derive_prompt_cache_key,
+    split_cache_breakpoint_blocks,
+    strip_cache_breakpoints,
+)
 from agent_system.llm.clients import LLMClient
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
 from agent_system.core.cancellation import CancellationToken
@@ -226,6 +231,33 @@ class HTTPXOpenAIClient(LLMClient):
         if self._is_openrouter:
             self._headers["HTTP-Referer"] = self._openrouter_base_referer
             self._headers["X-Title"] = "ScarabHive"
+
+    def _apply_cache_breakpoints(self, message_dicts: list) -> None:
+        """Cache-Breakpoint-Sentinels in Message-Contents verarbeiten (in place).
+
+        Mit prompt_cache_key (= OpenAI-GPT-Profil): String-Content wird an
+        CACHE_BP_SENTINEL in text-Parts gesplittet, alle bis auf den letzten
+        mit prompt_cache_breakpoint markiert (GPT-5.6, s. cache_key.py).
+        Ohne Key (deepseek & andere Fremd-Provider auf diesem Pfad): Sentinel
+        rueckstandsfrei strippen — fremde APIs kennen weder Marker noch Feld.
+        """
+        for msg in message_dicts:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or CACHE_BP_SENTINEL not in content:
+                continue
+            if not self.prompt_cache_key:
+                msg["content"] = strip_cache_breakpoints(content)
+                continue
+            blocks = split_cache_breakpoint_blocks(content)
+            parts = []
+            for bi, block in enumerate(blocks):
+                part: dict = {"type": "text", "text": block}
+                if bi < len(blocks) - 1:
+                    part["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                parts.append(part)
+            msg["content"] = parts
 
     def set_app_title(self, title: str) -> None:
         """Set per-agent OpenRouter app identity.
@@ -663,6 +695,7 @@ class HTTPXOpenAIClient(LLMClient):
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
+        self._apply_cache_breakpoints(message_dicts)
 
         payload = {
             "model": self.model,
@@ -1154,6 +1187,7 @@ class HTTPXOpenAIClient(LLMClient):
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
+        self._apply_cache_breakpoints(message_dicts)
 
         payload = {
             "model": self.model,

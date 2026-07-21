@@ -1,9 +1,13 @@
-"""Tests fuer llm/cache_key.py — prompt_cache_key "auto"-Ableitung."""
+"""Tests fuer llm/cache_key.py — prompt_cache_key "auto"-Ableitung + Breakpoints."""
 
 from agent_system.llm.cache_key import (
+    CACHE_BP_SENTINEL,
+    MAX_EXPLICIT_BREAKPOINTS,
     PREFIX_CHARS,
     PROMPT_CACHE_KEY_AUTO,
     derive_prompt_cache_key,
+    split_cache_breakpoint_blocks,
+    strip_cache_breakpoints,
 )
 
 
@@ -108,3 +112,49 @@ class TestFormats:
         a = derive_prompt_cache_key("auto", [])
         b = derive_prompt_cache_key("auto", [])
         assert a == b and a.startswith("auto-")
+
+
+class TestBreakpointSplit:
+    def test_no_sentinel_passthrough(self):
+        assert split_cache_breakpoint_blocks("abc") == ["abc"]
+        assert strip_cache_breakpoints("abc") == "abc"
+
+    def test_split_and_strip_roundtrip(self):
+        text = "stabil" + CACHE_BP_SENTINEL + "variabel"
+        assert split_cache_breakpoint_blocks(text) == ["stabil", "variabel"]
+        assert strip_cache_breakpoints(text) == "stabilvariabel"
+
+    def test_strip_preserves_explicit_newline_separator(self):
+        # Konstruktions-Muster der Pipeline: "\n" VOR dem Sentinel, damit
+        # der Strip exakt den Join ohne Marker ergibt.
+        text = "zeile1\n" + CACHE_BP_SENTINEL + "zeile2"
+        assert strip_cache_breakpoints(text) == "zeile1\nzeile2"
+
+    def test_cap_at_max_breakpoints(self):
+        blocks = ["b%d" % i for i in range(6)]
+        text = CACHE_BP_SENTINEL.join(blocks)
+        out = split_cache_breakpoint_blocks(text)
+        assert len(out) == MAX_EXPLICIT_BREAKPOINTS + 1
+        assert "".join(out) == "".join(blocks)
+
+    def test_empty_blocks_dropped(self):
+        text = CACHE_BP_SENTINEL + "inhalt" + CACHE_BP_SENTINEL
+        assert split_cache_breakpoint_blocks(text) == ["inhalt"]
+
+    def test_auto_key_ignores_sentinel_position(self):
+        # Der auto-Key wird aus dem POST-Split-Payload gehasht — mit und
+        # ohne Sentinel muss derselbe Key entstehen (Split strippt ihn).
+        raw = "instruktion " * 200
+        with_sent = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": [
+                {"type": "text", "text": raw[:500]},
+                {"type": "text", "text": raw[500:]},
+            ]},
+        ]
+        without = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": raw},
+        ]
+        assert derive_prompt_cache_key("auto", with_sent) == \
+            derive_prompt_cache_key("auto", without)

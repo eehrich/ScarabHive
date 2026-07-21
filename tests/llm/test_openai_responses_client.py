@@ -201,6 +201,22 @@ class TestToolsAndPayload:
         p = c._build_payload([ChatMessage(role="user", content="hi")], None)
         assert p["prompt_cache_key"] == "v4_scene_planner"
 
+    def test_payload_splits_cache_breakpoint_sentinel(self):
+        # GPT-5.6 cached Mid-Prompt-Divergenz nur mit expliziten Breakpoints
+        # (Experimente 2026-07-21): Sentinel im Task -> input_text-Parts,
+        # alle bis auf den letzten mit prompt_cache_breakpoint markiert.
+        from agent_system.llm.cache_key import CACHE_BP_SENTINEL
+        c = _client(prompt_cache_key="auto")
+        task = "stabiler teil" + CACHE_BP_SENTINEL + "variabler teil"
+        p = c._build_payload([ChatMessage(role="user", content=task)], None)
+        parts = p["input"][0]["content"]
+        assert [x["text"] for x in parts] == ["stabiler teil", "variabler teil"]
+        assert parts[0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert "prompt_cache_breakpoint" not in parts[1]
+        # Sentinel darf den Payload nirgends mehr verlassen
+        import json as _json
+        assert "CACHE_BREAKPOINT" not in _json.dumps(p)
+
     def test_payload_prompt_cache_key_auto_hashes_prefix(self):
         # "auto" = Praefix-Hash (cache_key.py): gleicher Prompt -> gleicher
         # Key, frueh divergenter Prompt (anderes Buch) -> anderer Key.

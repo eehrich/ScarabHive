@@ -1423,6 +1423,41 @@ class TestEncryptedReasoningRecovery:
         assert "reasoning_details" not in payload["messages"][5]
 
 
+class TestCacheBreakpoints:
+    """GPT-5.6-Cache-Breakpoints: Sentinel-Split (OpenAI) vs Strip (Fremd-Provider)."""
+
+    def _client(self, pck=None):
+        c = create_test_client()
+        c.prompt_cache_key = pck
+        return c
+
+    def test_with_key_splits_into_marked_parts(self):
+        from agent_system.llm.cache_key import CACHE_BP_SENTINEL
+        msgs = [{"role": "user",
+                 "content": "stabil" + CACHE_BP_SENTINEL + "variabel"}]
+        self._client(pck="auto")._apply_cache_breakpoints(msgs)
+        parts = msgs[0]["content"]
+        assert [p["text"] for p in parts] == ["stabil", "variabel"]
+        assert parts[0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert "prompt_cache_breakpoint" not in parts[1]
+
+    def test_without_key_strips_sentinel(self):
+        # deepseek-Fallback u.ae.: fremde APIs kennen weder Marker noch Feld —
+        # der Content bleibt ein Plain-String ohne Sentinel-Reste.
+        from agent_system.llm.cache_key import CACHE_BP_SENTINEL
+        msgs = [{"role": "user",
+                 "content": "zeile1\n" + CACHE_BP_SENTINEL + "zeile2"}]
+        self._client(pck=None)._apply_cache_breakpoints(msgs)
+        assert msgs[0]["content"] == "zeile1\nzeile2"
+
+    def test_content_without_sentinel_untouched(self):
+        msgs = [{"role": "user", "content": "normaler task"},
+                {"role": "assistant", "content": None}]
+        self._client(pck="auto")._apply_cache_breakpoints(msgs)
+        assert msgs[0]["content"] == "normaler task"
+        assert msgs[1]["content"] is None
+
+
 if __name__ == "__main__":
     # Run tests with pytest when executed directly
     pytest.main([__file__, "-v"])
