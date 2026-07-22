@@ -7,9 +7,9 @@ from pathlib import Path
 import sys
 import types
 from typing import Any, Callable, Dict, Iterable, List, Set
-import yaml
 
 from ..mcp.base import MCPServer
+from .plugin_manifest import load_plugin_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -110,20 +110,14 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         if not d.is_dir():
             continue
         
-        # Read plugin.yaml to determine entrypoint (default: plugin.py)
-        meta_file = d / "plugin.yaml"
+        # Load the plugin manifest (plugin.toml preferred, plugin.yaml fallback)
+        # once — reused below for the entrypoint AND the attached _plugin_metadata.
+        metadata = load_plugin_metadata(d)
         entrypoint_module = "plugin"
         entrypoint_factory = "PLUGIN_FACTORY"
-        
-        if meta_file.exists():
-            try:
-                with meta_file.open('r', encoding='utf-8') as fh:
-                    metadata = yaml.safe_load(fh) or {}
-                    entrypoint = metadata.get("entrypoint", "plugin:PLUGIN_FACTORY")
-                    if ":" in entrypoint:
-                        entrypoint_module, entrypoint_factory = entrypoint.split(":", 1)
-            except Exception as e:
-                logger.warning(f"Failed to read entrypoint from {meta_file}: {e}", exc_info=True)
+        entrypoint = metadata.get("entrypoint", "plugin:PLUGIN_FACTORY")
+        if isinstance(entrypoint, str) and ":" in entrypoint:
+            entrypoint_module, entrypoint_factory = entrypoint.split(":", 1)
         
         plugin_file = d / f"{entrypoint_module}.py"
         if not plugin_file.exists():
@@ -186,17 +180,10 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         # Determine plugin name: prefer PLUGIN_NAME constant if present for backwards compatibility
         name = getattr(mod, "PLUGIN_NAME", None) or d.name
         
-        # Reload metadata with all fields
-        metadata = None
-        if meta_file.exists():
-            try:
-                with meta_file.open('r', encoding='utf-8') as fh:
-                    metadata = yaml.safe_load(fh) or {}
-            except Exception as e:
-                logger.warning(f"Failed to read plugin metadata {meta_file}: {e}", exc_info=True)
-        
+        # Attach the manifest loaded at the top of the loop (None if absent,
+        # preserving the prior contract that _plugin_metadata is None w/o manifest).
         try:
-            setattr(factory, '_plugin_metadata', metadata)
+            setattr(factory, '_plugin_metadata', metadata or None)
         except Exception as e:
             logger.debug(f"Failed to attach metadata to plugin factory: {e}")
         
@@ -277,17 +264,13 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
                                 submodule_locations = getattr(spec, "submodule_search_locations", None)
                                 if submodule_locations:
                                     pkg_path = Path(submodule_locations[0])
-                                    meta_path = pkg_path / "plugin.yaml"
-                                    if meta_path.exists():
-                                        metadata_obj = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                                    metadata_obj = load_plugin_metadata(pkg_path) or None
                                 else:
                                     # single-module distribution: check module file's parent
                                     origin = getattr(spec, "origin", None)
                                     if origin:
                                         mod_path = Path(origin).parent
-                                        meta_path = mod_path / "plugin.yaml"
-                                        if meta_path.exists():
-                                            metadata_obj = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                                        metadata_obj = load_plugin_metadata(mod_path) or None
                         except Exception as e:
                             # best-effort; don't fail discovery on metadata lookup
                             logger.debug(f"Failed to load metadata for packaged plugin '{name}': {e}")
@@ -395,9 +378,8 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
                     for d in source_dirs:
                         try:
                             dp = Path(d)
-                            meta_path = dp.joinpath(name, "plugin.yaml")
-                            if meta_path.exists():
-                                loaded = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                            loaded = load_plugin_metadata(dp / name)
+                            if loaded:
                                 try:
                                     setattr(factory, "_plugin_metadata", loaded)
                                 except Exception as e:

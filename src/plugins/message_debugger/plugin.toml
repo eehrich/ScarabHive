@@ -1,0 +1,13 @@
+# message_debugger plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "message_debugger"
+version = "1.0.0"
+description = "Debug and inspect LLM conversation messages with detailed token analysis and history tracking"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["web", "hooks"]
+category = "debugging"
+requires = { agent_system = ">=0.6.0" }

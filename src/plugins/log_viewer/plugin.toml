@@ -1,0 +1,13 @@
+# log_viewer plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "log_viewer"
+version = "1.0.0"
+description = "Real-time log streaming and viewing plugin with web UI"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server", "web"]
+category = "monitoring"
+requires = { agent_system = ">=0.6.0" }

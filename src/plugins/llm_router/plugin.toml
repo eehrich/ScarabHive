@@ -1,0 +1,14 @@
+# llm_router plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "llm_router"
+version = "1.0.0"
+description = "Route requests to different LLM providers for specialized tasks or alternative AI models"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server"]
+category = "tools"
+license = "MIT"
+requires = { agent_system = ">=0.6.0" }

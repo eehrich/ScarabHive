@@ -122,12 +122,12 @@ class PluginValidator:
         return True
 
     def _load_configs(self) -> bool:
-        """Load and parse YAML configuration files."""
+        """Load and parse the plugin manifest + schema."""
         try:
-            # Load plugin.yaml
-            plugin_yaml_path = self.plugin_path / "plugin.yaml"
-            with open(plugin_yaml_path, "r", encoding="utf-8") as f:
-                self.plugin_yaml = yaml.safe_load(f)
+            # Load the plugin manifest (plugin.toml preferred, plugin.yaml
+            # fallback) via the shared loader — returns the [plugin] metadata.
+            from agent_system.plugins.plugin_manifest import load_plugin_metadata
+            self.plugin_yaml = load_plugin_metadata(self.plugin_path)
 
             # Load schema.yaml (optional) - handle Jinja2 templates
             schema_yaml_path = self.plugin_path / "schema.yaml"

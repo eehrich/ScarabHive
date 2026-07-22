@@ -9,7 +9,7 @@ This document explains how to create plugins (MCP servers) for AgentSystem. It w
 - [Quick Start: Your First Plugin](#quick-start-your-first-plugin)
 - [Plugin Structure and Layout](#plugin-structure-and-layout)
 - [Defining Schema (`schema.yaml`)](#defining-schema-schemayaml)
-- [Defining Metadata (`plugin.yaml`)](#defining-metadata-pluginyaml)
+- [Defining Metadata (`plugin.toml`)](#defining-metadata-plugintoml)
 - [Implementing the Server](#implementing-the-server)
   - [Agent-Based Plugins](#agent-based-plugins)
   - [Plugin Types Summary](#plugin-types-summary)
@@ -128,12 +128,13 @@ tools:
         required: ["name"]
 ```
 
-**Step 2: Create `plugin.yaml`**
-```yaml
-name: hello_world
-version: 1.0.0
-description: "Simple hello world plugin"
-entrypoint: server:HelloWorldServer
+**Step 2: Create `plugin.toml`**
+```toml
+[plugin]
+name = "hello_world"
+version = "1.0.0"
+description = "Simple hello world plugin"
+entrypoint = "server:HelloWorldServer"
 ```
 
 **Step 3: Create `server.py`**
@@ -187,19 +188,21 @@ That's it! Your plugin is ready to use.
 **Option 1: Simple (all-in-one)**
 ```
 src/plugins/<plugin_name>/
-  ├── plugin.yaml       # Plugin metadata
+  ├── plugin.toml       # Plugin metadata + Python requirements
   ├── schema.yaml       # Tool definitions
   ├── server.py         # Main server implementation + PLUGIN_FACTORY
+  ├── tests/            # Colocated tests (test_*.py)
   └── README.md         # Documentation
 ```
 
 **Option 2: Separated (MCP-only plugins)**
 ```
 src/plugins/<plugin_name>/
-  ├── plugin.yaml       # Plugin metadata
+  ├── plugin.toml       # Plugin metadata + Python requirements
   ├── schema.yaml       # Tool definitions
   ├── plugin.py         # Business logic + PLUGIN_FACTORY export
   ├── server.py         # MCP server wrapper (SchemaBasedMCPServer)
+  ├── tests/            # Colocated tests (test_*.py)
   └── README.md         # Documentation
 ```
 
@@ -215,38 +218,59 @@ If `PLUGIN_FACTORY` is missing from `plugin.py`, your plugin won't be discovered
 
 ### Test Structure
 
-Tests go in the project root under `tests/` and follow the naming convention:
+Tests are **colocated with the plugin**, in a `tests/` subfolder, and follow the
+naming convention:
 ```
-tests/
+src/plugins/<plugin_name>/tests/
   ├── test_plugin_<plugin_name>_basic.py
   ├── test_plugin_<plugin_name>_integration.py
   └── test_plugin_<plugin_name>_cancellation.py
 ```
 
-**Example test file:** `tests/test_plugin_hello_world_basic.py`
+**Example test file:** `src/plugins/hello_world/tests/test_plugin_hello_world_basic.py`
+
+`pytest.ini` collects these via the `src/plugins/*/tests` and
+`src/plugins_writer/*/tests` testpaths. The shared fixtures (`mock_system_config`,
+`reset_global_state`, the fake-LLM patch, …) live in the **root-level
+`conftest.py`**, so colocated tests inherit them exactly like tests under `tests/`.
+
+Framework-level tests that span multiple plugins (discovery, hook wiring,
+cross-plugin integration) stay under `tests/`. Keep test basenames globally
+unique (the naming convention already ensures this) — pytest's default
+prepend import mode requires it.
+
+To find a file relative to the plugin, anchor on the plugin dir, not the repo
+root: `Path(__file__).resolve().parents[1]` is the plugin directory (the test
+lives in `<plugin>/tests/`).
 
 ### File Responsibilities
 
 - **`schema.yaml`**: Defines tools, parameters, and validation rules
-- **`plugin.yaml`**: Metadata for discovery (name, version, entry point)
+- **`plugin.toml`**: Metadata for discovery (name, version, entry point) **and**
+  the plugin's own Python requirements
 - **`plugin.py`** (if separated structure): Core business logic + **MUST export PLUGIN_FACTORY**
 - **`server.py`**: MCP protocol implementation and tool routing
+- **`tests/`**: Colocated plugin tests
 - **`README.md`**: Usage examples, configuration options, troubleshooting
 
 **IMPORTANT**: If you use a separated structure (plugin.py + server.py), `plugin.py` MUST export `PLUGIN_FACTORY` because that's the only file checked during plugin discovery!
 
-## Defining Metadata (`plugin.yaml`)
+## Defining Metadata (`plugin.toml`)
 
-The `plugin.yaml` file contains essential metadata for plugin discovery and management.
+The `plugin.toml` file contains essential metadata for plugin discovery and
+management, plus the plugin's Python package requirements. All metadata lives
+under a single `[plugin]` table. (The legacy `plugin.yaml` is still read as a
+fallback, but new plugins use `plugin.toml`.)
 
 ### Basic Structure
 
-```yaml
-name: my_plugin
-version: 1.0.0
-description: "Brief description of what the plugin does"
-author: "Your Name"
-entrypoint: server:PLUGIN_FACTORY
+```toml
+[plugin]
+name = "my_plugin"
+version = "1.0.0"
+description = "Brief description of what the plugin does"
+author = "Your Name"
+entrypoint = "server:PLUGIN_FACTORY"
 ```
 
 ### Field Descriptions
@@ -266,60 +290,34 @@ entrypoint: server:PLUGIN_FACTORY
 
 ### Plugin Types and Categories
 
-```yaml
+The `type` list declares a plugin's capabilities; combine values for hybrids.
+
+```toml
 # MCP-only plugin (provides MCP server/tools)
-name: web_scraper
-version: 1.0.0
-description: "Web scraping tools for content extraction"
-author: "Your Name"
-entrypoint: server:WebScraperServer
-type:
-  - mcp-server
-category: tools
-
-# Web-only plugin (provides web UI/endpoints)
-name: monitoring_dashboard
-version: 1.2.0
-description: "System monitoring dashboard with real-time metrics"
-author: "Team Name"
-entrypoint: plugin:DashboardPlugin
-type:
-  - web
-category: monitoring
-
-# Hybrid plugin (MCP + Web)
-name: log_viewer
-version: 1.0.0
-description: "Real-time log streaming and viewing with web interface"
-author: "AgentSystem Team"
-entrypoint: plugin:LogViewerPlugin
-type:
-  - mcp-server
-  - web
-category: monitoring
-
-# Hooks-only plugin (lifecycle event handlers)
-name: request_logger
-version: 1.0.0
-description: "Logs agent lifecycle events"
-author: "AgentSystem"
-entrypoint: plugin:PLUGIN_FACTORY
-type:
-  - hooks
-category: monitoring
-
-# Multi-capability plugin (MCP + Web + Hooks)
-name: todo
-version: 1.0.0
-description: "Todo management with tools, web UI, and hooks"
-author: "AgentSystem"
-entrypoint: plugin:PLUGIN_FACTORY
-type:
-  - mcp-server
-  - web
-  - hooks
-category: productivity
+[plugin]
+name = "web_scraper"
+version = "1.0.0"
+description = "Web scraping tools for content extraction"
+author = "Your Name"
+entrypoint = "server:WebScraperServer"
+type = ["mcp-server"]
+category = "tools"
 ```
+
+```toml
+# Hybrid plugin (MCP + Web + Hooks) — combine types in the list
+[plugin]
+name = "todo"
+version = "1.0.0"
+description = "Todo management with tools, web UI, and hooks"
+author = "AgentSystem"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server", "web", "hooks"]
+category = "productivity"
+```
+
+Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
+`type = ["hooks"]` (lifecycle event handlers only).
 
 **Type Field Options:**
 - `mcp-server`: Plugin provides MCP tools/server
@@ -331,27 +329,25 @@ Combine multiple types by listing them (e.g., `[mcp-server, web]` for hybrid plu
 
 ### Advanced Options
 
-```yaml
-name: advanced_plugin
-version: 2.1.0
-description: "Advanced plugin with dependencies and configuration"
-author: "Team Name"
-entrypoint: server:AdvancedServer
-type:
-  - mcp-server
-  - web
-category: tools
+```toml
+[plugin]
+name = "advanced_plugin"
+version = "2.1.0"
+description = "Advanced plugin with dependencies and configuration"
+author = "Team Name"
+entrypoint = "server:AdvancedServer"
+type = ["mcp-server", "web"]
+category = "tools"
 
-# Dependencies (for external packages)
-dependencies:
-  - requests>=2.25.0
-  - beautifulsoup4>=4.9.0
+# Searchable keywords
+tags = ["web", "scraping", "api"]
 
-# Plugin classification
-tags:
-  - web
-  - scraping
-  - api
+# Framework version constraint (not a pip dependency)
+requires = { python = ">=3.11", agent_system = ">=0.4.0" }
+
+# Python package requirements OWNED by this plugin (pip specs only — not
+# other plugins). Aggregated into the install; see "Dependencies" below.
+dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
 ```
 
 ### Metadata Field Reference
@@ -370,14 +366,38 @@ tags:
 - **`category`**: Functional category (`tools`, `monitoring`, `data`, `ui`, `utilities`)
 - **`tags`**: Searchable keywords for discovery
 
-**Dependencies:**
-- **`dependencies`**: Python package requirements (for external plugins)
+**Framework & dependencies:**
+- **`requires`**: Framework/runtime version constraints (e.g.
+  `{ python = ">=3.11", agent_system = ">=0.4.0" }`). NOT pip packages.
+- **`dependencies`**: the plugin's own pip requirements, as a list of PEP 508
+  specs (`["ruamel.yaml>=0.18"]`). List only real PyPI packages — never other
+  plugin names (inter-plugin needs are resolved by discovery, not pip).
+
+### How plugin dependencies reach the install
+
+Plugin-owned requirements do **not** live in the root `pyproject.toml`. Instead:
+
+1. Each plugin declares its pip deps in `plugin.toml` (`[plugin] dependencies`).
+2. `scripts/aggregate_plugin_deps.py` merges `requirements/core.txt` (framework
+   deps shared by many plugins) with every plugin's `dependencies` into
+   `requirements/all.txt`.
+3. The root `pyproject.toml` reads `requirements/all.txt` via
+   `[tool.setuptools.dynamic]`, so `pip install .` installs the full set.
+
+After adding or changing a plugin's `dependencies`, re-run:
+```
+python scripts/aggregate_plugin_deps.py
+```
+A drift-guard test (`tests/pluginsystem/test_plugin_deps_aggregation.py`) fails
+if `requirements/all.txt` is stale. Deps used by many plugins or by the
+framework stay in `requirements/core.txt`; a dep used by exactly one plugin
+belongs in that plugin's `plugin.toml`.
 
 ## Defining Schema (`schema.yaml`)
 
 The `schema.yaml` file defines your plugin's tools using OpenAI function format. This is how the agent knows what tools are available and how to call them.
 
-> **Important**: `schema.yaml` contains only tool definitions and web UI configuration. Plugin metadata (type, category, version, etc.) belongs in `plugin.yaml`, not here.
+> **Important**: `schema.yaml` contains only tool definitions and web UI configuration. Plugin metadata (type, category, version, etc.) belongs in `plugin.toml`, not here.
 
 ### Basic Tool Definition
 
@@ -594,7 +614,7 @@ web_ui:
 
 For plugins that provide web interfaces, add a `web_ui` section to your schema:
 
-> **Note**: The `web_ui` section belongs in `schema.yaml` for UI configuration. Plugin metadata (type, category, etc.) belongs in `plugin.yaml`.
+> **Note**: The `web_ui` section belongs in `schema.yaml` for UI configuration. Plugin metadata (type, category, etc.) belongs in `plugin.toml`.
 
 ```yaml
 # After your tools definitions
@@ -956,7 +976,7 @@ PLUGIN_FACTORY = DashboardPlugin
 
 **Plugin Configuration:**
 ```yaml
-# plugin.yaml
+# plugin.toml
 name: my_dashboard
 version: 1.0.0
 description: "System dashboard web interface"
@@ -1244,13 +1264,13 @@ Agent-based plugins are ideal for:
 **File Structure:**
 ```
 src/plugins/my_agent/
-├── plugin.yaml          # Metadata
+├── plugin.toml          # Metadata
 ├── schema.yaml          # Tool definitions
 ├── server.py           # Agent class implementation
 └── plugin.py           # Factory function
 ```
 
-**1. Plugin Metadata (`plugin.yaml`):**
+**1. Plugin Metadata (`plugin.toml`):**
 ```yaml
 name: my_agent
 version: 1.0.0
@@ -2280,7 +2300,7 @@ my-agent-plugin/
     ├── __init__.py
     ├── server.py
     ├── schema.yaml
-    └── plugin.yaml
+    └── plugin.toml
 ```
 
 **Installation:**
@@ -2314,7 +2334,7 @@ PLUGIN_FACTORY = MyPluginServer
 
 **Required for MCP plugins:**
 - [ ] `schema.yaml` with proper tool definitions
-- [ ] `plugin.yaml` with metadata
+- [ ] `plugin.toml` with metadata
 - [ ] Server class extending `SchemaBasedMCPServer`
 - [ ] Support for `_status` parameter
 - [ ] Support for `_cancellation_token` parameter
@@ -2328,13 +2348,13 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] `web_ui` section in `schema.yaml` with panel/endpoint configuration
 - [ ] `get_web_router()` and `get_panels()` implementation
 - [ ] Static assets handling (CSS, JS, images)
-- [ ] `plugin.yaml` with `type: [mcp-server, web]` and `category` metadata
+- [ ] `plugin.toml` with `type: [mcp-server, web]` and `category` metadata
 
 **Required for web-only plugins:**
 - [ ] Web endpoints class extending `PluginWebInterface`
 - [ ] `web_ui` section in `schema.yaml` (no tools section needed)
 - [ ] `get_web_router()` returning FastAPI router with `/plugins/<name>/` prefix
-- [ ] `plugin.yaml` with `type: [web]` and `category` metadata
+- [ ] `plugin.toml` with `type: [web]` and `category` metadata
 - [ ] Static assets handling (CSS, JS, images)
 - [ ] UI panels registration via `get_panels()`
 - [ ] Security considerations for web access
@@ -2388,7 +2408,7 @@ PLUGIN_FACTORY = MyPluginServer
     from .server import MyPluginServer
     PLUGIN_FACTORY = MyPluginServer
     ```
-- Check `plugin.yaml` exists and has correct `entrypoint`
+- Check `plugin.toml` exists and has correct `entrypoint`
 - Verify plugin directory is listed in `config/plugins.yaml` under `plugin_dirs`
 - Check for syntax errors in `plugin.py` that prevent import
 - Use `python -m agent_system.agent_cli plugins` to list discovered plugins

@@ -1,0 +1,12 @@
+# batch_monitor plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "batch_monitor"
+version = "1.0.0"
+description = "Monitor and query batch queue status"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["web"]
+requires = { agent_system = ">=0.6.0" }

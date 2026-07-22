@@ -1,0 +1,13 @@
+# web_scraper plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "web_scraper"
+version = "0.1.0"
+description = "Fetch and extract readable text and structured data (tables/forms/lists) from web pages."
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server"]
+category = "tools"
+requires = { agent_system = ">=0.6.0" }

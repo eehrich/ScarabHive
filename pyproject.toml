@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-system-mcp"
-version = "0.5.3"
+version = "0.6.0"
 description = "ScarabHive - Flexible AI Agent Framework using MCP with pluggable servers and FastAPI UI"
 authors = [{ name = "Enrico Ehrich" }]
 license = "Apache-2.0"
@@ -17,61 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
 ]
-dependencies = [
-    "pydantic>=2.11,<3.0",  # chromadb 0.6.3 is compatible with pydantic 2.11+
-    "pyyaml>=6.0",
-    "ruamel.yaml>=0.18",  # OKF plugin: formatting-preserving YAML 1.2 round-trip for frontmatter
-    "fastapi==0.115.6",  # Pin exact version
-    "uvicorn[standard]>=0.30",
-    "httpx>=0.27",
-    "aiohttp>=3.12",
-    "requests>=2.28",
-    "urllib3>=1.24.2,<2.4.0",  # <2.4.0 needed for kubernetes compatibility
-    "duckduckgo-search>=6.1.6,<9.0",  # Note: ddgs package was hijacked by another project at v9.x
-    "tavily-python>=0.5.0",  # Tavily AI-powered web search
-    "yfinance>=0.2.52",
-    "curl-cffi>=0.5.0",
-    "snscrape>=0.7.0",
-    "tweepy>=4.14.0",
-    "openai>=1.37.0",
-    "faster-whisper>=1.1.0",  # Local Whisper backend for writer_audio pipeline
-    "silero-vad>=5.0",  # Neural VAD for end-silence snap in audio pipeline (model auto-downloaded via torch.hub)
-    "voicefixer>=0.1.2",  # Voice enhancement for calibration clips
-    "anthropic>=0.40.0",  # Anthropic Claude SDK
-    "ollama>=0.3.0",
-    "google-genai>=1.50.0",  # Gemini SDK - need recent version for batch API
-    "jinja2>=3.1",
-    "pytz>=2024.1",
-    "pytest>=8.4",
-    "pytest-asyncio>=1.1.0",
-    "tabulate>=0.9",
-    "ib_async>=0.9.86",
-    "nest_asyncio>=1.5.0",
-    "brotli>=1.1.0",
-    "Pillow>=10.0.0",
-    "concurrent-log-handler>=0.9.25",  # Multi-process safe rotating file handler (Windows-compatible file locks via portalocker)
-    "asyncssh>=2.13.0",
-    "aiofiles>=24.1.0",
-    "python-jose[cryptography]>=3.3.0",
-    "bcrypt>=5.0.0",
-    "python-multipart>=0.0.9",
-    "email-validator>=2.0.0",
-    "typer>=0.9.0",
-    "markdown>=3.5.0",
-    "rich>=13.0.0",
-    "markdownify>=0.11.0",
-    "pygments>=2.15.0",
-    "websockets>=15.0.0",
-    "chromadb>=1.4.0,<2.0",  # Update to fix Pydantic 2.11 compatibility
-    "posthog>=3.0.0,<3.2.0",  # Pin compatible version - 7.x has breaking changes
-    "chroma-hnswlib>=0.7.6",  # ChromaDB's compatible fork (NOT hnswlib!)
-    "sqlite-vec>=0.1.0",
-    "sentence-transformers>=4.0.0",
-    "onnxruntime>=1.20.0",
-    "psutil>=5.9.0",  # For performance profiling
-    "pydub>=0.25.0",  # Audio manipulation (requires ffmpeg)
-    "json-repair>=0.57.0",  # Robust JSON repair for malformed LLM output
-]
+dynamic = ["dependencies"]
 
 [project.urls]
 Homepage = "https://github.com/eehrich/ScarabHive"
@@ -101,13 +47,20 @@ mcp-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
 comfyui = "scripts.comfyui:main"
 audio-ops = "plugins.audio_ops.__main__:main"
 
+# Dependencies are aggregated per-plugin: each plugin declares its pip
+# requirements in its own plugin.toml; scripts/aggregate_plugin_deps.py
+# merges them with requirements/core.txt into requirements/all.txt, which
+# setuptools reads here. Keeps plugin-owned deps out of this file.
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements/all.txt"] }
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 # Note: templates/ and static/ are outside src/ so they're included via MANIFEST.in
 # The app.py _find_resource_dir() function handles multiple install scenarios
 [tool.setuptools.package-data]
-"*" = ["*.yaml", "*.json"]
+"*" = ["*.yaml", "*.json", "*.toml"]
 
 [project.optional-dependencies]
 dev = [

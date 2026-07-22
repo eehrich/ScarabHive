@@ -1,0 +1,13 @@
+# image_compose plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "image_compose"
+version = "1.0.0"
+description = "Compose images from layered primitives (backgrounds, text, shapes, gradients, SVG)"
+author = "Enrico Ehrich"
+entrypoint = "server:PLUGIN_FACTORY"
+type = ["mcp-server"]
+category = "media"
+requires = { agent_system = ">=0.6.0" }

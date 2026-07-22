@@ -1,0 +1,14 @@
+# tool_script plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "tool_script"
+version = "1.0.0"
+description = "Scripted tool chains — one Python script orchestrates tool calls server-side (no LLM round-trips between hops)"
+author = "AgentSystem"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server"]
+category = "tools"
+tags = ["scripting", "orchestration", "workflow"]
+requires = { agent_system = ">=0.6.0" }

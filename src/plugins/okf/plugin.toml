@@ -1,0 +1,19 @@
+# OKF plugin manifest — metadata AND Python requirements in one file.
+#
+# Read by `agent_system.plugins.plugin_manifest` (plugin.toml is preferred over
+# the legacy plugin.yaml). The `dependencies` list is aggregated into the build
+# by `scripts/aggregate_plugin_deps.py`, so plugin-owned requirements no longer
+# live in the root pyproject.toml.
+[plugin]
+name = "okf"
+version = "1.0.0"
+description = "Open Knowledge Format (OKF) — read/write/validate/graph/search curated markdown knowledge bundles, plus opt-in context injection"
+author = "AgentSystem"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server", "hooks"]
+category = "data"
+tags = ["okf", "knowledge", "wiki", "markdown", "context"]
+requires = { agent_system = ">=0.6.0" }
+
+# Python package requirements owned by this plugin (aggregated into the install).
+dependencies = ["ruamel.yaml>=0.18"]
