@@ -74,10 +74,17 @@ from agent_system.llm.models import (
 from agent_system.llm.cache_key import (
     CACHE_BP_SENTINEL,
     CACHE_MODE_TASK_SEQUENCE,
+    MARKER_STYLE_ANTHROPIC,
     MARKER_STYLE_NONE,
     MARKER_STYLE_OPENAI,
+    anthropic_cache_conversation,
     boundary_registry,
+    cap_cache_control,
     derive_prompt_cache_key,
+    mark_conversation_tail,
+    mark_last_system,
+    mark_last_tool,
+    messages_have_history,
     plan_cache_blocks,
     strip_cache_breakpoints,
 )
@@ -343,6 +350,51 @@ class OpenAIResponsesClient(LLMClient):
                 parts.append(part)
             item["content"] = parts
 
+    def _apply_anthropic_cache_blocks(self, items: list, tools: Optional[list]) -> None:
+        """Anthropic cache_control auf Responses-input-Items (Zukunfts-Pfad).
+
+        Aktuell routet KEIN Claude-Modell ueber die Responses-API — alle Claude
+        laufen via httpx-OpenRouter (Chat Completions) bzw. natives SDK. Diese
+        Verdrahtung greift, sobald ein Modell mit ``provider=openai_responses``
+        UND ``prompt_cache_marker_style=anthropic`` konfiguriert wird; sie nutzt
+        exakt dieselbe geteilte Policy (cache_key.py) wie die anderen Claude-
+        Pfade — kein zweiter Cache-Dialekt.
+
+        Anthropic verwendet cache_control (nicht die OpenAI-Breakpoint-Sentinels),
+        deshalb: etwaige Sentinels rueckstandsfrei entfernen und stattdessen den
+        System-Prefix + (bei Multi-Turn) den wachsenden Konversations-Tail + die
+        letzte Tool-Definition als Breakpoints markieren; der Cap erzwingt das
+        harte 4-Block-Limit.
+
+        String-Content wird zuerst in Responses-``input_text``-Parts gehoben,
+        damit der Marker auf einem gueltigen Responses-Blocktyp landet und nicht
+        auf ``{"type": "text"}`` (Chat-Completions-Format) — sonst waere das
+        Payload ungueltig.
+        """
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                # Responses-API: Assistant-Text ist output_text, sonst input_text.
+                part_type = "output_text" if item.get("role") == "assistant" else "input_text"
+                item["content"] = [
+                    {"type": part_type, "text": strip_cache_breakpoints(content)}
+                ]
+            elif isinstance(content, list):
+                for part in content:
+                    if (isinstance(part, dict)
+                            and isinstance(part.get("text"), str)
+                            and CACHE_BP_SENTINEL in part["text"]):
+                        part["text"] = strip_cache_breakpoints(part["text"])
+        mark_last_system(items)
+        if anthropic_cache_conversation(
+            self.prompt_cache_mode, messages_have_history(items)
+        ):
+            mark_conversation_tail(items)
+        mark_last_tool(tools or [])
+        cap_cache_control([tools or [], items])
+
     def _build_payload(self, messages: list, tools: Optional[list]) -> dict:
         payload: dict = {
             "model": self.model,
@@ -367,8 +419,13 @@ class OpenAIResponsesClient(LLMClient):
                 self.prompt_cache_key, payload["input"]
             )
             payload["prompt_cache_key"] = resolved_key
-        self._apply_cache_blocks(payload["input"], resolved_key)
         converted_tools = self._convert_tools(tools)
+        if self.prompt_cache_marker_style == MARKER_STYLE_ANTHROPIC:
+            # Zukunfts-Pfad: Claude via Responses-API -> cache_control statt
+            # OpenAI-Breakpoints (dieselbe geteilte Policy wie httpx/native).
+            self._apply_anthropic_cache_blocks(payload["input"], converted_tools)
+        else:
+            self._apply_cache_blocks(payload["input"], resolved_key)
         if converted_tools:
             payload["tools"] = converted_tools
             payload["tool_choice"] = "auto"

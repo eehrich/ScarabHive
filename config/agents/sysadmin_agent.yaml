@@ -85,6 +85,13 @@ plugins:
       agent_config:
         llm_profile: [normal]
         llm_profile_advanced: []
+        llm_params:
+          "*":
+            # Interaktive Multi-Turn-Session: auf Anthropic-Profilen (z.B.
+            # or-claude-sonnet) markiert der Client damit das Konversationsende
+            # als cache_control-Breakpoint (wachsender Verlauf cached
+            # inkrementell); auf GPT-Profilen = implizites Fortsetzungs-Caching.
+            prompt_cache_mode: multi_turn
         max_steps: 100
         system_template: "./prompts/system_admin_prompt.md"
 

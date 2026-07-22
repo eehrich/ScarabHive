@@ -27,6 +27,16 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm import anthropic_utils
+from agent_system.llm.cache_key import (
+    CACHE_BP_SENTINEL,
+    anthropic_cache_conversation,
+    cap_cache_control,
+    mark_conversation_tail,
+    mark_last_text_block,
+    mark_last_tool,
+    messages_have_history,
+    strip_cache_breakpoints,
+)
 from agent_system.utils.json_utils import repair_json
 
 logger = logging.getLogger(__name__)
@@ -69,6 +79,8 @@ class AnthropicAsyncClient(LLMClient):
         include_thinking: bool = False,
         thinking_budget: Optional[int] = None,
         enable_prompt_caching: bool = True,
+        prompt_cache_mode: Optional[str] = None,
+        reasoning_details_mode: Optional[str] = None,
         **extra_params
     ):
         """Initialize Anthropic client.
@@ -103,6 +115,11 @@ class AnthropicAsyncClient(LLMClient):
         self.include_thinking = include_thinking
         self.thinking_budget = thinking_budget
         self.enable_prompt_caching = enable_prompt_caching
+        # Anthropic-Cache-Policy (geteilt mit dem OpenRouter-httpx-Pfad):
+        # steuert ob der wachsende Konversations-Tail zusaetzlich zu System/Tools
+        # als cache_control-Breakpoint markiert wird (Multi-Turn).
+        self.prompt_cache_mode = prompt_cache_mode
+        self.reasoning_details_mode = reasoning_details_mode
         self.extra_params = extra_params
         
         # Initialize the official client
@@ -236,9 +253,9 @@ class AnthropicAsyncClient(LLMClient):
         
         # Cache-Breakpoint-Sentinels strippen (Sicherheitsnetz, auf dem
         # KONVERTIERTEN Output — Session-Messages bleiben unangetastet):
-        # der native Anthropic-Pfad setzt cache_control nur auf System/Tools;
-        # ein Sentinel-Marker darf das Modell nie erreichen (s. cache_key.py).
-        from agent_system.llm.cache_key import CACHE_BP_SENTINEL, strip_cache_breakpoints
+        # der native Anthropic-Pfad nutzt cache_control (nicht die OpenAI-
+        # Sentinel-Breakpoints); ein Sentinel-Marker darf das Modell nie
+        # erreichen (s. cache_key.py).
         if isinstance(system_prompt, str) and CACHE_BP_SENTINEL in system_prompt:
             system_prompt = strip_cache_breakpoints(system_prompt)
         for cm in converted_messages:
@@ -255,11 +272,22 @@ class AnthropicAsyncClient(LLMClient):
                         if isinstance(val, str) and CACHE_BP_SENTINEL in val:
                             block[key] = strip_cache_breakpoints(val)
 
-        # Apply prompt caching: convert system prompt to content blocks with cache_control
+        # Prompt caching (geteilte Anthropic-Policy, s. cache_key.py):
+        # System-Prefix als cache_control-Breakpoint markieren; bei Multi-Turn
+        # zusaetzlich den wachsenden Konversations-Tail (frueher fehlte das im
+        # nativen Pfad — dadurch cachte provider=anthropic den Verlauf NICHT,
+        # or-claude-sonnet via OpenRouter aber schon → jetzt konsistent).
         if self.enable_prompt_caching and system_prompt:
-            system_prompt = [
-                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
-            ]
+            if isinstance(system_prompt, str):
+                system_prompt = [{"type": "text", "text": system_prompt}]
+            mark_last_text_block(system_prompt)
+            # multi_turn ab Runde 1; auto/None nur bei echter Historie. System +
+            # Tool + Tail bleiben <= 4 Bloecke; der Cap am Assemblierungspunkt
+            # (chat / chat_tools_streaming) erzwingt das harte Limit ohnehin.
+            if anthropic_cache_conversation(
+                self.prompt_cache_mode, messages_have_history(converted_messages)
+            ):
+                mark_conversation_tail(converted_messages)
 
         return system_prompt, converted_messages
 
@@ -283,10 +311,10 @@ class AnthropicAsyncClient(LLMClient):
                 "input_schema": input_schema
             })
         
-        # Apply prompt caching: add cache_control to the last tool definition
-        if self.enable_prompt_caching and anthropic_tools:
-            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
-        
+        # Prompt caching: letzte Tool-Definition markieren (geteilte Policy)
+        if self.enable_prompt_caching:
+            mark_last_tool(anthropic_tools)
+
         return anthropic_tools
 
     def _clean_schema(self, schema: Dict) -> Dict:
@@ -337,19 +365,37 @@ class AnthropicAsyncClient(LLMClient):
         
         return result
 
+    def _cap_anthropic_cache(
+        self,
+        system_prompt: Optional[str | List[Dict[str, Any]]],
+        converted_messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Defense-in-depth: max. 4 cache_control-Bloecke ueber System + Tools +
+        Messages (Anthropic-Prefix-Reihenfolge). No-op ohne Caching. Geteilte
+        Policy (cache_key.cap_cache_control)."""
+        if not self.enable_prompt_caching:
+            return
+        cap_cache_control([
+            tools or [],
+            system_prompt if isinstance(system_prompt, list) else [],
+            converted_messages,
+        ])
+
     async def chat(self, messages: List[ChatMessage], cancellation_token=None) -> str:
         """Simple chat without tools - returns text response."""
         system_prompt, converted_messages = self._convert_messages(messages)
-        
+        self._cap_anthropic_cache(system_prompt, converted_messages)
+
         request_kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": converted_messages,
             "max_tokens": self.max_tokens,
         }
-        
+
         if system_prompt:
             request_kwargs["system"] = system_prompt
-        
+
         # Add extra params (temperature, top_p, etc.)
         for key in ("temperature", "top_p", "top_k"):
             if key in self.extra_params:
@@ -406,7 +452,8 @@ class AnthropicAsyncClient(LLMClient):
         
         system_prompt, converted_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools) if tools else []
-        
+        self._cap_anthropic_cache(system_prompt, converted_messages, anthropic_tools)
+
         # Build request kwargs
         request_kwargs: Dict[str, Any] = {
             "model": self.model,

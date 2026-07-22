@@ -18,14 +18,22 @@ import httpx
 import ssl
 
 from agent_system.llm.cache_key import (
+    ANTHROPIC_MAX_CACHE_BLOCKS,
     CACHE_BP_SENTINEL,
     CACHE_MODE_TASK_SEQUENCE,
     MARKER_STYLE_ANTHROPIC,
     MARKER_STYLE_NONE,
     MARKER_STYLE_OPENAI,
     MAX_EXPLICIT_BREAKPOINTS,
+    anthropic_cache_conversation,
     boundary_registry,
+    cap_cache_control,
     derive_prompt_cache_key,
+    mark_conversation_tail as _shared_mark_conversation_tail,
+    mark_last_system as _shared_mark_last_system,
+    mark_last_tool as _shared_mark_last_tool,
+    mark_message_tail as _shared_mark_message_tail,
+    messages_have_history,
     plan_cache_blocks,
     strip_cache_breakpoints,
 )
@@ -468,47 +476,40 @@ class HTTPXOpenAIClient(LLMClient):
             clean['reasoning_content'] = d['reasoning_content']
         return clean
 
+    # Anthropic-Cache-Policy lebt zentral in cache_key.py (Single-Source-of-Truth
+    # fuer alle Claude-Pfade). Diese Methoden sind duenne, format-adaptierende
+    # Delegatoren: sie reichen die OpenAI-Chat-Completions-Dicts dieses Clients an
+    # die geteilten Helfer weiter. Anthropic via OpenRouter tunnelt Claude durch
+    # die OpenAI-kompatible API — deshalb MUSS die cache_control-Injektion hier im
+    # OpenAI-Payload passieren; die ENTSCHEIDUNG (was/wie oft) liegt aber geteilt.
+
+    #: Rueckwaerts-kompatibles Alias auf das geteilte harte API-Limit.
+    ANTHROPIC_MAX_CACHE_BLOCKS = ANTHROPIC_MAX_CACHE_BLOCKS
+
     def _apply_anthropic_cache_control(self, message_dicts: list) -> None:
-        """Inject cache_control on system messages for Anthropic prompt caching via OpenRouter.
-
-        Converts system message content to structured content blocks with
-        ``cache_control: {"type": "ephemeral"}`` on the last block, enabling
-        Anthropic prompt caching for 70-80% cost savings on repeated prefixes.
-
-        Nur die LETZTE System-Message wird markiert: Anthropic cached alles
-        BIS EINSCHLIESSLICH des Markers, ein einzelner Breakpoint am Ende des
-        System-Prefix deckt also den gesamten System-Block ab. Jede
-        System-Message zu markieren (frueheres Verhalten) sprengte bei
-        mehreren System-Bloecken (context_engineer-Reminder, Core-Memory)
-        zusammen mit dem Tool-Marker das harte 4-cache_control-Limit → 400.
-
-        Modifies message_dicts in-place.
-        """
-        last_system = None
-        for msg in message_dicts:
-            if msg.get("role") == "system":
-                last_system = msg
-        if last_system is None:
-            return
-        content = last_system.get("content")
-        if isinstance(content, str):
-            last_system["content"] = [
-                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-            ]
-        elif isinstance(content, list):
-            # Add cache_control to the last text block
-            for i in range(len(content) - 1, -1, -1):
-                if isinstance(content[i], dict) and content[i].get("type") == "text":
-                    content[i]["cache_control"] = {"type": "ephemeral"}
-                    break
+        """Mark the last system message for Anthropic prompt caching (delegates to
+        the shared policy). Modifies message_dicts in-place."""
+        _shared_mark_last_system(message_dicts)
 
     def _apply_anthropic_tool_cache_control(self, tools: list) -> None:
-        """Add cache_control to the last tool definition for Anthropic prompt caching.
+        """Mark the last tool definition (delegates). Modifies tools in-place."""
+        _shared_mark_last_tool(tools)
 
-        Modifies tools in-place.
-        """
-        if tools:
-            tools[-1]["cache_control"] = {"type": "ephemeral"}
+    @staticmethod
+    def _mark_last_text_block(msg: dict) -> bool:
+        """Delegate: put cache_control on a message's last text block."""
+        return _shared_mark_message_tail(msg)
+
+    def _apply_anthropic_conversation_cache_control(self, message_dicts: list) -> None:
+        """Mark the growing conversation tail for multi-turn caching (delegates).
+        Gated by the caller on ``prompt_cache_mode``."""
+        _shared_mark_conversation_tail(message_dicts)
+
+    @classmethod
+    def _cap_anthropic_cache_control(cls, message_dicts: list, tools: Optional[list]) -> None:
+        """Delegate: keep at most ANTHROPIC_MAX_CACHE_BLOCKS cache_control blocks
+        across tools + messages (Anthropic prefix order), in-place."""
+        cap_cache_control([tools, message_dicts])
 
     def _postprocess_messages_for_provider(self, message_dicts: list) -> None:
         """Post-process serialized messages for provider-specific requirements.
@@ -528,6 +529,13 @@ class HTTPXOpenAIClient(LLMClient):
         """
         if self._is_anthropic_via_openrouter:
             self._apply_anthropic_cache_control(message_dicts)
+            # Conversation-tail caching for multi-turn agents — shared policy
+            # (multi_turn seeds from turn 1; auto/None only once real history
+            # exists; task_sequence/one_shot/off opt out).
+            if anthropic_cache_conversation(
+                self.prompt_cache_mode, messages_have_history(message_dicts)
+            ):
+                self._apply_anthropic_conversation_cache_control(message_dicts)
 
         if self._is_deepseek:
             # DeepSeek: ensure ALL assistant messages have reasoning_content
@@ -832,6 +840,9 @@ class HTTPXOpenAIClient(LLMClient):
             # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
             if self._is_anthropic_via_openrouter:
                 self._apply_anthropic_tool_cache_control(payload["tools"])
+                # Enforce Anthropic's hard 4-block cache_control limit across
+                # system + conversation-tail + tools + any sentinels.
+                self._cap_anthropic_cache_control(message_dicts, payload["tools"])
             payload["tool_choice"] = "auto"
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
             # OpenRouter may pass it through and confuse the Gemini backend.
@@ -1329,6 +1340,9 @@ class HTTPXOpenAIClient(LLMClient):
             # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
             if self._is_anthropic_via_openrouter:
                 self._apply_anthropic_tool_cache_control(payload["tools"])
+                # Enforce Anthropic's hard 4-block cache_control limit across
+                # system + conversation-tail + tools + any sentinels.
+                self._cap_anthropic_cache_control(message_dicts, payload["tools"])
             payload["tool_choice"] = "auto"
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
             if self.parallel_tool_calls and not self._is_gemini_via_openrouter:

@@ -296,5 +296,80 @@ class TestEncrypted400Detection:
             'Invalid request: missing field input')
 
 
+def _iter_all_parts(payload):
+    """Yield every content part dict across all input items of a payload."""
+    for item in payload.get("input", []):
+        content = item.get("content") if isinstance(item, dict) else None
+        if isinstance(content, list):
+            yield from (p for p in content if isinstance(p, dict))
+
+
+class TestAnthropicFuturePath:
+    """Forward-wiring: no Claude model routes through the Responses API today,
+    but if one is configured with prompt_cache_marker_style=anthropic it must
+    use cache_control (the shared policy) — NOT the GPT breakpoint path. The GPT
+    default path must stay byte-for-byte unchanged."""
+
+    def test_gpt_default_uses_breakpoints_not_cache_control(self):
+        """Default (no marker style) = GPT-5.6 breakpoint path, no cache_control."""
+        c = _client(prompt_cache_key="auto", prompt_cache_mode="task_sequence")
+        task = "STATIC\n<<<CACHE_BREAKPOINT>>>\nAPPEND\n<<<CACHE_BREAKPOINT>>>\nVOLATILE"
+        p = c._build_payload([ChatMessage(role="user", content=task)], None)
+        parts = list(_iter_all_parts(p))
+        assert any("prompt_cache_breakpoint" in part for part in parts)
+        assert all("cache_control" not in part for part in parts)
+
+    def test_anthropic_style_uses_cache_control_not_breakpoints(self):
+        c = _client(
+            model="anthropic/claude-sonnet-4",
+            prompt_cache_marker_style="anthropic",
+            prompt_cache_mode="multi_turn",
+            prompt_cache_key="auto",
+        )
+        msgs = [
+            ChatMessage(role="system", content="SYS"),
+            ChatMessage(role="user", content="Q1"),
+        ]
+        tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+        p = c._build_payload(msgs, tools)
+        parts = list(_iter_all_parts(p))
+        # cache_control present, NO OpenAI breakpoints
+        assert any("cache_control" in part for part in parts)
+        assert all("prompt_cache_breakpoint" not in part for part in parts)
+        # last tool marked
+        assert p["tools"][-1].get("cache_control") == {"type": "ephemeral"}
+
+    def test_anthropic_style_strips_sentinels(self):
+        """Anthropic path removes OpenAI breakpoint sentinels (wrong dialect)."""
+        c = _client(
+            model="anthropic/claude-sonnet-4",
+            prompt_cache_marker_style="anthropic",
+            prompt_cache_mode="multi_turn",
+        )
+        task = "A\n<<<CACHE_BREAKPOINT>>>\nB"
+        p = c._build_payload([ChatMessage(role="user", content=task)], None)
+        for part in _iter_all_parts(p):
+            assert "<<<CACHE_BREAKPOINT>>>" not in part.get("text", "")
+
+    def test_anthropic_cap_never_exceeds_four(self):
+        c = _client(
+            model="anthropic/claude-sonnet-4",
+            prompt_cache_marker_style="anthropic",
+            prompt_cache_mode="multi_turn",
+        )
+        msgs = [
+            ChatMessage(role="system", content="SYS"),
+            ChatMessage(role="user", content="Q1"),
+            ChatMessage(role="assistant", content="A1"),
+            ChatMessage(role="user", content="Q2"),
+        ]
+        tools = [{"type": "function", "function": {"name": f"t{i}", "parameters": {}}}
+                 for i in range(5)]
+        p = c._build_payload(msgs, tools)
+        n = sum(1 for part in _iter_all_parts(p) if "cache_control" in part)
+        n += sum(1 for t in p.get("tools", []) if "cache_control" in t)
+        assert n <= 4
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

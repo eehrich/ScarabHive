@@ -57,6 +57,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             include_thinking=include_thoughts or False,
             thinking_budget=thinking_budget,
             enable_prompt_caching=enable_prompt_caching if enable_prompt_caching is not None else True,
+            prompt_cache_mode=prompt_cache_mode,
+            reasoning_details_mode=reasoning_details_mode,
         )
 
     if provider == "gemini":

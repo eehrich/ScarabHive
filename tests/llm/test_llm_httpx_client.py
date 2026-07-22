@@ -1480,6 +1480,112 @@ class TestCacheBreakpoints:
         assert msgs[1]["content"] is None
 
 
+class TestAnthropicCacheControl:
+    """Anthropic (via OpenRouter) prompt caching: system + tools + multi-turn
+    conversation tail, all within the hard 4-block cache_control limit."""
+
+    def _client(self, mode=None):
+        c = create_test_client()
+        c._is_anthropic_via_openrouter = True
+        c._is_deepseek = False
+        c.prompt_cache_mode = mode
+        c.reasoning_details_mode = "keep_last"
+        return c
+
+    @staticmethod
+    def _count(msgs, tools=None):
+        n = 0
+        for t in (tools or []):
+            if isinstance(t, dict) and "cache_control" in t:
+                n += 1
+        for m in msgs:
+            content = m.get("content")
+            if isinstance(content, list):
+                n += sum(1 for p in content
+                         if isinstance(p, dict) and "cache_control" in p)
+            elif "cache_control" in m:
+                n += 1
+        return n
+
+    def _conversation(self):
+        return [
+            {"role": "system", "content": "BASE"},
+            {"role": "system", "content": "OKF CONTEXT"},
+            {"role": "system", "content": "MEMORY"},
+            {"role": "user", "content": "erste frage"},
+            {"role": "assistant", "content": "antwort"},
+            {"role": "tool", "content": "grosser ssh output"},
+            {"role": "user", "content": "zweite frage"},
+        ]
+
+    def test_multi_turn_marks_system_tail_tool_within_limit(self):
+        msgs = self._conversation()
+        tools = [{"function": {"name": "a"}}, {"function": {"name": "ssh"}}]
+        c = self._client("multi_turn")
+        c._postprocess_messages_for_provider(msgs)
+        c._apply_anthropic_tool_cache_control(tools)
+        c._cap_anthropic_cache_control(msgs, tools)
+        # last leading system + conversation tail + last tool = 3, <= 4
+        assert self._count(msgs, tools) == 3
+        assert "cache_control" in str(msgs[2]["content"])   # last system
+        assert "cache_control" in str(msgs[-1]["content"])  # tail
+        assert "cache_control" in tools[-1]
+
+    def test_only_last_system_marked_never_exceeds_limit(self):
+        # Regression: marking EVERY system message + tools blew the 4-limit
+        # (HTTP 400). Many system injections must still yield 1 system marker.
+        msgs = [{"role": "system", "content": f"sys{i}"} for i in range(6)]
+        msgs.append({"role": "user", "content": "frage"})
+        c = self._client("multi_turn")
+        c._postprocess_messages_for_provider(msgs)
+        system_markers = sum(
+            1 for m in msgs if m.get("role") == "system"
+            and isinstance(m.get("content"), list)
+            and any("cache_control" in p for p in m["content"]))
+        assert system_markers == 1
+
+    def test_auto_turn1_no_history_skips_tail(self):
+        msgs = [{"role": "system", "content": "BASE"},
+                {"role": "user", "content": "frage"}]
+        self._client(None)._postprocess_messages_for_provider(msgs)
+        assert "cache_control" not in str(msgs[1]["content"])  # no tail
+        assert "cache_control" in str(msgs[0]["content"])      # system yes
+
+    def test_auto_turn2_with_history_marks_tail(self):
+        msgs = [{"role": "system", "content": "BASE"},
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c"}]
+        self._client(None)._postprocess_messages_for_provider(msgs)
+        assert "cache_control" in str(msgs[-1]["content"])  # reactive tail
+
+    def test_task_sequence_and_off_skip_tail(self):
+        for mode in ("task_sequence", "one_shot", "off"):
+            msgs = self._conversation()
+            self._client(mode)._postprocess_messages_for_provider(msgs)
+            assert "cache_control" not in str(msgs[-1]["content"]), mode
+
+    def test_cap_trims_to_four_keeping_latest(self):
+        over = [{"role": "system",
+                 "content": [{"type": "text", "text": f"s{i}",
+                              "cache_control": {"type": "ephemeral"}}]}
+                for i in range(6)]
+        HTTPXOpenAIClient._cap_anthropic_cache_control(over, None)
+        assert self._count(over) == 4
+        # earliest two dropped, latest four kept
+        assert all("cache_control" not in over[i]["content"][0] for i in (0, 1))
+        assert all("cache_control" in over[i]["content"][0] for i in range(2, 6))
+
+    def test_cap_counts_tools_and_messages_together(self):
+        tools = [{"function": {"name": "a"}, "cache_control": {"type": "ephemeral"}}]
+        msgs = [{"role": "system",
+                 "content": [{"type": "text", "text": f"s{i}",
+                              "cache_control": {"type": "ephemeral"}}]}
+                for i in range(4)]
+        HTTPXOpenAIClient._cap_anthropic_cache_control(msgs, tools)
+        assert self._count(msgs, tools) == 4  # 1 tool + 4 msgs = 5 -> 4
+
+
 if __name__ == "__main__":
     # Run tests with pytest when executed directly
     pytest.main([__file__, "-v"])

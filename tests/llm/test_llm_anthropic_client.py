@@ -428,3 +428,160 @@ class TestAnthropicPromptCaching:
         ]
         converted = client_no_caching._convert_tools(tools)
         assert "cache_control" not in converted[0]
+
+
+def _make_client(mode):
+    """AnthropicAsyncClient with a given prompt_cache_mode (SDK mocked)."""
+    with patch('anthropic.AsyncAnthropic') as mock_anthropic:
+        mock_anthropic.return_value = MagicMock()
+        from agent_system.llm.anthropic_client import AnthropicAsyncClient
+        return AnthropicAsyncClient(
+            model="claude-sonnet-4-20250514",
+            api_key="test-api-key",
+            prompt_cache_mode=mode,
+        )
+
+
+def _tail_marked(converted_messages):
+    """True if the last converted message carries a cache_control block."""
+    if not converted_messages:
+        return False
+    content = converted_messages[-1].get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and "cache_control" in b for b in content
+    )
+
+
+def _count_markers(system_prompt, converted_messages, tools):
+    """Total cache_control blocks across system + messages + tools."""
+    n = 0
+    if isinstance(system_prompt, list):
+        n += sum(1 for b in system_prompt if isinstance(b, dict) and "cache_control" in b)
+    for msg in converted_messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            n += sum(1 for b in content if isinstance(b, dict) and "cache_control" in b)
+    for t in (tools or []):
+        if isinstance(t, dict) and "cache_control" in t:
+            n += 1
+    return n
+
+
+class TestAnthropicMultiTurnCaching:
+    """Native SDK path is now mode-aware and consistent with the OpenRouter
+    (httpx) path: multi_turn caches the growing conversation tail, and a shared
+    cap keeps <= 4 cache_control blocks. Same shared policy (cache_key.py)."""
+
+    _CONV = [
+        ChatMessage(role="system", content="You are helpful."),
+        ChatMessage(role="user", content="Q1"),
+        ChatMessage(role="assistant", content="A1"),
+        ChatMessage(role="user", content="Q2"),
+    ]
+    _SINGLE = [
+        ChatMessage(role="system", content="You are helpful."),
+        ChatMessage(role="user", content="Q1"),
+    ]
+
+    def test_multi_turn_marks_conversation_tail(self):
+        """multi_turn seeds the tail marker from turn 1 (declared conversation)."""
+        _, converted = _make_client("multi_turn")._convert_messages(self._SINGLE)
+        assert _tail_marked(converted) is True
+
+    def test_auto_no_tail_on_single_shot(self):
+        """auto marks no tail without real history (no assistant/tool message)."""
+        _, converted = _make_client("auto")._convert_messages(self._SINGLE)
+        assert _tail_marked(converted) is False
+
+    def test_auto_marks_tail_with_history(self):
+        """auto marks the tail once a real conversation exists."""
+        _, converted = _make_client("auto")._convert_messages(self._CONV)
+        assert _tail_marked(converted) is True
+
+    def test_default_none_no_tail_on_single_shot(self):
+        """No prompt_cache_mode behaves like auto (no wasted single-shot write)."""
+        _, converted = _make_client(None)._convert_messages(self._SINGLE)
+        assert _tail_marked(converted) is False
+
+    def test_task_sequence_opts_out_of_tail(self):
+        """task_sequence uses the ladder, not the multi-turn tail."""
+        _, converted = _make_client("task_sequence")._convert_messages(self._CONV)
+        assert _tail_marked(converted) is False
+
+    def test_off_opts_out_of_tail(self):
+        """off disables the conversation tail marker."""
+        _, converted = _make_client("off")._convert_messages(self._CONV)
+        assert _tail_marked(converted) is False
+
+    def test_system_still_cached_regardless_of_mode(self):
+        """The static system prefix is cached in every mode (marker on system)."""
+        for mode in (None, "auto", "multi_turn", "task_sequence", "off"):
+            system_prompt, _ = _make_client(mode)._convert_messages(self._SINGLE)
+            assert isinstance(system_prompt, list)
+            assert any(
+                isinstance(b, dict) and "cache_control" in b for b in system_prompt
+            ), f"system not cached for mode={mode}"
+
+    def test_cap_never_exceeds_four_blocks(self):
+        """System + tools + tail can never trip the hard 4-block HTTP-400 limit."""
+        client = _make_client("multi_turn")
+        system_prompt, converted = client._convert_messages(self._CONV)
+        tools = [
+            {"type": "function", "function": {"name": f"t{i}", "description": "d",
+             "parameters": {"type": "object", "properties": {}}}}
+            for i in range(3)
+        ]
+        anthropic_tools = client._convert_tools(tools)
+        client._cap_anthropic_cache(system_prompt, converted, anthropic_tools)
+        assert _count_markers(system_prompt, converted, anthropic_tools) <= 4
+
+    def test_cap_keeps_latest_blocks(self):
+        """The cap drops the EARLIEST markers (a later breakpoint subsumes them),
+        so the conversation tail — the most valuable marker — always survives."""
+        client = _make_client("multi_turn")
+        system_prompt, converted = client._convert_messages(self._CONV)
+        tools = [
+            {"type": "function", "function": {"name": f"t{i}", "description": "d",
+             "parameters": {"type": "object", "properties": {}}}}
+            for i in range(5)
+        ]
+        anthropic_tools = client._convert_tools(tools)
+        client._cap_anthropic_cache(system_prompt, converted, anthropic_tools)
+        # tail (last message) keeps its marker
+        assert _tail_marked(converted) is True
+
+    def test_tail_marks_tool_result_ending_turn(self):
+        """A turn ending on a tool_result block still gets the tail marker (native
+        format has no text block there) — parity with the OpenRouter path so the
+        Multi-Turn breakpoint advances to the turn end."""
+        messages = [
+            ChatMessage(role="system", content="You are helpful."),
+            ChatMessage(role="user", content="Q1"),
+            ChatMessage(role="assistant", content="", tool_calls=[
+                {"id": "c1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}}]),
+            ChatMessage(role="tool", tool_call_id="c1", content="TOOL RESULT"),
+        ]
+        _, converted = _make_client("multi_turn")._convert_messages(messages)
+        last = converted[-1]
+        content = last.get("content")
+        assert isinstance(content, list)
+        # the tool_result block carries cache_control
+        assert any(
+            isinstance(b, dict) and b.get("type") == "tool_result" and "cache_control" in b
+            for b in content
+        ), f"tool_result tail not marked: {content}"
+
+    def test_no_caching_disables_tail_and_cap(self):
+        """enable_prompt_caching=False: no markers at all, cap is a no-op."""
+        with patch('anthropic.AsyncAnthropic') as mock_anthropic:
+            mock_anthropic.return_value = MagicMock()
+            from agent_system.llm.anthropic_client import AnthropicAsyncClient
+            client = AnthropicAsyncClient(
+                model="claude-sonnet-4-20250514", api_key="k",
+                enable_prompt_caching=False, prompt_cache_mode="multi_turn",
+            )
+        system_prompt, converted = client._convert_messages(self._CONV)
+        client._cap_anthropic_cache(system_prompt, converted, None)
+        assert _tail_marked(converted) is False
+        assert system_prompt == "You are helpful."
