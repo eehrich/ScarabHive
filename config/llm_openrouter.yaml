@@ -320,6 +320,8 @@ llm_system:
       context_window: 1000000
       request_timeout: 600
       service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Sticky backend — OpenRouter's implicit prompt cache is backend-local; without a pin the 9 minimax upstreams free-load-balance → cache rarely warm (~6%). Pinned, a repeated prefix hits ~99% cached (probed 2026-07). Soft preference; falls back on outage.
+        order: ["minimax"]
       max_tokens: 16384
       capabilities:
         tools: true
@@ -342,6 +344,8 @@ llm_system:
       context_window: 1000000
       request_timeout: 600
       service_tier: flex
+      provider_routing:           # Sticky backend — see openrouter-minimax-m3: pinning keeps the backend-local implicit cache warm (~99% on repeated prefix vs ~6% free-balanced). Soft preference; falls back on outage.
+        order: ["minimax"]
       max_tokens: 0
       capabilities:
         tools: true
