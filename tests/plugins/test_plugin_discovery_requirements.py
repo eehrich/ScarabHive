@@ -25,7 +25,7 @@ class TestPluginFactoryRequirement:
     
     def test_all_plugins_have_plugin_factory_in_plugin_py(self):
         """CRITICAL: plugin.py MUST export PLUGIN_FACTORY for discovery."""
-        plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer')]
+        plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer'), Path('src/plugins_trading')]
         missing = []
         
         for plugin_dir in plugin_dirs:

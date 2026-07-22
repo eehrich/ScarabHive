@@ -25,7 +25,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agent_system.plugins.plugin_manifest import plugin_pip_dependencies  # noqa: E402
 
-PLUGIN_DIRS = [ROOT / "src" / "plugins", ROOT / "src" / "plugins_writer"]
+PLUGIN_DIRS = [
+    ROOT / "src" / "plugins",
+    ROOT / "src" / "plugins_writer",
+    ROOT / "src" / "plugins_trading",
+]
 CORE_FILE = ROOT / "requirements" / "core.txt"
 OUT_FILE = ROOT / "requirements" / "all.txt"
 
