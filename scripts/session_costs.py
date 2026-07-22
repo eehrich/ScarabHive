@@ -319,20 +319,21 @@ def print_human(session_id: str, roots: list[str], stats: dict,
         f"= {stats['root_calls']} coordinator + {stats['sub_calls']} sub-agent"
         f"  |  max sub-agent depth: {stats['max_depth']}"
     )
-    print("=" * 119)
+    print("=" * 136)
     print(f"  {'Model':<28.28} | {'Agent':<32.32} | {'Calls':>5} | "
-          f"{'Input':>11} | {'Cached':>11} | {'Output':>11} | {'Cost $':>9}")
-    print("  " + "-" * 115)
+          f"{'Input':>11} | {'Cached':>11} | {'Cache%':>6} | {'Output':>11} | {'Cost $':>9}")
+    print("  " + "-" * 134)
     for r in rows:
         model = f"{r['model']} (batch)" if r["is_batch"] else r["model"]
+        row_cache_pct = (r["cached_tokens"] / r["prompt_tokens"] * 100) if r["prompt_tokens"] else 0
         print(f"  {model:<28.28} | {r['agent']:<32.32} | {r['calls']:>5} | "
-              f"{r['prompt_tokens']:>11,} | {r['cached_tokens']:>11,} | "
+              f"{r['prompt_tokens']:>11,} | {r['cached_tokens']:>11,} | {row_cache_pct:>5.1f}% | "
               f"{r['completion_tokens']:>11,} | ${r['cost']:>8.4f}")
-    print("  " + "-" * 115)
+    print("  " + "-" * 134)
     cache_pct = (tot["cached_tokens"] / tot["prompt_tokens"] * 100
                  if tot["prompt_tokens"] else 0)
     print(f"  {'TOTAL':<28} | {'':<32} | {tot['calls']:>5} | "
-          f"{tot['prompt_tokens']:>11,} | {tot['cached_tokens']:>11,} | "
+          f"{tot['prompt_tokens']:>11,} | {tot['cached_tokens']:>11,} | {cache_pct:>5.1f}% | "
           f"{tot['completion_tokens']:>11,} | ${tot['cost']:>8.4f}")
     print(f"  Cache hit rate: {cache_pct:.1f}%")
 
@@ -374,6 +375,9 @@ def build_json(session_id: str, roots: list[str], stats: dict,
         "prompt_tokens": tot["prompt_tokens"],
         "completion_tokens": tot["completion_tokens"],
         "cached_tokens": tot["cached_tokens"],
+        "cache_hit_rate_pct": round(
+            tot["cached_tokens"] / tot["prompt_tokens"] * 100, 1)
+        if tot["prompt_tokens"] else 0.0,
         "coordinator_calls": stats["root_calls"],
         "sub_agent_calls": stats["sub_calls"],
         "max_sub_agent_depth": stats["max_depth"],
