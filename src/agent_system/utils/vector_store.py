@@ -437,7 +437,18 @@ class VectorStore:
         if self._chroma_client is None:
             import chromadb
             from chromadb.config import Settings
-            
+
+            # Telemetrie-Logger daempfen. anonymized_telemetry=False (unten) SOLLTE
+            # reichen, aber chromadb 1.4.0 neutralisiert Posthog nur ueber das alte
+            # Modul-Flag posthog.disabled=True — das ignoriert posthog>=7, das zudem
+            # capture() von 3 positionalen Args auf (event, **kwargs) umgestellt hat.
+            # Folge: chromadb feuert capture() weiter, es wirft TypeError, gefangen im
+            # try/except als logger.error (harmlos — der Fehler fliegt VOR jedem
+            # Netzwerk-I/O, nichts verlaesst den Prozess). Bis chromadb/posthog wieder
+            # zusammenpassen, den Telemetrie-Logger stummschalten. Muss VOR der Client-
+            # Erstellung stehen (dort feuert das erste Event, ClientStartEvent).
+            logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
+
             # WORKAROUND: On Windows, Rust bindings hang/crash (GitHub issue #5937)
             # Use Python SegmentAPI implementation instead
             if platform.system() == "Windows":
