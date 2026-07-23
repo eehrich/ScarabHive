@@ -569,6 +569,19 @@ class SessionManager:
         except FileNotFoundError:
             return
         if data.pop(session_id, None) is not None:
+            if not data and parent_session_id:
+                # Last child removed: delete the sub-index file instead of
+                # persisting an empty {} — the file's existence doubles as the
+                # sidebar's has_children signal, so a leftover empty partition
+                # would render a phantom expand toggle forever.
+                try:
+                    self._get_index_path(user_id, parent_session_id).unlink(missing_ok=True)
+                except OSError as e:
+                    logger.warning(
+                        "Failed to remove emptied sub-index for parent %s: %s",
+                        parent_session_id, e,
+                    )
+                return
             await self._write_index_async(user_id, data, parent_session_id)
 
     async def create_session(
@@ -994,6 +1007,164 @@ class SessionManager:
             
             logger.debug("Listed %d sessions for user %s after rebuild", len(sessions), user_id)
             return sessions
+
+    async def _read_main_index_async(self, user_id: str) -> Optional[Dict[str, Dict[str, Any]]]:
+        """Read ONLY the main index (top-level sessions).
+
+        Deliberately skips the per-parent ``.subs.*.index.json`` partitions —
+        those hold exclusively sub-sessions.
+
+        Returns ``None`` when the index needs healing (file missing or
+        unparseable) — callers decide whether to rebuild. A parsed-but-empty
+        index returns ``{}`` and is trusted: deletes legitimately empty it.
+        """
+        path = self._get_index_path(user_id)
+        if not path.exists():
+            return None
+
+        def read_one() -> Optional[Dict[str, Dict[str, Any]]]:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else None
+            except Exception as e:  # noqa: BLE001 — a broken index must not 500
+                logger.warning("Failed to read main index %s: %s", path, e)
+                return None
+
+        return await asyncio.to_thread(read_one)
+
+    def _has_children(self, user_id: str, session_id: str) -> bool:
+        """Whether a session has sub-sessions — one stat on its per-parent
+        sub-index, no file read. The size guard (> 4 bytes; an empty index
+        serialises to ``{}``) keeps a stale emptied sub-index from producing a
+        phantom expand toggle."""
+        try:
+            st = self._get_index_path(user_id, session_id).stat()
+        except (OSError, ValueError):
+            return False
+        return st.st_size > 4
+
+    def _annotate_children_flag(self, user_id: str, sessions: List[Dict[str, Any]]) -> None:
+        """Add ``has_children`` so the UI can render an expand toggle without
+        shipping the descendants."""
+        for s in sessions:
+            sid = s.get("session_id")
+            s["has_children"] = bool(sid) and self._has_children(user_id, sid)
+
+    async def list_root_sessions(self, user_id: str) -> List[Dict[str, Any]]:
+        """Top-level sessions only, newest first, each flagged ``has_children``.
+
+        This is what the sidebar needs. ``list_sessions`` merges the main index
+        with every per-parent sub-index — with tens of thousands of sub-sessions
+        that means reading thousands of files and building a payload the caller
+        then discards. Roots live exclusively in the main index, so one read is
+        enough. Children are fetched on demand via ``list_child_sessions``.
+        """
+        user_dir = self.storage_path / self._sanitize_user_id(user_id)
+        if not user_dir.exists():
+            return []
+        index_data = await self._read_main_index_async(user_id)
+        if index_data is None:
+            # Main index missing or unreadable — same self-heal as the old
+            # pipeline: rebuild it from the session files on disk (expensive,
+            # but only on actual index loss; _rebuild_index persists the
+            # result, so the next call is fast again). A parsed-but-empty
+            # index is trusted and does NOT trigger this (deletes empty it
+            # legitimately — rebuilding every call would reintroduce the
+            # full-scan cost this method exists to avoid).
+            index_data = await self._rebuild_index(user_id)
+        sessions = list(index_data.values())
+        sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+        self._annotate_children_flag(user_id, sessions)
+        logger.debug("Listed %d root sessions for user %s", len(sessions), user_id)
+        return sessions
+
+    async def list_child_sessions(
+        self, user_id: str, parent_session_id: str
+    ) -> List[Dict[str, Any]]:
+        """Direct children of one parent, newest first, each flagged ``has_children``.
+
+        Reads exactly that parent's ``.subs.<parent>.index.json`` — one file.
+        """
+        path = self._get_index_path(user_id, parent_session_id)  # validates the id
+        if not path.exists():
+            return []
+
+        def read_one() -> Dict[str, Dict[str, Any]]:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to read sub-index %s: %s", path, e)
+                return {}
+
+        index_data = await asyncio.to_thread(read_one)
+        # A sub-index is a partition of ONE parent, but stay strict: only return
+        # entries that actually name this parent.
+        children = [
+            meta for meta in index_data.values()
+            if self._extract_parent_id(meta) == parent_session_id
+        ]
+        children.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+        self._annotate_children_flag(user_id, children)
+        return children
+
+    async def find_sessions(
+        self,
+        user_id: str,
+        *,
+        session_id: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Server-side session lookup/search over the indices.
+
+        ``session_id``: existence + metadata for one session in O(1) (the
+        session file itself is the proof; no index scan). Lets the UI resolve a
+        session that is not currently loaded in the sidebar tree.
+
+        ``query``: case-insensitive substring match on the title across ALL
+        partitions. This is the expensive path (reads every sub-index), so it
+        only runs when the caller actually searches.
+        """
+        if session_id:
+            path = self._get_session_path(user_id, session_id)  # validates the id
+            if not path.exists():
+                return []
+            main = (await self._read_main_index_async(user_id)) or {}
+            meta = main.get(session_id)
+            if meta is None:
+                def read_meta() -> Optional[Dict[str, Any]]:
+                    try:
+                        with open(path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Failed to read session %s: %s", path, e)
+                        return None
+                    # Metadata only — never ship the message history here.
+                    return {k: v for k, v in data.items() if k != "messages"}
+                meta = await asyncio.to_thread(read_meta)
+            if not meta:
+                return []
+            meta = dict(meta)
+            meta["has_children"] = self._has_children(user_id, session_id)
+            return [meta]
+
+        if not query:
+            return []
+        needle = query.strip().lower()
+        if not needle:
+            return []
+        index_data = await self._read_all_indexes_async(user_id)
+        matches = [
+            meta for meta in index_data.values()
+            if needle in str(meta.get("title", "")).lower()
+        ]
+        matches.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+        matches = matches[: max(1, limit)]
+        self._annotate_children_flag(user_id, matches)
+        return matches
 
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
         """Rename a session.

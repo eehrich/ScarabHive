@@ -221,88 +221,95 @@ async def list_sessions(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+def _session_node(s: Dict[str, Any]) -> Dict[str, Any]:
+    """Index metadata -> sidebar node. ``children`` stays empty: descendants are
+    loaded on demand via ``/{session_id}/children``."""
+    profile = s.get("llm_profile")
+    return {
+        "session_id": s.get("session_id"),
+        "user_id": s.get("user_id"),
+        "title": s.get("title"),
+        "agent_name": s.get("agent_name"),
+        "llm_profile": profile[0] if isinstance(profile, list) else profile,
+        "created_at": s.get("created_at"),
+        "updated_at": s.get("updated_at"),
+        "message_count": s.get("message_count", 0),
+        "last_agent_response": s.get("last_agent_response"),
+        "tags": s.get("tags", []),
+        "depth": s.get("depth", 0),
+        "context_vars": s.get("context_vars", {}),
+        "has_children": bool(s.get("has_children")),
+        "children": [],
+    }
+
+
 @session_router.get("/hierarchy", response_model=Dict[str, Any])
 async def list_sessions_hierarchy(
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
 ):
-    """List sessions in hierarchical structure based on parent_session field."""
+    """Top-level sessions for the sidebar — ROOTS only.
+
+    Each root carries ``has_children`` so the UI can render an expand toggle;
+    the sub-sessions themselves are fetched on demand via
+    ``/{session_id}/children``. Previously this returned the fully nested tree,
+    which meant reading every per-parent sub-index and serialising tens of
+    thousands of nodes that stay hidden until a node is expanded.
+    """
     user_id = current_user.username if current_user else "anonymous"
-
     try:
-        sessions = await session_manager.list_sessions(user_id)
-        
-        # Build map: session_id -> session data
-        session_map = {s["session_id"]: s for s in sessions}
-        
-        # Build parent-child relationships from parent_session field
-        # parent_map: child_session_id -> parent_session_id
-        parent_map: Dict[str, str] = {}
-        children_map: Dict[str, List[str]] = {}  # parent_id -> [child_ids]
-        
-        for session in sessions:
-            session_id = session["session_id"]
-            parent_info = session.get("parent_session")
-            
-            if parent_info and isinstance(parent_info, dict):
-                parent_id = parent_info.get("session_id")
-                if parent_id:
-                    parent_map[session_id] = parent_id
-                    if parent_id not in children_map:
-                        children_map[parent_id] = []
-                    children_map[parent_id].append(session_id)
-        
-        # Build hierarchical structure: root sessions (no parent) with nested children
-        def build_session_node(session: Dict[str, Any]) -> Dict[str, Any]:
-            """Build session node with children recursively."""
-            session_id = session["session_id"]
-            
-            # Transform to response format
-            node = {
-                "session_id": session_id,
-                "user_id": session["user_id"],
-                "title": session["title"],
-                "agent_name": session["agent_name"],
-                "llm_profile": session["llm_profile"][0] if isinstance(session["llm_profile"], list) else session["llm_profile"],
-                "created_at": session["created_at"],
-                "updated_at": session["updated_at"],
-                "message_count": session.get("message_count", 0),
-                "last_agent_response": session.get("last_agent_response"),
-                "tags": session.get("tags", []),
-                "depth": session.get("depth", 0),
-                "context_vars": session.get("context_vars", {}),  # Include context_vars for phase info
-                "children": []
-            }
-            
-            # Add children recursively
-            child_ids = children_map.get(session_id, [])
-            for child_id in child_ids:
-                if child_id in session_map:
-                    child_session = session_map[child_id]
-                    child_node = build_session_node(child_session)
-                    node["children"].append(child_node)
-            
-            return node
-        
-        # Find root sessions (sessions without a parent)
-        root_sessions = []
-        for session in sessions:
-            session_id = session["session_id"]
-            if session_id not in parent_map:
-                # This is a root session
-                root_sessions.append(build_session_node(session))
-        
-        # Sort root sessions by updated_at (most recent first)
-        root_sessions.sort(key=lambda s: s["updated_at"], reverse=True)
-        
+        roots = await session_manager.list_root_sessions(user_id)
         return {
-            "sessions": root_sessions,
-            "total_count": len(sessions),
-            "root_count": len(root_sessions)
+            "sessions": [_session_node(s) for s in roots],
+            "root_count": len(roots),
         }
-
     except Exception as e:
         logger.exception("Failed to list sessions hierarchy: %s", e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@session_router.get("/search", response_model=Dict[str, Any])
+async def search_sessions(
+    q: Optional[str] = None,
+    session_id: Optional[str] = None,
+    limit: int = 50,
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """Server-side session lookup/search.
+
+    ``session_id=...`` resolves one session (existence + metadata) without the
+    sidebar having to hold the whole tree in memory. ``q=...`` matches titles
+    across all partitions. Must stay registered BEFORE ``/{session_id}``.
+    """
+    user_id = current_user.username if current_user else "anonymous"
+    try:
+        found = await session_manager.find_sessions(
+            user_id, session_id=session_id, query=q, limit=limit
+        )
+        return {"sessions": [_session_node(s) for s in found], "count": len(found)}
+    except ValueError as e:  # invalid session id
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to search sessions: %s", e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@session_router.get("/{session_id}/children", response_model=Dict[str, Any])
+async def list_session_children(
+    session_id: str,
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """Direct sub-sessions of one parent — reads exactly that parent's sub-index."""
+    user_id = current_user.username if current_user else "anonymous"
+    try:
+        children = await session_manager.list_child_sessions(user_id, session_id)
+        return {"sessions": [_session_node(s) for s in children], "count": len(children)}
+    except ValueError as e:  # invalid session id
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to list children of %s: %s", session_id, e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 

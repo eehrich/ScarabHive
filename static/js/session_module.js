@@ -11,7 +11,8 @@
 export class SessionManager {
   constructor() {
     this.currentSessionId = null;
-    this.sessions = [];
+    this.sessions = [];          // root sessions (children load on expand)
+    this.sessionById = new Map(); // flat lookup over everything loaded so far
     this.isAuthenticated = false;
     this.sidebarOpen = false;
     
@@ -40,7 +41,9 @@ export class SessionManager {
       }
       
       const lastSessionId = sessionStorage.getItem('lastSessionId');
-      if (lastSessionId && this.findSessionInHierarchy(lastSessionId)) {
+      // Resolve server-side: the sidebar only holds root sessions, so a
+      // sub-session would not be found by a client-side tree lookup.
+      if (lastSessionId && await this.sessionExists(lastSessionId)) {
         // Load the session messages into the chat
         await this.loadSession(lastSessionId);
       }
@@ -51,20 +54,31 @@ export class SessionManager {
   }
   
   findSessionInHierarchy(sessionId) {
-    // Recursively search for session in hierarchical structure
-    const search = (sessions) => {
-      for (const session of sessions) {
-        if (session.session_id === sessionId) {
-          return session;
-        }
-        if (session.children && session.children.length > 0) {
-          const found = search(session.children);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return search(this.sessions);
+    // Sessions load lazily (roots up front, children on expand), so the flat
+    // map of everything loaded is the authoritative lookup — walking
+    // this.sessions would miss nodes that arrived via a child fetch.
+    return (this.sessionById && this.sessionById.get(sessionId)) || null;
+  }
+
+  // Does this session exist server-side? Used for the auto-restore check, where
+  // the id may point at a sub-session that the sidebar has not loaded.
+  async sessionExists(sessionId) {
+    const local = this.findSessionInHierarchy(sessionId);
+    if (local) return true;
+    try {
+      const resp = await fetch(
+        `/api/sessions/search?session_id=${encodeURIComponent(sessionId)}`,
+        { credentials: 'include' }
+      );
+      if (!resp.ok) return false;
+      const data = await resp.json();
+      const found = (data.sessions || [])[0];
+      if (found) this.rememberSessions([found]);
+      return !!found;
+    } catch (err) {
+      console.error('Session lookup failed:', err);
+      return false;
+    }
   }
 
   async checkAuth() {
@@ -574,49 +588,76 @@ export class SessionManager {
       return;
     }
     
+    // A full re-render throws away the DOM of lazily loaded subtrees, so the
+    // lookup map is rebuilt from the roots rather than accumulating stale nodes.
+    this.sessionById = new Map();
+    this.rememberSessions(this.sessions);
     listEl.innerHTML = this.sessions.map(session => this.renderSessionHierarchy(session, 0)).join('');
-    
-    // Attach event listeners to session items
-    listEl.querySelectorAll('.session-item').forEach(item => {
+    this.attachSessionListeners(listEl);
+  }
+
+  // Sessions are loaded lazily (roots up front, children on expand), so the
+  // rendered tree is no longer a complete in-memory structure. Keep a flat
+  // id -> session map of everything loaded so lookups stay O(1) and also work
+  // for nodes that arrived via a child fetch.
+  rememberSessions(sessions) {
+    if (!this.sessionById) this.sessionById = new Map();
+    for (const s of sessions || []) {
+      if (s && s.session_id) this.sessionById.set(s.session_id, s);
+    }
+  }
+
+  // Wire up a freshly rendered subtree. Called for the whole list on initial
+  // render and for each lazily loaded children container.
+  attachSessionListeners(rootEl) {
+    rootEl.querySelectorAll('.session-item').forEach(item => {
+      if (item.dataset.wired === '1') return; // don't double-bind on re-entry
+      item.dataset.wired = '1';
       const sessionId = item.dataset.sessionId;
-      
+
       item.addEventListener('click', async (e) => {
         // Don't trigger if clicking on action buttons or toggle
         if (e.target.closest('.session-item-btn') || e.target.closest('.session-toggle-btn')) return;
-        
+
         // Stop propagation to prevent parent session items from also firing
         e.stopPropagation();
-        
+
         await this.loadSession(sessionId);
       });
     });
-    
-    // Attach event listeners to toggle buttons
-    listEl.querySelectorAll('.session-toggle-btn').forEach(btn => {
+
+    rootEl.querySelectorAll('.session-toggle-btn').forEach(btn => {
+      if (btn.dataset.wired === '1') return;
+      btn.dataset.wired = '1';
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.toggleSessionChildren(btn);
       });
     });
-    
-    // Attach event listeners to action buttons
-    listEl.querySelectorAll('.session-rename-btn').forEach(btn => {
+
+    rootEl.querySelectorAll('.session-rename-btn').forEach(btn => {
+      if (btn.dataset.wired === '1') return;
+      btn.dataset.wired = '1';
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.openRenameModal(btn.dataset.sessionId, btn.dataset.sessionTitle);
       });
     });
-    
-    listEl.querySelectorAll('.session-delete-btn').forEach(btn => {
+
+    rootEl.querySelectorAll('.session-delete-btn').forEach(btn => {
+      if (btn.dataset.wired === '1') return;
+      btn.dataset.wired = '1';
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const sessionTitle = btn.dataset.sessionTitle || 'Untitled';
         this.openDeleteModal(btn.dataset.sessionId, sessionTitle);
       });
     });
-    
+
     // Info buttons - show session info panel
-    listEl.querySelectorAll('.session-info-btn').forEach(btn => {
+    rootEl.querySelectorAll('.session-info-btn').forEach(btn => {
+      if (btn.dataset.wired === '1') return;
+      btn.dataset.wired = '1';
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const sessionId = btn.dataset.sessionId;
@@ -627,12 +668,15 @@ export class SessionManager {
       });
     });
   }
-  
-  toggleSessionChildren(toggleBtn) {
+
+  async toggleSessionChildren(toggleBtn) {
     const sessionItem = toggleBtn.closest('.session-item');
-    const childrenContainer = sessionItem.querySelector('.session-children');
+    // ':scope >' is required: a nested descendant also has .session-children,
+    // and a plain querySelector would grab the grandchild's container.
+    const childrenContainer = sessionItem.querySelector(':scope > .session-children');
+    if (!childrenContainer) return;
     const isExpanded = sessionItem.classList.contains('expanded');
-    
+
     if (isExpanded) {
       sessionItem.classList.remove('expanded');
       childrenContainer.style.display = 'none';
@@ -641,19 +685,50 @@ export class SessionManager {
           <path d="M4 3L8 6L4 9Z"/>
         </svg>
       `;
-    } else {
-      sessionItem.classList.add('expanded');
-      childrenContainer.style.display = 'block';
-      toggleBtn.innerHTML = `
-        <svg viewBox="0 0 12 12" fill="currentColor">
-          <path d="M3 4L6 8L9 4Z"/>
-        </svg>
-      `;
+      return;
     }
+
+    // Expanding: the sidebar only ships root sessions, so a node's children are
+    // fetched the first time it is opened (one sub-index read server-side).
+    if (childrenContainer.dataset.loaded !== '1') {
+      const sessionId = sessionItem.dataset.sessionId;
+      const childDepth = parseInt(sessionItem.dataset.depth || '0', 10) + 1;
+      childrenContainer.innerHTML = '<div class="sessions-loading">Loading...</div>';
+      childrenContainer.style.display = 'block';
+      try {
+        const resp = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/children`,
+          { credentials: 'include' }
+        );
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const children = data.sessions || [];
+        this.rememberSessions(children);
+        childrenContainer.innerHTML =
+          children.map(c => this.renderSessionHierarchy(c, childDepth)).join('');
+        childrenContainer.dataset.loaded = '1';
+        this.attachSessionListeners(childrenContainer);
+      } catch (err) {
+        console.error('Failed to load sub-sessions:', err);
+        childrenContainer.innerHTML =
+          '<div class="sessions-error">Failed to load sub-sessions</div>';
+      }
+    }
+
+    sessionItem.classList.add('expanded');
+    childrenContainer.style.display = 'block';
+    toggleBtn.innerHTML = `
+      <svg viewBox="0 0 12 12" fill="currentColor">
+        <path d="M3 4L6 8L9 4Z"/>
+      </svg>
+    `;
   }
   
   renderSessionHierarchy(session, depth = 0) {
-    const hasChildren = session.children && session.children.length > 0;
+    // has_children comes from the server (the parent's sub-index exists);
+    // children[] is only filled for subtrees that were already fetched.
+    const loadedChildren = !!(session.children && session.children.length > 0);
+    const hasChildren = !!session.has_children || loadedChildren;
     const isActive = session.session_id === this.currentSessionId;
     const isSubAgent = depth > 0; // Sub-agents are at depth > 0
     const date = new Date(session.updated_at);
@@ -713,8 +788,8 @@ export class SessionManager {
           <span class="session-item-count">${session.message_count} msgs</span>
         </div>
         ${hasChildren ? `
-          <div class="session-children" style="display: none;">
-            ${session.children.map(child => this.renderSessionHierarchy(child, depth + 1)).join('')}
+          <div class="session-children" style="display: none;"${loadedChildren ? ' data-loaded="1"' : ''}>
+            ${loadedChildren ? session.children.map(child => this.renderSessionHierarchy(child, depth + 1)).join('') : ''}
           </div>
         ` : ''}
       </div>
