@@ -104,17 +104,14 @@ llm_system:
         json_mode: true
         multimodal: true
 
-      # Notes:
-      # - Same as openrouter-gemini-3-flash but WITHOUT output token limit
-      # - Use for testing/budget-conscious large structured output tasks
-      # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
 
-    openrouter-gemini-3.5-flash:
+
+    openrouter-gemini-3.5-flash-lite:
       provider: openai_httpx
-      model: google/gemini-3.5-flash
+      model: google/gemini-3.5-flash-lite
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
-      context_window: 200000  # 1M token native; capped here for context-budget perf
+      context_window: 400000      # 1M token native; capped here for context-budget perf
       request_timeout: 600
       thinking_level: low         # Reduced from medium 2026-05-26 — Flash 3.5's decoder
                                   # collapses with MALFORMED_FUNCTION_CALL when long reasoning +
@@ -141,15 +138,41 @@ llm_system:
         json_mode: true
         multimodal: true  # text/image/video/audio/PDF native
 
-      # Notes:
-      # - Gemini 3.5 Flash: newer than 3.0 Flash, ~Pro-quality at Flash price
-      # - Pricing (standard): $1.50 input / $9.00 output per 1M tokens
-      # - service_tier: "flex" routes to Google Flex Processing (cheaper,
-      #   significantly slower; ok for non-interactive batch agents like
-      #   cover_artist). Remove the field for standard-speed billing.
-      # - max_tokens 32k: thinking tokens are charged AGAINST the output
-      #   budget; complex compose-tool calls with embedded SVG strings can
-      #   easily blow past 16k. 32k gives headroom for both.
+
+
+    openrouter-gemini-3.6-flash:
+      provider: openai_httpx
+      model: google/gemini-3.6-flash
+      api_key: "***REMOVED***"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 400000      # 1M token native; capped here for context-budget perf
+      request_timeout: 600
+      thinking_level: low         # Reduced from medium 2026-05-26 — Flash 3.5's decoder
+                                  # collapses with MALFORMED_FUNCTION_CALL when long reasoning +
+                                  # structured tool-call output (sequential_thinking thought
+                                  # strings, image_compose spec JSON) land in the same turn
+                                  # after a multi-MB vision input. `low` keeps reasoning
+                                  # available for retry decisions but cuts the per-turn
+                                  # reasoning-token pressure that triggers the failure.
+      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
+        order: ["google-vertex", "google-ai-studio"]
+      max_tokens: 32768           # Big complex tool-calls (image_compose_render specs with multiple SVG strings)
+                                  # PLUS thinking PLUS function-call envelope can exceed 16k —
+                                  # truncation mid-JSON causes MALFORMED_FUNCTION_CALL.
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
+        multimodal: true  # text/image/video/audio/PDF native
+
+
 
     openrouter-gemini-3-pro:
       provider: openai_httpx
@@ -940,6 +963,11 @@ llm_system:
   # PROFILES for easy access
   # =============================================================================
   profiles:
+    or-gemini-flash-lite:
+      model_ref: openrouter-gemini-3.5-flash-lite
+      description: "OpenRouter Gemini 3.5 Flash Lite - Lightweight with audio/video support"
+      max_steps: 500
+
     or-gemini-flash:
       model_ref: openrouter-gemini-3-flash
       description: "OpenRouter Gemini 3 Flash - Fast with audio/video support"
@@ -955,9 +983,9 @@ llm_system:
       description: "OpenRouter Gemini 3 Flash - No output token limit (budget-friendly testing)"
       max_steps: 500
 
-    or-gemini-3.5-flash:
-      model_ref: openrouter-gemini-3.5-flash
-      description: "OpenRouter Gemini 3.5 Flash - Newer Flash, ~Pro-quality at Flash price; uses Flex tier (cheaper, slower)"
+    or-gemini-3.6-flash:
+      model_ref: openrouter-gemini-3.6-flash
+      description: "OpenRouter Gemini 3.6 Flash - Newer Flash, ~Pro-quality at Flash price; uses Flex tier (cheaper, slower)"
       max_steps: 500
 
     or-gemini-pro:
