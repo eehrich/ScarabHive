@@ -49,7 +49,10 @@
    */
   async function loadAgents(selectElement) {
     try {
-      const response = await fetch('/agents');
+      // cache:'no-store' — the browser must not serve a stale agent list from
+      // its HTTP cache on a normal reload (new agents only appeared after a
+      // force reload). The server also sends Cache-Control: no-store now.
+      const response = await fetch('/agents', { cache: 'no-store' });
       const data = await response.json();
 
       if (!data.agents || data.agents.length === 0) {
@@ -106,7 +109,7 @@
    */
   async function loadLLMProfiles(selectElement) {
     try {
-      const response = await fetch('/llm/profiles');
+      const response = await fetch('/llm/profiles', { cache: 'no-store' });
       const data = await response.json();
 
       if (!data.profiles || data.profiles.length === 0) {

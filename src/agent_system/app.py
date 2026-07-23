@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 import uvicorn
-from fastapi import FastAPI, Request, Query, Header, HTTPException, status
+from fastapi import FastAPI, Request, Query, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
@@ -1196,12 +1196,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         return config.model_dump()
 
     @app.get("/agents")
-    def list_agents():
+    def list_agents(response: Response):
         """List registered agent-like servers that are publicly visible (UI dropdown).
 
         Returns agents with _mcp_public=True OR agents without _mcp_public attribute (backward compat).
         Agents with visibility='tool' or 'private' (_mcp_public=False) are excluded.
         """
+        # Without this the browser may serve the list from its HTTP cache on a
+        # normal reload — newly registered agents then only appear after a
+        # force reload (observed: agent missing from the dropdown until Ctrl+F5).
+        response.headers["Cache-Control"] = "no-store"
         agents = []
         try:
             for name in _app_registry.list():  # type: ignore[attr-defined]
@@ -1225,8 +1229,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         return {"agents": sorted(agents), "default": config.default_agent}
 
     @app.get("/llm/profiles")
-    def list_llm_profiles():
+    def list_llm_profiles(response: Response):
         """List available LLM profiles with their descriptions."""
+        response.headers["Cache-Control"] = "no-store"  # same staleness class as /agents
         profiles = []
         default_profile = None
         try:
