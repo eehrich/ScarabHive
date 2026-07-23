@@ -689,6 +689,31 @@
   // Streaming state tracking
   let currentStreamingContent = '';
   let currentStreamingStep = null;
+
+  // Set when a user message was appended to the RUNNING request. The stream's
+  // block is rebound to a fresh one only when the NEXT step actually starts —
+  // rebinding at append time would hijack the still-streaming current step
+  // (thinking_delta re-renders the full accumulated text into whatever block
+  // blk points at), teleporting the in-flight answer below the injected
+  // message and letting the post-drain step overwrite it.
+  let pendingAppendRebind = false;
+
+  // Move the live stream to a fresh assistant block (appended at the end of the
+  // chat, i.e. below any injected user message) by mutating the SAME blk object
+  // the stream handlers hold — object identity is what makes the in-place
+  // rebind work (see the 'continuation' handler and the mid-run append flow).
+  function rebindLiveBlock(blk) {
+    const newBlk = addAssistantBlock(chatContainer);
+    blk.row = newBlk.row;
+    blk.box = newBlk.box;
+    blk.t = newBlk.t;
+    blk.think = newBlk.think;
+    blk.status = newBlk.status;
+    blk.thinkingSection = newBlk.thinkingSection;
+    blk.statusSection = newBlk.statusSection;
+    blk.responseSection = newBlk.responseSection;
+    scrollBottom();
+  }
   
   // DOM elements (set in init, shared across handlers)
   let runBtn = null;
@@ -853,6 +878,12 @@
           // New step - reset accumulator
           currentStreamingContent = '';
           currentStreamingStep = data.step;
+          // A message was appended mid-run: THIS step is the agent's reaction
+          // to it — stream it into a fresh block below the injected message.
+          if (pendingAppendRebind) {
+            pendingAppendRebind = false;
+            rebindLiveBlock(blk);
+          }
         }
         
         // Update with accumulated content + cursor directly in response box
@@ -918,6 +949,16 @@
           showSection(blk.think);
         } else {
           // Step marker event (before LLM call) - don't interfere with streaming
+          // Next step starting: apply a deferred mid-run-append rebind so the
+          // step renders below the injected user message. Guard on !content:
+          // the pure pre-LLM marker is {type, step}, while the "simplified
+          // thinking" event emitted at the END of a text-only step carries
+          // `content` — rebinding on that one would strand an empty block
+          // when a continuation hook fires right after.
+          if (pendingAppendRebind && !data.content) {
+            pendingAppendRebind = false;
+            rebindLiveBlock(blk);
+          }
           // Just ensure think section exists
           if (!blk.think) {
             blk.think = document.createElement('pre');
@@ -968,23 +1009,23 @@
           contMsg.innerHTML = `<div class="continuation-badge">🔄 Auto-Continue #${data.count || '?'}</div><div class="continuation-reason">${escapeHtml(data.reason || '')}</div><div class="continuation-text">${formatTextWithLineBreaks(data.message || '')}</div>`;
           contRow.appendChild(contMsg);
           chatContainer.appendChild(contRow);
-          // Create a new assistant block for the next response and update blk in-place
-          const newBlk = addAssistantBlock(chatContainer);
-          blk.row = newBlk.row;
-          blk.box = newBlk.box;
-          blk.t = newBlk.t;
-          blk.think = newBlk.think;
-          blk.status = newBlk.status;
-          blk.thinkingSection = newBlk.thinkingSection;
-          blk.statusSection = newBlk.statusSection;
-          blk.responseSection = newBlk.responseSection;
-          scrollBottom();
+          // Create a new assistant block for the next response and update blk
+          // in-place; this supersedes any deferred mid-run-append rebind.
+          pendingAppendRebind = false;
+          rebindLiveBlock(blk);
         }
         break;
       case 'final':
         // Mark completion for reconnect logic
         sseReceivedFinalOrEnd = true;
         sseReconnectAttempts = 0;
+        if (pendingAppendRebind) {
+          // Edge (e.g. max-steps): the run finalizes without another step. The
+          // final would be suppressed against the old block's non-empty content
+          // — render it into a fresh block below the injected message instead.
+          pendingAppendRebind = false;
+          rebindLiveBlock(blk);
+        }
         // Clear stored request (job finished)
         storeActiveRequest(null);
         
@@ -1009,6 +1050,7 @@
         // Mark completion for reconnect logic
         sseReceivedFinalOrEnd = true;
         sseReconnectAttempts = 0;
+        pendingAppendRebind = false;
         // Clear stored request (job finished)
         storeActiveRequest(null);
         
@@ -1298,20 +1340,26 @@
         }
 
         if (appended) {
-          // The running agent picks the message up at its next step. Rebind the
-          // live stream's block in-place to a fresh one below the injected user
-          // message so the agent's reaction renders after it (same pattern as
-          // the 'continuation' event handler).
-          if (activeStreamBlk) {
-            const newBlk = addAssistantBlock(chatContainer);
-            activeStreamBlk.row = newBlk.row;
-            activeStreamBlk.box = newBlk.box;
-            activeStreamBlk.t = newBlk.t;
-            activeStreamBlk.think = newBlk.think;
-            activeStreamBlk.status = newBlk.status;
-            activeStreamBlk.thinkingSection = newBlk.thinkingSection;
-            activeStreamBlk.statusSection = newBlk.statusSection;
-            activeStreamBlk.responseSection = newBlk.responseSection;
+          // The running agent picks the message up at its NEXT step. Do NOT
+          // rebind the stream block yet — the current step is usually still
+          // streaming into it, and thinking_delta re-renders the full
+          // accumulated text into whatever block blk points at, which would
+          // teleport the in-flight answer below the injected message.
+          // handleSSEEvent performs the rebind when the next step starts.
+          pendingAppendRebind = true;
+          if (activeStreamBlk && activeStreamBlk.status) {
+            // Visible confirmation — without it the UI looks stalled until the
+            // agent's current step finishes and the reaction starts.
+            // phase 'end' renders a persistent completed (✓) row; the synthetic
+            // unique request_id keeps it from mutating the agent's own
+            // operation row (operationKey = request_id in addStatusEvent).
+            addStatusEvent(activeStreamBlk.status, {
+              type: 'status',
+              phase: 'end',
+              message: 'Message delivered to the running agent — it reacts at its next step',
+              request_id: `${currentRequestId}_user_append_${Date.now()}`,
+              timestamp: new Date().toISOString()
+            });
             scrollBottom();
           }
           runActive = true; updateActionButton();
@@ -1334,6 +1382,7 @@
       stopBtn.setAttribute('title', 'Stop');
       stopBtn.setAttribute('aria-label', 'Stop');
       currentRequestId = null; // Will be set when SSE 'start' event arrives
+      pendingAppendRebind = false; // stale flag from a previous run must not leak
 
       // Use FormData for all requests (supports both text-only and multimodal)
       if (hasFiles) {
