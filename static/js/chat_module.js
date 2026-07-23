@@ -695,19 +695,27 @@
   let stopBtn = null;
   let chatContainer = null;
 
-  // The run button stays VISIBLE while a run is active — that is how a user
-  // injects a message into the running agent: the submit handler detects the
-  // live request and POSTs the text to /events/{id}/append instead of starting
-  // a new run (see docs/mid_run_message_injection.md). Previously the button
-  // was hidden and replaced by Stop, which made mid-run injection unreachable
-  // by mouse (only Ctrl+Enter still worked). Only the tooltip changes now; the
-  // Stop button appears ALONGSIDE it while running.
-  function setRunBtnMode(running) {
-    if (!runBtn) return;
-    runBtn.style.display = 'block';
+  // One action-button slot, driven by (run active? typed anything?):
+  //   idle                      -> Run
+  //   running, input empty      -> Stop
+  //   running, input has text   -> Send  (injects into the RUNNING agent; the
+  //                                submit handler POSTs it to
+  //                                /events/{id}/append — see
+  //                                docs/mid_run_message_injection.md)
+  // Clearing the input flips Send back to Stop. Without this, a run only ever
+  // showed Stop and mid-run injection was unreachable by mouse.
+  let runActive = false;
+
+  function updateActionButton() {
+    if (!runBtn || !stopBtn) return;
+    const ti = document.getElementById('task');
+    const hasText = !!(ti && ti.value.trim());
+    const showSend = !runActive || hasText;
+    runBtn.style.display = showSend ? 'block' : 'none';
+    stopBtn.style.display = showSend ? 'none' : 'block';
     runBtn.setAttribute(
-      'title', running ? 'Send to running agent (Ctrl+Enter)' : 'Run (Ctrl+Enter)');
-    runBtn.setAttribute('aria-label', running ? 'Send to running agent' : 'Run');
+      'title', runActive ? 'Send to running agent (Ctrl+Enter)' : 'Run (Ctrl+Enter)');
+    runBtn.setAttribute('aria-label', runActive ? 'Send to running agent' : 'Run');
   }
   
   // Session and request tracking (shared across init and event listeners)
@@ -1022,7 +1030,7 @@
           sseReconnectTimer = null;
         }
         
-        setRunBtnMode(false); // back to idle 'Run'
+        runActive = false; updateActionButton(); // back to idle 'Run'
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
         stopBtn.setAttribute('title', 'Stop');
@@ -1051,7 +1059,7 @@
           currentStatusEventSource.close();
           currentStatusEventSource = null;
         }
-        setRunBtnMode(false); // back to idle 'Run'
+        runActive = false; updateActionButton(); // back to idle 'Run'
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
         stopBtn.setAttribute('title', 'Stop');
@@ -1079,7 +1087,7 @@
         showSection(blk.t);
         const stepInfo = data.step ? ` at step ${data.step}` : '';
         blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
-        setRunBtnMode(false); // back to idle 'Run'
+        runActive = false; updateActionButton(); // back to idle 'Run'
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
         stopBtn.setAttribute('title', 'Stop');
@@ -1126,6 +1134,12 @@
     updateHeaderSessionId();
     updateRequestId();
 
+    // While a run is active the action button is Stop — but as soon as the user
+    // types something it becomes Send, so the text can be injected into the
+    // running agent. Clearing the input flips it back to Stop.
+    taskInput.addEventListener('input', updateActionButton);
+    updateActionButton();
+
     // Stop button event listener
     stopBtn.addEventListener('click', async function() {
       if (currentRequestId) {
@@ -1157,7 +1171,7 @@
             }
             
             // UI zurücksetzen: Run-Button anzeigen, Stop-Button verstecken
-            setRunBtnMode(false);
+            runActive = false; updateActionButton();
             stopBtn.style.display = 'none';
             currentRequestId = null;
             currentEventSource = null;
@@ -1183,7 +1197,7 @@
             currentRequestId = null;
             currentEventSource = null;
             // UI zurücksetzen
-            setRunBtnMode(false);
+            runActive = false; updateActionButton();
             stopBtn.style.display = 'none';
             stopBtn.classList.remove('cancelling');
             stopBtn.disabled = false;
@@ -1300,8 +1314,7 @@
             activeStreamBlk.responseSection = newBlk.responseSection;
             scrollBottom();
           }
-          setRunBtnMode(true);
-          stopBtn.style.display = 'block';
+          runActive = true; updateActionButton();
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           stopBtn.disabled = false;
           stopBtn.setAttribute('title', 'Stop');
@@ -1315,8 +1328,7 @@
       // No active request or has files: start a new request
       const blk = addAssistantBlock(chatContainer);
       activeStreamBlk = blk;
-      setRunBtnMode(true);  // run button stays visible (mid-run inject)
-      stopBtn.style.display = 'block'; // Show stop button
+      runActive = true; updateActionButton();  // -> Stop (empty input)
       stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
       stopBtn.disabled = false;
       stopBtn.setAttribute('title', 'Stop');
@@ -1383,7 +1395,7 @@
             }
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
-            setRunBtnMode(false);
+            runActive = false; updateActionButton();
             stopBtn.style.display = 'none';
             // Reset stop button state
             stopBtn.setAttribute('title', 'Stop');
@@ -1456,7 +1468,7 @@
             clearTimeout(closeEventSourceTimer);
             closeEventSourceTimer = null;
           }
-          setRunBtnMode(false);
+          runActive = false; updateActionButton();
           stopBtn.style.display = 'none';
           // Reset stop button state
           stopBtn.setAttribute('title', 'Stop');
@@ -1533,7 +1545,7 @@
           }
           showSection(blk.t);
           blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
-          setRunBtnMode(false);
+          runActive = false; updateActionButton();
           stopBtn.style.display = 'none';
           stopBtn.setAttribute('title', 'Stop');
           stopBtn.setAttribute('aria-label', 'Stop');
@@ -1606,13 +1618,13 @@
                   const contentFormat = status.result.content_format || 'text';
                   blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
                 }
-                setRunBtnMode(false);
+                runActive = false; updateActionButton();
                 stopBtn.style.display = 'none';
                 sseReconnectAttempts = 0;
               } else if (status.error) {
                 showSection(blk.t);
                 blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(status.error)}</div>`;
-                setRunBtnMode(false);
+                runActive = false; updateActionButton();
                 stopBtn.style.display = 'none';
                 sseReconnectAttempts = 0;
               } else if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
@@ -1624,7 +1636,7 @@
                 errorNotice.className = 'response-text error';
                 errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ Connection lost after ' + SSE_MAX_RECONNECT_ATTEMPTS + ' reconnect attempts');
                 blk.t.appendChild(errorNotice);
-                setRunBtnMode(false);
+                runActive = false; updateActionButton();
                 stopBtn.style.display = 'none';
                 sseReconnectAttempts = 0;
               }
@@ -1663,7 +1675,7 @@
           currentStatusEventSource.close();
           currentStatusEventSource = null;
         }
-        setRunBtnMode(false);
+        runActive = false; updateActionButton();
         stopBtn.style.display = 'none';
         stopBtn.setAttribute('title', 'Stop');
         stopBtn.setAttribute('aria-label', 'Stop');
@@ -1699,8 +1711,7 @@
           const blk = addAssistantBlock(chatContainer);
           activeStreamBlk = blk;
           
-          setRunBtnMode(true);
-          stopBtn.style.display = 'block';
+          runActive = true; updateActionButton();
           stopBtn.disabled = false;
           stopBtn.setAttribute('title', 'Stop');
           stopBtn.setAttribute('aria-label', 'Stop');
@@ -1732,7 +1743,7 @@
           es.onerror = () => {
             es.close();
             currentEventSource = null;
-            setRunBtnMode(false);
+            runActive = false; updateActionButton();
             stopBtn.style.display = 'none';
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
