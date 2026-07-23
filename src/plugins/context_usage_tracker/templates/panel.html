@@ -1,783 +1,469 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Context Usage Tracker</title>
-    <link rel="stylesheet" href="/static/css/scrollbar.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Context &amp; Cost Usage</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  /* VS Code dark theme — panel design standard (see message_debugger) */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1e1e1e; color: #d4d4d4; font-size: 13px; }
+  .container { padding: 12px; max-width: 100%; }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 20px;
-        }
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .header h1 { font-size: 16px; color: #569cd6; font-weight: 600; }
+  .header-actions { display: flex; gap: 6px; }
+  button { background: #0e639c; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+  button:hover { background: #1177bb; }
+  button.icon-only { background: #2d2d30; border: 1px solid #3e3e42; color: #d4d4d4; }
+  button.icon-only:hover { background: #3e3e42; }
+  button.icon-only.active { background: #16825d; border-color: #16825d; color: #fff; }
+  button.danger { background: #5a1d1d; }
+  button.danger:hover { background: #7a2727; }
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .stat-card { background: #252526; border: 1px solid #3e3e42; border-radius: 6px; padding: 10px 12px; }
+  .stat-card .label { color: #858585; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .stat-card .value { font-size: 18px; font-weight: 600; margin-top: 3px; color: #d4d4d4; }
+  .stat-card .sub { font-size: 11px; color: #858585; margin-top: 2px; }
+  .stat-card.green .value { color: #4ec9b0; }
+  .stat-card.blue .value { color: #569cd6; }
+  .stat-card.orange .value { color: #ce9178; }
+  .stat-card.purple .value { color: #c586c0; }
 
-        h1 {
-            font-size: 24px;
-            margin-bottom: 20px;
-            color: #569cd6;
-        }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid #3e3e42; margin-bottom: 10px; }
+  .tab { background: transparent; color: #858585; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 7px 14px; font-size: 13px; }
+  .tab:hover { background: #2d2d30; color: #d4d4d4; }
+  .tab.active { color: #569cd6; border-bottom-color: #569cd6; background: transparent; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
 
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-            margin-bottom: 30px;
-        }
+  .filters { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .filters label { color: #858585; font-size: 12px; }
+  select { background: #2d2d30; color: #d4d4d4; border: 1px solid #3e3e42; border-radius: 4px; padding: 4px 6px; font-size: 12px; }
 
-        .stat-card {
-            background: #252526;
-            border: 1px solid #3e3e42;
-            border-radius: 6px;
-            padding: 12px;
-            min-width: 0;
-            overflow: hidden;
-        }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: right; color: #858585; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #3e3e42; white-space: nowrap; cursor: pointer; user-select: none; }
+  th:first-child, td:first-child { text-align: left; }
+  th.sorted { color: #569cd6; }
+  td { padding: 5px 8px; border-bottom: 1px solid #2d2d30; text-align: right; white-space: nowrap; }
+  td.name { text-align: left; color: #9cdcfe; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+  td.model { text-align: left; color: #858585; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+  tr:hover td { background: #2a2d2e; }
+  tr.clickable { cursor: pointer; }
+  .cost { color: #4ec9b0; }
+  .cached { color: #c586c0; }
+  .muted { color: #858585; }
+  .pct-bar { display: inline-block; min-width: 46px; }
 
-        .stat-label {
-            font-size: 11px;
-            color: #858585;
-            margin-bottom: 5px;
-            white-space: nowrap;
-        }
+  .chart-box { background: #252526; border: 1px solid #3e3e42; border-radius: 6px; padding: 10px; margin-bottom: 10px; height: 390px; }
+  .empty { color: #858585; text-align: center; padding: 28px 0; }
 
-        .stat-value {
-            font-size: clamp(12px, 3vw, 22px);
-            font-weight: 600;
-            color: #4ec9b0;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .agent-section {
-            background: #252526;
-            border: 1px solid #3e3e42;
-            border-radius: 6px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-
-        .agent-section h2 {
-            font-size: 18px;
-            margin-bottom: 15px;
-            color: #ce9178;
-        }
-
-        .agent-list {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .agent-item {
-            background: #1e1e1e;
-            border: 1px solid #3e3e42;
-            border-radius: 4px;
-            padding: 12px;
-            display: grid;
-            grid-template-columns: minmax(120px, 1.5fr) repeat(5, minmax(60px, 1fr));
-            gap: 10px;
-            align-items: center;
-        }
-
-        .agent-name {
-            font-weight: 500;
-            color: #569cd6;
-        }
-
-        .agent-stat {
-            font-size: 14px;
-        }
-
-        .agent-stat-label {
-            font-size: 11px;
-            color: #858585;
-        }
-
-        .history-section {
-            background: #252526;
-            border: 1px solid #3e3e42;
-            border-radius: 6px;
-            padding: 20px;
-        }
-
-        .history-section h2 {
-            font-size: 18px;
-            margin-bottom: 15px;
-            color: #dcdcaa;
-        }
-
-        .history-list {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-
-        .history-item {
-            background: #1e1e1e;
-            border: 1px solid #3e3e42;
-            border-radius: 4px;
-            padding: 10px;
-            margin-bottom: 8px;
-            font-size: 13px;
-        }
-
-        .history-time {
-            color: #858585;
-            font-size: 11px;
-        }
-
-        .controls {
-            margin-bottom: 20px;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
-        button {
-            background: #0e639c;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 8px 16px;
-            cursor: pointer;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        button:hover {
-            background: #1177bb;
-        }
-
-        button.icon-only {
-            padding: 8px;
-            width: 36px;
-            height: 36px;
-            justify-content: center;
-        }
-
-        button.icon-only.active {
-            background: #16825d;
-        }
-
-        button.icon-only.active:hover {
-            background: #1a9970;
-        }
-
-        .chart-container {
-            background: #252526;
-            border: 1px solid #3e3e42;
-            border-radius: 6px;
-            padding: 20px;
-            padding-bottom: 40px;
-            margin-bottom: 30px;
-            height: 320px;
-            position: relative;
-        }
-
-        .chart-container h2 {
-            font-size: 18px;
-            margin-bottom: 15px;
-            color: #dcdcaa;
-        }
-
-        .error {
-            color: #f48771;
-            padding: 10px;
-            background: #3e1e1e;
-            border-radius: 4px;
-            margin-bottom: 20px;
-        }
-
-        .success {
-            color: #4ec9b0;
-            padding: 10px;
-            background: #1e3e1e;
-            border-radius: 4px;
-            margin-bottom: 20px;
-        }
-
-        .no-data {
-            color: #858585;
-            text-align: center;
-            padding: 40px;
-        }
-
-        /* Modal Styles */
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.6);
-            backdrop-filter: blur(4px);
-        }
-
-        .modal-content {
-            background-color: #1e1e1e;
-            margin: 15% auto;
-            padding: 0;
-            border-radius: 8px;
-            max-width: 450px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-            animation: slideDown 0.3s ease;
-            border: 1px solid #569cd6;
-        }
-
-        @keyframes slideDown {
-            from {
-                transform: translateY(-50px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-
-        .modal-header {
-            background: #2d2d2d;
-            color: white;
-            padding: 20px 25px;
-            border-radius: 8px 8px 0 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #569cd6;
-        }
-
-        .modal-header h2 {
-            margin: 0;
-            font-size: 1.3rem;
-            color: #dcdcaa;
-        }
-
-        .close {
-            color: #858585;
-            font-size: 28px;
-            font-weight: bold;
-            cursor: pointer;
-            line-height: 1;
-            transition: color 0.2s ease;
-        }
-
-        .close:hover {
-            color: #f48771;
-        }
-
-        .modal-body {
-            padding: 25px;
-            color: #d4d4d4;
-            line-height: 1.6;
-        }
-
-        .modal-footer {
-            padding: 15px 25px;
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-            border-top: 1px solid #3e3e3e;
-        }
-
-        .modal-footer button {
-            padding: 8px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.95rem;
-            transition: all 0.2s ease;
-        }
-
-        .modal-footer button.cancel {
-            background: #3e3e3e;
-            color: #d4d4d4;
-        }
-
-        .modal-footer button.cancel:hover {
-            background: #4e4e4e;
-        }
-
-        .modal-footer button.danger {
-            background: #f48771;
-            color: white;
-        }
-
-        .modal-footer button.danger:hover {
-            background: #e06c5c;
-        }
-    </style>
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: #252526; border: 1px solid #3e3e42; border-radius: 8px; padding: 16px; min-width: 340px; max-width: 90%; max-height: 80%; overflow: auto; }
+  .modal h2 { font-size: 14px; color: #569cd6; margin-bottom: 10px; }
+  .modal .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12px; }
+  .modal .kv .k { color: #858585; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>📊 Context Usage Tracker</h1>
-
-        <div class="controls">
-            <button class="icon-only" onclick="refreshData()" title="Refresh">
-                🔄
-            </button>
-            <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
-                ⏱️
-            </button>
-            <button class="icon-only active" id="session-filter-btn" onclick="toggleSessionFilter()" title="Showing: Current Session">
-                🎯
-            </button>
-            <button class="icon-only" onclick="clearHistory()" title="Clear History" style="margin-left: auto;">
-                🗑️
-            </button>
-        </div>
-
-        <div id="error-container"></div>
-
-        <div class="stats-grid" id="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Current Tokens</div>
-                <div class="stat-value" id="current-tokens">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Current Cached</div>
-                <div class="stat-value" id="current-cached" style="color: #9cdcfe;">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Accumulated Tokens</div>
-                <div class="stat-value" id="accumulated-tokens">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Accumulated Cached</div>
-                <div class="stat-value" id="accumulated-cached" style="color: #9cdcfe;">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Usage %</div>
-                <div class="stat-value" id="usage-percent">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Messages</div>
-                <div class="stat-value" id="message-count">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Total Calls</div>
-                <div class="stat-value" id="total-calls">-</div>
-            </div>
-        </div>
-
-        <div class="chart-container">
-            <h2>📈 Token Usage Over Time</h2>
-            <canvas id="token-chart"></canvas>
-        </div>
-
-        <div class="agent-section">
-            <h2>🤖 Agents</h2>
-            <div class="agent-list" id="agent-list">
-                <div class="no-data">No agent data available</div>
-            </div>
-        </div>
-
-        <div class="history-section">
-            <h2>📝 Recent History</h2>
-            <div class="history-list" id="history-list">
-                <div class="no-data">No history available</div>
-            </div>
-        </div>
+<div class="container">
+  <div class="header">
+    <h1>📊 Context &amp; Cost Usage</h1>
+    <div class="header-actions">
+      <button id="scopeBtn" class="icon-only active" title="Scope: current session / all sessions">🎯 Session</button>
+      <button id="refreshBtn" class="icon-only" title="Refresh now">🔄</button>
+      <button id="autoBtn" class="icon-only active" title="Auto-refresh (5s)">⏱ Auto</button>
+      <button id="clearBtn" class="icon-only danger" title="Clear history">🗑</button>
     </div>
+  </div>
 
-    <script>
-        // Prevent parent page scroll when scrolling in this panel
-        document.addEventListener('wheel', function(e) {
-            const scrollable = document.scrollingElement || document.documentElement;
-            const atTop = scrollable.scrollTop === 0;
-            const atBottom = scrollable.scrollHeight - scrollable.scrollTop === scrollable.clientHeight;
-            
-            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-                e.preventDefault();
-            }
-        }, { passive: false });
+  <div class="stats-grid" id="statsGrid"></div>
 
-        let autoRefreshInterval = null;
-        let tokenChart = null;
-        let currentSessionOnly = true; // Filter by current session by default
+  <div class="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="agents">Agents</button>
+    <button class="tab" data-tab="calls">Calls</button>
+  </div>
 
-        // Format large numbers compactly (e.g., 1.18M, 234K)
-        function formatCompact(num) {
-            if (num >= 1000000) {
-                return (num / 1000000).toFixed(2) + 'M';
-            } else if (num >= 100000) {
-                return (num / 1000).toFixed(0) + 'K';
-            } else if (num >= 10000) {
-                return (num / 1000).toFixed(1) + 'K';
-            }
-            return num.toLocaleString();
-        }
-
-        function getCurrentSessionId() {
-            // Method 1: Try to get from parent window's sessionManager
-            try {
-                if (window.parent && window.parent !== window && window.parent.sessionManager) {
-                    const sessionId = window.parent.sessionManager.getCurrentSessionId();
-                    if (sessionId) return sessionId;
-                }
-            } catch (e) {
-                console.error('[Context Tracker] Cannot access parent sessionManager:', e.message);
-            }
-
-            // Method 2: Try to get from parent window's chat module
-            try {
-                if (window.parent && window.parent !== window && window.parent.chatModule) {
-                    const sessionId = window.parent.chatModule.getCurrentSessionId?.();
-                    if (sessionId) return sessionId;
-                }
-            } catch (e) {
-                console.error('[Context Tracker] Cannot access parent chatModule:', e.message);
-            }
-
-            // Method 3: Parse from parent's DOM
-            try {
-                if (window.parent && window.parent !== window) {
-                    const headerEl = window.parent.document.getElementById('headerSessionId');
-                    if (headerEl && headerEl.textContent && headerEl.textContent !== '--') {
-                        return headerEl.textContent;
-                    }
-                }
-            } catch (e) {
-                console.error('[Context Tracker] Cannot access parent DOM:', e.message);
-            }
-
-            // Method 4: URL parameter
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlSessionId = urlParams.get('session_id');
-            if (urlSessionId) return urlSessionId;
-
-            // Method 5: LocalStorage fallback
-            const storedSessionId = localStorage.getItem('currentSessionId');
-            if (storedSessionId) return storedSessionId;
-
-            return null;
-        }
-
-        function initChart() {
-            const ctx = document.getElementById('token-chart').getContext('2d');
-            tokenChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: 'Total Tokens',
-                        data: [],
-                        borderColor: '#4ec9b0',
-                        backgroundColor: 'rgba(78, 201, 176, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }, {
-                        label: 'Prompt Tokens',
-                        data: [],
-                        borderColor: '#569cd6',
-                        backgroundColor: 'rgba(86, 156, 214, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }, {
-                        label: 'Completion Tokens',
-                        data: [],
-                        borderColor: '#ce9178',
-                        backgroundColor: 'rgba(206, 145, 120, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }, {
-                        label: 'Cached Tokens',
-                        data: [],
-                        borderColor: '#9cdcfe',
-                        backgroundColor: 'rgba(156, 220, 254, 0.1)',
-                        tension: 0.4,
-                        fill: false,
-                        borderDash: [5, 5]
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            labels: {
-                                color: '#d4d4d4'
-                            }
-                        }
-                    },
-                    scales: {
-                        x: {
-                            ticks: { color: '#858585' },
-                            grid: { color: '#3e3e42' }
-                        },
-                        y: {
-                            ticks: { color: '#858585' },
-                            grid: { color: '#3e3e42' },
-                            beginAtZero: true
-                        }
-                    }
-                }
-            });
-        }
-
-        function updateChart(historyData) {
-            if (!tokenChart || !historyData || historyData.length === 0) return;
-
-            const maxPoints = 50;
-            const data = historyData.slice(-maxPoints);
-
-            const labels = data.map(item => {
-                const date = new Date(item.timestamp * 1000);
-                return date.toLocaleTimeString();
-            });
-
-            tokenChart.data.labels = labels;
-            tokenChart.data.datasets[0].data = data.map(item => item.total_tokens);
-            tokenChart.data.datasets[1].data = data.map(item => item.prompt_tokens);
-            tokenChart.data.datasets[2].data = data.map(item => item.completion_tokens);
-            tokenChart.data.datasets[3].data = data.map(item => item.cached_tokens || 0);
-            tokenChart.update('none');
-        }
-
-        async function refreshData() {
-            try {
-                const currentSessionId = getCurrentSessionId();
-                const sessionId = currentSessionOnly ? currentSessionId : null;
-
-                // Build URLs with session_id parameter if filtering
-                const usageUrl = `/plugins/context_usage_tracker/usage${sessionId ? '?session_id=' + sessionId : ''}`;
-                const historyUrl = `/plugins/context_usage_tracker/history?last_n=1000${sessionId ? '&session_id=' + sessionId : ''}`;
-
-                const usageResp = await fetch(usageUrl);
-                const usageData = await usageResp.json();
-
-                const latest = usageData.latest || {};
-                const currentTotalTokens = latest.total_tokens || 0;
-                const currentCachedTokens = latest.cached_tokens || 0;
-                const currentCachedPercent = currentTotalTokens > 0
-                    ? ((currentCachedTokens / currentTotalTokens) * 100).toFixed(0)
-                    : 0;
-
-                document.getElementById('current-tokens').textContent =
-                    currentTotalTokens.toLocaleString();
-                document.getElementById('current-cached').textContent =
-                    `${currentCachedTokens.toLocaleString()} (${currentCachedPercent}%)`;
-                document.getElementById('usage-percent').textContent =
-                    latest.usage_percentage ? latest.usage_percentage.toFixed(1) + '%' : '0%';
-                document.getElementById('message-count').textContent =
-                    latest.message_count || '0';
-
-                const agents = usageData.agents || {};
-
-                // Calculate accumulated cached tokens from all agents
-                const accumulatedCachedTokens = Object.values(agents).reduce((sum, agent) =>
-                    sum + (agent.total_cached_tokens || 0), 0);
-                const accumulatedTotalTokens = Object.values(agents).reduce((sum, agent) =>
-                    sum + (agent.total_tokens || 0), 0);
-                const accumulatedCachedPercent = accumulatedTotalTokens > 0
-                    ? ((accumulatedCachedTokens / accumulatedTotalTokens) * 100).toFixed(0)
-                    : 0;
-                document.getElementById('accumulated-cached').textContent =
-                    `${formatCompact(accumulatedCachedTokens)} (${accumulatedCachedPercent}%)`;
-
-                // Get history data (already filtered by backend if sessionId provided)
-                const historyResp = await fetch(historyUrl);
-                const historyData = await historyResp.json();
-                const history = historyData.history || [];
-
-                // Calculate stats from backend data (no frontend filtering needed)
-                const totalCalls = Object.values(agents).reduce((sum, agent) =>
-                    sum + (agent.total_calls || 0), 0);
-                const accumulatedTokens = Object.values(agents).reduce((sum, agent) =>
-                    sum + (agent.total_tokens || 0), 0);
-
-                document.getElementById('total-calls').textContent = totalCalls;
-                document.getElementById('accumulated-tokens').textContent =
-                    formatCompact(accumulatedTokens);
-
-                const agentList = document.getElementById('agent-list');
-                if (Object.keys(agents).length > 0) {
-                    agentList.innerHTML = Object.values(agents).map(agent => {
-                        const cachedPercent = agent.total_tokens > 0
-                            ? ((agent.total_cached_tokens || 0) / agent.total_tokens * 100).toFixed(0)
-                            : 0;
-                        const cachedColor = cachedPercent < 30 ? '#f48771' : cachedPercent < 60 ? '#dcdcaa' : '#4ec9b0';
-                        return `
-                        <div class="agent-item">
-                            <div>
-                                <div class="agent-name">${agent.agent_name}</div>
-                                <div class="agent-stat-label">${agent.agent_id}</div>
-                            </div>
-                            <div>
-                                <div class="agent-stat">${agent.total_calls}</div>
-                                <div class="agent-stat-label">Calls</div>
-                            </div>
-                            <div>
-                                <div class="agent-stat">${agent.total_tokens?.toLocaleString()}</div>
-                                <div class="agent-stat-label">Accumulated</div>
-                            </div>
-                            <div>
-                                <div class="agent-stat">${(agent.total_cached_tokens || 0).toLocaleString()}</div>
-                                <div class="agent-stat-label">Cached</div>
-                            </div>
-                            <div>
-                                <div class="agent-stat" style="color: ${cachedColor}">${cachedPercent}%</div>
-                                <div class="agent-stat-label">Cache %</div>
-                            </div>
-                            <div>
-                                <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div>
-                                <div class="agent-stat-label">Peak Tokens</div>
-                            </div>
-                        </div>
-                    `}).join('');
-                } else {
-                    agentList.innerHTML = '<div class="no-data">No agent data available</div>';
-                }
-
-                // Update chart and history list with filtered data
-                if (history && history.length > 0) {
-                    updateChart(history);
-
-                    const historyList = document.getElementById('history-list');
-                    historyList.innerHTML = history.slice().reverse().slice(0, 50).map(item => {
-                        const date = new Date(item.timestamp * 1000);
-                        const cachePercent = item.total_tokens > 0
-                            ? ((item.cached_tokens || 0) / item.total_tokens * 100).toFixed(0)
-                            : 0;
-                        const cachedInfo = item.cached_tokens > 0 ? ` (${cachePercent}% cached)` : '';
-                        return `
-                            <div class="history-item">
-                                <div class="history-time">${date.toLocaleString()}</div>
-                                <div>
-                                    <strong>${item.agent_name}</strong> -
-                                    ${item.total_tokens} tokens${cachedInfo} -
-                                    ${item.message_count} messages
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
-                } else {
-                    document.getElementById('history-list').innerHTML =
-                        '<div class="no-data">No history available</div>';
-                }
-
-                document.getElementById('error-container').innerHTML = '';
-
-            } catch (error) {
-                console.error('Error fetching data:', error);
-                document.getElementById('error-container').innerHTML =
-                    `<div class="error">Error loading data: ${error.message}</div>`;
-            }
-        }
-
-        function clearHistory() {
-            console.log('clearHistory() called - showing modal');
-            document.getElementById('clearHistoryModal').style.display = 'block';
-        }
-
-        function closeClearHistoryModal() {
-            console.log('closeClearHistoryModal() called');
-            document.getElementById('clearHistoryModal').style.display = 'none';
-        }
-
-        async function confirmClearHistory() {
-            console.log('confirmClearHistory() called');
-            const errorContainer = document.getElementById('error-container');
-            
-            // Close modal
-            closeClearHistoryModal();
-            
-            try {
-                errorContainer.innerHTML = '<div class="success">⏳ Clearing history...</div>';
-                const response = await fetch('/plugins/context_usage_tracker/clear', { method: 'POST' });
-                console.log('Clear response:', response.status);
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`HTTP ${response.status}: ${errorText}`);
-                }
-                errorContainer.innerHTML = '<div class="success">✅ History cleared successfully!</div>';
-                setTimeout(() => { errorContainer.innerHTML = ''; }, 3000);
-                await refreshData();
-            } catch (error) {
-                console.error('Error clearing history:', error);
-                errorContainer.innerHTML = `<div class="error">❌ Error clearing history: ${error.message}</div>`;
-            }
-        }
-
-        function toggleAutoRefresh() {
-            const btn = document.getElementById('auto-refresh-btn');
-            const isActive = btn.classList.contains('active');
-
-            if (isActive) {
-                btn.classList.remove('active');
-                btn.title = 'Auto-Refresh (5s) - Inactive';
-                if (autoRefreshInterval) {
-                    clearInterval(autoRefreshInterval);
-                    autoRefreshInterval = null;
-                }
-            } else {
-                btn.classList.add('active');
-                btn.title = 'Auto-Refresh (5s) - Active';
-                autoRefreshInterval = setInterval(refreshData, 5000);
-            }
-        }
-
-        function toggleSessionFilter() {
-            const btn = document.getElementById('session-filter-btn');
-            currentSessionOnly = !currentSessionOnly;
-
-            if (currentSessionOnly) {
-                btn.classList.add('active');
-                btn.title = 'Showing: Current Session';
-            } else {
-                btn.classList.remove('active');
-                btn.title = 'Showing: All Sessions';
-            }
-
-            refreshData();
-        }
-
-        // Close modal when clicking outside of it
-        window.onclick = function(event) {
-            const modal = document.getElementById('clearHistoryModal');
-            if (event.target === modal) {
-                closeClearHistoryModal();
-            }
-        }
-
-        initChart();
-        refreshData();
-        autoRefreshInterval = setInterval(refreshData, 5000);
-    </script>
-
-    <!-- Clear History Modal -->
-    <div id="clearHistoryModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>⚠️ Clear History</h2>
-                <span class="close" onclick="closeClearHistoryModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <p>Are you sure you want to clear all context usage history?</p>
-                <p><strong>This action cannot be undone.</strong></p>
-            </div>
-            <div class="modal-footer">
-                <button class="cancel" onclick="closeClearHistoryModal()">Cancel</button>
-                <button class="danger" onclick="confirmClearHistory()">Clear History</button>
-            </div>
-        </div>
+  <div class="tab-content active" id="tab-overview">
+    <div class="filters">
+      <label>Agent</label>
+      <select id="chartAgentFilter"><option value="">all</option></select>
     </div>
+    <div class="chart-box"><canvas id="usageChart"></canvas></div>
+    <div id="overviewStats"></div>
+  </div>
+
+  <div class="tab-content" id="tab-agents">
+    <div id="agentsTable"></div>
+  </div>
+
+  <div class="tab-content" id="tab-calls">
+    <div class="filters">
+      <label>Agent</label>
+      <select id="callAgentFilter"><option value="">all</option></select>
+      <label>Show</label>
+      <select id="callLimit">
+        <option>50</option><option selected>100</option><option>250</option><option>500</option>
+      </select>
+      <span class="muted" id="callCount"></span>
+    </div>
+    <div id="callsTable"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="detailModal">
+  <div class="modal">
+    <h2>Call Detail</h2>
+    <div class="kv" id="detailBody"></div>
+    <div class="actions"><button onclick="panel.closeModals()">Close</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="clearModal">
+  <div class="modal">
+    <h2>Clear history?</h2>
+    <div>This removes all recorded calls and agent statistics.</div>
+    <div class="actions">
+      <button class="icon-only" onclick="panel.closeModals()">Cancel</button>
+      <button class="danger" onclick="panel.doClear()">Clear</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const panel = {
+  base: '/plugins/context_usage_tracker',
+  scopeSession: true,
+  autoTimer: null,
+  chart: null,
+  history: [],       // snapshots (scope-filtered by the server)
+  agents: {},
+  statistics: {},
+  latest: null,
+  agentSort: { key: 'total_cost', dir: -1 },
+
+  // ---- session resolution (iframe -> parent bridges, same as before) ----
+  getCurrentSessionId() {
+    try {
+      if (window.parent && window.parent !== window && window.parent.sessionManager) {
+        const sid = window.parent.sessionManager.getCurrentSessionId();
+        if (sid) return sid;
+      }
+    } catch (e) { /* cross-frame access denied */ }
+    try {
+      if (window.parent && window.parent !== window && window.parent.chatModule) {
+        const sid = window.parent.chatModule.getCurrentSessionId?.();
+        if (sid) return sid;
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      if (window.parent && window.parent !== window) {
+        const el = window.parent.document.getElementById('headerSessionId');
+        if (el && el.textContent && el.textContent !== '--') return el.textContent;
+      }
+    } catch (e) { /* ignore */ }
+    const url = new URLSearchParams(window.location.search).get('session_id');
+    if (url) return url;
+    return localStorage.getItem('currentSessionId') || null;
+  },
+
+  // ---- formatting ----
+  esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; },
+  n(x) { return (x ?? 0).toLocaleString('en-US'); },
+  usd(c, dashIfNull = true) {
+    if (c === null || c === undefined) return dashIfNull ? '<span class="muted">–</span>' : '$0';
+    const v = Number(c);
+    return '$' + (v >= 0.1 ? v.toFixed(3) : v.toFixed(4));
+  },
+  t(ts) { return new Date(ts * 1000).toLocaleTimeString(); },
+  dt(ts) { const d = new Date(ts * 1000); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString(); },
+  pct(x) { return (x ?? 0).toFixed(1) + '%'; },
+
+  // ---- data ----
+  async refresh() {
+    const sid = this.scopeSession ? this.getCurrentSessionId() : null;
+    const q = sid ? `?session_id=${encodeURIComponent(sid)}` : '';
+    const qh = sid ? `&session_id=${encodeURIComponent(sid)}` : '';
+    try {
+      const [usage, hist] = await Promise.all([
+        fetch(`${this.base}/usage${q}`, { cache: 'no-store' }).then(r => r.json()),
+        fetch(`${this.base}/history?last_n=1000${qh}`, { cache: 'no-store' }).then(r => r.json()),
+      ]);
+      this.latest = usage.latest && Object.keys(usage.latest).length ? usage.latest : null;
+      this.agents = usage.agents || {};
+      this.statistics = usage.statistics || {};
+      this.history = hist.history || [];
+      this.renderAll();
+    } catch (e) {
+      console.error('[usage panel] refresh failed', e);
+    }
+  },
+
+  renderAll() {
+    // Tables first, chart last and isolated: a Chart.js failure (e.g. blocked
+    // CDN) must not blank the Agents/Calls tabs — the data matters more than
+    // the decoration.
+    this.renderCards();
+    this.renderOverviewStats();
+    this.renderAgents();
+    this.renderCalls();
+    try {
+      this.renderChart();
+    } catch (e) {
+      console.error('[usage panel] chart render failed', e);
+      const box = document.querySelector('.chart-box');
+      if (box && !box.dataset.failed) {
+        box.dataset.failed = '1';
+        box.innerHTML = '<div class="empty">Chart unavailable (Chart.js failed to load)</div>';
+      }
+    }
+  },
+
+  // ---- stat cards ----
+  renderCards() {
+    const tot = this.statistics.totals || {};
+    const l = this.latest;
+    const calls = this.history.length;
+    const cacheSub = tot.prompt_tokens
+      ? `${this.pct(tot.cache_hit_rate)} of ${this.n(tot.prompt_tokens)} prompt`
+      : '';
+    const costSub = tot.cost_known_calls !== undefined && calls
+      ? `${tot.cost_known_calls}/${calls} calls billed` : '';
+    const ctxVal = l ? this.n(l.total_tokens) : '–';
+    const ctxSub = l ? `${this.pct(l.usage_percentage)} of ${this.n(l.context_window)}${l.is_stale ? ' · stale' : ''}` : '';
+    document.getElementById('statsGrid').innerHTML = `
+      <div class="stat-card green"><div class="label">Total Cost</div>
+        <div class="value">${this.usd(tot.cost ?? 0, false)}</div><div class="sub">${costSub}</div></div>
+      <div class="stat-card blue"><div class="label">Calls</div>
+        <div class="value">${this.n(calls)}</div><div class="sub">${this.scopeSession ? 'this session' : 'all sessions'}</div></div>
+      <div class="stat-card"><div class="label">Output Tokens</div>
+        <div class="value">${this.n(tot.completion_tokens ?? 0)}</div><div class="sub">prompt ${this.n(tot.prompt_tokens ?? 0)}</div></div>
+      <div class="stat-card purple"><div class="label">Cached</div>
+        <div class="value">${this.n(tot.cached_tokens ?? 0)}</div><div class="sub">${cacheSub}</div></div>
+      <div class="stat-card orange"><div class="label">Cache Writes</div>
+        <div class="value">${this.n(tot.cache_write_tokens ?? 0)}</div><div class="sub"></div></div>
+      <div class="stat-card"><div class="label">Context Now</div>
+        <div class="value">${ctxVal}</div><div class="sub">${ctxSub}</div></div>`;
+  },
+
+  // Keep an agent <select> in sync with the agents present in the data,
+  // preserving the current selection (used by the chart and the calls tab).
+  // Rebuild ONLY when the option set actually changed and the user is not
+  // interacting with it — the 5s auto-refresh would otherwise collapse the
+  // open native dropdown under the cursor.
+  syncAgentSelect(sel) {
+    if (document.activeElement === sel) return;
+    const names = [...new Set(this.history.map(s => s.agent_name))].sort();
+    const want = names.join('\x1f');
+    if (sel.dataset.opts === want) return;
+    const current = sel.value;
+    sel.innerHTML = '<option value="">all</option>' +
+      names.map(n => `<option${n === current ? ' selected' : ''}>${this.esc(n)}</option>`).join('');
+    sel.dataset.opts = want;
+  },
+
+  // ---- overview chart ----
+  renderChart() {
+    const sel = document.getElementById('chartAgentFilter');
+    this.syncAgentSelect(sel);
+    let rows = this.history;
+    if (sel.value) rows = rows.filter(s => s.agent_name === sel.value);
+    const data = rows.slice(-60);
+    const labels = data.map(s => this.t(s.timestamp));
+    const ds = (label, key, color, dash) => ({
+      label, data: data.map(s => s[key] ?? 0), borderColor: color, backgroundColor: color,
+      borderWidth: 1.5, pointRadius: 0, tension: .25, borderDash: dash || [], yAxisID: 'y',
+    });
+    const cost = {
+      label: 'cost $', data: data.map(s => s.cost ?? null), borderColor: '#4ec9b0', backgroundColor: '#4ec9b0',
+      borderWidth: 1.5, pointRadius: 2, tension: .25, yAxisID: 'y2', spanGaps: true,
+    };
+    const cfg = {
+      type: 'line',
+      data: { labels, datasets: [
+        ds('total', 'total_tokens', '#569cd6'),
+        ds('prompt', 'prompt_tokens', '#ce9178', [4, 3]),
+        ds('output', 'completion_tokens', '#d4d4d4', [2, 2]),
+        ds('cached', 'cached_tokens', '#c586c0', [6, 3]),
+        cost,
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: '#858585', boxWidth: 14, font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: '#858585', maxTicksLimit: 10, font: { size: 10 } }, grid: { color: '#2d2d30' } },
+          y: { ticks: { color: '#858585', font: { size: 10 } }, grid: { color: '#2d2d30' } },
+          y2: { position: 'right', ticks: { color: '#4ec9b0', font: { size: 10 } }, grid: { drawOnChartArea: false } },
+        },
+      },
+    };
+    if (this.chart) { this.chart.data = cfg.data; this.chart.update(); return; }
+    this.chart = new Chart(document.getElementById('usageChart'), cfg);
+  },
+
+  renderOverviewStats() {
+    const s = this.statistics;
+    const el = document.getElementById('overviewStats');
+    if (!s || !s.tokens) { el.innerHTML = '<div class="empty">No data yet</div>'; return; }
+    el.innerHTML = `<table>
+      <tr><th></th><th>current</th><th>min</th><th>max</th><th>avg</th></tr>
+      <tr><td class="name">Context tokens</td><td>${this.n(s.tokens.current)}</td><td>${this.n(s.tokens.min)}</td>
+          <td>${this.n(s.tokens.max)}</td><td>${this.n(Math.round(s.tokens.avg))}</td></tr>
+      <tr><td class="name">Context usage</td><td>${this.pct(s.usage_percentage.current)}</td><td>${this.pct(s.usage_percentage.min)}</td>
+          <td>${this.pct(s.usage_percentage.max)}</td><td>${this.pct(s.usage_percentage.avg)}</td></tr>
+    </table>`;
+  },
+
+  // ---- agents tab ----
+  sortAgents(key) {
+    if (this.agentSort.key === key) this.agentSort.dir *= -1;
+    else this.agentSort = { key, dir: -1 };
+    this.renderAgents();
+  },
+  renderAgents() {
+    const el = document.getElementById('agentsTable');
+    const rows = Object.values(this.agents);
+    if (!rows.length) { el.innerHTML = '<div class="empty">No agent activity yet</div>'; return; }
+    const { key, dir } = this.agentSort;
+    const sortVal = (a) => key === 'avg_cost'
+      ? (a.cost_known_calls ? (a.total_cost ?? 0) / a.cost_known_calls : 0)
+      : (a[key] ?? 0);
+    rows.sort((a, b) => {
+      const av = sortVal(a), bv = sortVal(b);
+      const cmp = (typeof av === 'string' || typeof bv === 'string')
+        ? String(av).localeCompare(String(bv))
+        : av - bv;
+      return dir === -1 ? -cmp : cmp;
+    });
+    const th = (label, k) =>
+      `<th class="${key === k ? 'sorted' : ''}" onclick="panel.sortAgents('${k}')">${label}${key === k ? (dir === -1 ? ' ↓' : ' ↑') : ''}</th>`;
+    el.innerHTML = `<table>
+      <tr>
+        ${th('Agent', 'agent_name')}${th('Calls', 'total_calls')}${th('Σ Tokens', 'total_tokens')}
+        ${th('Σ Prompt', 'total_prompt_tokens')}${th('Σ Output', 'total_completion_tokens')}
+        ${th('Σ Cached', 'total_cached_tokens')}${th('Σ Write', 'total_cache_write_tokens')}
+        ${th('Σ Cost', 'total_cost')}${th('Ø $/Call', 'avg_cost')}${th('Peak', 'peak_tokens')}${th('Last', 'last_activity')}
+      </tr>
+      ${rows.map(a => {
+        const hit = a.total_prompt_tokens ? (a.total_cached_tokens / a.total_prompt_tokens * 100) : 0;
+        const avg = a.cost_known_calls ? a.total_cost / a.cost_known_calls : null;
+        return `<tr>
+          <td class="name" title="${this.esc(a.agent_id)}">${this.esc(a.agent_name)}</td>
+          <td>${this.n(a.total_calls)}</td>
+          <td>${this.n(a.total_tokens)}</td>
+          <td>${this.n(a.total_prompt_tokens ?? 0)}</td>
+          <td>${this.n(a.total_completion_tokens ?? 0)}</td>
+          <td class="cached">${this.n(a.total_cached_tokens)} <span class="muted">(${hit.toFixed(0)}%)</span></td>
+          <td>${this.n(a.total_cache_write_tokens ?? 0)}</td>
+          <td class="cost">${this.usd(a.total_cost ?? 0, false)}</td>
+          <td class="cost">${avg === null ? '<span class="muted">–</span>' : this.usd(avg, false)}</td>
+          <td>${this.n(a.peak_tokens)}</td>
+          <td class="muted">${a.last_activity ? this.t(a.last_activity) : '–'}</td>
+        </tr>`;
+      }).join('')}
+    </table>`;
+  },
+
+  // ---- calls tab ----
+  renderCalls() {
+    const el = document.getElementById('callsTable');
+    const agentFilter = document.getElementById('callAgentFilter');
+    const limit = parseInt(document.getElementById('callLimit').value, 10) || 100;
+
+    // keep the agent filter options in sync with the data
+    this.syncAgentSelect(agentFilter);
+
+    let rows = this.history;
+    if (agentFilter.value) rows = rows.filter(s => s.agent_name === agentFilter.value);
+    document.getElementById('callCount').textContent = `${Math.min(limit, rows.length)} of ${rows.length}`;
+    rows = rows.slice(-limit).reverse(); // newest first
+
+    if (!rows.length) { el.innerHTML = '<div class="empty">No calls recorded</div>'; return; }
+    // In session scope, calls from sub-sessions (sub-/sub-sub-agents pulled in
+    // via the request-id tree) get a ↳ marker.
+    const scopeSid = this.scopeSession ? this.getCurrentSessionId() : null;
+    el.innerHTML = `<table>
+      <tr><th>Time</th><th>Agent</th><th>Model</th><th>Prompt</th><th>Output</th>
+          <th>Cached</th><th>Write</th><th>Ctx&nbsp;%</th><th>$</th></tr>
+      ${rows.map((s, i) => `<tr class="clickable" onclick="panel.showDetail(${i})" data-i="${i}">
+        <td class="name muted">${this.t(s.timestamp)}</td>
+        <td class="name">${scopeSid && s.session_id !== scopeSid ? '<span class="muted" title="sub-agent call">↳ </span>' : ''}${this.esc(s.agent_name)}</td>
+        <td class="model" title="${this.esc(s.model || '')}">${this.esc(s.model || '–')}</td>
+        <td>${this.n(s.prompt_tokens)}</td>
+        <td>${this.n(s.completion_tokens)}</td>
+        <td class="cached">${this.n(s.cached_tokens)}</td>
+        <td>${this.n(s.cache_write_tokens ?? 0)}</td>
+        <td class="muted">${this.pct(s.usage_percentage)}</td>
+        <td class="cost">${this.usd(s.cost)}</td>
+      </tr>`).join('')}
+    </table>`;
+    this._callRows = rows;
+  },
+
+  showDetail(i) {
+    const s = (this._callRows || [])[i];
+    if (!s) return;
+    const kv = [
+      ['Time', this.dt(s.timestamp)], ['Agent', s.agent_name], ['Agent id', s.agent_id],
+      ['Model', s.model || '–'], ['Session', s.session_id], ['Request', s.request_id || '–'],
+      ['Prompt tokens', this.n(s.prompt_tokens)], ['Output tokens', this.n(s.completion_tokens)],
+      ['Total tokens', this.n(s.total_tokens)], ['Cached (read)', this.n(s.cached_tokens)],
+      ['Cache write', this.n(s.cache_write_tokens ?? 0)], ['Tool-def tokens', this.n(s.tool_definition_tokens ?? 0)],
+      ['Messages', this.n(s.message_count)],
+      ['Context', `${this.n(s.total_tokens)} / ${this.n(s.context_window)} (${this.pct(s.usage_percentage)})`],
+      ['Cost', s.cost === null || s.cost === undefined ? '–' : '$' + Number(s.cost).toFixed(6)],
+    ];
+    document.getElementById('detailBody').innerHTML =
+      kv.map(([k, v]) => `<div class="k">${k}</div><div>${this.esc(v)}</div>`).join('');
+    document.getElementById('detailModal').classList.add('open');
+  },
+
+  // ---- actions ----
+  closeModals() { document.querySelectorAll('.modal-overlay').forEach(m => m.classList.remove('open')); },
+  async doClear() {
+    this.closeModals();
+    try { await fetch(`${this.base}/clear`, { method: 'POST' }); } catch (e) { console.error(e); }
+    this.refresh();
+  },
+  toggleScope() {
+    this.scopeSession = !this.scopeSession;
+    const b = document.getElementById('scopeBtn');
+    b.classList.toggle('active', this.scopeSession);
+    b.textContent = this.scopeSession ? '🎯 Session' : '🌐 All';
+    this.refresh();
+  },
+  toggleAuto() {
+    const b = document.getElementById('autoBtn');
+    if (this.autoTimer) { clearInterval(this.autoTimer); this.autoTimer = null; b.classList.remove('active'); }
+    else { this.autoTimer = setInterval(() => this.refresh(), 5000); b.classList.add('active'); }
+  },
+  switchTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+  },
+
+  init() {
+    document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => this.switchTab(t.dataset.tab)));
+    document.getElementById('refreshBtn').addEventListener('click', () => this.refresh());
+    document.getElementById('scopeBtn').addEventListener('click', () => this.toggleScope());
+    document.getElementById('autoBtn').addEventListener('click', () => this.toggleAuto());
+    document.getElementById('clearBtn').addEventListener('click', () => document.getElementById('clearModal').classList.add('open'));
+    document.getElementById('callAgentFilter').addEventListener('change', () => this.renderCalls());
+    document.getElementById('callLimit').addEventListener('change', () => this.renderCalls());
+    document.getElementById('chartAgentFilter').addEventListener('change', () => this.renderChart());
+    document.querySelectorAll('.modal-overlay').forEach(m =>
+      m.addEventListener('click', e => { if (e.target === m) this.closeModals(); }));
+    this.autoTimer = setInterval(() => this.refresh(), 5000);
+    this.refresh();
+  },
+};
+panel.init();
+</script>
 </body>
 </html>

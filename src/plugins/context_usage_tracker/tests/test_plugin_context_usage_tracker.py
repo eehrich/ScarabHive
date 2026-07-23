@@ -551,3 +551,184 @@ def test_tracker_clear_history_clears_invalidations(tmp_path):
     assert latest is not None
     assert "is_stale" not in latest
 
+
+
+# ---------------------------------------------------------------------------
+# v2.0.0: per-call cost / model / request_id / cache_write tracking
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_track_llm_usage_with_cost_and_model(plugin, mock_hook_context):
+    """The hook extracts cost, cache writes, model and request_id per call."""
+    mock_hook_context.llm_response["usage"]["cost"] = 0.3942
+    mock_hook_context.llm_response["usage"]["prompt_tokens_details"] = {
+        "cached_tokens": 60,
+        "cache_write_tokens": 40,
+    }
+    mock_hook_context.llm.model = "anthropic/claude-sonnet-4.5"
+    mock_hook_context.request_id = "req-789"
+
+    result = await plugin.hooks_plugin.track_usage(mock_hook_context)
+    assert result.success is True
+
+    latest = plugin.tracker.get_latest()
+    assert latest is not None
+    assert latest["cost"] == pytest.approx(0.3942)
+    assert latest["cached_tokens"] == 60
+    assert latest["cache_write_tokens"] == 40
+    assert latest["model"] == "anthropic/claude-sonnet-4.5"
+    assert latest["request_id"] == "req-789"
+
+
+@pytest.mark.asyncio
+async def test_track_llm_usage_cache_creation_tokens_fallback(plugin, mock_hook_context):
+    """Native Anthropic reports cache writes as cache_creation_tokens."""
+    mock_hook_context.llm_response["usage"]["prompt_tokens_details"] = {
+        "cached_tokens": 10,
+        "cache_creation_tokens": 555,
+    }
+    await plugin.hooks_plugin.track_usage(mock_hook_context)
+    latest = plugin.tracker.get_latest()
+    assert latest["cache_write_tokens"] == 555
+
+
+@pytest.mark.asyncio
+async def test_track_llm_usage_without_cost_stays_none(plugin, mock_hook_context):
+    """Providers without billing info leave cost as None (panel shows a dash)."""
+    await plugin.hooks_plugin.track_usage(mock_hook_context)
+    latest = plugin.tracker.get_latest()
+    assert latest["cost"] is None
+
+
+def test_agent_stats_cost_rollup(tmp_path):
+    """Per-agent rollup accumulates cost, prompt/completion and cache writes."""
+    tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    tracker.record_usage(
+        agent_id="a1", agent_name="A1", session_id="s1",
+        total_tokens=100, prompt_tokens=80, completion_tokens=20,
+        cached_tokens=40, cache_write_tokens=10, cost=0.5, model="m1",
+    )
+    tracker.record_usage(
+        agent_id="a1", agent_name="A1", session_id="s1",
+        total_tokens=200, prompt_tokens=150, completion_tokens=50,
+        cached_tokens=100, cache_write_tokens=0, cost=None, model="m1",
+    )
+    stats = tracker.get_agent_stats()["a1"]
+    assert stats["total_cost"] == pytest.approx(0.5)
+    assert stats["cost_known_calls"] == 1
+    assert stats["total_prompt_tokens"] == 230
+    assert stats["total_completion_tokens"] == 70
+    assert stats["total_cache_write_tokens"] == 10
+
+    # Session-filtered variant carries the same fields
+    s_stats = tracker.get_agent_stats(session_id="s1")["a1"]
+    assert s_stats["total_cost"] == pytest.approx(0.5)
+    assert s_stats["cost_known_calls"] == 1
+
+
+def test_statistics_totals_block(tmp_path):
+    """get_statistics exposes the cost/cache aggregates the panel cards use."""
+    tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    tracker.record_usage(
+        agent_id="a1", agent_name="A1", session_id="s1",
+        total_tokens=100, prompt_tokens=80, completion_tokens=20,
+        cached_tokens=40, cost=0.25,
+    )
+    tracker.record_usage(
+        agent_id="a2", agent_name="A2", session_id="s1",
+        total_tokens=100, prompt_tokens=20, completion_tokens=80,
+        cached_tokens=10, cost=None,
+    )
+    totals = tracker.get_statistics()["totals"]
+    assert totals["cost"] == pytest.approx(0.25)
+    assert totals["cost_known_calls"] == 1
+    assert totals["prompt_tokens"] == 100
+    assert totals["completion_tokens"] == 100
+    assert totals["cached_tokens"] == 50
+    assert totals["cache_hit_rate"] == pytest.approx(50.0)
+
+
+def test_history_agent_filter(tmp_path):
+    tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    tracker.record_usage(agent_id="a1", agent_name="A1", session_id="s1", total_tokens=1)
+    tracker.record_usage(agent_id="a2", agent_name="A2", session_id="s1", total_tokens=2)
+    tracker.record_usage(agent_id="a1", agent_name="A1", session_id="s2", total_tokens=3)
+    assert len(tracker.get_history(agent_id="a1")) == 2
+    assert len(tracker.get_history(agent_id="a1", session_id="s2")) == 1
+
+
+def test_load_old_format_without_cost_fields(tmp_path):
+    """A pre-2.0 JSON file (no cost/model/... fields) loads with defaults."""
+    import json as _json
+    storage = tmp_path / "old.json"
+    storage.write_text(_json.dumps({
+        "agents": {"a1": {
+            "agent_id": "a1", "agent_name": "A1", "total_calls": 3,
+            "total_tokens": 300, "peak_tokens": 150, "message_count": 5,
+            "last_activity": 123.0, "total_cached_tokens": 50,
+        }},
+        "history": [{
+            "timestamp": 123.0, "agent_id": "a1", "agent_name": "A1",
+            "session_id": "s1", "total_tokens": 100, "prompt_tokens": 80,
+            "completion_tokens": 20, "message_count": 2,
+            "context_window": 1000, "usage_percentage": 10.0,
+        }],
+        "latest": None,
+    }), encoding="utf-8")
+
+    tracker = UsageTracker(storage_path=storage)
+    hist = tracker.get_history()
+    assert len(hist) == 1
+    assert hist[0]["cost"] is None
+    assert hist[0]["cache_write_tokens"] == 0
+    assert hist[0]["model"] == ""
+    stats = tracker.get_agent_stats()["a1"]
+    assert stats["total_cost"] == 0.0
+    assert stats["total_calls"] == 3
+
+
+def test_session_filter_includes_sub_and_sub_sub_agents(tmp_path):
+    """Session scope pulls in sub-agent calls (own sub-sessions) via the
+    hierarchical request-id tree — including sub-sub-agents; other sessions
+    stay excluded."""
+    tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    # main conversation call in the root session
+    tracker.record_usage(agent_id="main", agent_name="Main", session_id="root-sess",
+                         total_tokens=10, prompt_tokens=8, completion_tokens=2,
+                         cost=0.1, request_id="req1")
+    # sub-agent call: own sub-session, request prefixed by the parent request
+    tracker.record_usage(agent_id="subA", agent_name="SubA", session_id="sub-sess-1",
+                         total_tokens=20, prompt_tokens=15, completion_tokens=5,
+                         cost=0.2, request_id="req1_sub_abc123")
+    # sub-sub-agent call (transitively prefixed)
+    tracker.record_usage(agent_id="subB", agent_name="SubB", session_id="sub-sub-sess",
+                         total_tokens=30, prompt_tokens=25, completion_tokens=5,
+                         cost=0.3, request_id="req1_sub_abc123_sub_def456")
+    # unrelated session must NOT leak in
+    tracker.record_usage(agent_id="other", agent_name="Other", session_id="other-sess",
+                         total_tokens=99, request_id="reqX")
+
+    hist = tracker.get_history(session_id="root-sess")
+    assert [h["agent_id"] for h in hist] == ["main", "subA", "subB"]
+
+    stats = tracker.get_agent_stats(session_id="root-sess")
+    assert set(stats.keys()) == {"main", "subA", "subB"}
+    assert stats["subB"]["total_cost"] == pytest.approx(0.3)
+
+    totals = tracker.get_statistics(session_id="root-sess")["totals"]
+    assert totals["cost"] == pytest.approx(0.6)
+
+    # agent filter composes with the tree expansion
+    assert len(tracker.get_history(session_id="root-sess", agent_id="subA")) == 1
+
+    # get_latest stays exact-session (Context Now = main conversation)
+    assert tracker.get_latest(session_id="root-sess")["agent_id"] == "main"
+
+
+def test_session_filter_pre20_snapshots_match_exact_only(tmp_path):
+    """Old snapshots without request_id still match their own session."""
+    tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    tracker.record_usage(agent_id="main", agent_name="Main", session_id="root-sess",
+                         total_tokens=10)  # request_id defaults to ""
+    hist = tracker.get_history(session_id="root-sess")
+    assert len(hist) == 1

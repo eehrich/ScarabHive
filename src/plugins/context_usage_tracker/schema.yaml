@@ -14,15 +14,15 @@ web_ui:
     enabled: true
     icon: "📊"
     text: "Context Usage"
-    tooltip: "View context and token usage statistics"
-    
+    tooltip: "Context, token and cost usage per agent and per call"
+
   panel:
     enabled: true
-    title: "Context Usage Debug"
+    title: "Context & Cost Usage"
     panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
     type: "iframe"
-    default_height: 600
+    default_height: 760
     
   endpoints:
     - path: "/"

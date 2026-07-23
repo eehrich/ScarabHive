@@ -4,7 +4,7 @@
 # scripts/aggregate_plugin_deps.py.
 [plugin]
 name = "context_usage_tracker"
-version = "1.0.0"
+version = "2.0.0"
 description = "Tracks LLM context usage and token consumption with web UI"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"

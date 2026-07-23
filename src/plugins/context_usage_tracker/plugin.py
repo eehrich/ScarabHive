@@ -64,9 +64,34 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             # Extract cached_tokens from OpenAI's prompt_tokens_details
             # Format: {"prompt_tokens_details": {"cached_tokens": 1920}}
             cached_tokens = 0
+            cache_write_tokens = 0
             prompt_tokens_details = usage.get("prompt_tokens_details")
             if prompt_tokens_details and isinstance(prompt_tokens_details, dict):
-                cached_tokens = prompt_tokens_details.get("cached_tokens", 0)
+                cached_tokens = prompt_tokens_details.get("cached_tokens", 0) or 0
+                # OpenRouter reports cache WRITES as cache_write_tokens, the
+                # native Anthropic client as cache_creation_tokens.
+                cache_write_tokens = (
+                    prompt_tokens_details.get("cache_write_tokens")
+                    or prompt_tokens_details.get("cache_creation_tokens")
+                    or 0
+                )
+
+            # Billed cost in USD. OpenRouter-backed clients pass the provider's
+            # `cost` through in the usage dict; direct-API providers may not
+            # send one — then it stays None and the panel shows a dash.
+            cost = usage.get("cost")
+            if cost is not None:
+                try:
+                    cost = float(cost)
+                except (TypeError, ValueError):
+                    cost = None
+
+            # Model that actually served the call (respects llm_override)
+            model = ""
+            if context.llm is not None:
+                model = getattr(context.llm, 'model', None) or getattr(context.llm, 'model_name', '') or ""
+                if not isinstance(model, str):  # mocks / exotic clients — keep it JSON-safe
+                    model = ""
 
             # Get context_window from the actual LLM instance (respects llm_override)
             # instead of resolving from agent_config (which uses agent's default profile)
@@ -118,6 +143,10 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 context_window=context_window,
                 cached_tokens=cached_tokens,
                 tool_definition_tokens=tool_definition_tokens,
+                cache_write_tokens=cache_write_tokens,
+                cost=cost,
+                model=model,
+                request_id=getattr(context, 'request_id', None) or "",
             )
 
             return HookResult(success=True, modified=False, context=context)

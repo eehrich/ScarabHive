@@ -65,9 +65,10 @@ class ContextUsageWebFactory:
             "statistics": statistics,
         })
     
-    async def get_history(self, request: Request, last_n: int = 100, session_id: str | None = None) -> JSONResponse:
-        """Get usage history."""
-        history = self.tracker.get_history(last_n=last_n, session_id=session_id)
+    async def get_history(self, request: Request, last_n: int = 100, session_id: str | None = None,
+                          agent_id: str | None = None) -> JSONResponse:
+        """Get usage history (optionally filtered by session and/or agent)."""
+        history = self.tracker.get_history(last_n=last_n, session_id=session_id, agent_id=agent_id)
         return JSONResponse({"history": history})
     
     async def clear_history(self, request: Request) -> JSONResponse:

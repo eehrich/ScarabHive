@@ -7,7 +7,7 @@ import time
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields as dataclass_fields
 from collections import deque
 import threading
 
@@ -30,7 +30,7 @@ def _get_io_executor() -> concurrent.futures.ThreadPoolExecutor:
 
 @dataclass
 class ContextUsageSnapshot:
-    """A snapshot of context usage at a specific time."""
+    """A snapshot of context usage at a specific time (one per LLM call)."""
     timestamp: float
     agent_id: str
     agent_name: str
@@ -41,8 +41,23 @@ class ContextUsageSnapshot:
     message_count: int
     context_window: int
     usage_percentage: float
-    cached_tokens: int = 0  # OpenAI cached prompt tokens
+    cached_tokens: int = 0  # cached prompt tokens (cache READ)
     tool_definition_tokens: int = 0  # Estimated tokens for tool schemas/definitions
+    cache_write_tokens: int = 0  # tokens written to the provider prompt cache
+    cost: Optional[float] = None  # billed cost in USD (None if provider sent none)
+    model: str = ""  # model identifier of the client that served the call
+    request_id: str = ""  # request this call belonged to
+
+
+#: Known snapshot fields — used to load persisted data tolerantly (older files
+#: lack newer fields, newer files must not crash older code readers).
+_SNAPSHOT_FIELDS = {f.name for f in dataclass_fields(ContextUsageSnapshot)}
+
+
+def _snapshot_from_dict(data: Dict[str, Any]) -> ContextUsageSnapshot:
+    """Build a snapshot from a persisted dict, ignoring unknown keys and
+    relying on dataclass defaults for missing ones."""
+    return ContextUsageSnapshot(**{k: v for k, v in data.items() if k in _SNAPSHOT_FIELDS})
 
 
 @dataclass
@@ -55,7 +70,12 @@ class AgentStats:
     peak_tokens: int = 0
     message_count: int = 0
     last_activity: float = 0
-    total_cached_tokens: int = 0  # Accumulated cached tokens
+    total_cached_tokens: int = 0  # Accumulated cached tokens (cache reads)
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_cache_write_tokens: int = 0
+    total_cost: float = 0.0  # Sum of billed costs (calls without cost contribute 0)
+    cost_known_calls: int = 0  # How many calls actually carried a cost
 
 
 class UsageTracker:
@@ -90,7 +110,11 @@ class UsageTracker:
                     message_count: int = 0,
                     context_window: int = 0,
                     cached_tokens: int = 0,
-                    tool_definition_tokens: int = 0) -> None:
+                    tool_definition_tokens: int = 0,
+                    cache_write_tokens: int = 0,
+                    cost: Optional[float] = None,
+                    model: str = "",
+                    request_id: str = "") -> None:
         """Record a context usage snapshot."""
 
         usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
@@ -108,6 +132,10 @@ class UsageTracker:
             usage_percentage=usage_percentage,
             cached_tokens=cached_tokens,
             tool_definition_tokens=tool_definition_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cost=cost,
+            model=model,
+            request_id=request_id,
         )
 
         with self._lock:
@@ -131,6 +159,12 @@ class UsageTracker:
             stats.message_count = message_count
             stats.last_activity = time.time()
             stats.total_cached_tokens += cached_tokens
+            stats.total_prompt_tokens += prompt_tokens
+            stats.total_completion_tokens += completion_tokens
+            stats.total_cache_write_tokens += cache_write_tokens
+            if cost is not None:
+                stats.total_cost += cost
+                stats.cost_known_calls += 1
 
         # Schedule async save (debounced to avoid too frequent writes)
         self._schedule_save()
@@ -141,14 +175,42 @@ class UsageTracker:
             f"messages={message_count}"
         )
 
-    def get_history(self, last_n: Optional[int] = None, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get usage history as a list of dictionaries."""
+    @staticmethod
+    def _filter_session_tree(history_list: List["ContextUsageSnapshot"],
+                             session_id: str) -> List["ContextUsageSnapshot"]:
+        """Calls belonging to a session INCLUDING its sub-agents (any depth).
+
+        Sub-agent calls run in their own sub-sessions, so a plain session_id
+        match hides them. Their request_ids are hierarchical
+        (``<parent_request>_sub_<id>``, transitively for sub-sub-agents — see
+        sub_agent_manager), so the session's own request ids expand the filter
+        to the whole tree. Calls recorded before request_ids existed (pre-2.0
+        snapshots) can only match by exact session.
+        """
+        own_requests = {s.request_id for s in history_list
+                        if s.session_id == session_id and s.request_id}
+        prefixes = tuple(r + "_" for r in own_requests)
+        return [
+            s for s in history_list
+            if s.session_id == session_id
+            or (prefixes and s.request_id and s.request_id.startswith(prefixes))
+        ]
+
+    def get_history(self, last_n: Optional[int] = None, session_id: Optional[str] = None,
+                    agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get usage history as a list of dictionaries (optionally filtered).
+
+        The session filter includes the session's sub-agent calls (see
+        _filter_session_tree).
+        """
         with self._lock:
             history_list = list(self._history)
 
-        # Filter by session_id if provided
+        # Filter by session_id (incl. sub-agent tree) / agent_id if provided
         if session_id is not None:
-            history_list = [s for s in history_list if s.session_id == session_id]
+            history_list = self._filter_session_tree(history_list, session_id)
+        if agent_id is not None:
+            history_list = [s for s in history_list if s.agent_id == agent_id]
 
         if last_n is not None:
             history_list = history_list[-last_n:]
@@ -211,8 +273,8 @@ class UsageTracker:
         """Get statistics for all agents."""
         with self._lock:
             if session_id is not None:
-                # Calculate stats from filtered history
-                session_snapshots = [s for s in self._history if s.session_id == session_id]
+                # Calculate stats from filtered history (incl. sub-agent calls)
+                session_snapshots = self._filter_session_tree(list(self._history), session_id)
 
                 # Build stats from session-filtered snapshots
                 session_agent_stats: Dict[str, Dict[str, Any]] = {}
@@ -228,6 +290,11 @@ class UsageTracker:
                             "message_count": snapshot.message_count,
                             "last_activity": snapshot.timestamp,
                             "total_cached_tokens": 0,
+                            "total_prompt_tokens": 0,
+                            "total_completion_tokens": 0,
+                            "total_cache_write_tokens": 0,
+                            "total_cost": 0.0,
+                            "cost_known_calls": 0,
                         }
 
                     stats = session_agent_stats[agent_id]
@@ -237,32 +304,26 @@ class UsageTracker:
                     stats["message_count"] = snapshot.message_count
                     stats["last_activity"] = max(stats["last_activity"], snapshot.timestamp)
                     stats["total_cached_tokens"] += getattr(snapshot, 'cached_tokens', 0)
+                    stats["total_prompt_tokens"] += snapshot.prompt_tokens
+                    stats["total_completion_tokens"] += snapshot.completion_tokens
+                    stats["total_cache_write_tokens"] += getattr(snapshot, 'cache_write_tokens', 0)
+                    if getattr(snapshot, 'cost', None) is not None:
+                        stats["total_cost"] += snapshot.cost
+                        stats["cost_known_calls"] += 1
 
                 return session_agent_stats
 
             # Return global stats
-            return {
-                agent_id: {
-                    "agent_id": stats.agent_id,
-                    "agent_name": stats.agent_name,
-                    "total_calls": stats.total_calls,
-                    "total_tokens": stats.total_tokens,
-                    "peak_tokens": stats.peak_tokens,
-                    "message_count": stats.message_count,
-                    "last_activity": stats.last_activity,
-                    "total_cached_tokens": stats.total_cached_tokens,
-                }
-                for agent_id, stats in self._agent_stats.items()
-            }
+            return {agent_id: asdict(stats) for agent_id, stats in self._agent_stats.items()}
 
     def get_statistics(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Get overall usage statistics."""
         with self._lock:
             history_list = list(self._history)
 
-        # Filter by session_id if provided
+        # Filter by session_id if provided (incl. the session's sub-agent calls)
         if session_id is not None:
-            history_list = [s for s in history_list if s.session_id == session_id]
+            history_list = self._filter_session_tree(history_list, session_id)
 
         if not history_list:
             return {"error": "No usage data available"}
@@ -290,6 +351,22 @@ class UsageTracker:
                 "max": max(percentages),
                 "avg": sum(percentages) / len(percentages)
             },
+        }
+
+        # Cost / cache aggregates over the (filtered) window — the analysis
+        # numbers the panel's overview cards are built from.
+        costs = [s.cost for s in history_list if s.cost is not None]
+        prompt_sum = sum(s.prompt_tokens for s in history_list)
+        completion_sum = sum(s.completion_tokens for s in history_list)
+        cached_sum = sum(s.cached_tokens for s in history_list)
+        stats["totals"] = {
+            "cost": sum(costs),
+            "cost_known_calls": len(costs),
+            "prompt_tokens": prompt_sum,
+            "completion_tokens": completion_sum,
+            "cached_tokens": cached_sum,
+            "cache_write_tokens": sum(s.cache_write_tokens for s in history_list),
+            "cache_hit_rate": (cached_sum / prompt_sum * 100) if prompt_sum > 0 else 0.0,
         }
 
         return stats
@@ -344,16 +421,7 @@ class UsageTracker:
             # Capture data while holding lock briefly
             with self._lock:
                 agents_data = {
-                    agent_id: {
-                        "agent_id": stats.agent_id,
-                        "agent_name": stats.agent_name,
-                        "total_calls": stats.total_calls,
-                        "total_tokens": stats.total_tokens,
-                        "peak_tokens": stats.peak_tokens,
-                        "message_count": stats.message_count,
-                        "last_activity": stats.last_activity,
-                        "total_cached_tokens": stats.total_cached_tokens
-                    }
+                    agent_id: asdict(stats)
                     for agent_id, stats in self._agent_stats.items()
                 }
 
@@ -393,41 +461,26 @@ class UsageTracker:
             with open(self.storage_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            # Load agent stats
+            # Load agent stats (tolerant: unknown keys ignored, missing keys
+            # fall back to dataclass defaults — files written by older or newer
+            # versions both load).
+            agent_fields = {f.name for f in dataclass_fields(AgentStats)}
             agents_data = data.get("agents", {})
             with self._lock:
                 for agent_id, stats_dict in agents_data.items():
                     self._agent_stats[agent_id] = AgentStats(
-                        agent_id=stats_dict["agent_id"],
-                        agent_name=stats_dict["agent_name"],
-                        total_calls=stats_dict.get("total_calls", 0),
-                        total_tokens=stats_dict.get("total_tokens", 0),
-                        peak_tokens=stats_dict.get("peak_tokens", 0),
-                        message_count=stats_dict.get("message_count", 0),
-                        last_activity=stats_dict.get("last_activity", 0),
-                        total_cached_tokens=stats_dict.get("total_cached_tokens", 0)
+                        **{k: v for k, v in stats_dict.items() if k in agent_fields}
                     )
 
-                # Load history snapshots
+                # Load history snapshots (same tolerance via _snapshot_from_dict)
                 history_data = data.get("history", [])
                 for snapshot_dict in history_data:
-                    # Handle missing fields for backwards compatibility
-                    if "cached_tokens" not in snapshot_dict:
-                        snapshot_dict["cached_tokens"] = 0
-                    if "tool_definition_tokens" not in snapshot_dict:
-                        snapshot_dict["tool_definition_tokens"] = 0
-                    snapshot = ContextUsageSnapshot(**snapshot_dict)
-                    self._history.append(snapshot)
+                    self._history.append(_snapshot_from_dict(snapshot_dict))
 
                 # Load latest snapshot
                 latest_data = data.get("latest")
                 if latest_data:
-                    # Handle missing fields for backwards compatibility
-                    if "cached_tokens" not in latest_data:
-                        latest_data["cached_tokens"] = 0
-                    if "tool_definition_tokens" not in latest_data:
-                        latest_data["tool_definition_tokens"] = 0
-                    self._latest_snapshot = ContextUsageSnapshot(**latest_data)
+                    self._latest_snapshot = _snapshot_from_dict(latest_data)
 
             logger.info(
                 f"📂 Loaded usage data: {len(agents_data)} agents, "
