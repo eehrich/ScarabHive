@@ -10,7 +10,11 @@ This mirrors the steering behavior of CLI coding agents.
 
 ## Behavior
 
-1. User types into the chat while a run is active (`streamActive`).
+1. User types into the chat while a run is active (`streamActive`) and submits
+   with the run button or Ctrl/Cmd+Enter. The run button **stays visible during
+   a run** (tooltip: "Send to running agent") and the Stop button appears
+   *alongside* it — not instead of it. Hiding the run button while running made
+   the whole feature unreachable by mouse.
 2. Frontend POSTs to `/events/{request_id}/append?fallback=none` instead of
    starting a new request.
 3. The message is queued on the **owning agent instance** (resolved via the

@@ -694,6 +694,21 @@
   let runBtn = null;
   let stopBtn = null;
   let chatContainer = null;
+
+  // The run button stays VISIBLE while a run is active — that is how a user
+  // injects a message into the running agent: the submit handler detects the
+  // live request and POSTs the text to /events/{id}/append instead of starting
+  // a new run (see docs/mid_run_message_injection.md). Previously the button
+  // was hidden and replaced by Stop, which made mid-run injection unreachable
+  // by mouse (only Ctrl+Enter still worked). Only the tooltip changes now; the
+  // Stop button appears ALONGSIDE it while running.
+  function setRunBtnMode(running) {
+    if (!runBtn) return;
+    runBtn.style.display = 'block';
+    runBtn.setAttribute(
+      'title', running ? 'Send to running agent (Ctrl+Enter)' : 'Run (Ctrl+Enter)');
+    runBtn.setAttribute('aria-label', running ? 'Send to running agent' : 'Run');
+  }
   
   // Session and request tracking (shared across init and event listeners)
   let currentRequestId = null;
@@ -1007,7 +1022,7 @@
           sseReconnectTimer = null;
         }
         
-        runBtn.style.display = 'block'; // Show run button
+        setRunBtnMode(false); // back to idle 'Run'
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
         stopBtn.setAttribute('title', 'Stop');
@@ -1036,7 +1051,7 @@
           currentStatusEventSource.close();
           currentStatusEventSource = null;
         }
-        runBtn.style.display = 'block'; // Show run button
+        setRunBtnMode(false); // back to idle 'Run'
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
         stopBtn.setAttribute('title', 'Stop');
@@ -1064,7 +1079,7 @@
         showSection(blk.t);
         const stepInfo = data.step ? ` at step ${data.step}` : '';
         blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
-        runBtn.style.display = 'block'; // Show run button
+        setRunBtnMode(false); // back to idle 'Run'
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
         stopBtn.setAttribute('title', 'Stop');
@@ -1142,7 +1157,7 @@
             }
             
             // UI zurücksetzen: Run-Button anzeigen, Stop-Button verstecken
-            runBtn.style.display = 'block';
+            setRunBtnMode(false);
             stopBtn.style.display = 'none';
             currentRequestId = null;
             currentEventSource = null;
@@ -1168,7 +1183,7 @@
             currentRequestId = null;
             currentEventSource = null;
             // UI zurücksetzen
-            runBtn.style.display = 'block';
+            setRunBtnMode(false);
             stopBtn.style.display = 'none';
             stopBtn.classList.remove('cancelling');
             stopBtn.disabled = false;
@@ -1285,7 +1300,7 @@
             activeStreamBlk.responseSection = newBlk.responseSection;
             scrollBottom();
           }
-          runBtn.style.display = 'none';
+          setRunBtnMode(true);
           stopBtn.style.display = 'block';
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           stopBtn.disabled = false;
@@ -1300,7 +1315,7 @@
       // No active request or has files: start a new request
       const blk = addAssistantBlock(chatContainer);
       activeStreamBlk = blk;
-      runBtn.style.display = 'none'; // Hide run button
+      setRunBtnMode(true);  // run button stays visible (mid-run inject)
       stopBtn.style.display = 'block'; // Show stop button
       stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
       stopBtn.disabled = false;
@@ -1368,7 +1383,7 @@
             }
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
-            runBtn.style.display = 'block';
+            setRunBtnMode(false);
             stopBtn.style.display = 'none';
             // Reset stop button state
             stopBtn.setAttribute('title', 'Stop');
@@ -1441,7 +1456,7 @@
             clearTimeout(closeEventSourceTimer);
             closeEventSourceTimer = null;
           }
-          runBtn.style.display = 'block';
+          setRunBtnMode(false);
           stopBtn.style.display = 'none';
           // Reset stop button state
           stopBtn.setAttribute('title', 'Stop');
@@ -1518,7 +1533,7 @@
           }
           showSection(blk.t);
           blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
-          runBtn.style.display = 'block';
+          setRunBtnMode(false);
           stopBtn.style.display = 'none';
           stopBtn.setAttribute('title', 'Stop');
           stopBtn.setAttribute('aria-label', 'Stop');
@@ -1591,13 +1606,13 @@
                   const contentFormat = status.result.content_format || 'text';
                   blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
                 }
-                runBtn.style.display = 'block';
+                setRunBtnMode(false);
                 stopBtn.style.display = 'none';
                 sseReconnectAttempts = 0;
               } else if (status.error) {
                 showSection(blk.t);
                 blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(status.error)}</div>`;
-                runBtn.style.display = 'block';
+                setRunBtnMode(false);
                 stopBtn.style.display = 'none';
                 sseReconnectAttempts = 0;
               } else if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
@@ -1609,7 +1624,7 @@
                 errorNotice.className = 'response-text error';
                 errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ Connection lost after ' + SSE_MAX_RECONNECT_ATTEMPTS + ' reconnect attempts');
                 blk.t.appendChild(errorNotice);
-                runBtn.style.display = 'block';
+                setRunBtnMode(false);
                 stopBtn.style.display = 'none';
                 sseReconnectAttempts = 0;
               }
@@ -1648,7 +1663,7 @@
           currentStatusEventSource.close();
           currentStatusEventSource = null;
         }
-        runBtn.style.display = 'block';
+        setRunBtnMode(false);
         stopBtn.style.display = 'none';
         stopBtn.setAttribute('title', 'Stop');
         stopBtn.setAttribute('aria-label', 'Stop');
@@ -1684,7 +1699,7 @@
           const blk = addAssistantBlock(chatContainer);
           activeStreamBlk = blk;
           
-          runBtn.style.display = 'none';
+          setRunBtnMode(true);
           stopBtn.style.display = 'block';
           stopBtn.disabled = false;
           stopBtn.setAttribute('title', 'Stop');
@@ -1717,7 +1732,7 @@
           es.onerror = () => {
             es.close();
             currentEventSource = null;
-            runBtn.style.display = 'block';
+            setRunBtnMode(false);
             stopBtn.style.display = 'none';
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
