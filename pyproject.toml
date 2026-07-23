@@ -97,8 +97,14 @@ exclude = [".venv", ".pytest_cache", "*.egg-info", "logs", "docs", "src/**/__pyc
 [tool.ruff.lint.per-file-ignores]
 # Test files commonly re-use pytest fixture names both at module level
 # (re-import for visibility) and in test signatures — F811 is a false
-# positive in that pattern.
-"tests/**/*.py" = ["F811"]
+# positive in that pattern. Also relax test-idiomatic style: imports placed
+# after a sys.path bootstrap (E402) and setup statements joined with ';'
+# (E702). Matched by filename so it applies wherever tests live (root tests/
+# AND colocated src/plugins*/*/tests/).
+# E731 (lambda assigned to a name) and E741 (ambiguous single-letter var like
+# `l`) are low-signal in test setup — relaxed for tests only.
+"**/test_*.py" = ["F811", "E402", "E702", "E731", "E741"]
+"tests/**/*.py" = ["F811", "E402", "E702", "E731", "E741"]
 
 [tool.mypy]
 python_version = "3.12"

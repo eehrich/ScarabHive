@@ -4,14 +4,11 @@ Tests for handling unknown/hallucinated tool calls.
 When an LLM hallucinates a tool name, the agent should return an error message
 instead of crashing with a RuntimeError.
 """
-import asyncio
 import json
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-from agent_system.llm.models import ChatMessage
 from tool_execution_test_helpers import execute_tools_collect
 
 

@@ -307,7 +307,7 @@ class TestInjectDebateContext:
         """Hook should update debate_last_injected_msg_id in session vars."""
         ch = db.create_channel(name="test", topic="Track test")
         cid = ch["channel_id"]
-        r1 = db.post_message(cid, "Sven", "critic", 1, "First")
+        db.post_message(cid, "Sven", "critic", 1, "First")
         r2 = db.post_message(cid, "Mira", "advocate", 1, "Second")
 
         context_vars = {"debate_channel_id": cid}
@@ -359,7 +359,7 @@ class TestInjectDebateContext:
         assert user_count_1 == 1
 
         # Second call: no new messages → no additional user injection
-        result = await hooks.inject_debate_context(ctx)
+        await hooks.inject_debate_context(ctx)
         user_count_2 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER_POSTS)
         assert user_count_2 == 1  # still just 1
 

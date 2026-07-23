@@ -2,7 +2,6 @@
 
 import json
 
-import pytest
 
 from agent_system.utils.json_utils import repair_json
 

@@ -235,7 +235,7 @@ class TestEstimateMessageTokens:
 # ---------------------------------------------------------------------------
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from agent_system.services.session_service import SessionService
 from agent_system.services.session_manager import SessionManager, SessionNotFoundError
 

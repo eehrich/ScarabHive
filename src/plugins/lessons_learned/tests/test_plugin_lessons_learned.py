@@ -16,9 +16,7 @@ Target: >70% code coverage for critical modules
 """
 
 import json
-import sqlite3
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,7 +28,6 @@ from plugins.lessons_learned.models import (
     Lesson,
     LessonCandidate,
     LessonStatus,
-    SourceType,
 )
 from plugins.lessons_learned.prompt_builder import build_lesson_prompt
 from plugins.lessons_learned.server import LessonsLearnedServer
@@ -378,7 +375,7 @@ class TestEvidence:
         lesson_before = await server.get_lesson(r["lesson_id"])
 
         # Now contradict
-        result = await server.add_evidence(r["lesson_id"], "s2", "a", "contradict")
+        await server.add_evidence(r["lesson_id"], "s2", "a", "contradict")
         lesson_after = await server.get_lesson(r["lesson_id"])
 
         assert lesson_after is not None
@@ -857,7 +854,7 @@ class TestClusterTokenLimit:
 
         server._llm_evaluate_cluster_single = mock_evaluate
         try:
-            result = await server._llm_evaluate_cluster(lessons)
+            await server._llm_evaluate_cluster(lessons)
             # Should have been split - each sub-cluster should be smaller
             assert len(call_sizes) > 1, f"Expected split but got {len(call_sizes)} call(s)"
             for size in call_sizes:

@@ -76,8 +76,6 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
     changed = False
 
     # agent_config-Blöcke lokalisieren: (start_line, block_indent)
-    in_block_indent: int | None = None
-    ac_indent: int | None = None
 
     # Erst alle relevanten Zeilen-Indizes einsammeln, gruppiert pro Block
     blocks: list[dict] = []
@@ -205,7 +203,7 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
         return None, warnings
     # Zeilenende-Stil erhalten
     trailing_nl = "\n" if text.endswith("\n") else ""
-    return [l + "\n" for l in out[:-1]] + [out[-1] + trailing_nl], warnings
+    return [ln + "\n" for ln in out[:-1]] + [out[-1] + trailing_nl], warnings
 
 
 def main() -> None:

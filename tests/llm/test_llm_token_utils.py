@@ -775,7 +775,6 @@ class TestMediaDurationCache:
     def test_cache_hit_returns_cached_value(self, tmp_path):
         """Test that cache returns cached duration on hit."""
         from agent_system.llm.token_utils import _duration_cache, _CacheEntry
-        import time
         
         # Clear cache first
         _duration_cache.clear()
@@ -838,7 +837,7 @@ class TestMediaDurationCache:
     
     def test_cache_caches_none_values(self, tmp_path):
         """Test that cache stores None values (for files that can't be read)."""
-        from agent_system.llm.token_utils import _duration_cache, _CacheEntry
+        from agent_system.llm.token_utils import _duration_cache
         
         _duration_cache.clear()
         
@@ -866,13 +865,13 @@ class TestMediaDurationCache:
         t1 = time.perf_counter()
         tokens1 = estimate_file_tokens(audio_file, file_type='audio')
         t2 = time.perf_counter()
-        first_time = t2 - t1
+        t2 - t1
         
         # Second call - should use cache
         t3 = time.perf_counter()
         tokens2 = estimate_file_tokens(audio_file, file_type='audio')
         t4 = time.perf_counter()
-        second_time = t4 - t3
+        t4 - t3
         
         # Same result
         assert tokens1 == tokens2 == 410

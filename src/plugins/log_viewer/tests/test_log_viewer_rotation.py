@@ -1,7 +1,6 @@
 """Tests for log viewer rotation file handling"""
 
 import pytest
-from pathlib import Path
 from plugins.log_viewer.endpoints import LogViewerWebEndpoints
 from agent_system.config.models import AgentSystemConfig, MCPConfig
 

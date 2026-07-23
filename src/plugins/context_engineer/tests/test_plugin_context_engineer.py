@@ -2203,7 +2203,7 @@ class TestEnsureValidMessageSequence:
             {"role": "assistant", "content": "Only assistant"},
         ]
         
-        removed = strategy._ensure_valid_message_sequence(messages, "test")
+        strategy._ensure_valid_message_sequence(messages, "test")
         
         # Should have added a fallback user message
         assert any(msg.get("role") == "user" for msg in messages)
@@ -2218,7 +2218,7 @@ class TestEnsureValidMessageSequence:
             {"role": "system", "content": "System 2"},
         ]
         
-        removed = strategy._ensure_valid_message_sequence(messages, "test")
+        strategy._ensure_valid_message_sequence(messages, "test")
         
         # Should have added a fallback user message
         assert len(messages) == 3  # 2 system + 1 fallback user
@@ -2238,7 +2238,6 @@ class TestDetectRecallType:
     @pytest.fixture
     def hooks(self, tmp_path):
         """Create a minimal ContextEngineerPlugin instance for testing."""
-        from unittest.mock import MagicMock
         from plugins.context_engineer.hooks import ContextEngineerPlugin
 
         hooks = ContextEngineerPlugin.__new__(ContextEngineerPlugin)

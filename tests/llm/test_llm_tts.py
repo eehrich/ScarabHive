@@ -1,14 +1,11 @@
 """Tests for the TTS (Text-to-Speech) client abstraction layer."""
-import asyncio
 import wave
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent_system.llm.tts import (
     GeminiTTSClient,
-    TTSClient,
     TTSResult,
     TTSSpeaker,
     TTSVoice,
@@ -105,7 +102,7 @@ class TestGeminiTTSClient:
     @pytest.fixture
     def mock_genai(self):
         """Patch google.genai.Client and return mocks."""
-        with patch("agent_system.llm.tts.GeminiTTSClient.__init__", return_value=None) as mock_init:
+        with patch("agent_system.llm.tts.GeminiTTSClient.__init__", return_value=None):
             client = GeminiTTSClient.__new__(GeminiTTSClient)
             # Manually set attributes that __init__ would set
             client.model = "gemini-2.5-flash-preview-tts"

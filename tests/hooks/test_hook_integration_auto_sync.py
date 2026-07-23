@@ -12,7 +12,7 @@ ensuring that:
 
 import json
 import pytest
-from unittest.mock import Mock, MagicMock, AsyncMock, patch
+from unittest.mock import Mock
 
 from agent_system.hooks import (
     HookRegistry,
@@ -253,7 +253,7 @@ class TestPreLlmHooksAutoSync:
         # Use a short message list that won't trigger modification
         short_messages = sample_messages[:3]
         
-        result_messages = await manager.execute_pre_llm_hooks(
+        await manager.execute_pre_llm_hooks(
             messages=short_messages,
             step=1,
             request_id="req-123",
@@ -546,7 +546,7 @@ class TestEdgeCases:
         
         messages = [ChatMessage(role="user", content="Hello")]
         
-        result = await manager.execute_pre_llm_hooks(
+        await manager.execute_pre_llm_hooks(
             messages=messages,
             step=1,
             request_id="req-123",

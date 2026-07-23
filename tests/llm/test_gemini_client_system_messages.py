@@ -1,5 +1,4 @@
 """Tests for Gemini Client system message merging functionality."""
-import pytest
 
 from agent_system.llm.gemini_utils import convert_openai_messages_to_gemini
 from agent_system.llm.models import ChatMessage

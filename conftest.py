@@ -87,8 +87,9 @@ def _configure_test_logging():
     for logger_name in ['httpcore', 'httpx', 'asyncio', 'urllib3', 'filelock']:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
-# Import logging.handlers for RotatingFileHandler check
-import logging.handlers
+# Import logging.handlers for RotatingFileHandler check (used below and in
+# _reset_all_global_state; NOT auto-available from `import logging` alone).
+import logging.handlers  # noqa: F401,E402
 
 # Apply test logging configuration early
 _configure_test_logging()

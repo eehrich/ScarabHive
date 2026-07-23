@@ -8,7 +8,6 @@ Tests the PluginEndpointSecurityEnforcer class which handles:
 - Audit logging
 """
 import pytest
-from unittest.mock import MagicMock
 
 from agent_system.plugins.web_adapter import (
     PluginEndpointSecurityEnforcer,

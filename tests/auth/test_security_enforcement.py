@@ -6,7 +6,7 @@ security enforcement based on configuration rules.
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 from fastapi import HTTPException
 
 from agent_system.auth.enforcement import (

@@ -1,7 +1,6 @@
 """Tests for log rotation functionality"""
 
 import logging
-import tempfile
 from pathlib import Path
 import pytest
 from agent_system.config.models import LoggingConfig

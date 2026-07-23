@@ -2,7 +2,7 @@
 
 import pytest
 import httpx
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock, patch
 
 from agent_system.app import build_app
 from agent_system.auth.security import create_access_token

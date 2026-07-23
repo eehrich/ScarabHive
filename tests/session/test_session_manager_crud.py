@@ -655,7 +655,7 @@ async def test_corrupt_session_file_handling(session_manager, temp_storage):
 async def test_find_session_owner_async_uses_cache(session_manager):
     """_find_session_owner_async should find sessions via in-memory cache,
     even if the filesystem scan would miss them (race prevention)."""
-    session = await session_manager.create_session(
+    await session_manager.create_session(
         user_id="user1",
         session_id="cached_sid_001",
         title="Cached"
@@ -672,7 +672,7 @@ async def test_find_session_owner_async_uses_cache(session_manager):
 @pytest.mark.asyncio
 async def test_find_session_owner_sync_uses_cache(session_manager):
     """Sync variant should also consult the cache first."""
-    session = await session_manager.create_session(
+    await session_manager.create_session(
         user_id="user1",
         session_id="cached_sid_002",
         title="Cached"

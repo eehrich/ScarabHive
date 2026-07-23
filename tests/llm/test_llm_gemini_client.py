@@ -1023,7 +1023,7 @@ class TestGeminiClientStreaming:
             # thinkingConfig should include thinkingLevel for Gemini 3 models
             gen_config = kwargs["json"].get("generationConfig", {})
             thinking_config = gen_config.get("thinkingConfig", {})
-            assert thinking_config.get("includeThoughts") == True
+            assert thinking_config.get("includeThoughts") is True
             assert thinking_config.get("thinkingLevel") == "THINKING_LEVEL_MEDIUM"
 
     @pytest.mark.asyncio

@@ -1,4 +1,3 @@
-import os
 import httpx
 import pytest
 from agent_system.mcp.status import StatusPhase, publish_status

@@ -11,7 +11,6 @@ AFTER THE FIX:
 - Session hooks work correctly
 """
 
-import pytest
 from agent_system.llm.models import ChatMessage
 
 

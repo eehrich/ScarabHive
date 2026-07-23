@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_system.services.config_service import ConfigService
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig
 
 
 @pytest.fixture
