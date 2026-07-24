@@ -598,6 +598,11 @@ class OpenAIResponsesClient(LLMClient):
         payload = self._build_payload(messages, tools)
         url = f"{self.base_url}/responses"
         _enc_retried = False
+        # Muss VOR der Schleife stehen: gesetzt wird es nur in den 429-Zweigen,
+        # gelesen aber in der Encrypted-Reasoning-400-Heilung — ein 400 ohne
+        # vorheriges 429 lief sonst in UnboundLocalError (Live-Fund 2026-07-25,
+        # gemini-3.6-flash-Lauf: "cannot access local variable '_tier_dropped'").
+        _tier_dropped = False
 
         timeout = httpx.Timeout(
             connect=self.timeout_config.connect,
