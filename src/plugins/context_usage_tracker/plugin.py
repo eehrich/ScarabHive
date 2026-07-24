@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.factory import resolve_llm_config_for_agent
+from agent_system.llm.pricing import estimate_cost
 from agent_system.llm.token_utils import estimate_tools_token_count
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .tracker import UsageTracker
@@ -93,6 +94,23 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 if not isinstance(model, str):  # mocks / exotic clients — keep it JSON-safe
                     model = ""
 
+            # No billed cost (direct APIs like DeepSeek/Gemini SDK send none):
+            # fall back to an ESTIMATE from the central pricing table. Flagged
+            # so the panel can render it distinctly — it is not an exact price.
+            cost_is_estimate = False
+            if cost is None and model:
+                # Batch clients (BatchLLMClient.batch_provider = "openai"/...)
+                # bill at the table's batch_discount — without this the
+                # estimate would be ~2x the real price. isinstance-str guard:
+                # plain mocks/exotic clients must not look batchy.
+                bp = getattr(context.llm, 'batch_provider', None)
+                is_batch = isinstance(bp, str) and bool(bp)
+                est = estimate_cost(model, prompt_tokens, completion_tokens,
+                                    cached_tokens, is_batch=is_batch)
+                if est is not None:
+                    cost = est
+                    cost_is_estimate = True
+
             # Get context_window from the actual LLM instance (respects llm_override)
             # instead of resolving from agent_config (which uses agent's default profile)
             context_window = 0
@@ -145,6 +163,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 tool_definition_tokens=tool_definition_tokens,
                 cache_write_tokens=cache_write_tokens,
                 cost=cost,
+                cost_is_estimate=cost_is_estimate,
                 model=model,
                 request_id=getattr(context, 'request_id', None) or "",
             )

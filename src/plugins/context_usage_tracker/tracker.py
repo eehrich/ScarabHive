@@ -44,7 +44,8 @@ class ContextUsageSnapshot:
     cached_tokens: int = 0  # cached prompt tokens (cache READ)
     tool_definition_tokens: int = 0  # Estimated tokens for tool schemas/definitions
     cache_write_tokens: int = 0  # tokens written to the provider prompt cache
-    cost: Optional[float] = None  # billed cost in USD (None if provider sent none)
+    cost: Optional[float] = None  # USD cost (billed, or estimated — see flag)
+    cost_is_estimate: bool = False  # True = computed from config/llm_pricing.yaml
     model: str = ""  # model identifier of the client that served the call
     request_id: str = ""  # request this call belonged to
 
@@ -74,8 +75,9 @@ class AgentStats:
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_cache_write_tokens: int = 0
-    total_cost: float = 0.0  # Sum of billed costs (calls without cost contribute 0)
-    cost_known_calls: int = 0  # How many calls actually carried a cost
+    total_cost: float = 0.0  # Sum of costs (billed + estimated; no-cost calls contribute 0)
+    cost_known_calls: int = 0  # How many calls carried a cost at all
+    cost_estimated_calls: int = 0  # ...of which were pricing-table estimates
 
 
 class UsageTracker:
@@ -113,6 +115,7 @@ class UsageTracker:
                     tool_definition_tokens: int = 0,
                     cache_write_tokens: int = 0,
                     cost: Optional[float] = None,
+                    cost_is_estimate: bool = False,
                     model: str = "",
                     request_id: str = "") -> None:
         """Record a context usage snapshot."""
@@ -134,6 +137,7 @@ class UsageTracker:
             tool_definition_tokens=tool_definition_tokens,
             cache_write_tokens=cache_write_tokens,
             cost=cost,
+            cost_is_estimate=cost_is_estimate,
             model=model,
             request_id=request_id,
         )
@@ -165,6 +169,8 @@ class UsageTracker:
             if cost is not None:
                 stats.total_cost += cost
                 stats.cost_known_calls += 1
+                if cost_is_estimate:
+                    stats.cost_estimated_calls += 1
 
         # Schedule async save (debounced to avoid too frequent writes)
         self._schedule_save()
@@ -295,6 +301,7 @@ class UsageTracker:
                             "total_cache_write_tokens": 0,
                             "total_cost": 0.0,
                             "cost_known_calls": 0,
+                            "cost_estimated_calls": 0,
                         }
 
                     stats = session_agent_stats[agent_id]
@@ -310,6 +317,8 @@ class UsageTracker:
                     if getattr(snapshot, 'cost', None) is not None:
                         stats["total_cost"] += snapshot.cost
                         stats["cost_known_calls"] += 1
+                        if getattr(snapshot, 'cost_is_estimate', False):
+                            stats["cost_estimated_calls"] += 1
 
                 return session_agent_stats
 
@@ -362,6 +371,7 @@ class UsageTracker:
         stats["totals"] = {
             "cost": sum(costs),
             "cost_known_calls": len(costs),
+            "cost_estimated_calls": sum(1 for s in history_list if s.cost_is_estimate),
             "prompt_tokens": prompt_sum,
             "completion_tokens": completion_sum,
             "cached_tokens": cached_sum,

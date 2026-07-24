@@ -732,3 +732,103 @@ def test_session_filter_pre20_snapshots_match_exact_only(tmp_path):
                          total_tokens=10)  # request_id defaults to ""
     hist = tracker.get_history(session_id="root-sess")
     assert len(hist) == 1
+
+
+# ---------------------------------------------------------------------------
+# v2.1.0: pricing-table fallback when the provider sends no billed cost
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def pricing_file(tmp_path, monkeypatch):
+    """A minimal pricing table + chdir so the default relative path resolves."""
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "llm_pricing.yaml").write_text(
+        "deepseek-chat:\n  input: 0.28\n  output: 0.42\n  cached_input: 0.028\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    # the pricing module caches by (path, mtime) — reset for isolation
+    from agent_system.llm import pricing as pricing_mod
+    pricing_mod._cache.update(path=None, mtime=None, table={})
+    return cfg / "llm_pricing.yaml"
+
+
+def test_estimate_cost_formula(pricing_file):
+    from agent_system.llm.pricing import estimate_cost
+    # 1M uncached input + 1M output
+    assert estimate_cost("deepseek-chat", 1_000_000, 1_000_000) == pytest.approx(0.28 + 0.42)
+    # cached portion billed at cached_input rate
+    est = estimate_cost("deepseek-chat", 1_000_000, 0, cached_tokens=1_000_000)
+    assert est == pytest.approx(0.028)
+    # unknown model -> None (caller keeps cost as dash)
+    assert estimate_cost("unknown/model", 1000, 1000) is None
+
+
+@pytest.mark.asyncio
+async def test_track_usage_pricing_fallback(plugin, mock_hook_context, pricing_file):
+    """No billed cost + model in the table -> estimated cost, flagged."""
+    mock_hook_context.llm.model = "deepseek-chat"
+    result = await plugin.hooks_plugin.track_usage(mock_hook_context)
+    assert result.success is True
+    latest = plugin.tracker.get_latest()
+    # 100 prompt + 50 completion at deepseek rates
+    assert latest["cost"] == pytest.approx((100 * 0.28 + 50 * 0.42) / 1_000_000)
+    assert latest["cost_is_estimate"] is True
+
+
+@pytest.mark.asyncio
+async def test_track_usage_billed_cost_not_overridden(plugin, mock_hook_context, pricing_file):
+    """A billed provider cost wins over the table and is NOT flagged."""
+    mock_hook_context.llm.model = "deepseek-chat"
+    mock_hook_context.llm_response["usage"]["cost"] = 0.777
+    await plugin.hooks_plugin.track_usage(mock_hook_context)
+    latest = plugin.tracker.get_latest()
+    assert latest["cost"] == pytest.approx(0.777)
+    assert latest["cost_is_estimate"] is False
+
+
+@pytest.mark.asyncio
+async def test_track_usage_unknown_model_keeps_none(plugin, mock_hook_context, pricing_file):
+    mock_hook_context.llm.model = "some/unpriced-model"
+    await plugin.hooks_plugin.track_usage(mock_hook_context)
+    latest = plugin.tracker.get_latest()
+    assert latest["cost"] is None
+    assert latest["cost_is_estimate"] is False
+
+
+@pytest.mark.asyncio
+async def test_track_usage_batch_discount_applied(plugin, mock_hook_context, tmp_path, monkeypatch):
+    """Batch clients (BatchLLMClient.batch_provider) get the table's
+    batch_discount — otherwise estimates would be ~2x the real price."""
+    cfg = tmp_path / "config"; cfg.mkdir(exist_ok=True)
+    (cfg / "llm_pricing.yaml").write_text(
+        "batchy-model:\n  input: 1.0\n  output: 2.0\n  batch_discount: 0.5\n",
+        encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    from agent_system.llm import pricing as pricing_mod
+    pricing_mod._cache.update(path=None, mtime=None, table={})
+
+    mock_hook_context.llm.model = "batchy-model"
+    mock_hook_context.llm.batch_provider = "anthropic"  # str -> batch
+    await plugin.hooks_plugin.track_usage(mock_hook_context)
+    latest = plugin.tracker.get_latest()
+    full = (100 * 1.0 + 50 * 2.0) / 1_000_000
+    assert latest["cost"] == pytest.approx(full * 0.5)
+    assert latest["cost_is_estimate"] is True
+
+
+def test_estimated_calls_tracked_in_rollups(tmp_path):
+    """Rollups and statistics separate billed from estimated costs."""
+    tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    tracker.record_usage(agent_id="a1", agent_name="A1", session_id="s1",
+                         total_tokens=10, cost=0.5, cost_is_estimate=False)
+    tracker.record_usage(agent_id="a1", agent_name="A1", session_id="s1",
+                         total_tokens=10, cost=0.2, cost_is_estimate=True)
+    stats = tracker.get_agent_stats()["a1"]
+    assert stats["cost_known_calls"] == 2
+    assert stats["cost_estimated_calls"] == 1
+    totals = tracker.get_statistics()["totals"]
+    assert totals["cost_estimated_calls"] == 1
+    s_stats = tracker.get_agent_stats(session_id="s1")["a1"]
+    assert s_stats["cost_estimated_calls"] == 1
