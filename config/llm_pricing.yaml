@@ -14,7 +14,7 @@
 #   batch_discount: multiplier for batch API pricing (e.g. 0.5 = 50% off). Optional.
 #                   Applied when provider in DB starts with "batch_" (e.g. batch_gemini).
 #
-# Last updated: 2026-03-30
+# Last updated: 2026-07-24
 
 # =============================================================================
 # DeepSeek — Direct API (api.deepseek.com)
@@ -69,6 +69,26 @@ gemini-3.1-pro-preview:
 # Batch API = 50% discount (https://docs.anthropic.com/en/docs/build-with-claude/batch-processing)
 # Pricing: https://platform.claude.com/docs/en/about-claude/pricing
 # =============================================================================
+claude-opus-5:
+  input: 5.00
+  output: 25.00
+  cached_input: 0.50
+  batch_discount: 0.5
+
+# Fable 5 — Anthropic's most capable model ($10/$50)
+claude-fable-5:
+  input: 10.00
+  output: 50.00
+  cached_input: 1.00
+  batch_discount: 0.5
+
+# Sonnet 5 direct API — intro pricing $2/$10 through 2026-08-31 (then $3/$15)
+claude-sonnet-5:
+  input: 2.00
+  output: 10.00
+  cached_input: 0.20
+  batch_discount: 0.5
+
 claude-sonnet-4-5-20250929:
   input: 3.00
   output: 15.00

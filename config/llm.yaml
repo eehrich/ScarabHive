@@ -313,14 +313,13 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Opus 4.8 - Most capable Opus-tier: highly autonomous,
-    # SOTA long-horizon agentic work, knowledge work, and memory.
-    # Same API surface as 4.7 (adaptive thinking only; sampling params &
-    # budget_tokens removed). 1M context at standard pricing (no long-context
-    # premium). $5/$25 per MTok.
-    claude-opus-4-8:
+    # Claude Opus 5 - For complex agentic coding and enterprise work;
+    # most capable Opus-tier. Same API surface as 4.7/4.8 (adaptive thinking
+    # only; sampling params & budget_tokens removed); effort defaults to high.
+    # 1M context, 128K max output at standard pricing. $5/$25 per MTok.
+    claude-opus-5:
       provider: anthropic
-      model: claude-opus-4-8
+      model: claude-opus-5
       api_key: "***REMOVED***"
       context_window: 1000000
       request_timeout: 300
@@ -336,20 +335,45 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-    # Claude Opus 4.8 with Extended (Adaptive) Thinking
-    # NOTE: on Opus 4.8, thinking={type:enabled, budget_tokens:N} returns 400.
+    # Claude Opus 5 with Extended (Adaptive) Thinking
+    # NOTE: on Opus 5, thinking={type:enabled, budget_tokens:N} returns 400.
     # Adaptive thinking is the only "on" mode — app layer must send
     # thinking={type:"adaptive"} instead of a fixed budget. `thinking_budget`
     # bleibt für Backward-Compat / Soft-Cap; NICHT als API-Budget genutzt.
-    claude-opus-4-8-thinking:
+    claude-opus-5-thinking:
       provider: anthropic
-      model: claude-opus-4-8
+      model: claude-opus-5
       api_key: "***REMOVED***"
       context_window: 1000000
       request_timeout: 600
       max_tokens: 32768
       include_thinking: true
       thinking_budget: 16384
+      enable_prompt_caching: true
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+    # Claude Fable 5 - Anthropic's most capable model: next-generation
+    # intelligence for long-running agents. 1M context, 128K max output.
+    # $10/$50 per MTok. Thinking ist serverseitig IMMER an (adaptive);
+    # include_thinking MUSS false bleiben — der Client würde sonst
+    # thinking={type:enabled, budget_tokens:N} senden → 400. Ohne thinking-
+    # Param läuft Fable automatisch adaptive; Raw-CoT wird nie zurückgegeben.
+    # Einzelne Turns können viele Minuten laufen → request_timeout großzügig.
+    claude-fable-5:
+      provider: anthropic
+      model: claude-fable-5
+      api_key: "***REMOVED***"
+      context_window: 1000000
+      request_timeout: 600
+      max_tokens: 32768
+      include_thinking: false
       enable_prompt_caching: true
       capabilities:
         tools: true
@@ -398,10 +422,10 @@ llm_system:
         streaming: false
         json_mode: true
 
-    claude-opus-4-8-batch:
+    claude-opus-5-batch:
       provider: batch
       batch_provider: anthropic
-      model: claude-opus-4-8
+      model: claude-opus-5
       api_key: "***REMOVED***"
       context_window: 1000000
       max_tokens: 16384
@@ -860,13 +884,18 @@ llm_system:
       max_steps: 500
 
     claude-opus:
-      model_ref: claude-opus-4-8
-      description: "Claude Opus 4.8 - Most capable Opus-tier: highly autonomous, SOTA long-horizon agentic work, knowledge work, and memory"
+      model_ref: claude-opus-5
+      description: "Claude Opus 5 - For complex agentic coding and enterprise work; most capable Opus-tier"
       max_steps: 500
 
     claude-opus-batch:
-      model_ref: claude-opus-4-8-batch
-      description: "Claude Opus 4.8 (batch)"
+      model_ref: claude-opus-5-batch
+      description: "Claude Opus 5 (batch)"
+      max_steps: 500
+
+    claude-fable:
+      model_ref: claude-fable-5
+      description: "Claude Fable 5 - Anthropic's most capable model; next-generation intelligence for long-running agents ($10/$50 per MTok)"
       max_steps: 500
 
     claude-haiku:
