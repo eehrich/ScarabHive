@@ -144,6 +144,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             max_tokens=max_tokens,
             service_tier=service_tier,
             provider_routing=provider_routing,
+            safety_settings=safety_settings,
             prompt_cache_key=prompt_cache_key,
             prompt_cache_mode=prompt_cache_mode,
             prompt_cache_marker_style=prompt_cache_marker_style,

@@ -26,7 +26,10 @@ llm_system:
     # ---------------------------------------------------------------------------
     
     openrouter-gemini-3-flash:
-      provider: openai_httpx
+      # Native Responses-API route: thought signatures ride as verbatim items
+      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
+      # safety_settings pass through. Migrated 2026-07-24.
+      provider: openai_responses
       model: google/gemini-3-flash-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
@@ -50,7 +53,10 @@ llm_system:
         multimodal: true  # Native image/audio/video processing
 
     openrouter-gemini-3-flash-minimal:
-      provider: openai_httpx
+      # Native Responses-API route: thought signatures ride as verbatim items
+      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
+      # safety_settings pass through. Migrated 2026-07-24.
+      provider: openai_responses
       model: google/gemini-3-flash-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
@@ -81,7 +87,10 @@ llm_system:
       # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
 
     openrouter-gemini-3-flash-unlimited:
-      provider: openai_httpx
+      # Native Responses-API route: thought signatures ride as verbatim items
+      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
+      # safety_settings pass through. Migrated 2026-07-24.
+      provider: openai_responses
       model: google/gemini-3-flash-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
@@ -107,7 +116,10 @@ llm_system:
 
 
     openrouter-gemini-3.5-flash-lite:
-      provider: openai_httpx
+      # Native Responses-API route: thought signatures ride as verbatim items
+      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
+      # safety_settings pass through. Migrated 2026-07-24.
+      provider: openai_responses
       model: google/gemini-3.5-flash-lite
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
@@ -141,7 +153,10 @@ llm_system:
 
 
     openrouter-gemini-3.6-flash:
-      provider: openai_httpx
+      # Native Responses-API route: thought signatures ride as verbatim items
+      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
+      # safety_settings pass through. Migrated 2026-07-24.
+      provider: openai_responses
       model: google/gemini-3.6-flash
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
@@ -175,7 +190,10 @@ llm_system:
 
 
     openrouter-gemini-3-pro:
-      provider: openai_httpx
+      # Native Responses-API route: thought signatures ride as verbatim items
+      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
+      # safety_settings pass through. Migrated 2026-07-24.
+      provider: openai_responses
       model: google/gemini-3.1-pro-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
@@ -206,7 +224,10 @@ llm_system:
       # - Pricing: ~$2 input / ~$12 output per 1M tokens
 
     openrouter-gemini-3-pro-unlimited:
-      provider: openai_httpx
+      # Native Responses-API route: thought signatures ride as verbatim items
+      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
+      # safety_settings pass through. Migrated 2026-07-24.
+      provider: openai_responses
       model: google/gemini-3.1-pro-preview
       api_key: "***REMOVED***"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1

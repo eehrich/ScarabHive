@@ -981,6 +981,33 @@ class HTTPXOpenAIClient(LLMClient):
                                     )
                                     continue
 
+                        # Self-healing: Gemini "Corrupted thought signature" can
+                        # ALSO arrive as an HTTP-STATUS 400 (observed 2026-07-24,
+                        # gemini-3.5-flash-lite) — the signature-bypass below
+                        # only covers the body-level shape, so without this
+                        # branch the run crashed hard instead of healing.
+                        if (response.status_code == 400 and not _sig_retried
+                                and "thought signature" in (response.text or "").lower()):
+                            n_patched = self._inject_signature_bypass(payload)
+                            if n_patched > 0:
+                                _sig_retried = True
+                                logger.warning(
+                                    "HTTP-400 retry: injecting signature bypass "
+                                    "token into reasoning_details (%d block(s)). "
+                                    "model=%s detail=%r",
+                                    n_patched, self.model, (response.text or "")[:500],
+                                )
+                                await self._report_status(
+                                    status_scope,
+                                    f"Signature bypass retry: {self.model}",
+                                )
+                                await self._notify_retry(
+                                    "openai_httpx", self.model, url, False,
+                                    "http-400 signature bypass",
+                                    attempt, self.max_retries + 1,
+                                )
+                                continue
+
                         logger.error(f"HTTPX non-streaming request failed: {error_msg}")
                         _duration_ms = (_time.time() - _request_start) * 1000
                         await self._notify_post_response({
@@ -1514,6 +1541,32 @@ class HTTPXOpenAIClient(LLMClient):
                                             attempt, self.max_retries + 1,
                                         )
                                         continue
+
+                            # Self-healing: Gemini "Corrupted thought signature"
+                            # as HTTP-STATUS 400 (mirrors the non-streaming
+                            # path; the body-level bypass below doesn't see
+                            # status-level 400s).
+                            if (response.status_code == 400 and not _sig_retried
+                                    and "thought signature" in error_text.lower()):
+                                n_patched = self._inject_signature_bypass(payload)
+                                if n_patched > 0:
+                                    _sig_retried = True
+                                    logger.warning(
+                                        "HTTP-400 stream retry: injecting signature "
+                                        "bypass token into reasoning_details "
+                                        "(%d block(s)). model=%s detail=%r",
+                                        n_patched, self.model, error_text[:500],
+                                    )
+                                    await self._report_status(
+                                        status_scope,
+                                        f"Signature bypass retry: {self.model}",
+                                    )
+                                    await self._notify_retry(
+                                        "openai_httpx", self.model, url, True,
+                                        "http-400 signature bypass (stream)",
+                                        attempt, self.max_retries + 1,
+                                    )
+                                    continue
 
                             logger.error(f"HTTPX streaming request failed: {error_msg}")
                             if response.status_code >= 500:

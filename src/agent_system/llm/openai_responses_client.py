@@ -88,6 +88,7 @@ from agent_system.llm.cache_key import (
     plan_cache_blocks,
     strip_cache_breakpoints,
 )
+from agent_system.llm.gemini_utils import sanitize_schema_for_gemini
 from agent_system.llm.httpx_client import HTTPXTimeoutConfig
 from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
@@ -131,6 +132,7 @@ class OpenAIResponsesClient(LLMClient):
         max_tokens: Optional[int] = None,
         service_tier: Optional[str] = None,
         provider_routing: Optional[dict] = None,
+        safety_settings: Optional[dict] = None,
         prompt_cache_key: Optional[str] = None,
         prompt_cache_mode: Optional[str] = None,
         prompt_cache_marker_style: Optional[str] = None,
@@ -148,6 +150,7 @@ class OpenAIResponsesClient(LLMClient):
         self.max_tokens = max_tokens
         self.service_tier = service_tier
         self.provider_routing = provider_routing
+        self.safety_settings = safety_settings
         self.prompt_cache_key = prompt_cache_key
         self.prompt_cache_mode = prompt_cache_mode
         self.prompt_cache_marker_style = prompt_cache_marker_style
@@ -287,23 +290,41 @@ class OpenAIResponsesClient(LLMClient):
             supports_audio=supports_audio,
         )
 
-    @staticmethod
-    def _convert_tools(tools: Optional[list]) -> Optional[list]:
-        """Chat-format tool schemas -> Responses-format (flat, no nesting)."""
+    @property
+    def _is_gemini_model(self) -> bool:
+        """Gemini via OpenRouter — needs tool-schema sanitization (same as
+        the Chat Completions route's _sanitize_tools_for_gemini)."""
+        return self.model.startswith("google/gemini")
+
+    def _convert_tools(self, tools: Optional[list]) -> Optional[list]:
+        """Chat-format tool schemas -> Responses-format (flat, no nesting).
+
+        For Gemini models the parameter schemas are sanitized like on the
+        Chat Completions route: Gemini's Function Declarations reject JSON
+        Schema keywords (additionalProperties, default, format, oneOf, ...)
+        and complex nested schemas then fail with MALFORMED_FUNCTION_CALL.
+        """
         if not tools:
             return None
+        sanitize = self._is_gemini_model
         converted = []
         for t in tools:
             fn = t.get("function") if isinstance(t, dict) else None
             if fn:
+                params = fn.get("parameters", {})
+                if sanitize and params:
+                    params = sanitize_schema_for_gemini(params)
                 converted.append({
                     "type": "function",
                     "name": fn.get("name", ""),
                     "description": fn.get("description", ""),
-                    "parameters": fn.get("parameters", {}),
+                    "parameters": params,
                 })
             elif isinstance(t, dict) and t.get("name"):
-                converted.append(t)  # already flat
+                clean = dict(t)
+                if sanitize and clean.get("parameters"):
+                    clean["parameters"] = sanitize_schema_for_gemini(clean["parameters"])
+                converted.append(clean)  # already flat
         return converted or None
 
     # ------------------------------------------------------------------
@@ -409,6 +430,13 @@ class OpenAIResponsesClient(LLMClient):
             payload["service_tier"] = self.service_tier
         if self.provider_routing:
             payload["provider"] = self.provider_routing
+        # Gemini via OpenRouter: content-filter thresholds (BLOCK_NONE for
+        # fiction prose etc.) — same shape the Chat Completions route sends.
+        if self.safety_settings:
+            payload["safety_settings"] = [
+                {"category": category, "threshold": threshold}
+                for category, threshold in self.safety_settings.items()
+            ]
         # GPT-5.6+: ohne prompt_cache_key praktisch kein Cache-Matching
         # (OpenAI-Doku: "you must set prompt_cache_key ..."). "auto" =
         # Praefix-Hash, kollisionsfrei bei parallelen Buechern
@@ -548,8 +576,13 @@ class OpenAIResponsesClient(LLMClient):
 
     @staticmethod
     def _is_encrypted_reasoning_400(body_text: str) -> bool:
+        """Reasoning-artifact rejection — OpenAI encrypted items OR Gemini
+        thought signatures (both heal the same way on this route: drop the
+        artifacts, retry with a fresh chain)."""
+        lowered = body_text.lower()
         return ("encrypted content" in body_text and "rs_" in body_text) or \
-               "invalid_encrypted_content" in body_text
+               "invalid_encrypted_content" in body_text or \
+               "thought signature" in lowered
 
     async def _notify_error(self, url: str, duration_ms: float, error_msg: str) -> None:
         """Post-response notification for terminal failures — keeps the
@@ -619,6 +652,21 @@ class OpenAIResponsesClient(LLMClient):
                 body_text = response.text or ""
 
                 if response.status_code == 429:
+                    # Flex-tier fallback (parity with the httpx route): flex
+                    # queues saturate with 429s while the standard tier is
+                    # fine. Drop service_tier ONCE and retry immediately —
+                    # does not consume a retry slot (the request changes
+                    # substantially). Only after that: typed raise so the
+                    # agent-level fallback chain takes over.
+                    if payload.pop("service_tier", None) is not None:
+                        _tier_dropped = True
+                        logger.warning(
+                            f"HTTP 429 on flex tier — dropping service_tier and "
+                            f"retrying at standard tier: {self.model}")
+                        await self._notify_retry(
+                            "openai_responses", self.model, url, False,
+                            "429 flex->standard tier drop", attempt, self.max_retries + 1)
+                        continue
                     retry_after = None
                     try:
                         retry_after = float(response.headers.get("retry-after", ""))
@@ -663,6 +711,8 @@ class OpenAIResponsesClient(LLMClient):
                         _enc_retried = True
                         n = strip_all_reasoning_artifacts(messages)
                         payload = self._build_payload(messages, tools)
+                        if _tier_dropped:
+                            payload.pop("service_tier", None)
                         logger.warning(
                             "Responses-400 retry: stripped reasoning artifacts from "
                             "%d message(s) (defective reasoning item). model=%s detail=%r",
@@ -705,6 +755,19 @@ class OpenAIResponsesClient(LLMClient):
                     err_msg = str(body_err.get("message", "")) if isinstance(body_err, dict) else str(body_err)
                     if ("rate_limit" in err_code or err_code == "429"
                             or "too many requests" in err_msg.lower()):
+                        # First 429: drop the flex tier (saturated flex queue,
+                        # standard is usually fine) and retry without consuming
+                        # a slot — ported from the httpx route's body-429 heal.
+                        if payload.pop("service_tier", None) is not None:
+                            _tier_dropped = True
+                            logger.warning(
+                                f"Body rate-limit on flex tier — dropping "
+                                f"service_tier, retrying at standard: {self.model}")
+                            await self._notify_retry(
+                                "openai_responses", self.model, url, False,
+                                "body-429 flex->standard tier drop",
+                                attempt, self.max_retries + 1)
+                            continue
                         backoff = self.retry_backoff * (2 ** attempt)
                         logger.warning(
                             f"Responses body rate-limit, retry {attempt + 1}/"
@@ -722,6 +785,8 @@ class OpenAIResponsesClient(LLMClient):
                     _enc_retried = True
                     n = strip_all_reasoning_artifacts(messages)
                     payload = self._build_payload(messages, tools)
+                    if _tier_dropped:
+                        payload.pop("service_tier", None)
                     logger.warning(
                         "Responses body-error retry: stripped reasoning artifacts "
                         "from %d message(s) (defective reasoning item). model=%s detail=%r",

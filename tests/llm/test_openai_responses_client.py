@@ -169,9 +169,26 @@ class TestToolsAndPayload:
     def test_tools_converted_to_flat_format(self):
         tools = [{"type": "function", "function": {
             "name": "get_value", "description": "d", "parameters": {"type": "object"}}}]
-        conv = OpenAIResponsesClient._convert_tools(tools)
+        conv = _client()._convert_tools(tools)
         assert conv == [{"type": "function", "name": "get_value",
                          "description": "d", "parameters": {"type": "object"}}]
+
+    def test_gemini_tool_schemas_sanitized(self):
+        """Gemini-Modelle: Function-Declaration-feindliche JSON-Schema-Keywords
+        (additionalProperties, default, format, oneOf, title) werden entfernt —
+        wie auf der Chat-Route (_sanitize_tools_for_gemini); GPT bleibt roh."""
+        import json as _json
+        nasty = [{"type": "function", "function": {"name": "f", "description": "d",
+                  "parameters": {"type": "object", "title": "T", "additionalProperties": False,
+                                 "properties": {"x": {"type": "string", "default": "a",
+                                                      "format": "id"},
+                                                "y": {"oneOf": [{"type": "string"}]}}}}}]
+        gem = _client(model="google/gemini-3.5-flash-lite")._convert_tools(nasty)
+        blob = _json.dumps(gem)
+        for kw in ('"title"', '"default"', '"oneOf"', '"additionalProperties"', '"format"'):
+            assert kw not in blob, f"{kw} nicht sanitized"
+        gpt = _client(model="openai/gpt-5.6-terra")._convert_tools(nasty)
+        assert '"oneOf"' in _json.dumps(gpt)
 
     def test_payload_carries_config(self):
         c = _client(max_tokens=16384, parallel_tool_calls=True)
