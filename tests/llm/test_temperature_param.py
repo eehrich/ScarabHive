@@ -119,19 +119,29 @@ class TestPayload:
         assert state["thinking_level"] == "high"
         assert state["temperature"] == 0.2  # gespeichert, aber nicht gesendet
 
+    # #697c: Diese beiden Tests prüften vorher ``_build_payload_for_test`` —
+    # eine Methode, die es NIRGENDS gibt. Der hasattr-Zweig fiel also immer auf
+    # „nur den Zustand prüfen" zurück, und der eigentliche Riegel (temperature
+    # NICHT im Payload bei Reasoning-Modellen) war komplett ungetestet. Der
+    # echte Builder heißt ``_build_payload``.
+
     def test_responses_payload_omits_temperature_for_reasoning(self):
         # Die o-/gpt-5.x-Serie antwortet mit 400, wenn temperature mitkommt.
         client = make_llm(provider="openai_responses", model="gpt-5.6", api_key="k",
                           temperature=0.2, thinking_level="high")
-        payload = client._build_payload_for_test() if hasattr(
-            client, "_build_payload_for_test") else None
-        if payload is None:
-            # Kein öffentlicher Builder → Zustand prüfen, den der Zweig liest
-            assert client.temperature == 0.2 and client.thinking_level == "high"
-        else:
-            assert "temperature" not in payload
+        payload = client._build_payload([{"role": "user", "content": "hi"}], None)
+        assert "temperature" not in payload, payload
+        assert payload.get("reasoning") == {"effort": "high"}
 
     def test_responses_payload_keeps_temperature_without_reasoning(self):
         client = make_llm(provider="openai_responses", model="gpt-4o", api_key="k",
                           temperature=0.0)
-        assert client.temperature == 0.0 and client.thinking_level is None
+        payload = client._build_payload([{"role": "user", "content": "hi"}], None)
+        # 0.0 ist ein GÜLTIGER Wert — der Guard prüft auf None, nicht auf falsy
+        assert payload["temperature"] == 0.0
+        assert "reasoning" not in payload
+
+    def test_responses_payload_omits_temperature_when_unset(self):
+        client = make_llm(provider="openai_responses", model="gpt-4o", api_key="k")
+        payload = client._build_payload([{"role": "user", "content": "hi"}], None)
+        assert "temperature" not in payload
