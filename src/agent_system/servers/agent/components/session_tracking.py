@@ -391,6 +391,21 @@ class SessionTracker:
         """
         self._compacted_messages.pop(session_id, None)
 
+    def discard_session(self, session_id: str) -> None:
+        """
+        Drop every trace of a session.
+
+        Used for the ephemeral sessions that stateless one-shot calls create:
+        without this the tracker would keep one growing entry per call (a
+        per-segment agent runs hundreds of times per book).
+
+        Args:
+            session_id: The session ID
+        """
+        self._sessions.pop(session_id, None)
+        self._session_metadata.pop(session_id, None)
+        self._compacted_messages.pop(session_id, None)
+
     def set_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
         """
         Set metadata for a session (e.g., user_id).

@@ -1,6 +1,7 @@
 """
 Utility functions for agent execution and result collection.
 """
+import uuid
 from typing import Dict, Any, Optional, Union
 from .server import Agent
 from ...llm.models import ChatMessage
@@ -56,13 +57,27 @@ async def collect_final_result(
         agent: The agent instance to execute
         task: The task to execute (string or ChatMessage with multimodal content)
         request_id: Optional request ID for correlation
-        session_id: Optional session ID for conversation history
+        session_id: Optional session ID for conversation history. Omit it for a
+            STATELESS call -- an ephemeral id is generated so the run starts
+            with an empty history and leaves nothing behind.
         llm_override: Optional LLM client to use instead of agent's default
         llm_profile_info_override: Optional profile info string for status display
-        
+
     Returns:
         Dict containing task, calls, summary, and optionally errors
     """
+    # An omitted session_id used to reach the session tracker as the literal
+    # key None, so EVERY caller that did not pass one shared a single growing
+    # history on that agent instance. Per-item agents (one instance reused for
+    # hundreds of segments/scenes) therefore replayed every previous exchange
+    # on every call until the request blew past the model's context limit
+    # ("input token count exceeds the maximum number of tokens allowed
+    # 1048576" on the audio_text_comparator). "No session id" must mean "no
+    # shared history", so give each such call its own throwaway session.
+    ephemeral_session = session_id is None
+    if ephemeral_session:
+        session_id = f"ephemeral-{uuid.uuid4()}"
+
     # Extract task text for result logging
     if isinstance(task, ChatMessage):
         if isinstance(task.content, str):
@@ -120,5 +135,16 @@ async def collect_final_result(
             result["cancelled"] = True
         else:
             result.setdefault("errors", []).append(str(e))
-    
+    finally:
+        # A throwaway session must not outlive its single call, otherwise the
+        # tracker accumulates one entry per invocation.
+        if ephemeral_session:
+            tracker = getattr(agent, "_session_tracker", None)
+            discard = getattr(tracker, "discard_session", None)
+            if discard is not None:
+                try:
+                    discard(session_id)
+                except Exception:  # noqa: BLE001 - cleanup must never fail a run
+                    pass
+
     return result
