@@ -90,6 +90,7 @@ from agent_system.llm.cache_key import (
 )
 from agent_system.llm.gemini_utils import sanitize_schema_for_gemini
 from agent_system.llm.httpx_client import HTTPXTimeoutConfig
+from agent_system.llm.openai_utils import convert_audio_to_input_audio
 from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
 logger = logging.getLogger(__name__)
@@ -98,12 +99,87 @@ logger = logging.getLogger(__name__)
 RESPONSES_ITEMS_FORMAT = "openai-responses-items-v1"
 RESPONSES_ITEMS_TYPE = "reasoning.responses_items"
 
+#: Audio containers the Responses input item officially accepts (openai SDK
+#: ``ResponseInputAudioParam.format``: Literal["mp3", "wav"]). Other containers
+#: are passed through with a warning — the receiving bridge (OpenRouter ->
+#: Gemini) accepts more than OpenAI's own literal, and a loud 400 beats
+#: silently dropping the audio.
+RESPONSES_AUDIO_FORMATS = ("mp3", "wav")
+
 
 def _get(msg: Any, key: str, default: Any = None) -> Any:
     """Field access for both dict messages and ChatMessage objects."""
     if isinstance(msg, dict):
         return msg.get(key, default)
     return getattr(msg, key, default)
+
+
+def _part_to_dict(part: Any) -> Any:
+    """Normalize one content part to a plain dict.
+
+    The agent loop hands ChatMessage OBJECTS to the client, so a multimodal
+    ``content`` list still holds the pydantic models from llm/models.py
+    (TextContent, ImageContent, AudioContent, ...) — unlike the Chat
+    Completions route, which runs ``model_dump()`` on every message before
+    normalizing. Without this step an AudioContent fell through to
+    ``str(part)`` and the ENTIRE base64 payload travelled as TEXT (live find
+    2026-07-25: a 1.9 MB ``input_text`` part, rejected with "[invalid_prompt]
+    The input token count exceeds the maximum ... 1048576").
+    """
+    if isinstance(part, dict):
+        return part
+    if hasattr(part, "model_dump"):
+        return part.model_dump(exclude_none=True, mode="json")
+    return part
+
+
+def _image_to_input_image(part: dict) -> Optional[dict]:
+    """Internal image part -> Responses ``input_image`` (or None if unusable).
+
+    Accepts both house shapes: OpenAI-style (``image_url`` as string or
+    ``{"url": ...}``) and Anthropic-style (``source={"type": "base64",
+    "media_type": ..., "data": ...}``). The Responses item always carries the
+    picture in ``image_url`` — base64 goes in as a ``data:`` URL.
+    """
+    url = part.get("image_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not url:
+        source = part.get("source")
+        if isinstance(source, dict):
+            if source.get("data"):
+                media_type = (source.get("media_type")
+                              or part.get("media_type") or "image/png")
+                url = f"data:{media_type};base64,{source['data']}"
+            else:
+                url = source.get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    converted: dict = {"type": "input_image", "image_url": url}
+    detail = part.get("detail")
+    if detail:
+        converted["detail"] = detail
+    return converted
+
+
+def _audio_to_input_audio(part: dict) -> Optional[dict]:
+    """Internal audio part -> Responses ``input_audio`` (or None if unusable).
+
+    Same item shape as on the Chat Completions route (proven there: the
+    OpenRouter -> Gemini bridge consumes ``input_audio``), so the converter is
+    reused from openai_utils — no second audio dialect.
+    """
+    converted = convert_audio_to_input_audio(part)
+    if not isinstance(converted, dict) or converted.get("type") != "input_audio":
+        return None  # converter could not read the payload
+    fmt = (converted.get("input_audio") or {}).get("format")
+    if fmt not in RESPONSES_AUDIO_FORMATS:
+        logger.warning(
+            "Responses input_audio: format %r is outside the officially "
+            "supported set %s — passing through to the provider.",
+            fmt, RESPONSES_AUDIO_FORMATS,
+        )
+    return converted
 
 
 class OpenAIResponsesClient(LLMClient):
@@ -159,23 +235,60 @@ class OpenAIResponsesClient(LLMClient):
         self.timeout_config = timeout_config or HTTPXTimeoutConfig(
             connect=10.0, read=float(request_timeout), write=30.0, pool=5.0
         )
+        #: Number of media parts dropped for lack of a model capability —
+        #: countable signal for callers/tests (see _drop_media).
+        self.dropped_media_parts: int = 0
 
     # ------------------------------------------------------------------
     # Input building: ChatMessage list -> Responses `input` item list
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _content_to_parts(content: Any, role: str) -> Any:
+    @property
+    def _supports_audio_input(self) -> bool:
+        return bool(getattr(self.capabilities, "audio_input", False)) if self.capabilities else False
+
+    @property
+    def _supports_vision(self) -> bool:
+        from ..utils.multimodal_tool_content import check_vision_support
+        return check_vision_support(self.capabilities)
+
+    def _drop_media(self, kind: str, reason: str, part: dict) -> dict:
+        """Replace an un-sendable media part with a VISIBLE text note.
+
+        Never a serialized blob of the payload: that is what let the model
+        judge audio against a truncated JSON string and answer confidently
+        anyway (live find 2026-07-25). The note tells the model the media is
+        missing, the WARNING tells the operator, and ``dropped_media_parts``
+        gives the caller a countable signal.
+        """
+        self.dropped_media_parts += 1
+        name = part.get("name")
+        logger.warning(
+            "Responses input: dropped %s part%s — %s (model=%s). The model "
+            "answers WITHOUT this media.",
+            kind, f" {name!r}" if name else "", reason, self.model,
+        )
+        return {"type": "input_text",
+                "text": f"[{kind} input omitted: {reason}]"}
+
+    def _content_to_parts(self, content: Any, role: str) -> Any:
         """Convert message content to Responses format.
 
-        Plain strings pass through (accepted for message items). Chat-format
-        content arrays (text / image_url parts, e.g. from the multimodal
-        injection) are converted to input_text / input_image parts.
+        Plain strings pass through (accepted for message items). Content arrays
+        — chat-format parts from the multimodal injection AS WELL AS the
+        pydantic content models a caller puts on ChatMessage — are converted to
+        the Responses items input_text / input_image / input_audio.
+
+        Media is capability-gated: if the model has no audio/vision input the
+        part is DROPPED and replaced by a visible note (see ``_drop_media``).
+        The generic ``[:2000]`` degradation stays as the last resort for
+        genuinely unknown part types, and can no longer swallow media.
         """
         if not isinstance(content, list):
             return content if content is not None else ""
         parts = []
-        for part in content:
+        for raw_part in content:
+            part = _part_to_dict(raw_part)
             if not isinstance(part, dict):
                 parts.append({"type": "input_text", "text": str(part)})
                 continue
@@ -183,16 +296,37 @@ class OpenAIResponsesClient(LLMClient):
             if ptype == "text":
                 parts.append({"type": "input_text",
                               "text": strip_cache_breakpoints(part.get("text", ""))})
-            elif ptype == "image_url":
-                url = part.get("image_url")
-                if isinstance(url, dict):
-                    url = url.get("url", "")
-                parts.append({"type": "input_image", "image_url": url})
-            elif ptype in ("input_text", "input_image", "input_file"):
+            elif ptype == "text_file":
+                # parity with openai_utils.normalize_content_item
+                parts.append({"type": "input_text",
+                              "text": f"[File: {part.get('name') or 'file'}]\n"
+                                      f"{part.get('content', '')}"})
+            elif ptype in ("image", "image_url", "input_image"):
+                if not self._supports_vision:
+                    parts.append(self._drop_media(
+                        "image", "model has no image_input capability", part))
+                    continue
+                converted = _image_to_input_image(part)
+                parts.append(converted if converted else self._drop_media(
+                    "image", "no usable image data (neither image_url nor source)", part))
+            elif ptype in ("audio", "input_audio"):
+                if not self._supports_audio_input:
+                    parts.append(self._drop_media(
+                        "audio", "model has no audio_input capability", part))
+                    continue
+                converted = _audio_to_input_audio(part)
+                parts.append(converted if converted else self._drop_media(
+                    "audio", "no usable audio data (neither audio_url nor base64 source)", part))
+            elif ptype == "video":
+                # The Responses API has no video input item (openai SDK
+                # ResponseInputContentParam = text | image | file).
+                parts.append(self._drop_media(
+                    "video", "the Responses API has no video input item", part))
+            elif ptype in ("input_text", "input_file"):
                 parts.append(part)  # already Responses format
             else:
-                # Unknown part type (e.g. unsupported audio): degrade to text
-                # so the request stays valid instead of 400ing.
+                # Unknown part type: degrade to text so the request stays valid
+                # instead of 400ing. Media never reaches this branch.
                 parts.append({"type": "input_text", "text": json.dumps(part, ensure_ascii=False)[:2000]})
         return parts
 
@@ -280,16 +414,12 @@ class OpenAIResponsesClient(LLMClient):
         return items
 
     def _create_multimodal_injection(self, tool_msg: Any) -> Optional[dict]:
-        from ..utils.multimodal_tool_content import (
-            check_vision_support,
-            create_multimodal_injection,
-        )
-        supports_audio = bool(getattr(self.capabilities, "audio_input", False)) if self.capabilities else False
+        from ..utils.multimodal_tool_content import create_multimodal_injection
         return create_multimodal_injection(
             tool_msg=tool_msg,
-            supports_vision=check_vision_support(self.capabilities),
+            supports_vision=self._supports_vision,
             model_name=self.model,
-            supports_audio=supports_audio,
+            supports_audio=self._supports_audio_input,
         )
 
     @property

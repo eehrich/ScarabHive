@@ -14,7 +14,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from agent_system.llm.models import ChatMessage
+from agent_system.llm.capabilities import ModelCapabilities
+from agent_system.llm.models import (
+    AudioContent,
+    ChatMessage,
+    ImageContent,
+    ImageSource,
+    TextContent,
+)
 from agent_system.llm.openai_responses_client import (
     RESPONSES_ITEMS_FORMAT,
     OpenAIResponsesClient,
@@ -32,6 +39,16 @@ def _client(**kw):
     )
     defaults.update(kw)
     return OpenAIResponsesClient(**defaults)
+
+
+def _multimodal_client(**kw):
+    """Client for a model that can actually take image+audio input
+    (config shorthand ``capabilities.multimodal: true``, e.g. the
+    or-gemini-flash profiles)."""
+    kw.setdefault("model", "google/gemini-3.5-flash-lite")
+    kw.setdefault("capabilities", ModelCapabilities(
+        image_input=True, audio_input=True, video_input=True))
+    return _client(**kw)
 
 
 SAMPLE_OUTPUT = [
@@ -144,7 +161,9 @@ class TestMessagesToInput:
         assert not any("rs_old" in str(i) for i in items)
 
     def test_system_and_multimodal_content_parts(self):
-        c = _client()
+        # Vision-capable model (all openai_responses profiles run
+        # capabilities.multimodal: true) — without it the guard drops the image.
+        c = _multimodal_client()
         chat_parts = [
             {"type": "text", "text": "beschreibe"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
@@ -163,6 +182,134 @@ class TestMessagesToInput:
         items = c._messages_to_input([
             {"role": "tool", "tool_call_id": "c1", "content": {"ok": True}}])
         assert items[0]["output"] == '{"ok": true}'
+
+
+class TestMediaParts:
+    """Media must arrive as Responses media items — NEVER as a serialized blob.
+
+    Live find 2026-07-25 (audio-Phase-4b): ChatMessage content carries the
+    PYDANTIC models (AudioContent/TextContent), which are not dicts, so every
+    part fell into ``str(part)`` — the full 1.9 MB base64 went out as
+    ``input_text`` ("input token count exceeds ... 1048576") and the comparator
+    judged text against a stringified blob instead of listening to the clip.
+    """
+
+    def _parts(self, client, *content):
+        items = client._messages_to_input([ChatMessage(role="user", content=list(content))])
+        return items[0]["content"]
+
+    def test_audio_base64_source_becomes_input_audio(self):
+        c = _multimodal_client()
+        parts = self._parts(
+            c,
+            TextContent(text="ORIGINAL: hallo"),
+            AudioContent(
+                source=ImageSource(type="base64", media_type="audio/mpeg", data="QUJD"),
+                media_type="audio/mpeg", name="seg1.mp3"),
+        )
+        assert parts[0] == {"type": "input_text", "text": "ORIGINAL: hallo"}
+        assert parts[1] == {"type": "input_audio",
+                            "input_audio": {"data": "QUJD", "format": "mp3"}}
+        assert c.dropped_media_parts == 0
+
+    def test_audio_data_url_becomes_input_audio(self):
+        c = _multimodal_client()
+        parts = self._parts(c, {"type": "audio", "audio_url": "data:audio/wav;base64,QUJD"})
+        assert parts[0] == {"type": "input_audio",
+                            "input_audio": {"data": "QUJD", "format": "wav"}}
+
+    def test_audio_payload_never_serialized_as_text(self):
+        """Regression guard for the exact failure: the base64 must not appear
+        inside any input_text part."""
+        import json as _json
+        c = _multimodal_client()
+        blob = "A" * 5000
+        parts = self._parts(c, AudioContent(
+            source=ImageSource(type="base64", media_type="audio/mpeg", data=blob),
+            media_type="audio/mpeg"))
+        assert parts[0]["type"] == "input_audio"
+        texts = _json.dumps([p for p in parts if p["type"] == "input_text"])
+        assert blob[:100] not in texts
+
+    def test_image_base64_source_becomes_data_url(self):
+        c = _multimodal_client()
+        parts = self._parts(c, ImageContent(
+            type="image",
+            source=ImageSource(type="base64", media_type="image/png", data="AAA"),
+            name="cover.png"))
+        assert parts[0] == {"type": "input_image", "image_url": "data:image/png;base64,AAA"}
+
+    def test_image_url_shapes_become_input_image(self):
+        c = _multimodal_client()
+        parts = self._parts(
+            c,
+            {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+            {"type": "image_url", "image_url": "data:image/jpeg;base64,BBB"},
+        )
+        assert parts[0] == {"type": "input_image", "image_url": "https://x/y.png"}
+        assert parts[1] == {"type": "input_image", "image_url": "data:image/jpeg;base64,BBB"}
+
+    def test_unknown_part_still_degrades_to_truncated_text(self):
+        c = _multimodal_client()
+        parts = self._parts(c, {"type": "sensor_reading", "payload": "Z" * 5000})
+        assert parts[0]["type"] == "input_text"
+        assert len(parts[0]["text"]) == 2000
+
+    def test_capability_guard_drops_audio_for_text_only_model(self, caplog):
+        """No audio_input capability => audio is DROPPED with a visible note and
+        a WARNING naming the model — not embedded in any form."""
+        import logging
+        c = _client(model="openai/gpt-5.6-terra",
+                    capabilities=ModelCapabilities(image_input=True))
+        with caplog.at_level(logging.WARNING):
+            parts = self._parts(c, AudioContent(
+                source=ImageSource(type="base64", media_type="audio/mpeg", data="SECRET"),
+                media_type="audio/mpeg", name="seg1.mp3"))
+        assert parts[0]["type"] == "input_text"
+        assert "audio input omitted" in parts[0]["text"]
+        assert "SECRET" not in parts[0]["text"]
+        assert c.dropped_media_parts == 1
+        assert any("audio" in r.message and "openai/gpt-5.6-terra" in r.message
+                   for r in caplog.records)
+
+    def test_capability_guard_drops_image_without_vision(self, caplog):
+        import logging
+        c = _client(capabilities=ModelCapabilities(image_input=False))
+        with caplog.at_level(logging.WARNING):
+            parts = self._parts(c, {"type": "image_url",
+                                    "image_url": "data:image/png;base64,SECRET"})
+        assert parts[0]["type"] == "input_text"
+        assert "image input omitted" in parts[0]["text"]
+        assert "SECRET" not in parts[0]["text"]
+        assert c.dropped_media_parts == 1
+
+    def test_no_capabilities_object_drops_media(self):
+        """capabilities=None (unconfigured model) must be treated as 'cannot',
+        not as 'unknown, send anyway'."""
+        c = _client()
+        parts = self._parts(c, AudioContent(
+            source=ImageSource(type="base64", media_type="audio/mpeg", data="X"),
+            media_type="audio/mpeg"))
+        assert parts[0]["type"] == "input_text"
+        assert c.dropped_media_parts == 1
+
+    def test_video_dropped_with_note(self):
+        c = _multimodal_client()
+        parts = self._parts(c, {"type": "video", "video_url": "data:video/mp4;base64,X"})
+        assert parts[0]["type"] == "input_text"
+        assert "video input omitted" in parts[0]["text"]
+
+    def test_unusable_media_dropped_not_serialized(self):
+        c = _multimodal_client()
+        parts = self._parts(c, {"type": "audio", "name": "broken.flac"})
+        assert parts[0]["type"] == "input_text"
+        assert "audio input omitted" in parts[0]["text"]
+        assert c.dropped_media_parts == 1
+
+    def test_text_file_part_becomes_readable_text(self):
+        c = _multimodal_client()
+        parts = self._parts(c, {"type": "text_file", "name": "a.md", "content": "hi"})
+        assert parts[0] == {"type": "input_text", "text": "[File: a.md]\nhi"}
 
 
 class TestToolsAndPayload:

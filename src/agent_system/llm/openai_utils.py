@@ -20,21 +20,26 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def _convert_audio_to_input_audio(item: Dict[str, Any]) -> Dict[str, Any]:
+def convert_audio_to_input_audio(item: Dict[str, Any]) -> Dict[str, Any]:
     """Convert audio content to OpenRouter input_audio format.
-    
+
     OpenRouter/Gemini expects:
         {"type": "input_audio", "input_audio": {"data": "base64...", "format": "mp3"}}
-    
+
     Our AudioContent has either:
         a) {"type": "audio", "audio_url": "data:audio/mp3;base64,XXXXX", ...}
         b) {"type": "audio", "source": {"type": "base64", "data": "...", "media_type": "audio/flac"}, ...}
-    
+
+    The Responses API uses the SAME item shape (openai SDK
+    ResponseInputAudioParam), so ``openai_responses_client`` reuses this
+    converter instead of introducing a second audio dialect.
+
     Args:
         item: Audio content item with audio_url or source
-        
+
     Returns:
-        Converted input_audio format item
+        Converted input_audio format item, or the original item when neither
+        shape carries usable data (callers must check ``type``).
     """
     # If already in input_audio format, return as-is
     if item.get("type") == "input_audio":
@@ -112,7 +117,7 @@ def normalize_content_item(
         if allow_audio:
             # Convert to input_audio format for OpenRouter/Gemini
             logger.debug(f"Converting {item_type} content to input_audio format")
-            return _convert_audio_to_input_audio(item)
+            return convert_audio_to_input_audio(item)
         else:
             logger.debug(f"Filtering {item_type} content - not supported by OpenAI Chat Completions API")
             return None
