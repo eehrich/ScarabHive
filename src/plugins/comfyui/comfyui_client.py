@@ -512,15 +512,26 @@ class ComfyUIClient:
         except Exception as e:
             return {"error": str(e)}
     
-    async def get_object_info(self) -> dict[str, Any]:
+    async def get_object_info(
+        self, node_class: str | None = None
+    ) -> dict[str, Any]:
         """Get available node types from ComfyUI.
-        
+
+        Args:
+            node_class: Optional single class name. ComfyUI serves
+                ``/object_info/<class>`` for it, which returns the same
+                ``{class_name: definition}`` shape as the full map but is
+                a few KB instead of several MB — worth it for a capability
+                probe. An unknown class yields an empty dict (or a 404,
+                reported as ``{"error": ...}``), never a raise.
+
         Returns:
-            Dict with all available node classes and their definitions
+            Dict with the available node class(es) and their definitions
         """
+        path = f"/object_info/{node_class}" if node_class else "/object_info"
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.get(f"{self.base_url}/object_info") as resp:
+                async with session.get(f"{self.base_url}{path}") as resp:
                     if resp.status == 200:
                         return await resp.json()
                     return {"error": f"Status {resp.status}"}
