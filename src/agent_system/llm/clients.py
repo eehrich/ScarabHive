@@ -23,7 +23,7 @@ from ..config.models import ModelCapabilitiesConfig
 logger = logging.getLogger(__name__)
 
 
-def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None, provider_routing: Optional[dict] = None, reasoning_details_mode: Optional[str] = None, prompt_cache_key: Optional[str] = None, prompt_cache_mode: Optional[str] = None, prompt_cache_marker_style: Optional[str] = None) -> LLMClient:
+def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, parallel_tool_calls: bool = True, include_thoughts: Optional[bool] = None, thinking_budget: Optional[int] = None, thinking_level: Optional[str] = None, max_tokens: Optional[int] = None, enable_prompt_caching: Optional[bool] = None, modalities: Optional[list[str]] = None, safety_settings: Optional[dict[str, str]] = None, service_tier: Optional[str] = None, provider_routing: Optional[dict] = None, reasoning_details_mode: Optional[str] = None, prompt_cache_key: Optional[str] = None, prompt_cache_mode: Optional[str] = None, prompt_cache_marker_style: Optional[str] = None, temperature: Optional[float] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -33,6 +33,11 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
     - provider=anthropic: use official Anthropic SDK for Claude models.
     - provider=ollama: use Ollama (native or openai-compat) depending on mode.
     """
+    # temperature nur weitergeben, wenn konfiguriert: ein None in
+    # extra_params würde providerseitige Defaults überschreiben (z.B.
+    # GeminiClient: extra_params.get("temperature", 1.0)). 0.0 ist ein
+    # gültiger Wert und muss durchkommen.
+    _temp_kw: dict[str, float] = {} if temperature is None else {"temperature": temperature}
     import os
     logger = logging.getLogger(__name__)
     try:
@@ -48,6 +53,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
         
         return AnthropicAsyncClient(
             model=model,
+            **_temp_kw,
             api_key=api_key,
             base_url=base_url,
             context_window=context_window or 200000,
@@ -69,6 +75,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
         
         return GeminiClient(
             model=model,
+            **_temp_kw,
             api_key=api_key,
             base_url=base_url or "https://generativelanguage.googleapis.com/v1beta",
             context_window=context_window or 200000,
@@ -91,6 +98,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
         
         return GeminiSDKClient(
             model=model,
+            **_temp_kw,
             api_key=api_key,
             base_url=base_url or "https://generativelanguage.googleapis.com/v1beta",
             context_window=context_window or 200000,
@@ -148,6 +156,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             prompt_cache_key=prompt_cache_key,
             prompt_cache_mode=prompt_cache_mode,
             prompt_cache_marker_style=prompt_cache_marker_style,
+            temperature=temperature,
         )
 
     if provider == "openai" or provider == "openai_httpx":
@@ -173,6 +182,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 )
             return HTTPXOpenAIClient(
                 model=model,
+                **_temp_kw,
                 api_key=api_key,
                 base_url=base_url or "https://api.openai.com/v1",
                 timeout_config=timeout_config,
@@ -196,6 +206,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
         else:
             # Build default_extra dict for additional parameters
             default_extra: dict[str, Any] = {}
+            if temperature is not None:
+                default_extra["temperature"] = temperature
             if modalities:
                 default_extra["modalities"] = modalities
 
@@ -229,6 +241,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             options: dict[str, Any] = {}
             if context_window:
                 options["num_ctx"] = context_window
+            if temperature is not None:
+                options["temperature"] = temperature
             return OllamaNativeAsyncClient(
                 model=model,
                 base_url=base_native,
@@ -253,6 +267,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
         return OpenAIAsyncClient(
             model=model,
             api_key=key,
+            default_extra=(_temp_kw or None),
             base_url=base,
             timeout=float(request_timeout) if request_timeout else None,
             verify=ssl_verify,

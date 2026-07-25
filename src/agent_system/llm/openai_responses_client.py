@@ -136,6 +136,7 @@ class OpenAIResponsesClient(LLMClient):
         prompt_cache_key: Optional[str] = None,
         prompt_cache_mode: Optional[str] = None,
         prompt_cache_marker_style: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
@@ -154,6 +155,7 @@ class OpenAIResponsesClient(LLMClient):
         self.prompt_cache_key = prompt_cache_key
         self.prompt_cache_mode = prompt_cache_mode
         self.prompt_cache_marker_style = prompt_cache_marker_style
+        self.temperature = temperature
         self.timeout_config = timeout_config or HTTPXTimeoutConfig(
             connect=10.0, read=float(request_timeout), write=30.0, pool=5.0
         )
@@ -424,6 +426,11 @@ class OpenAIResponsesClient(LLMClient):
         }
         if self.thinking_level:
             payload["reasoning"] = {"effort": self.thinking_level}
+        # Sampling-Temperatur nur ohne Reasoning: die o-/gpt-5.x-Serie
+        # akzeptiert den Param nicht (400 "temperature is not supported"),
+        # dort steuert reasoning.effort. 0.0 ist gültig → auf None prüfen.
+        if self.temperature is not None and not self.thinking_level:
+            payload["temperature"] = self.temperature
         if self.max_tokens:
             payload["max_output_tokens"] = self.max_tokens
         if self.service_tier:

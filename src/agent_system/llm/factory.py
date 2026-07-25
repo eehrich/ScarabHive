@@ -158,6 +158,9 @@ def create_llm_from_profile(
     if llm_kwargs.get("max_tokens") is not None:
         make_kwargs["max_tokens"] = llm_kwargs.get("max_tokens")
 
+    if llm_kwargs.get("temperature") is not None:
+        make_kwargs["temperature"] = llm_kwargs.get("temperature")
+
     if llm_kwargs.get("safety_settings") is not None:
         make_kwargs["safety_settings"] = llm_kwargs.get("safety_settings")
 
@@ -319,6 +322,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.max_tokens is not None:
         llm_kwargs["max_tokens"] = model_config.max_tokens
 
+    if model_config.temperature is not None:
+        llm_kwargs["temperature"] = model_config.temperature
+
     if model_config.safety_settings is not None:
         llm_kwargs["safety_settings"] = model_config.safety_settings
 
@@ -432,6 +438,9 @@ class LLMFactory:
 
         if llm_kwargs.get("max_tokens") is not None:
             make_kwargs["max_tokens"] = llm_kwargs.get("max_tokens")
+
+        if llm_kwargs.get("temperature") is not None:
+            make_kwargs["temperature"] = llm_kwargs.get("temperature")
 
         if llm_kwargs.get("safety_settings") is not None:
             make_kwargs["safety_settings"] = llm_kwargs.get("safety_settings")

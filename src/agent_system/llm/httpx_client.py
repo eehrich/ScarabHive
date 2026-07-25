@@ -109,6 +109,13 @@ class HTTPXOpenAIClient(LLMClient):
         self.thinking_level: str | None = self.extra_params.pop("thinking_level", None)
         self.thinking_budget: int | None = self.extra_params.pop("thinking_budget", None)
 
+        # Sampling-Temperatur. None = Provider-Default (bei DeepSeek/OpenAI
+        # ~1,0) — bis 2026-07 war der Param framework-seitig überhaupt nicht
+        # setzbar, mechanische Aufgaben liefen also mit voller Varianz. Wie
+        # service_tier bewusst aus extra_params gepopt: explizites Feld im
+        # Payload statt opaker Passthrough.
+        self.temperature: float | None = self.extra_params.pop("temperature", None)
+
         # Service tier (Google Flex etc.) — set via config, injected as a
         # top-level field in the chat-completions payload. Common values:
         #   - "flex":     Google Flex Processing (cheaper, slower)
@@ -831,6 +838,19 @@ class HTTPXOpenAIClient(LLMClient):
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
 
+        # Sampling-Temperatur, nur wenn explizit konfiguriert (0.0 ist ein
+        # gültiger Wert → auf None prüfen, nicht auf Falsy). Reasoning-
+        # Modelle akzeptieren den Param nicht: wenn thinking_level/-budget
+        # gesetzt ist, NICHT senden — sonst 400er.
+        if self.temperature is not None:
+            if self.thinking_level is not None or self.thinking_budget is not None:
+                logger.debug(
+                    "temperature=%s ignoriert (Reasoning-Modell, model=%s)",
+                    self.temperature, self.model,
+                )
+            else:
+                payload["temperature"] = self.temperature
+
         if tools:
             if self._is_gemini_via_openrouter:
                 payload["tools"] = self._sanitize_tools_for_gemini(tools)
@@ -1357,6 +1377,19 @@ class HTTPXOpenAIClient(LLMClient):
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
+
+        # Sampling-Temperatur, nur wenn explizit konfiguriert (0.0 ist ein
+        # gültiger Wert → auf None prüfen, nicht auf Falsy). Reasoning-
+        # Modelle akzeptieren den Param nicht: wenn thinking_level/-budget
+        # gesetzt ist, NICHT senden — sonst 400er.
+        if self.temperature is not None:
+            if self.thinking_level is not None or self.thinking_budget is not None:
+                logger.debug(
+                    "temperature=%s ignoriert (Reasoning-Modell, model=%s)",
+                    self.temperature, self.model,
+                )
+            else:
+                payload["temperature"] = self.temperature
 
         if tools:
             if self._is_gemini_via_openrouter:
