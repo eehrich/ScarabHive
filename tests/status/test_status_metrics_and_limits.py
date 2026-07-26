@@ -5,29 +5,8 @@ from agent_system.mcp.status import StatusPhase, publish_status
 pytestmark = pytest.mark.anyio
 
 
-class _DisabledAuth:
-    def __get__(self, obj, objtype=None):
-        return False
-
-    def __set__(self, obj, value):
-        pass
-
-
-@pytest.fixture(autouse=True)
-def _disable_auth(monkeypatch):
-    """Disable endpoint auth for every test here, restored on teardown.
-
-    Via monkeypatch — a bare ``AuthConfig.enabled = DisabledAuth()`` (as the
-    helper did before) leaks a session-wide class override that disables auth
-    for EVERY later test in the suite (poisons the auth-enforcement and
-    writer_jobs tests that run after this module).
-    """
-    from agent_system.config.models import AuthConfig
-    monkeypatch.setattr(AuthConfig, "enabled", _DisabledAuth(), raising=False)
-
-
 def _build_app_with_auth_disabled():
-    """Build app (auth already disabled by the autouse _disable_auth fixture)."""
+    """Build app (endpoint auth disabled by the autouse fixture in conftest.py)."""
     from agent_system.app import build_app
     return build_app()
 
