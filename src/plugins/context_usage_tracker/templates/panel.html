@@ -177,10 +177,12 @@ const panel = {
   // ---- formatting ----
   esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; },
   n(x) { return (x ?? 0).toLocaleString('en-US'); },
-  usd(c, dashIfNull = true) {
-    if (c === null || c === undefined) return dashIfNull ? '<span class="muted">–</span>' : '$0';
-    const v = Number(c);
-    return '$' + (v >= 0.1 ? v.toFixed(3) : v.toFixed(4));
+  // Costs are stored in USD but rendered in cents (¢): per-call prices like
+  // $0.001 are hard to read (leading zeros), 0.1¢ is not.
+  cents(c, dashIfNull = true) {
+    if (c === null || c === undefined) return dashIfNull ? '<span class="muted">–</span>' : '0¢';
+    const v = Number(c) * 100;
+    return (v >= 10 ? v.toFixed(1) : v >= 1 ? v.toFixed(2) : v.toFixed(3)) + '¢';
   },
   t(ts) { return new Date(ts * 1000).toLocaleTimeString(); },
   dt(ts) { const d = new Date(ts * 1000); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString(); },
@@ -246,7 +248,7 @@ const panel = {
     const ctxSub = l ? `${this.pct(l.usage_percentage)} of ${this.n(l.context_window)}${l.is_stale ? ' · stale' : ''}` : '';
     document.getElementById('statsGrid').innerHTML = `
       <div class="stat-card green"><div class="label">Total Cost</div>
-        <div class="value">${costPrefix}${this.usd(tot.cost ?? 0, false)}</div><div class="sub">${costSub}</div></div>
+        <div class="value">${costPrefix}${this.cents(tot.cost ?? 0, false)}</div><div class="sub">${costSub}</div></div>
       <div class="stat-card blue"><div class="label">Calls</div>
         <div class="value">${this.n(calls)}</div><div class="sub">${this.scopeSession ? 'this session' : 'all sessions'}</div></div>
       <div class="stat-card"><div class="label">Output Tokens</div>
@@ -288,7 +290,7 @@ const panel = {
       borderWidth: 1.5, pointRadius: 0, tension: .25, borderDash: dash || [], yAxisID: 'y',
     });
     const cost = {
-      label: 'cost $', data: data.map(s => s.cost ?? null), borderColor: '#4ec9b0', backgroundColor: '#4ec9b0',
+      label: 'cost ¢', data: data.map(s => s.cost == null ? null : s.cost * 100), borderColor: '#4ec9b0', backgroundColor: '#4ec9b0',
       borderWidth: 1.5, pointRadius: 2, tension: .25, yAxisID: 'y2', spanGaps: true,
     };
     const cfg = {
@@ -356,7 +358,7 @@ const panel = {
         ${th('Agent', 'agent_name')}${th('Calls', 'total_calls')}${th('Σ Tokens', 'total_tokens')}
         ${th('Σ Prompt', 'total_prompt_tokens')}${th('Σ Output', 'total_completion_tokens')}
         ${th('Σ Cached', 'total_cached_tokens')}${th('Σ Write', 'total_cache_write_tokens')}
-        ${th('Σ Cost', 'total_cost')}${th('Ø $/Call', 'avg_cost')}${th('Peak', 'peak_tokens')}${th('Last', 'last_activity')}
+        ${th('Σ Cost', 'total_cost')}${th('Ø ¢/Call', 'avg_cost')}${th('Peak', 'peak_tokens')}${th('Last', 'last_activity')}
       </tr>
       ${rows.map(a => {
         const hit = a.total_prompt_tokens ? (a.total_cached_tokens / a.total_prompt_tokens * 100) : 0;
@@ -369,8 +371,8 @@ const panel = {
           <td>${this.n(a.total_completion_tokens ?? 0)}</td>
           <td class="cached">${this.n(a.total_cached_tokens)} <span class="muted">(${hit.toFixed(0)}%)</span></td>
           <td>${this.n(a.total_cache_write_tokens ?? 0)}</td>
-          <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}"${a.cost_estimated_calls ? ' title="includes pricing-table estimates"' : ''}>${a.cost_estimated_calls ? '~' : ''}${this.usd(a.total_cost ?? 0, false)}</td>
-          <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}">${avg === null ? '<span class="muted">–</span>' : (a.cost_estimated_calls ? '~' : '') + this.usd(avg, false)}</td>
+          <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}"${a.cost_estimated_calls ? ' title="includes pricing-table estimates"' : ''}>${a.cost_estimated_calls ? '~' : ''}${this.cents(a.total_cost ?? 0, false)}</td>
+          <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}">${avg === null ? '<span class="muted">–</span>' : (a.cost_estimated_calls ? '~' : '') + this.cents(avg, false)}</td>
           <td>${this.n(a.peak_tokens)}</td>
           <td class="muted">${a.last_activity ? this.t(a.last_activity) : '–'}</td>
         </tr>`;
@@ -398,7 +400,7 @@ const panel = {
     const scopeSid = this.scopeSession ? this.getCurrentSessionId() : null;
     el.innerHTML = `<table>
       <tr><th>Time</th><th class="left">Agent</th><th class="left">Model</th><th>Prompt</th><th>Output</th>
-          <th>Cached</th><th>Write</th><th>Ctx&nbsp;%</th><th>$</th></tr>
+          <th>Cached</th><th>Write</th><th>Ctx&nbsp;%</th><th>¢</th></tr>
       ${rows.map((s, i) => `<tr class="clickable" onclick="panel.showDetail(${i})" data-i="${i}">
         <td class="name muted">${this.t(s.timestamp)}</td>
         <td class="name">${scopeSid && s.session_id !== scopeSid ? '<span class="muted" title="sub-agent call">↳ </span>' : ''}${this.esc(s.agent_name)}</td>
@@ -408,7 +410,7 @@ const panel = {
         <td class="cached">${this.n(s.cached_tokens)}</td>
         <td>${this.n(s.cache_write_tokens ?? 0)}</td>
         <td class="muted">${this.pct(s.usage_percentage)}</td>
-        <td class="${s.cost_is_estimate ? 'cost-est' : 'cost'}"${s.cost_is_estimate ? ' title="estimated via llm_pricing.yaml — no billed cost from the provider"' : ''}>${s.cost_is_estimate ? '~' : ''}${this.usd(s.cost)}</td>
+        <td class="${s.cost_is_estimate ? 'cost-est' : 'cost'}"${s.cost_is_estimate ? ' title="estimated via llm_pricing.yaml — no billed cost from the provider"' : ''}>${s.cost_is_estimate ? '~' : ''}${this.cents(s.cost)}</td>
       </tr>`).join('')}
     </table>`;
     this._callRows = rows;
@@ -426,8 +428,8 @@ const panel = {
       ['Messages', this.n(s.message_count)],
       ['Context', `${this.n(s.total_tokens)} / ${this.n(s.context_window)} (${this.pct(s.usage_percentage)})`],
       ['Cost', s.cost === null || s.cost === undefined ? '–'
-        : (s.cost_is_estimate ? '~$' + Number(s.cost).toFixed(6) + '  (estimated, llm_pricing.yaml)'
-                              : '$' + Number(s.cost).toFixed(6))],
+        : (s.cost_is_estimate ? '~' + (Number(s.cost) * 100).toFixed(4) + '¢  (estimated, llm_pricing.yaml)'
+                              : (Number(s.cost) * 100).toFixed(4) + '¢')],
     ];
     document.getElementById('detailBody').innerHTML =
       kv.map(([k, v]) => `<div class="k">${k}</div><div>${this.esc(v)}</div>`).join('');
