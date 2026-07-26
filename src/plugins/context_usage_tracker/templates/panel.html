@@ -53,6 +53,8 @@
   td.model { text-align: left; color: #858585; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
   tr:hover td { background: #2a2d2e; }
   tr.clickable { cursor: pointer; }
+  /* fixed-width digits so stacked prices align column-wise */
+  .mono, .cost, .cost-est { font-family: 'Cascadia Mono', Consolas, 'Courier New', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
   .cost { color: #4ec9b0; }
   .cost-est { color: #ce9178; } /* estimated from llm_pricing.yaml — not a billed price */
   .cached { color: #c586c0; }
@@ -181,8 +183,7 @@ const panel = {
   // $0.001 are hard to read (leading zeros), 0.1¢ is not.
   cents(c, dashIfNull = true) {
     if (c === null || c === undefined) return dashIfNull ? '<span class="muted">–</span>' : '0¢';
-    const v = Number(c) * 100;
-    return (v >= 10 ? v.toFixed(1) : v >= 1 ? v.toFixed(2) : v.toFixed(3)) + '¢';
+    return (Number(c) * 100).toFixed(3) + '¢';
   },
   t(ts) { return new Date(ts * 1000).toLocaleTimeString(); },
   dt(ts) { const d = new Date(ts * 1000); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString(); },
@@ -248,7 +249,7 @@ const panel = {
     const ctxSub = l ? `${this.pct(l.usage_percentage)} of ${this.n(l.context_window)}${l.is_stale ? ' · stale' : ''}` : '';
     document.getElementById('statsGrid').innerHTML = `
       <div class="stat-card green"><div class="label">Total Cost</div>
-        <div class="value">${costPrefix}${this.cents(tot.cost ?? 0, false)}</div><div class="sub">${costSub}</div></div>
+        <div class="value mono">${costPrefix}${this.cents(tot.cost ?? 0, false)}</div><div class="sub">${costSub}</div></div>
       <div class="stat-card blue"><div class="label">Calls</div>
         <div class="value">${this.n(calls)}</div><div class="sub">${this.scopeSession ? 'this session' : 'all sessions'}</div></div>
       <div class="stat-card"><div class="label">Output Tokens</div>
