@@ -265,6 +265,11 @@ class LLMClient:
     _on_pre_llm_request: Any = None   # async callable(payload_info: dict) -> None
     _on_post_llm_response: Any = None  # async callable(response_info: dict) -> None
 
+    #: Wall-clock ms of the last SUCCESSFUL response, stashed by
+    #: _notify_post_response. Server-level post_llm_call hooks (e.g.
+    #: context_usage_tracker) read it off the client to attribute call latency.
+    _last_response_duration_ms: Any = None
+
     def set_llm_hooks(
         self,
         on_pre_request: Any = None,
@@ -283,6 +288,10 @@ class LLMClient:
 
     async def _notify_pre_request(self, payload_info: Dict[str, Any]) -> None:
         """Notify pre-request hook if set. Errors are swallowed to not break LLM calls."""
+        # Clear the prior call's latency at request start: a success path that
+        # never notifies then leaves latency=None (honest) instead of inheriting
+        # the previous call's value. _notify_post_response re-sets it on success.
+        self._last_response_duration_ms = None
         if self._on_pre_llm_request:
             try:
                 await self._on_pre_llm_request(payload_info)
@@ -292,6 +301,12 @@ class LLMClient:
 
     async def _notify_post_response(self, response_info: Dict[str, Any]) -> None:
         """Notify post-response hook if set. Errors are swallowed to not break LLM calls."""
+        # Stash the served call's latency for server-level hooks. Skip
+        # retry/error notifications (they carry an "error") so the value
+        # reflects the response actually returned. Normal use runs one
+        # chat_tools per client instance at a time → last-value is unambiguous.
+        if not response_info.get("error") and response_info.get("duration_ms") is not None:
+            self._last_response_duration_ms = response_info.get("duration_ms")
         if self._on_post_llm_response:
             try:
                 await self._on_post_llm_response(response_info)

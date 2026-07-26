@@ -89,10 +89,17 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
 
             # Model that actually served the call (respects llm_override)
             model = ""
+            latency_ms = None
             if context.llm is not None:
                 model = getattr(context.llm, 'model', None) or getattr(context.llm, 'model_name', '') or ""
                 if not isinstance(model, str):  # mocks / exotic clients — keep it JSON-safe
                     model = ""
+                # Wall-clock latency the client stashed for the served response
+                # (LLMClient._notify_post_response). isinstance guard: mocks may
+                # return a Mock for any attribute.
+                _lat = getattr(context.llm, '_last_response_duration_ms', None)
+                if isinstance(_lat, (int, float)):
+                    latency_ms = float(_lat)
 
             # No billed cost (direct APIs like DeepSeek/Gemini SDK send none):
             # fall back to an ESTIMATE from the central pricing table. Flagged
@@ -166,6 +173,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 cost_is_estimate=cost_is_estimate,
                 model=model,
                 request_id=getattr(context, 'request_id', None) or "",
+                latency_ms=latency_ms,
             )
 
             return HookResult(success=True, modified=False, context=context)

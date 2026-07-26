@@ -90,6 +90,7 @@
   <div class="tabs">
     <button class="tab active" data-tab="overview">Overview</button>
     <button class="tab" data-tab="agents">Agents</button>
+    <button class="tab" data-tab="llms">LLMs</button>
     <button class="tab" data-tab="calls">Calls</button>
   </div>
 
@@ -104,6 +105,10 @@
 
   <div class="tab-content" id="tab-agents">
     <div id="agentsTable"></div>
+  </div>
+
+  <div class="tab-content" id="tab-llms">
+    <div id="llmsTable"></div>
   </div>
 
   <div class="tab-content" id="tab-calls">
@@ -188,6 +193,11 @@ const panel = {
   t(ts) { return new Date(ts * 1000).toLocaleTimeString(); },
   dt(ts) { const d = new Date(ts * 1000); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString(); },
   pct(x) { return (x ?? 0).toFixed(1) + '%'; },
+  lat(ms) {
+    if (ms === null || ms === undefined) return '<span class="muted">–</span>';
+    const v = Number(ms);
+    return v >= 1000 ? (v / 1000).toFixed(2) + 's' : v.toFixed(0) + 'ms';
+  },
 
   // ---- data ----
   async refresh() {
@@ -216,6 +226,7 @@ const panel = {
     this.renderCards();
     this.renderOverviewStats();
     this.renderAgents();
+    this.renderLLMs();
     this.renderCalls();
     try {
       this.renderChart();
@@ -344,6 +355,8 @@ const panel = {
     const { key, dir } = this.agentSort;
     const sortVal = (a) => key === 'avg_cost'
       ? (a.cost_known_calls ? (a.total_cost ?? 0) / a.cost_known_calls : 0)
+      : key === 'avg_latency'
+      ? (a.latency_calls ? (a.total_latency_ms ?? 0) / a.latency_calls : 0)
       : (a[key] ?? 0);
     rows.sort((a, b) => {
       const av = sortVal(a), bv = sortVal(b);
@@ -359,7 +372,7 @@ const panel = {
         ${th('Agent', 'agent_name')}${th('Calls', 'total_calls')}${th('Σ Tokens', 'total_tokens')}
         ${th('Σ Prompt', 'total_prompt_tokens')}${th('Σ Output', 'total_completion_tokens')}
         ${th('Σ Cached', 'total_cached_tokens')}${th('Σ Write', 'total_cache_write_tokens')}
-        ${th('Σ Cost', 'total_cost')}${th('Ø ¢/Call', 'avg_cost')}${th('Peak', 'peak_tokens')}${th('Last', 'last_activity')}
+        ${th('Σ Cost', 'total_cost')}${th('Ø ¢/Call', 'avg_cost')}${th('Ø Lat', 'avg_latency')}${th('Peak', 'peak_tokens')}${th('Last', 'last_activity')}
       </tr>
       ${rows.map(a => {
         const hit = a.total_prompt_tokens ? (a.total_cached_tokens / a.total_prompt_tokens * 100) : 0;
@@ -374,6 +387,7 @@ const panel = {
           <td>${this.n(a.total_cache_write_tokens ?? 0)}</td>
           <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}"${a.cost_estimated_calls ? ' title="includes pricing-table estimates"' : ''}>${a.cost_estimated_calls ? '~' : ''}${this.cents(a.total_cost ?? 0, false)}</td>
           <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}">${avg === null ? '<span class="muted">–</span>' : (a.cost_estimated_calls ? '~' : '') + this.cents(avg, false)}</td>
+          <td class="mono">${a.latency_calls ? this.lat(a.total_latency_ms / a.latency_calls) : '<span class="muted">–</span>'}</td>
           <td>${this.n(a.peak_tokens)}</td>
           <td class="muted">${a.last_activity ? this.t(a.last_activity) : '–'}</td>
         </tr>`;
@@ -401,7 +415,7 @@ const panel = {
     const scopeSid = this.scopeSession ? this.getCurrentSessionId() : null;
     el.innerHTML = `<table>
       <tr><th>Time</th><th class="left">Agent</th><th class="left">Model</th><th>Prompt</th><th>Output</th>
-          <th>Cached</th><th>Write</th><th>Ctx&nbsp;%</th><th>¢</th></tr>
+          <th>Cached</th><th>Write</th><th>Ctx&nbsp;%</th><th>Lat</th><th>¢</th></tr>
       ${rows.map((s, i) => `<tr class="clickable" onclick="panel.showDetail(${i})" data-i="${i}">
         <td class="name muted">${this.t(s.timestamp)}</td>
         <td class="name">${scopeSid && s.session_id !== scopeSid ? '<span class="muted" title="sub-agent call">↳ </span>' : ''}${this.esc(s.agent_name)}</td>
@@ -411,10 +425,61 @@ const panel = {
         <td class="cached">${this.n(s.cached_tokens)}</td>
         <td>${this.n(s.cache_write_tokens ?? 0)}</td>
         <td class="muted">${this.pct(s.usage_percentage)}</td>
+        <td class="mono">${this.lat(s.latency_ms)}</td>
         <td class="${s.cost_is_estimate ? 'cost-est' : 'cost'}"${s.cost_is_estimate ? ' title="estimated via llm_pricing.yaml — no billed cost from the provider"' : ''}>${s.cost_is_estimate ? '~' : ''}${this.cents(s.cost)}</td>
       </tr>`).join('')}
     </table>`;
     this._callRows = rows;
+  },
+
+  // ---- LLMs tab: per-model aggregation derived from the (scoped) history ----
+  renderLLMs() {
+    const el = document.getElementById('llmsTable');
+    const by = {};
+    for (const s of this.history) {
+      const m = s.model || '–';
+      const g = by[m] || (by[m] = {
+        model: m, calls: 0, total: 0, prompt: 0, output: 0, cached: 0,
+        cost: 0, costCalls: 0, estCalls: 0, lat: [],
+      });
+      g.calls++;
+      g.total += s.total_tokens || 0;
+      g.prompt += s.prompt_tokens || 0;
+      g.output += s.completion_tokens || 0;
+      g.cached += s.cached_tokens || 0;
+      if (s.cost != null) { g.cost += s.cost; g.costCalls++; if (s.cost_is_estimate) g.estCalls++; }
+      if (s.latency_ms != null) g.lat.push(s.latency_ms);
+    }
+    const rows = Object.values(by).sort((a, b) => b.calls - a.calls);
+    if (!rows.length) { el.innerHTML = '<div class="empty">No LLM calls recorded</div>'; return; }
+    const avg = (arr) => arr.length ? arr.reduce((x, y) => x + y, 0) / arr.length : null;
+    const pctl = (arr, p) => {
+      if (!arr.length) return null;
+      const a = [...arr].sort((x, y) => x - y);
+      return a[Math.min(a.length - 1, Math.floor(p / 100 * a.length))];
+    };
+    el.innerHTML = `<table>
+      <tr><th class="left">Model</th><th>Calls</th><th>Σ Tokens</th><th>Σ Prompt</th><th>Σ Output</th>
+          <th>Σ Cached</th><th>Σ Cost</th><th>Ø ¢/Call</th><th>Ø Lat</th><th>p95 Lat</th></tr>
+      ${rows.map(g => {
+        const hit = g.prompt ? (g.cached / g.prompt * 100) : 0;
+        const avgCost = g.costCalls ? g.cost / g.costCalls : null;
+        const est = g.estCalls > 0;
+        const cc = est ? 'cost-est' : 'cost';
+        return `<tr>
+          <td class="model" title="${this.esc(g.model)}">${this.esc(g.model)}</td>
+          <td>${this.n(g.calls)}</td>
+          <td>${this.n(g.total)}</td>
+          <td>${this.n(g.prompt)}</td>
+          <td>${this.n(g.output)}</td>
+          <td class="cached">${this.n(g.cached)} <span class="muted">(${hit.toFixed(0)}%)</span></td>
+          <td class="${cc}">${est ? '~' : ''}${this.cents(g.cost, false)}</td>
+          <td class="${cc}">${avgCost === null ? '<span class="muted">–</span>' : (est ? '~' : '') + this.cents(avgCost, false)}</td>
+          <td class="mono">${this.lat(avg(g.lat))}</td>
+          <td class="mono">${this.lat(pctl(g.lat, 95))}</td>
+        </tr>`;
+      }).join('')}
+    </table>`;
   },
 
   showDetail(i) {
@@ -427,6 +492,7 @@ const panel = {
       ['Total tokens', this.n(s.total_tokens)], ['Cached (read)', this.n(s.cached_tokens)],
       ['Cache write', this.n(s.cache_write_tokens ?? 0)], ['Tool-def tokens', this.n(s.tool_definition_tokens ?? 0)],
       ['Messages', this.n(s.message_count)],
+      ['Latency', s.latency_ms == null ? '–' : this.lat(s.latency_ms)],
       ['Context', `${this.n(s.total_tokens)} / ${this.n(s.context_window)} (${this.pct(s.usage_percentage)})`],
       ['Cost', s.cost === null || s.cost === undefined ? '–'
         : (s.cost_is_estimate ? '~' + (Number(s.cost) * 100).toFixed(4) + '¢  (estimated, llm_pricing.yaml)'

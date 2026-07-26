@@ -48,6 +48,7 @@ class ContextUsageSnapshot:
     cost_is_estimate: bool = False  # True = computed from config/llm_pricing.yaml
     model: str = ""  # model identifier of the client that served the call
     request_id: str = ""  # request this call belonged to
+    latency_ms: Optional[float] = None  # wall-clock response time of the call
 
 
 #: Known snapshot fields — used to load persisted data tolerantly (older files
@@ -78,6 +79,8 @@ class AgentStats:
     total_cost: float = 0.0  # Sum of costs (billed + estimated; no-cost calls contribute 0)
     cost_known_calls: int = 0  # How many calls carried a cost at all
     cost_estimated_calls: int = 0  # ...of which were pricing-table estimates
+    total_latency_ms: float = 0.0  # Sum of response times (ms) over calls that reported one
+    latency_calls: int = 0  # How many calls carried a latency measurement
 
 
 class UsageTracker:
@@ -117,7 +120,8 @@ class UsageTracker:
                     cost: Optional[float] = None,
                     cost_is_estimate: bool = False,
                     model: str = "",
-                    request_id: str = "") -> None:
+                    request_id: str = "",
+                    latency_ms: Optional[float] = None) -> None:
         """Record a context usage snapshot."""
 
         usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
@@ -140,6 +144,7 @@ class UsageTracker:
             cost_is_estimate=cost_is_estimate,
             model=model,
             request_id=request_id,
+            latency_ms=latency_ms,
         )
 
         with self._lock:
@@ -171,6 +176,9 @@ class UsageTracker:
                 stats.cost_known_calls += 1
                 if cost_is_estimate:
                     stats.cost_estimated_calls += 1
+            if latency_ms is not None:
+                stats.total_latency_ms += latency_ms
+                stats.latency_calls += 1
 
         # Schedule async save (debounced to avoid too frequent writes)
         self._schedule_save()
@@ -302,6 +310,8 @@ class UsageTracker:
                             "total_cost": 0.0,
                             "cost_known_calls": 0,
                             "cost_estimated_calls": 0,
+                            "total_latency_ms": 0.0,
+                            "latency_calls": 0,
                         }
 
                     stats = session_agent_stats[agent_id]
@@ -319,6 +329,9 @@ class UsageTracker:
                         stats["cost_known_calls"] += 1
                         if getattr(snapshot, 'cost_is_estimate', False):
                             stats["cost_estimated_calls"] += 1
+                    if getattr(snapshot, 'latency_ms', None) is not None:
+                        stats["total_latency_ms"] += snapshot.latency_ms
+                        stats["latency_calls"] += 1
 
                 return session_agent_stats
 
