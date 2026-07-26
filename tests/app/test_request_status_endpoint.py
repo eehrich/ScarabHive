@@ -20,8 +20,15 @@ from unittest.mock import AsyncMock, MagicMock
 pytestmark = pytest.mark.anyio
 
 
-def _disable_auth():
-    """Patch AuthConfig.enabled to False before build_app sees it."""
+def _disable_auth(monkeypatch):
+    """Force AuthConfig(...).enabled to False for build_app in this test only.
+
+    Applied via monkeypatch so pytest restores AuthConfig on teardown. A bare
+    ``AuthConfig.enabled = _DisabledAuth()`` (as this did before) leaks a
+    session-wide class override that disables auth for EVERY later test —
+    poisoning the whole suite's auth-enforcement tests, which then see
+    requires_auth=False and fail with `assert False` only in the full run.
+    """
     from agent_system.config.models import AuthConfig
 
     class _DisabledAuth:
@@ -31,7 +38,7 @@ def _disable_auth():
         def __set__(self, obj, value):
             pass
 
-    AuthConfig.enabled = _DisabledAuth()
+    monkeypatch.setattr(AuthConfig, "enabled", _DisabledAuth(), raising=False)
 
 
 def _client(app):
@@ -49,7 +56,7 @@ async def test_status_fallback_returns_unknown_not_completed(
     status='unknown', completed=false plus error+reason so callers
     (writer-jobs reconcile pass, frontend poll loop) can act on the
     truth instead of treating it as a successful run."""
-    _disable_auth()
+    _disable_auth(monkeypatch)
     from agent_system import app as app_mod
 
     # Stub the background job manager to always say "I don't know".
@@ -90,7 +97,7 @@ async def test_status_returns_running_when_session_tracker_has_it(
     session_tracker says it's active, the endpoint correctly reports
     status='running', completed=false — the existing fallback chain
     must still work."""
-    _disable_auth()
+    _disable_auth(monkeypatch)
     from agent_system import app as app_mod
 
     empty_mgr = MagicMock()
@@ -118,7 +125,7 @@ async def test_status_returns_completed_when_bg_job_has_it(
     job-specific sse_clients / events_buffered keys that the
     writer-side reconcile uses as the positive-evidence marker for
     'this is a real completion' (vs the lying fallback)."""
-    _disable_auth()
+    _disable_auth(monkeypatch)
     from agent_system import app as app_mod
     from agent_system.services.background_job_manager import JobStatus
 
@@ -159,7 +166,7 @@ async def test_status_registry_walk_finds_subagent_request(
     (is_request_active_anywhere) and report 'running', otherwise the
     writer-side reconcile treats a live multi-hour run as lost and
     re-queues it for resume (double-run)."""
-    _disable_auth()
+    _disable_auth(monkeypatch)
     from agent_system import app as app_mod
 
     mgr = MagicMock()

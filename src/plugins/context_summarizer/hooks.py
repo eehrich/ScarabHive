@@ -456,18 +456,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
                         del self._last_summarization_time[oldest]
 
-                    # NOTE: Session persistence is now handled automatically by HookIntegrationManager
-                    # when we return HookResult with modified=True. The explicit set_compacted_messages()
-                    # call below is kept for backwards compatibility but is no longer strictly required.
-                    conversation_msgs = [msg for msg in new_messages if msg.role != "system"]
-                    if context.agent and hasattr(context.agent, '_session_tracker'):
-                        context.agent._session_tracker.set_compacted_messages(
-                            session_id, conversation_msgs
-                        )
-                        logger.debug(
-                            f"[ContextSummarizer] Persisted {len(conversation_msgs)} compacted messages "
-                            f"for session {session_id}"
-                        )
+                    # Session persistence is handled automatically by
+                    # HookIntegrationManager when we return HookResult(modified=True)
+                    # below (hook path), and by the summarize tool wrapper via its
+                    # own set_compacted_messages() call (direct-tool path). No
+                    # explicit persist here: it double-persisted the session (once
+                    # explicitly, once automatically) — the tool path even wrote a
+                    # different message set (non-system here vs full context there).
 
                     # Store result instead of returning directly
                     result = HookResult(

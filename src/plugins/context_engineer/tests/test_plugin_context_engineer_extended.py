@@ -160,7 +160,10 @@ class TestMediaBytesTracking:
         ]
         messages.append({"role": "user", "content": "Process these"})
         
-        # The total size should exceed 18MB threshold
+        # This class's fixture leaves max_request_bytes at the 90MB default;
+        # this test exercises the byte-limit trigger, so cap it below the 25MB
+        # payload (the sibling byte-threshold fixture sets 18MB the same way).
+        strategy.config.max_request_bytes = 18 * 1024 * 1024  # 18MB
         result = await strategy.compact(messages, current_tokens=50000)
         
         # Check that "B" layer was applied

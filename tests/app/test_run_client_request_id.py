@@ -23,7 +23,15 @@ from unittest.mock import AsyncMock, MagicMock
 pytestmark = pytest.mark.anyio
 
 
-def _disable_auth():
+def _disable_auth(monkeypatch):
+    """Force AuthConfig(...).enabled to False for build_app in this test only.
+
+    Applied via monkeypatch so pytest restores AuthConfig on teardown. A bare
+    ``AuthConfig.enabled = _DisabledAuth()`` (as this did before) leaks a
+    session-wide class override that disables auth for EVERY later test —
+    poisoning the whole suite's auth-enforcement tests, which then see
+    requires_auth=False and fail with `assert False` only in the full run.
+    """
     from agent_system.config.models import AuthConfig
 
     class _DisabledAuth:
@@ -33,7 +41,7 @@ def _disable_auth():
         def __set__(self, obj, value):
             pass
 
-    AuthConfig.enabled = _DisabledAuth()
+    monkeypatch.setattr(AuthConfig, "enabled", _DisabledAuth(), raising=False)
 
 
 def _client(app):
@@ -48,7 +56,7 @@ async def test_run_rejects_malformed_request_id(
     """Format whitelist: ids flow into log lines, ownership maps and
     cancellation-token keys — anything outside [A-Za-z0-9_-]{8,64}
     is refused with 400."""
-    _disable_auth()
+    _disable_auth(monkeypatch)
     from agent_system import app as app_mod
 
     app = app_mod.build_app()
@@ -64,7 +72,7 @@ async def test_run_rejects_malformed_request_id(
 async def test_run_rejects_short_request_id(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _disable_auth()
+    _disable_auth(monkeypatch)
     from agent_system import app as app_mod
 
     app = app_mod.build_app()
@@ -82,7 +90,7 @@ async def test_run_returns_409_when_request_id_already_active(
     request_id while the original run is still active gets a clean
     409 (classified transient writer-side → the retry waits) instead
     of silently starting a second concurrent agent run."""
-    _disable_auth()
+    _disable_auth(monkeypatch)
     from agent_system import app as app_mod
 
     mgr = MagicMock()

@@ -201,26 +201,27 @@ class TestPluginDiscoveryIntegration:
             assert plugins[plugin_name] is not None, f"Plugin {plugin_name} factory is None"
 
     def test_plugin_metadata_loading(self, temp_workspace):
-        """Test that plugin metadata is loaded correctly for plugins that have plugin.yaml."""
+        """Test that plugin metadata is loaded correctly for plugins that have a manifest."""
         from agent_system.plugins import discover_all_plugins
 
         plugins = discover_all_plugins([temp_workspace / "plugins"])
 
-        # Only check metadata for plugins that have plugin.yaml file
-        # Some plugins (e.g., MCP servers) may only have schema.yaml
+        # Only check metadata for plugins that carry a manifest. The manifest is
+        # plugin.toml (with legacy plugin.yaml as fallback); some plugins (e.g.
+        # MCP servers) may only have schema.yaml and carry no metadata.
         plugins_with_metadata = {}
         for plugin_name, factory in plugins.items():
             plugin_dir = temp_workspace / "plugins" / plugin_name
-            if (plugin_dir / "plugin.yaml").exists():
+            if (plugin_dir / "plugin.toml").exists() or (plugin_dir / "plugin.yaml").exists():
                 plugins_with_metadata[plugin_name] = factory
 
         # Ensure at least some plugins have metadata
-        assert len(plugins_with_metadata) > 0, "No plugins with plugin.yaml found"
+        assert len(plugins_with_metadata) > 0, "No plugins with a plugin manifest found"
 
-        # Check that metadata is properly attached for plugins with plugin.yaml
+        # Check that metadata is properly attached for plugins with a manifest
         for plugin_name, factory in plugins_with_metadata.items():
             metadata = getattr(factory, "_plugin_metadata", None)
-            assert metadata is not None, f"Plugin {plugin_name} has plugin.yaml but metadata not loaded"
+            assert metadata is not None, f"Plugin {plugin_name} has a manifest but metadata not loaded"
 
             # Check required metadata fields
             assert "name" in metadata, f"Plugin {plugin_name} missing name in metadata"
