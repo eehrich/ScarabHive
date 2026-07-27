@@ -584,11 +584,34 @@ def _reset_all_global_state():
     except ImportError:
         pass
     
-    # Reset plugin registries
+    # Reset plugin registries.
+    #
+    # mcp/integration.py aliases this registry at IMPORT time
+    # (`from ...mcp_adapter import plugin_mcp_registry`) and MCPIntegration
+    # stores that alias as self.plugin_registry. REBINDING the attribute here
+    # (the old `plugin_mcp_registry = PluginMCPRegistry()`) therefore does NOT
+    # reach the stale alias — it keeps pointing at the fully-discovered
+    # registry a prior app-building test populated. A later bare-agent test
+    # then discovers every plugin and renders an extra tool-system prompt
+    # (regression seen in tests/integration test_message_list_construction and
+    # broad writer-test pollution). Clear the registry contents IN PLACE so
+    # every alias observes it empty, and unify both module references on one
+    # instance.
     try:
         from agent_system.plugins import mcp_adapter
-        mcp_adapter.plugin_mcp_registry = mcp_adapter.PluginMCPRegistry()
-    except ImportError:
+        reg = mcp_adapter.plugin_mcp_registry
+        reg.plugin_servers.clear()
+        reg.plugin_factories.clear()
+        try:
+            from agent_system.mcp import integration as _mcp_int_mod
+            stale = getattr(_mcp_int_mod, "plugin_mcp_registry", None)
+            if stale is not None and stale is not reg:
+                stale.plugin_servers.clear()
+                stale.plugin_factories.clear()
+                _mcp_int_mod.plugin_mcp_registry = reg
+        except ImportError:
+            pass
+    except (ImportError, AttributeError):
         pass
     
     try:
