@@ -2,14 +2,11 @@
 	// See http://go.microsoft.com/fwlink/?LinkId=827846
 	// for the documentation about the extensions.json format
 	"recommendations": [
-		"github.copilot-chat",
 		"davidanson.vscode-markdownlint",
 		//"ms-python.mypy-type-checker",
 		"ms-python.python",
 		"ms-python.debugpy",
 		"ms-python.vscode-pylance",
-		"charliermarsh.ruff",
-		"ms-vscode.vscode-websearchforcopilot",
-		//"upstash.context7-mcp"
+		"charliermarsh.ruff"
 	]
 }
