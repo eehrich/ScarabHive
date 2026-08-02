@@ -20,6 +20,7 @@ from agent_system.cli_utils.chat import (
     display_width,
     parse_chat_command,
     run_chat_turn,
+    suggest_command,
 )
 from agent_system.mcp.status import StatusEvent, StatusPhase, status_bus
 
@@ -302,12 +303,24 @@ class TestParseChatCommand:
         assert parse_chat_command("/resume ab12cd") == ("resume", "ab12cd")
         assert parse_chat_command("/resume") == ("resume", "")
 
-    def test_unknown_slash_input_is_a_message_not_a_command(self):
+    def test_paths_are_messages_not_commands(self):
         """A path is ordinary input for a sysadmin/coder agent. Treating it as
         a typo'd command silently swallowed the message."""
         assert parse_chat_command("/etc/nginx/nginx.conf pruefen") == (
             None, "/etc/nginx/nginx.conf pruefen")
-        assert parse_chat_command("/nope")[0] is None
+        assert parse_chat_command("/usr/local/bin")[0] is None
+        assert parse_chat_command("/tmp/x.log lesen")[0] is None
+
+    def test_mistyped_command_is_flagged_not_sent_to_the_llm(self):
+        """The other half: "/h" is a typo, not a message. Passing it through
+        spent a whole LLM turn on it."""
+        assert parse_chat_command("/h") == ("unknown", "/h")
+        assert parse_chat_command("/sesion") == ("unknown", "/sesion")
+
+    def test_suggests_the_closest_command(self):
+        assert suggest_command("/h") == "/help"
+        assert suggest_command("/sesion") == "/session"
+        assert suggest_command("/zzzzz") is None
 
     def test_double_slash_escapes_a_command_word(self):
         assert parse_chat_command("//new heisst bei uns anders") == (

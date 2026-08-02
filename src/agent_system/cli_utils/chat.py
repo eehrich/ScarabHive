@@ -15,8 +15,10 @@ Two pieces live here:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -517,14 +519,20 @@ _COMMAND_ALIASES = {
 }
 
 
+# A command word: a single "/name" token, no further slash, no dot. That is
+# what separates a mistyped command from a path -- "/h" is a typo the user
+# wants flagged, "/etc/nginx/nginx.conf" is ordinary input for a sysadmin
+# agent and firing an LLM turn on either extreme is wrong.
+_COMMAND_WORD = re.compile(r"^/[A-Za-z?][A-Za-z0-9_-]*$")
+
+
 def parse_chat_command(line: str) -> tuple[Optional[str], str]:
     """Split a prompt line into (command, payload).
 
-    Only KNOWN aliases are commands. Anything else starting with "/" is a
-    normal message -- "/etc/nginx/nginx.conf pruefen" is ordinary input for a
-    sysadmin agent, and treating it as a typo'd command silently ate it.
-    "//" is the literal escape for a message that really has to start with a
-    command word.
+    Returns ("unknown", line) for something that LOOKS like a command but
+    isn't one, so the REPL can say so instead of silently spending a turn on
+    it. Anything else starting with "/" is a normal message. "//" is the
+    literal escape for a message that really has to start with a command word.
     """
     stripped = line.strip()
     if stripped.startswith("//"):
@@ -533,9 +541,25 @@ def parse_chat_command(line: str) -> tuple[Optional[str], str]:
         return None, stripped
     word, _, rest = stripped.partition(" ")
     command = _COMMAND_ALIASES.get(word.lower())
-    if command is None:
-        return None, stripped
-    return command, rest.strip()
+    if command is not None:
+        return command, rest.strip()
+    if _COMMAND_WORD.match(word):
+        return "unknown", word
+    return None, stripped
+
+
+def suggest_command(word: str) -> Optional[str]:
+    """Closest known command for a typo, or None.
+
+    Prefixes first: "/h" is the common abbreviation-style slip, and difflib
+    scores it far below any cutoff against "/help" (2 chars against 5).
+    """
+    lowered = word.lower()
+    prefixed = sorted((c for c in _COMMAND_ALIASES if c.startswith(lowered)), key=len)
+    if prefixed:
+        return prefixed[0]
+    matches = difflib.get_close_matches(lowered, _COMMAND_ALIASES, n=1, cutoff=0.6)
+    return matches[0] if matches else None
 
 
 _HELP_TEXT = '''\
@@ -1011,6 +1035,12 @@ def run_chat_loop(
                 continue
             if command == "help":
                 print(_HELP_TEXT)
+                continue
+            if command == "unknown":
+                hint = suggest_command(payload)
+                did_you_mean = f"  Did you mean {hint}?" if hint else ""
+                print(f"Unknown command: {payload}{did_you_mean}")
+                print(f"/help lists the commands; //{payload[1:]} sends it as a message.")
                 continue
 
             started = time.monotonic()
