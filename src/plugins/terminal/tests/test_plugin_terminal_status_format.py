@@ -68,3 +68,41 @@ class TestOutputSize:
     def test_missing_and_none_stdout_are_safe(self):
         assert _output_size({}) == "no output"
         assert _output_size({"stdout": None}) == "no output"
+
+
+class TestConsoleModeRestore:
+    """Every bash -c spawn resets the inherited console's VT flag on Windows;
+    the executor puts it back so status lines after the command still render
+    ANSI instead of literal escapes."""
+
+    async def test_execute_restores_console_mode(self, monkeypatch):
+        import plugins.terminal.executor as executor_mod
+        calls = []
+        monkeypatch.setattr(executor_mod, "_restore_console_mode",
+                            lambda: calls.append(1))
+        from plugins.terminal.platform_detect import PlatformDetector
+        from plugins.terminal.security import CommandSecurityValidator
+        bash_path, _shell = PlatformDetector().detect_bash()
+        ex = executor_mod.CommandExecutor(
+            bash_path=bash_path,
+            security_validator=CommandSecurityValidator(),
+        )
+        result = await ex.execute("echo hi")
+        assert result["status"] == "success"
+        assert calls, "execute() must restore the console mode afterwards"
+
+    async def test_execute_restores_even_on_timeout(self, monkeypatch):
+        import plugins.terminal.executor as executor_mod
+        calls = []
+        monkeypatch.setattr(executor_mod, "_restore_console_mode",
+                            lambda: calls.append(1))
+        from plugins.terminal.platform_detect import PlatformDetector
+        from plugins.terminal.security import CommandSecurityValidator
+        bash_path, _shell = PlatformDetector().detect_bash()
+        ex = executor_mod.CommandExecutor(
+            bash_path=bash_path,
+            security_validator=CommandSecurityValidator(),
+        )
+        result = await ex.execute("sleep 30", timeout=1)
+        assert result["status"] == "error"
+        assert calls, "the finally must run on the timeout path too"

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # STD_OUTPUT_HANDLE / ENABLE_VIRTUAL_TERMINAL_PROCESSING (Windows console API)
 _STD_OUTPUT_HANDLE = -11
+_STD_INPUT_HANDLE = -10
 _ENABLE_VT_PROCESSING = 0x0004
 # Module-level so tests can flip the platform without patching os.name globally
 _IS_WINDOWS = os.name == "nt"
@@ -46,6 +47,80 @@ def _enable_windows_vt() -> bool:
     except Exception as e:
         logger.debug(f"Could not enable ANSI processing on this console: {e}")
         return False
+
+
+def reassert_vt() -> None:
+    """Re-enable VT processing if a child process switched it off.
+
+    Console modes are per-console, not per-process: a spawned shell (cmd.exe,
+    MSYS bash) inherits the console and resets its mode on startup. After the
+    first terminal.execute() the escapes we keep emitting render literally --
+    so anyone painting ANSI after subprocesses ran has to re-assert the flag.
+    Unlike _enable_windows_vt this is deliberately uncached.
+    """
+    if not _IS_WINDOWS:
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return
+        if not (mode.value & _ENABLE_VT_PROCESSING):
+            kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING)
+    except Exception as e:
+        logger.debug(f"Could not re-assert ANSI processing: {e}")
+
+
+def snapshot_console_input_mode() -> int | None:
+    """Capture the console INPUT mode while it is known-good.
+
+    Child shells don't only reset the output mode -- they also switch the
+    input mode (line input, echo, processed Ctrl-C off). At that point every
+    keystroke at a prompt lands raw: Enter and Backspace stop working and
+    Ctrl-C arrives as a character instead of a signal. Snapshot at REPL start,
+    restore via restore_console_input_mode() before each prompt read.
+    """
+    if not _IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return None
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return None
+        return int(mode.value)
+    except Exception as e:
+        logger.debug(f"Could not snapshot console input mode: {e}")
+        return None
+
+
+def restore_console_input_mode(mode: int | None) -> None:
+    """Put the console input mode back to its snapshot (no-op for None)."""
+    if mode is None or not _IS_WINDOWS:
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return
+        current = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(current)):
+            return
+        if current.value != mode:
+            kernel32.SetConsoleMode(handle, mode)
+    except Exception as e:
+        logger.debug(f"Could not restore console input mode: {e}")
 
 
 def ansi_capable_stdout() -> bool:

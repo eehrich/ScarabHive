@@ -11,6 +11,22 @@ from .security import CommandSecurityValidator
 logger = logging.getLogger(__name__)
 
 
+def _restore_console_mode() -> None:
+    """Undo the console-mode reset a spawned shell inflicts on Windows.
+
+    Console modes belong to the CONSOLE, not the process: an MSYS bash (or
+    cmd.exe) child inherits our console and clears its VT-processing flag on
+    startup, even when its std handles are pipes. From that moment every ANSI
+    escape the CLI prints renders literally. Whoever spawns the shell puts the
+    flag back -- best effort, and a no-op outside a Windows console.
+    """
+    try:
+        from agent_system.cli_utils.common import reassert_vt
+        reassert_vt()
+    except Exception:
+        logger.debug("Could not restore console mode", exc_info=True)
+
+
 class PersistentTerminal:
     """
     Persistent bash terminal session (like GitHub Copilot's run_in_terminal).
@@ -65,6 +81,8 @@ class PersistentTerminal:
         # Start output reader task
         self._reader_task = asyncio.create_task(self._read_output())
         logger.info(f"Persistent terminal started (PID: {self.process.pid})")
+        # bash start resets the inherited console's VT flag
+        _restore_console_mode()
 
     async def execute(
         self,
@@ -340,6 +358,10 @@ class CommandExecutor:
                 "error_type": type(e).__name__,
                 "command": command
             }
+        finally:
+            # Every bash -c spawn resets the console's VT flag; put it back
+            # before the status lines for this very command get printed.
+            _restore_console_mode()
 
     async def execute_background(
         self,
@@ -384,6 +406,10 @@ class CommandExecutor:
                 cwd=cwd or self.initial_cwd,
                 env=exec_env
             )
+
+            # Best effort -- the child may reset the console mode a moment
+            # AFTER this returns; the chat renderer re-asserts per line.
+            _restore_console_mode()
 
             return {
                 "status": "success",
