@@ -21,6 +21,42 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Status lines are read at a glance, in a stream that is also carrying the
+# model's tokens. A full pipeline with quotes, escapes and newlines wraps over
+# several lines and pushes everything around it out of view -- so commands get
+# folded to one line and capped here before they go into a status message.
+_CMD_DISPLAY_LIMIT = 70
+
+
+def _short_cmd(command: str, limit: int = _CMD_DISPLAY_LIMIT) -> str:
+    """Fold a command to a single line of at most `limit` characters.
+
+    The end line gets the same budget as the progress line on purpose: the WebUI
+    writes both into the same row, so the end message REPLACES the progress
+    message and is all that survives (static/js/chat_module.js, phase 'end').
+    """
+    single_line = " ".join(command.split())
+    if len(single_line) <= limit:
+        return single_line
+    return single_line[:limit - 3] + "..."
+
+
+def _output_size(result: dict[str, Any]) -> str:
+    """Line count of what a command produced -- the part the reader wants.
+
+    The executor caps stdout at max_output_kb, so this counts what survived,
+    not what was produced. Saying so beats a number that is silently wrong by
+    orders of magnitude.
+    """
+    stdout = result.get("stdout") or ""
+    if not stdout:
+        return "no output"
+    lines = stdout.count("\n") + (0 if stdout.endswith("\n") else 1)
+    plural = "s" if lines != 1 else ""
+    if result.get("truncated"):
+        return f"{lines}+ lines (truncated)"
+    return f"{lines} line{plural}"
+
 
 class TerminalServer(SchemaBasedMCPServer):
     """Terminal MCP server for executing shell commands with persistent sessions.
@@ -184,13 +220,13 @@ class TerminalServer(SchemaBasedMCPServer):
         # Check for cancellation
         cancellation_token = params.get("_cancellation_token")
         if cancellation_token and cancellation_token.is_cancelled:
-            await status.error(f"Command cancelled before execution: {command}")
+            await status.error(f"Cancelled before execution: {_short_cmd(command)}")
             return {
                 "status": "cancelled",
                 "command": command
             }
 
-        await status.progress(f"Executing: {command}")
+        await status.progress(f"Executing: {_short_cmd(command)}")
 
         # Execute command
         result = await self.executor.execute(
@@ -204,14 +240,16 @@ class TerminalServer(SchemaBasedMCPServer):
         if result["status"] == "success":
             exit_code = result.get("exit_code", 0)
             exec_time = result.get("execution_time", 0)
-            # Include command in end message for WebUI visibility
+            # The end line has to stand on its own -- in the WebUI it overwrites
+            # the progress line, so it is the only record of what ran.
             await status.end(
-                f"'{command}' completed (exit code {exit_code}, {exec_time:.2f}s)",
+                f"{_short_cmd(command)} -- exit {exit_code}, "
+                f"{exec_time:.2f}s, {_output_size(result)}",
                 meta={"execution_time": exec_time, "exit_code": exit_code}
             )
         else:
             error_msg = result.get("error", "Unknown error")
-            await status.error(f"'{command}' failed: {error_msg}")
+            await status.error(f"{_short_cmd(command)} failed: {error_msg}")
 
         return result
 
@@ -233,7 +271,7 @@ class TerminalServer(SchemaBasedMCPServer):
         # Get status context
         status = params["_status"]
 
-        await status.progress(f"Starting background process: {command}")
+        await status.progress(f"Starting background process: {_short_cmd(command)}")
 
         # Execute in background (creates separate process, not persistent terminal)
         result = await self.executor.execute_background(
@@ -257,8 +295,11 @@ class TerminalServer(SchemaBasedMCPServer):
             owner_session=params.get("_session_id")
         )
 
-        # Include command and process_id in end message for WebUI
-        await status.end(f"Background process '{command}' started (ID: {process_id}, PID: {process.pid})")
+        # process_id is what the follow-up tools take, so it leads.
+        await status.end(
+            f"Background process {process_id} started (PID {process.pid}): "
+            f"{_short_cmd(command)}"
+        )
 
         return {
             "status": "success",
