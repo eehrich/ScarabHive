@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 import logging
-from jinja2 import Template
+from functools import lru_cache
+from pathlib import Path
+from jinja2 import Environment, FileSystemLoader
 from datetime import datetime, timedelta
 import pytz
 
 
 logger = logging.getLogger(__name__)
+
+#: Repo-level shared prompt library. Partials placed here are includable from
+#: ANY prompt, which is how the same rule can live in one file instead of being
+#: copy-pasted into every pipeline's prompts (v4 / v5b / v6 ...).
+SHARED_PROMPT_DIR = Path("config/prompts")
 
 
 def get_datetime_context(timezone_str: str = "UTC", location: str = "Unknown") -> Dict[str, Any]:
@@ -57,28 +64,78 @@ def _is_text_template(template_path: str) -> bool:
     return lower_path.endswith(('.md', '.txt', '.markdown'))
 
 
+def _include_search_paths(template_path: str) -> Tuple[str, ...]:
+    """Directories that ``{% include %}`` may read from, most specific first.
+
+    1. The template's own directory — ``{% include "shared/tone.md" %}`` resolves
+       next to the prompt itself.
+    2. ``config/prompts`` — the shared library, includable from every prompt.
+
+    Jinja's FileSystemLoader confines lookups to these roots, so a template
+    cannot escape them via ``..``.
+    """
+    paths = [str(Path(template_path).parent)]
+    if SHARED_PROMPT_DIR.is_dir():
+        shared = str(SHARED_PROMPT_DIR)
+        if shared not in paths:
+            paths.append(shared)
+    return tuple(paths)
+
+
+@lru_cache(maxsize=64)
+def _get_env(search_paths: Tuple[str, ...]) -> Environment:
+    """Jinja environment for a set of include roots.
+
+    Cached because prompts render on EVERY LLM call — the previous bare
+    ``Template()`` also reused a cached environment internally, so building a
+    fresh one per render would have been a regression. Jinja environments are
+    documented as thread-safe once configured, and FileSystemLoader keeps
+    ``auto_reload`` on, so edited partials are still picked up without a
+    restart.
+
+    Settings mirror the previous bare ``Template()``: autoescape off (these are
+    markdown prompts, not HTML) and undefined variables render empty.
+    """
+    return Environment(
+        loader=FileSystemLoader(list(search_paths), encoding="utf-8"),
+        autoescape=False,
+    )
+
+
 def _render_text_template(template_path: str, context: Dict[str, Any]) -> Dict[str, str]:
     """Render a plain text or markdown file as a single system_prompt section.
-    
+
     The entire file content is treated as the system_prompt and rendered
-    with Jinja2 template substitution.
-    
+    with Jinja2 template substitution. ``{% include %}`` is supported and
+    resolves against :func:`_include_search_paths`, so a rule shared by several
+    prompts lives in ONE partial instead of being copy-pasted (and drifting).
+
     Args:
         template_path: Path to the text/markdown file
         context: Template context variables for Jinja2 rendering
-        
+
     Returns:
         Dict with single 'system_prompt' key containing the rendered content
     """
     with open(template_path, "r", encoding="utf-8") as f:
         raw_content = f.read()
-    
+
     try:
-        rendered = Template(raw_content).render(**context)
+        # An Environment (not a bare Template) is what gives templates a loader —
+        # without one, `{% include %}` raises "no loader for this environment".
+        env = _get_env(_include_search_paths(template_path))
+        rendered = env.from_string(raw_content).render(**context)
     except Exception as e:
-        logger.warning(f"Failed to render text template {template_path}: {e}")
+        # Includes are resolved here, so a missing/broken partial lands in this
+        # branch. Falling back to the raw text would ship literal Jinja tags to
+        # the model — log loudly enough that it is not mistaken for prose.
+        logger.warning(
+            "Failed to render prompt template %s: %s "
+            "(includes are resolved from %s) — using unrendered content",
+            template_path, e, _include_search_paths(template_path),
+        )
         rendered = raw_content  # Fallback to unrendered content
-    
+
     return {"system_prompt": rendered}
 
 
