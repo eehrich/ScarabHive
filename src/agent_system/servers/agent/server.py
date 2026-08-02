@@ -2206,10 +2206,21 @@ class Agent(MCPServer):
 
             # Create assistant message and add it BEFORE post_llm hooks
             # so message debugger can capture the complete conversation
+            # DeepSeek thinking mode: with `tools` in the request, the assistant's
+            # reasoning_content MUST be passed back on every subsequent turn
+            # (api-docs.deepseek.com/guides/thinking_mode#tool-call). Dropping it
+            # here made _postprocess_messages_for_provider send an empty string,
+            # so the model lost its chain of thought after every tool call and
+            # re-derived it from scratch — reasoning grew with the conversation
+            # until it hit the 65536-token cap (measured: 2.6s/103 reasoning
+            # tokens on turn 1, 650s/65536 once tool results had accumulated).
+            # Agents without tool calls (v4 pipeline) were never affected, which
+            # is why this only showed up on the tool-heavy coding agents.
             assistant_msg = ChatMessage(
                 role="assistant",
                 content=content or "",
                 tool_calls=tool_calls if tool_calls else None,
+                reasoning_content=assistant.get("reasoning_content"),
                 reasoning_details=reasoning_details,
                 timestamp=datetime.now(timezone.utc)
             )
