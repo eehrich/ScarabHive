@@ -10,9 +10,62 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
+
+# STD_OUTPUT_HANDLE / ENABLE_VIRTUAL_TERMINAL_PROCESSING (Windows console API)
+_STD_OUTPUT_HANDLE = -11
+_ENABLE_VT_PROCESSING = 0x0004
+# Module-level so tests can flip the platform without patching os.name globally
+_IS_WINDOWS = os.name == "nt"
+
+
+@lru_cache(maxsize=1)
+def _enable_windows_vt() -> bool:
+    """Switch ANSI processing on for the attached Windows console, once.
+
+    Only the SetConsoleMode side effect is cached -- not the decision, which
+    still has to re-read sys.stdout (colorama replaces it during startup).
+    """
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return False
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if mode.value & _ENABLE_VT_PROCESSING:
+            return True
+        return bool(kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING))
+    except Exception as e:
+        logger.debug(f"Could not enable ANSI processing on this console: {e}")
+        return False
+
+
+def ansi_capable_stdout() -> bool:
+    """Whether stdout can actually render ANSI -- switching it on if it can.
+
+    isatty() alone is not enough on Windows: a console IS a tty but prints
+    escape sequences literally until ENABLE_VIRTUAL_TERMINAL_PROCESSING is set
+    on it. That gap is how raw ESC[90m ended up in the output instead of colour.
+    """
+    try:
+        if not sys.stdout.isatty():
+            return False
+    except Exception as e:
+        logger.debug(f"Failed to check if stdout is a TTY: {e}")
+        return False
+
+    if not _IS_WINDOWS:
+        return True
+    return _enable_windows_vt()
+
 
 # Global color mode (can be set by CLI tools)
 # Supports: 'auto', 'always', 'never', 'ansi', 'html', 'text'
@@ -54,13 +107,9 @@ def get_output_format() -> str:
     if mode in ("ansi", "html", "text", "markdown"):
         return mode
     
-    # Auto mode: ANSI if TTY, otherwise text
+    # Auto mode: ANSI only where it will actually render as colour
     if mode == "auto":
-        try:
-            return "ansi" if sys.stdout.isatty() else "text"
-        except Exception as e:
-            logger.debug(f"Failed to check if stdout is a TTY: {e}")
-            return "text"
+        return "ansi" if ansi_capable_stdout() else "text"
     
     # Default fallback
     return "text"
