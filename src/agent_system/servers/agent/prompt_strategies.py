@@ -34,6 +34,41 @@ class PromptContext:
     session_template_vars: Optional[Dict[str, Any]] = None  # Session-scoped vars (override agent_config)
 
 
+def build_context_values(context: PromptContext) -> Dict[str, Any]:
+    """Jinja context shared by prompt strategies and skill bodies.
+
+    Module-level (not a method) because skills are rendered by PromptRenderer,
+    which is not a PromptStrategy — and this never needed ``self``.
+    """
+    context_vals = {
+        "tools": context.available_tools,
+        "max_steps": context.max_steps,
+        "current_step": context.current_step
+    }
+
+    # Add datetime context if enabled
+    if (hasattr(context.system_config, 'context') and
+            context.system_config.context.auto_datetime):
+        dt_ctx = get_datetime_context(
+            context.system_config.context.timezone,
+            context.system_config.context.location
+        )
+        context_vals.update(dt_ctx)
+
+    # Add custom template variables from agent config
+    # These override built-in variables if there's a conflict
+    if context.agent_config.template_vars:
+        context_vals.update(context.agent_config.template_vars)
+
+    # Add session-scoped template variables (highest priority)
+    # These override BOTH built-in AND agent_config template_vars
+    # CRITICAL: This ensures session isolation - each session has its own vars
+    if context.session_template_vars:
+        context_vals.update(context.session_template_vars)
+
+    return context_vals
+
+
 class PromptStrategy(ABC):
     """Abstract base for prompt rendering strategies."""
     
@@ -54,33 +89,7 @@ class PromptStrategy(ABC):
     
     def _get_context_values(self, context: PromptContext) -> Dict[str, Any]:
         """Build common context values for template rendering."""
-        context_vals = {
-            "tools": context.available_tools,
-            "max_steps": context.max_steps,
-            "current_step": context.current_step
-        }
-        
-        # Add datetime context if enabled
-        if (hasattr(context.system_config, 'context') and 
-            context.system_config.context.auto_datetime):
-            dt_ctx = get_datetime_context(
-                context.system_config.context.timezone,
-                context.system_config.context.location
-            )
-            context_vals.update(dt_ctx)
-        
-        # Add custom template variables from agent config
-        # These override built-in variables if there's a conflict
-        if context.agent_config.template_vars:
-            context_vals.update(context.agent_config.template_vars)
-        
-        # Add session-scoped template variables (highest priority)
-        # These override BOTH built-in AND agent_config template_vars
-        # CRITICAL: This ensures session isolation - each session has its own vars
-        if context.session_template_vars:
-            context_vals.update(context.session_template_vars)
-        
-        return context_vals
+        return build_context_values(context)
 
 
 class SubclassHookStrategy(PromptStrategy):
@@ -204,17 +213,25 @@ class DefaultPromptStrategy(PromptStrategy):
         return "You are an assistant agent.", None
 
 
+#: Missing-skill names already reported, so the error is logged once per agent
+#: instead of on every single render (prompts render on every LLM call).
+_reported_missing_skills: set[tuple[str, str]] = set()
+
+
 class PromptRenderer:
     """
     Orchestrates prompt rendering using strategy pattern.
-    
+
     Order of precedence:
       1. Subclass hook (get_custom_system_prompt)
       2. In-memory raw prompt (agent_config.system_prompt)
       3. Template file (agent_config.system_template)
       4. Default fallback
+
+    Skills configured on the agent are appended to whichever prompt won — the
+    single place where all four strategies meet.
     """
-    
+
     def __init__(self):
         """Initialize with ordered list of strategies."""
         self.strategies = [
@@ -223,20 +240,122 @@ class PromptRenderer:
             TemplateFileStrategy(),
             DefaultPromptStrategy(),
         ]
-    
+
     def render(self, context: PromptContext) -> tuple[str, Optional[str]]:
         """
-        Render prompts using first applicable strategy.
-        
+        Render prompts using first applicable strategy, then append skills.
+
         Returns:
             (system_prompt, tools_prompt_or_None)
         """
+        system_prompt, tools_prompt = "You are an assistant agent.", None
         for strategy in self.strategies:
             if strategy.can_handle(context):
                 result = strategy.render(context)
                 # If strategy returns empty string, try next one
                 if result[0]:
-                    return result
-        
-        # Should never reach here (DefaultPromptStrategy always handles)
-        return "You are an assistant agent.", None
+                    system_prompt, tools_prompt = result
+                    break
+
+        system_prompt = self._append_skills(system_prompt, context)
+        return system_prompt, tools_prompt
+
+    def _append_skills(self, system_prompt: str, context: PromptContext) -> str:
+        """Append ``always`` skill bodies plus an index of ``on_demand`` ones.
+
+        Appended at the END of the system prompt, in configured order: the
+        system prompt is the stable cache prefix, so a deterministic order keeps
+        it byte-identical between calls (see docs/prompt_cache_design.md).
+
+        Skill bodies are ordinary prompt templates — they get the same Jinja
+        context and support ``{% include %}``. ``on_demand`` skills contribute
+        only their one-line description: without that index the agent would
+        never know they exist and would never fetch them.
+        """
+        skills_cfg = getattr(context.agent_config, "skills", None)
+        wanted = list(getattr(skills_cfg, "always", []) or []) if skills_cfg else []
+        on_demand = list(getattr(skills_cfg, "on_demand", []) or []) if skills_cfg else []
+        if not wanted and not on_demand:
+            return system_prompt
+
+        from agent_system.skills import get_skill_registry
+        from agent_system.skills.registry import default_skill_dirs
+
+        # Roots come from config (skills.skill_dirs), falling back to the
+        # default. ensure_discovered only touches the filesystem when the roots
+        # changed — this runs on every LLM call.
+        configured = list(
+            getattr(getattr(context.system_config, "skills", None), "skill_dirs", []) or []
+        )
+        registry = get_skill_registry()
+        registry.ensure_discovered(configured or list(default_skill_dirs()))
+        context_vals = build_context_values(context)
+        parts = [system_prompt.rstrip()] if system_prompt.strip() else []
+
+        for name in wanted:
+            skill = registry.get(name)
+            if skill is None:
+                key = (context.agent_name, name)
+                if key not in _reported_missing_skills:
+                    _reported_missing_skills.add(key)
+                    logger.error(
+                        "Agent %s: skill '%s' not found — it will be MISSING from the "
+                        "prompt. Known skills: %s (scanned: %s)",
+                        context.agent_name, name, registry.names() or "none",
+                        registry.scanned_dirs or "no dirs",
+                    )
+                continue
+            try:
+                rendered = render_prompts(
+                    skill.entry, context_vals, auto_datetime=False
+                ).get("system_prompt", "").strip()
+            except Exception as e:  # noqa: BLE001 - a broken skill must not kill the run
+                logger.error(
+                    "Agent %s: skill '%s' failed to render (%s) — skipped",
+                    context.agent_name, name, e,
+                )
+                continue
+            if rendered:
+                parts.append(rendered)
+                logger.debug(
+                    "Agent %s: appended skill '%s' v%s (%d chars)",
+                    context.agent_name, skill.name, skill.version, len(rendered),
+                )
+
+        index = self._on_demand_index(on_demand, registry, context)
+        if index:
+            parts.append(index)
+
+        return "\n\n".join(parts)
+
+    def _on_demand_index(self, names, registry, context: PromptContext) -> str:
+        """One-line-per-skill index telling the agent what it can fetch.
+
+        Only the descriptions go into the prompt; bodies and bundled files are
+        pulled with the ``skills`` plugin's tools when a task needs them.
+        """
+        lines = []
+        for name in names:
+            skill = registry.get(name)
+            if skill is None:
+                key = (context.agent_name, name)
+                if key not in _reported_missing_skills:
+                    _reported_missing_skills.add(key)
+                    logger.error(
+                        "Agent %s: on_demand skill '%s' not found — it will be MISSING "
+                        "from the index. Known skills: %s (scanned: %s)",
+                        context.agent_name, name, registry.names() or "none",
+                        registry.scanned_dirs or "no dirs",
+                    )
+                continue
+            desc = " ".join((skill.description or "").split()) or "(no description)"
+            lines.append(f"- `{skill.name}`: {desc}")
+
+        if not lines:
+            return ""
+        return (
+            "## Available skills\n\n"
+            "Reference material you can load when a task needs it. Read a skill with "
+            "the skills tools (`skills_read`); list its bundled files with `skills_list`.\n\n"
+            + "\n".join(lines)
+        )

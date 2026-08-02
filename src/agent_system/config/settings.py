@@ -225,38 +225,49 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         base_dir = cfg_path.parent
         # repository root is assumed to be parent of the config dir
         repo_root = cfg_path.parent.parent if cfg_path.parent.parent.exists() else base_dir
+
+        def _resolve_dir_list(block_key: str, list_key: str) -> None:
+            """Resolve <block_key>.<list_key> entries to absolute paths in place.
+
+            Shared by plugin_dirs and skill_dirs so both behave identically —
+            the alternative was duplicating this resolution per discovery root.
+            """
+            block = data.get(block_key) if isinstance(data, dict) else None
+            if not isinstance(block, dict):
+                return
+            entries = block.get(list_key)
+            if not isinstance(entries, list):
+                return
+            resolved = []
+            for p in entries:
+                if isinstance(p, str) and p:
+                    ppath = Path(p)
+                    if not ppath.is_absolute():
+                        # Try config-folder-relative first
+                        try:
+                            candidate = (base_dir.joinpath(ppath)).resolve()
+                        except Exception:
+                            candidate = base_dir.joinpath(ppath)
+                        # If that candidate doesn't exist but an equivalent
+                        # path exists relative to the repo root, prefer the
+                        # repo-root-relative path (handles `src/...`).
+                        if not candidate.exists():
+                            try:
+                                repo_candidate = (repo_root.joinpath(ppath)).resolve()
+                            except Exception:
+                                repo_candidate = repo_root.joinpath(ppath)
+                            if repo_candidate.exists():
+                                p = str(repo_candidate)
+                            else:
+                                p = str(candidate)
+                        else:
+                            p = str(candidate)
+                resolved.append(p)
+            data[block_key][list_key] = resolved
+
         try:
-            # New structure: plugins.plugin_dirs
-            plugins_block = data.get("plugins") if isinstance(data, dict) else None
-            if isinstance(plugins_block, dict):
-                pdirs = plugins_block.get("plugin_dirs")
-                if isinstance(pdirs, list):
-                    resolved = []
-                    for p in pdirs:
-                        if isinstance(p, str) and p:
-                            ppath = Path(p)
-                            if not ppath.is_absolute():
-                                # Try config-folder-relative first
-                                try:
-                                    candidate = (base_dir.joinpath(ppath)).resolve()
-                                except Exception:
-                                    candidate = base_dir.joinpath(ppath)
-                                # If that candidate doesn't exist but an equivalent
-                                # path exists relative to the repo root, prefer the
-                                # repo-root-relative path (handles `src/...`).
-                                if not candidate.exists():
-                                    try:
-                                        repo_candidate = (repo_root.joinpath(ppath)).resolve()
-                                    except Exception:
-                                        repo_candidate = repo_root.joinpath(ppath)
-                                    if repo_candidate.exists():
-                                        p = str(repo_candidate)
-                                    else:
-                                        p = str(candidate)
-                                else:
-                                    p = str(candidate)
-                        resolved.append(p)
-                    data["plugins"]["plugin_dirs"] = resolved
+            _resolve_dir_list("plugins", "plugin_dirs")   # New structure: plugins.plugin_dirs
+            _resolve_dir_list("skills", "skill_dirs")     # skills.skill_dirs (docs/skills_design.md)
         except Exception:
             # Conservative: if resolution fails for any reason, keep original values
             pass

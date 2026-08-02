@@ -294,6 +294,37 @@ def resolve_llm_params(
 # Feinsteuerung pro Modell).
 
 
+class SkillsConfig(BaseModel):
+    """Which packaged skills an agent gets (see docs/skills_design.md).
+
+    ``always`` skills are appended to the system prompt at render time — the
+    agent HAS the knowledge, it does not have to ask for it. Deterministic and
+    cache-friendly (part of the stable prefix).
+
+    Accepts a bare list as shorthand, so both forms work::
+
+        skills: ["house-style"]              # == always: ["house-style"]
+        skills:
+          always: ["house-style"]
+
+    ``on_demand`` skills are NOT put in the prompt — only a one-line index of
+    them is, so the agent knows they exist and can pull the body (and any
+    bundled ``reference/`` files) with the ``skills`` plugin's tools. Use it for
+    material that is large and only occasionally needed; anything the agent
+    needs most of the time belongs in ``always``, where it cannot be forgotten.
+    """
+
+    always: List[str] = Field(default_factory=list)
+    on_demand: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_bare_list(cls, v: Any) -> Any:
+        if isinstance(v, (list, tuple)):
+            return {"always": list(v)}
+        return v
+
+
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     # LLM-KETTE (seit 2026-07: neue Semantik!): Liste = [primär, fallback1, fallback2, ...]
@@ -342,6 +373,9 @@ class AgentConfig(BaseModel):
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
+    # Packaged knowledge appended to the system prompt (docs/skills_design.md).
+    # Bare list allowed: `skills: ["house-style"]`.
+    skills: Optional[SkillsConfig] = None
     template_vars: Optional[Dict[str, Any]] = None  # Custom variables for Jinja2 template rendering
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)  # Timeout configuration for deadlock prevention
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)  # Tool call loop detection
@@ -649,6 +683,20 @@ class MCPServerModeConfig(BaseModel):
     # Timeout configuration
     default_timeout: float = 30.0  # Default HTTP request timeout for MCP streamable transport (seconds)
     sse_heartbeat_interval: float = 30.0  # Interval for SSE heartbeat messages (seconds)
+
+
+class SkillsSystemConfig(BaseModel):
+    """Where packaged skills are discovered (matches the ``skills:`` block).
+
+    Mirrors ``plugins.plugin_dirs``: several roots, each of whose immediate
+    subdirectories may be a skill. Relative paths resolve like plugin dirs
+    (config-folder first, then repo root). The first root defining a name wins.
+
+    Empty means "use the default" (``skills/``, or ``$AGENT_SKILL_DIRS``), so an
+    existing config without this block keeps working.
+    """
+
+    skill_dirs: List[str] = Field(default_factory=list)
 
 
 class PluginsConfig(BaseModel):
@@ -981,6 +1029,9 @@ class AgentSystemConfig(BaseModel):
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    # Skill discovery roots (docs/skills_design.md). Per-agent selection is
+    # AgentConfig.skills; this is only WHERE skills are found.
+    skills: SkillsSystemConfig = Field(default_factory=SkillsSystemConfig)
 
     # Included configurations (will be populated from included files)
     llm_system: Optional[LLMSystemConfig] = None

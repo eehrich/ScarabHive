@@ -3,7 +3,7 @@
 # ================================
 
 name: "ScarabHive"
-version: "0.5.3"
+version: "0.6.0"
 description: "ScarabHive - Flexible AI Agent Framework with plugin support"
 
 # all included configs
@@ -49,6 +49,19 @@ network:
 
 # define the agent which will be startet by default if no other agent is specified
 default_agent: chat_agent
+
+# ================================
+# Skills — packaged agent knowledge (docs/skills_design.md)
+# ================================
+# Discovery roots, like plugins.plugin_dirs: every immediate subdirectory of a
+# root that carries a skill.toml is one skill. The first root defining a name
+# wins. Relative paths resolve config-folder-first, then repo root.
+# Which skills an agent actually gets is set per agent (agent_config.skills).
+# Omit or leave empty to use the default ("skills"); $AGENT_SKILL_DIRS overrides
+# the default too.
+skills:
+  skill_dirs:
+    - skills
 
 # Multi-user authentication and authorization (optional)
 auth:
