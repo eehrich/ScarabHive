@@ -976,7 +976,7 @@ llm_system:
       capabilities:
         tools: true
         function_calling: true
-        streaming: false
+        streaming: true
         json_mode: true
         multimodal: true  # multimodal reasoning model per OpenRouter listing
         
