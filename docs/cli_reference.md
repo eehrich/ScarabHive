@@ -114,30 +114,52 @@ agent-cli chat --agent amiga_coder --llm deepseek-chat
 # Send a first message immediately
 agent-cli chat "Wie ist der Stand?" --agent sysadmin_agent
 
-# Resume an earlier session
-agent-cli chat --session a1b2c3d4
+# Resume an earlier session (/sessions and /session print this line for you)
+agent-cli chat --session a1b2c3d4 --agent amiga_coder
+
+# List sessions without entering the chat
+agent-cli chat --list-sessions
 ```
 
 Accepts the same `--agent`, `--llm`, `--llm-params`, `--session`,
-`--session-user`, `--session-title` and `--vars` options as `run`.
+`--session-user`, `--list-sessions` and `--vars` options as `run`, plus the
+global `--color` and `--no-status`.
 
 **In-chat commands:**
 
 | Command | Effect |
 |---------|--------|
-| `/exit`, `/quit`, `/q` | End the chat (Ctrl-D / Ctrl-Z+Enter work too) |
+| `/exit`, `/quit`, `/q`, `/bye` | End the chat (Ctrl-D / Ctrl-Z+Enter work too) |
 | `/new` | Start a fresh session (the current one stays saved) |
-| `/session` | Show the current session id |
-| `/help` | List the commands |
-| Ctrl-C | Cancel the **running turn** -- the chat keeps going |
+| `/session` | Show the current session and the command that resumes it |
+| `/sessions` | List the 10 most recent sessions |
+| `/resume <id>` | Continue an earlier session without leaving the chat |
+| `/help`, `/?` | List the commands |
+| Ctrl-C | Cancel the **running turn**; twice at the prompt exits |
+
+**Multi-line input.** A plain Enter sends the message, so pasting a block
+needs one of:
+
+```
+"""
+move.w  d0,d1
+rts
+"""
+```
+
+or a trailing backslash to continue on the next line. A message that has to
+*start* with a command word is escaped with a doubled slash (`//new ...`);
+anything else beginning with `/` that is not a known command — a path like
+`/etc/nginx/nginx.conf`, for instance — is sent as an ordinary message.
 
 **Display:** tool activity is rendered like the WebUI front panel -- one line
 per operation that updates in place and collapses into its `✓`/`✗` end state,
 instead of a chronological log. Thinking tokens appear as a live counter
 (`✻ Thinking… (~120 tokens · 4s)`), intermediate agent narration between tool
-calls is shown dimmed, and the final answer is rendered as markdown. On a
-non-ANSI terminal (or when piped) the display falls back to plain
-chronological lines.
+calls is shown dimmed, and the final answer is rendered as markdown. Each turn
+ends with a dim usage footer (`↑1.2k ↓830 · $0.0213 · 3m41s`) and the session
+total is printed on exit. On a non-ANSI terminal (or when piped) the display
+falls back to plain chronological lines.
 
 ---
 

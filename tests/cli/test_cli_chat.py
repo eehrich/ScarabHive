@@ -4,14 +4,34 @@ The renderer contract mirrors the WebUI (see chat_module.js): one line per
 operation key, progress rewritten in place, the end line REPLACES the progress
 line and must stand on its own. Thinking is a counter line, not a token flood.
 """
+import builtins
 import io
+import logging
+import sys
 
 from agent_system.cli_utils.chat import (
+    _ASCII_SYMBOLS,
     ChatRenderer,
+    _accumulate_usage,
+    _format_usage,
+    _read_input,
+    _restore_logging,
+    _silence_stdout_logging,
+    display_width,
     parse_chat_command,
     run_chat_turn,
 )
 from agent_system.mcp.status import StatusEvent, StatusPhase, status_bus
+
+
+def _bus_queue_count() -> int:
+    """Queue subscribers currently registered on the bus.
+
+    The earlier version of these tests read a `_subscribers` attribute that
+    does not exist and defaulted it to [] -- every leak assertion was 0 == 0.
+    No getattr default here: if the attribute is renamed the test must break.
+    """
+    return len(status_bus._queue_handlers)
 
 
 def _ev(server="tool.x", message="working", phase=StatusPhase.PROGRESS,
@@ -271,16 +291,31 @@ class TestNarration:
 class TestParseChatCommand:
     def test_aliases(self):
         for line in ("/exit", "/quit", "/q", "/bye", " /EXIT "):
-            assert parse_chat_command(line) == "exit"
-        assert parse_chat_command("/new") == "new"
-        assert parse_chat_command("/session") == "session"
-        assert parse_chat_command("/help") == "help"
-        assert parse_chat_command("/?") == "help"
+            assert parse_chat_command(line)[0] == "exit"
+        assert parse_chat_command("/new")[0] == "new"
+        assert parse_chat_command("/session")[0] == "session"
+        assert parse_chat_command("/sessions")[0] == "sessions"
+        assert parse_chat_command("/help")[0] == "help"
+        assert parse_chat_command("/?")[0] == "help"
 
-    def test_unknown_command_vs_normal_input(self):
-        assert parse_chat_command("/nope") == "unknown"
-        assert parse_chat_command("hello world") is None
-        assert parse_chat_command("was ist 1/2?") is None
+    def test_payload_is_split_off(self):
+        assert parse_chat_command("/resume ab12cd") == ("resume", "ab12cd")
+        assert parse_chat_command("/resume") == ("resume", "")
+
+    def test_unknown_slash_input_is_a_message_not_a_command(self):
+        """A path is ordinary input for a sysadmin/coder agent. Treating it as
+        a typo'd command silently swallowed the message."""
+        assert parse_chat_command("/etc/nginx/nginx.conf pruefen") == (
+            None, "/etc/nginx/nginx.conf pruefen")
+        assert parse_chat_command("/nope")[0] is None
+
+    def test_double_slash_escapes_a_command_word(self):
+        assert parse_chat_command("//new heisst bei uns anders") == (
+            None, "/new heisst bei uns anders")
+
+    def test_normal_input_passes_through(self):
+        assert parse_chat_command("hello world") == (None, "hello world")
+        assert parse_chat_command("was ist 1/2?") == (None, "was ist 1/2?")
 
 
 class _FakeAgent:
@@ -354,21 +389,21 @@ class TestRunChatTurn:
         assert result["cancelled"] is True
 
     async def test_unsubscribes_from_the_status_bus(self):
-        before = len(getattr(status_bus, "_subscribers", []))
+        before = _bus_queue_count()
         agent = _FakeAgent([
             {"type": "start", "request_id": "r", "session_id": "s"},
             {"type": "end"},
         ])
         r, _t = _renderer()
         await run_chat_turn(agent, "x", "s", r)
-        assert len(getattr(status_bus, "_subscribers", [])) == before
+        assert _bus_queue_count() == before
 
     async def test_show_status_false_subscribes_nothing(self):
-        before = len(getattr(status_bus, "_subscribers", []))
+        before = _bus_queue_count()
         agent = _FakeAgent([{"type": "end"}])
         r, _t = _renderer()
         await run_chat_turn(agent, "x", "s", r, show_status=False)
-        assert len(getattr(status_bus, "_subscribers", [])) == before
+        assert _bus_queue_count() == before
 
 
 class _ExplodingAgent:
@@ -383,13 +418,13 @@ class _ExplodingAgent:
 
 class TestTurnRobustness:
     async def test_exception_still_unsubscribes_the_status_queue(self):
-        before = len(getattr(status_bus, "_subscribers", []))
+        before = _bus_queue_count()
         r, _t = _renderer()
         try:
             await run_chat_turn(_ExplodingAgent(), "x", "s", r)
         except RuntimeError:
             pass
-        assert len(getattr(status_bus, "_subscribers", [])) == before
+        assert _bus_queue_count() == before
 
     def test_exploding_turn_returns_an_error_instead_of_killing_the_repl(self):
         import asyncio
@@ -436,3 +471,212 @@ class TestVtReassertion:
         r, _t = _renderer(ansi=False)
         r.handle_status(_ev(message="run"))
         r.println("x")
+
+
+class TestDisplayWidth:
+    """Region offsets assume one printed line is one physical line. len()
+    counts code points, so a CJK/emoji chunk could wrap and silently shift
+    every offset above it -- the corruption the hard wrap exists to prevent."""
+
+    def test_wide_characters_count_two_columns(self):
+        assert display_width("abc") == 3
+        assert display_width("日本語") == 6
+        assert display_width("a日b") == 4
+
+    def test_combining_marks_count_zero(self):
+        assert display_width("é") == 1        # e + combining acute
+
+    def test_wrapped_lines_never_exceed_the_column_budget(self):
+        r, out = _renderer(width=21)                # 20 usable columns
+        r.println("日本語" * 12)
+        for line in out.getvalue().split("\n")[:-1]:
+            plain = line.replace("\x1b[90m", "").replace("\x1b[0m", "")
+            assert display_width(plain) <= 20
+        assert r._total == out.getvalue().count("\n")
+
+    def test_fit_caps_by_columns_not_code_points(self):
+        r, out = _renderer(width=15)
+        r.handle_status(_ev(message="日" * 40, phase=StatusPhase.END))
+        plain = (out.getvalue().replace("\x1b[32m", "").replace("\x1b[0m", "")
+                 .strip("\n"))
+        assert display_width(plain) <= 14
+
+
+class TestNarrationWrapping:
+    def test_wraps_on_word_boundaries(self):
+        r, out = _renderer(width=21)
+        r.println("alpha beta gamma delta epsilon")
+        lines = [ln for ln in out.getvalue().split("\n") if ln]
+        assert "alpha" in lines[0]
+        assert any("epsilon" in ln for ln in lines)
+        for ln in lines:                            # no word cut in half
+            assert "alph" not in ln or "alpha" in ln
+
+    def test_word_longer_than_the_line_is_still_split(self):
+        r, out = _renderer(width=11)                # 10 usable
+        r.println("x" * 25)
+        assert r._total == out.getvalue().count("\n")
+        assert r._total >= 3
+
+    def test_blank_line_stays_blank(self):
+        r, out = _renderer()
+        r.println("")
+        assert out.getvalue() == "\n"
+        assert r._total == 1
+
+
+class TestErrorOutput:
+    def test_errors_are_not_truncated_to_one_line(self):
+        """The actionable part (provider body, env var, URL) sits at the END;
+        capping to terminal width dropped exactly that."""
+        r, out = _renderer(width=40)
+        r.error_line("ERROR: LLM call failed: 401 Unauthorized -- set "
+                     "ANTHROPIC_API_KEY in config/llm.yaml to fix this")
+        plain = out.getvalue().replace("\x1b[31m", "").replace("\x1b[0m", "")
+        assert "ANTHROPIC_API_KEY" in plain
+        assert "…" not in plain
+
+    def test_multiline_errors_keep_their_lines(self):
+        r, out = _renderer()
+        r.error_line("Zeile eins\nZeile zwei")
+        plain = out.getvalue().replace("\x1b[31m", "").replace("\x1b[0m", "")
+        assert "Zeile eins" in plain and "Zeile zwei" in plain
+
+
+class TestResize:
+    def test_width_change_ends_the_region(self):
+        """A resize reflows already-printed lines, so recorded offsets stop
+        matching physical lines -- climbing after that corrupts the viewport."""
+        r, out = _renderer(width=60)
+        r.handle_status(_ev(request_id="a", message="erste"))
+        r._width_override = 30                      # user drags the window
+        r.handle_status(_ev(request_id="a", message="zweite"))
+        text = out.getvalue()
+        assert "\x1b[1A" not in text                # no climb across the resize
+        assert text.count("\n") == 2                # appended instead
+
+
+class TestUsage:
+    def test_accumulates_across_llm_calls(self):
+        total = {}
+        _accumulate_usage(total, {"prompt_tokens": 100, "completion_tokens": 20})
+        _accumulate_usage(total, {"prompt_tokens": 50, "completion_tokens": 5, "cost": 0.01})
+        assert total == {"prompt_tokens": 150, "completion_tokens": 25, "cost": 0.01}
+
+    def test_ignores_malformed_usage(self):
+        total = {}
+        _accumulate_usage(total, None)
+        _accumulate_usage(total, "nonsense")
+        _accumulate_usage(total, {"prompt_tokens": "many"})
+        assert total == {}
+
+    def test_format_is_compact(self):
+        line = _format_usage({"prompt_tokens": 1200, "completion_tokens": 830,
+                              "cost": 0.0213}, 221.0, _ASCII_SYMBOLS)
+        assert "1.2k" in line and "830" in line and "$0.0213" in line
+        assert "3m41s" in line
+
+    def test_format_without_usage_still_shows_time(self):
+        assert _format_usage({}, 5.0, _ASCII_SYMBOLS) == "5s"
+
+
+def _feed(lines):
+    """Replacement for input() that yields the given lines, then EOF."""
+    it = iter(lines)
+
+    def fake_input(prompt=""):
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError
+    return fake_input
+
+
+class TestMultilineInput:
+    """Pasting a code block used to fire ONE TURN PER LINE: line 1 started a
+    task and the rest sat in the console buffer, launching back to back."""
+
+    def test_fenced_block_is_one_message(self, monkeypatch):
+        monkeypatch.setattr(builtins, "input",
+                            _feed(['"""', "move.w d0,d1", "rts", '"""']))
+        assert _read_input("> ") == "move.w d0,d1\nrts"
+
+    def test_fence_closing_on_the_content_line(self, monkeypatch):
+        monkeypatch.setattr(builtins, "input",
+                            _feed(['"""', "eine zeile", 'zwei"""']))
+        assert _read_input("> ") == "eine zeile\nzwei"
+
+    def test_backslash_continuation(self, monkeypatch):
+        monkeypatch.setattr(builtins, "input",
+                            _feed(["erste \\", "zweite \\", "dritte"]))
+        assert _read_input("> ") == "erste \nzweite \ndritte"
+
+    def test_plain_line_is_untouched(self, monkeypatch):
+        monkeypatch.setattr(builtins, "input", _feed(["normale frage"]))
+        assert _read_input("> ") == "normale frage"
+
+    def test_unterminated_fence_ends_at_eof(self, monkeypatch):
+        monkeypatch.setattr(builtins, "input", _feed(['"""', "abc"]))
+        assert _read_input("> ") == "abc"
+
+
+class TestLoggingSilence:
+    def test_stdout_handler_is_muted_and_restored(self):
+        """Console log lines land in the same stream as the live region but are
+        invisible to its accounting -- every later climb would land too high."""
+        root = logging.getLogger()
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.WARNING)
+        root.addHandler(handler)
+        try:
+            silenced = _silence_stdout_logging()
+            assert handler.level > logging.CRITICAL
+            _restore_logging(silenced)
+            assert handler.level == logging.WARNING
+        finally:
+            root.removeHandler(handler)
+
+    def test_file_handlers_keep_logging(self, tmp_path):
+        root = logging.getLogger()
+        handler = logging.FileHandler(tmp_path / "x.log", encoding="utf-8")
+        handler.setLevel(logging.INFO)
+        root.addHandler(handler)
+        try:
+            _silence_stdout_logging()
+            assert handler.level == logging.INFO   # untouched: nothing is lost
+        finally:
+            root.removeHandler(handler)
+            handler.close()
+
+
+class TestNoStatusGating:
+    async def test_narration_is_suppressed_with_no_status(self):
+        """--no-status means stdout carries answers only; narration ignored it."""
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete",
+             "assistant": {"content": "Zwischenstand", "tool_calls": [{"id": "t"}]}},
+            {"type": "final", "summary": "fertig"},
+            {"type": "end"},
+        ])
+        r, out = _renderer()
+        await run_chat_turn(agent, "x", "s", r, show_status=False)
+        assert "Zwischenstand" not in out.getvalue()
+
+
+class TestTurnUsage:
+    async def test_usage_is_summed_over_the_turn(self):
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete",
+             "assistant": {"content": "a", "tool_calls": [{"id": "t"}]},
+             "usage": {"prompt_tokens": 10, "completion_tokens": 2}},
+            {"type": "thinking_complete",
+             "assistant": {"content": "b", "tool_calls": None},
+             "usage": {"prompt_tokens": 30, "completion_tokens": 4}},
+            {"type": "final", "summary": "b"},
+            {"type": "end"},
+        ])
+        r, _t = _renderer()
+        result = await run_chat_turn(agent, "x", "s", r)
+        assert result["usage"] == {"prompt_tokens": 40, "completion_tokens": 6}

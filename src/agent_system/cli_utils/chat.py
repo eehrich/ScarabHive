@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import time
+import unicodedata
 from typing import Any, Optional, TextIO
 
 from .common import (
@@ -40,8 +41,10 @@ _PAINT_INTERVAL_S = 0.1
 # Graceful-cancel budget after Ctrl-C before the turn task is cancelled hard.
 _CANCEL_GRACE_S = 15.0
 
-_UNICODE_SYMBOLS = {"run": "▸", "ok": "✓", "err": "✗", "think": "✻", "cut": "…", "sep": " · "}
-_ASCII_SYMBOLS = {"run": ">", "ok": "+", "err": "x", "think": "*", "cut": "...", "sep": ", "}
+_UNICODE_SYMBOLS = {"run": "▸", "ok": "✓", "err": "✗", "think": "✻", "cut": "…",
+                    "sep": " · ", "up": "↑", "down": "↓"}
+_ASCII_SYMBOLS = {"run": ">", "ok": "+", "err": "x", "think": "*", "cut": "...",
+                  "sep": ", ", "up": "in ", "down": "out "}
 
 
 def _pick_symbols(out: TextIO) -> dict[str, str]:
@@ -52,6 +55,38 @@ def _pick_symbols(out: TextIO) -> dict[str, str]:
         return _UNICODE_SYMBOLS
     except (UnicodeEncodeError, LookupError):
         return _ASCII_SYMBOLS
+
+
+def _char_width(ch: str) -> int:
+    """Display columns one character occupies."""
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def display_width(text: str) -> int:
+    """Columns `text` occupies -- NOT len().
+
+    The region's cursor arithmetic assumes one printed line is one physical
+    line. A CJK character or emoji is two columns wide, so a chunk measured
+    with len() can wrap and silently shift every offset above it.
+    """
+    return sum(_char_width(ch) for ch in text)
+
+
+def _cut_to_width(text: str, limit: int) -> str:
+    """Longest prefix of `text` that fits into `limit` columns."""
+    if limit <= 0:
+        return ""
+    out: list[str] = []
+    used = 0
+    for ch in text:
+        w = _char_width(ch)
+        if used + w > limit:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out)
 
 
 class ChatRenderer:
@@ -81,6 +116,10 @@ class ChatRenderer:
         # Live region state: key -> absolute line index since region start.
         self._lines: dict[str, int] = {}
         self._total = 0
+        # Width the region's lines were laid out at. A mid-turn resize reflows
+        # every already-printed line, so the recorded offsets stop matching
+        # physical lines -- the region has to end rather than climb blindly.
+        self._region_width: Optional[int] = None
         # Thinking counter state
         self._thinking_active = False
         self._thinking_tokens = 0
@@ -107,12 +146,12 @@ class ChatRenderer:
         rewrite -- the cursor only returns to the start of the last physical
         line.
         """
-        single = indent + " ".join(text.split())
+        single = (indent + " ".join(text.split())).expandtabs(4)
         limit = self._width() - 1
-        if len(single) <= limit:
+        if display_width(single) <= limit:
             return single
         cut = self.sym["cut"]
-        return single[: max(limit - len(cut), 1)] + cut
+        return _cut_to_width(single, max(limit - display_width(cut), 1)) + cut
 
     def _colored(self, text: str, color: Optional[str]) -> str:
         # Deliberately NOT colorize(): that helper consults the global
@@ -155,6 +194,7 @@ class ChatRenderer:
         # (MSYS bash does, on every start) -- re-assert before painting, or
         # everything from here on renders as literal escapes.
         reassert_vt()
+        self._check_resize()
         offset = self._total - self._lines[key] if key in self._lines else None
         if offset is not None and offset <= self._usable_height():
             self.out.write(f"\x1b[{offset}A\r\x1b[K{text}\x1b[{offset}B\r")
@@ -164,10 +204,20 @@ class ChatRenderer:
             self.out.write(text + "\n")
         self.out.flush()
 
+    def _check_resize(self) -> None:
+        """End the region when the terminal width changed under us."""
+        width = self._width()
+        if self._region_width is None:
+            self._region_width = width
+        elif width != self._region_width:
+            self._commit_region()
+            self._region_width = width
+
     def _commit_region(self) -> None:
         """Freeze the live region: lines stay as printed, tracking resets."""
         self._lines.clear()
         self._total = 0
+        self._region_width = None
 
     def commit(self) -> None:
         """End the live region before output that bypasses this renderer.
@@ -185,7 +235,8 @@ class ChatRenderer:
         every physical line printed here is counted in the offsets -- a
         coordinator step simply climbs OVER the narration to its own row.
         Long text is hard-wrapped so the count matches physical lines (a
-        soft-wrapped line would silently shift every offset above it), and
+        soft-wrapped line would silently shift every offset above it),
+        measured in COLUMNS not code points, broken at word boundaries, and
         colour is applied per chunk AFTER slicing so no escape is ever cut.
         """
         if not self.ansi:
@@ -193,14 +244,49 @@ class ChatRenderer:
             self.out.flush()
             return
         reassert_vt()  # see _paint
+        self._check_resize()
         width = max(self._width() - 1, 10)
         for logical in text.splitlines() or [""]:
-            for start in range(0, len(logical), width) if logical else (0,):
-                chunk = logical[start:start + width]
+            for chunk in self._wrap(logical.expandtabs(4), width):
                 self.out.write(self._colored(chunk, color) if chunk else "")
                 self.out.write("\n")
                 self._total += 1
         self.out.flush()
+
+    @staticmethod
+    def _wrap(line: str, width: int) -> list[str]:
+        """Break `line` into chunks of at most `width` COLUMNS, on words.
+
+        textwrap can't be used: it counts code points, so a CJK line would
+        come back too wide and wrap again in the terminal -- the exact
+        corruption the hard wrap exists to prevent.
+        """
+        if not line:
+            return [""]
+        chunks: list[str] = []
+        current = ""
+        used = 0
+        for word in line.split(" "):
+            piece = word if not current else " " + word
+            if used + display_width(piece) > width and current:
+                chunks.append(current)
+                current, used = "", 0
+                piece = word
+            # A single word wider than the line still has to be split.
+            while display_width(piece) > width:
+                head = _cut_to_width(piece, width - used) if used else _cut_to_width(piece, width)
+                if not head:
+                    chunks.append(current)
+                    current, used = "", 0
+                    continue
+                chunks.append(current + head)
+                piece = piece[len(head):]
+                current, used = "", 0
+            current += piece
+            used += display_width(piece)
+        if current or not chunks:
+            chunks.append(current)
+        return chunks
 
     def close(self) -> None:
         """End of turn: nothing may stay live or half-counted."""
@@ -247,10 +333,14 @@ class ChatRenderer:
         # Unknown phases are dropped on purpose: display-only surface.
 
     def error_line(self, text: str) -> None:
-        # Unique key per error: consecutive distinct errors must not
-        # overwrite each other on one shared region line.
-        self._error_seq = getattr(self, "_error_seq", 0) + 1
-        self._paint(f"__error__{self._error_seq}", self._colored(self._fit(text), "31"))
+        """Errors print IN FULL, wrapped -- never capped to one line.
+
+        What the user needs to act on (provider response body, missing env
+        var, URL) sits at the END of these messages; _fit would drop exactly
+        that and leave it only in the log.
+        """
+        for logical in str(text).splitlines() or [""]:
+            self.println(logical, color="31")
 
     # ------------------------------------------------------- thinking counter
 
@@ -330,7 +420,8 @@ async def run_chat_turn(
     """
     from ..mcp.status import status_bus
 
-    result: dict[str, Any] = {"summary": None, "cancelled": False, "errors": []}
+    result: dict[str, Any] = {"summary": None, "cancelled": False, "errors": [],
+                              "usage": {}}
     if state is None:
         state = {}
 
@@ -370,13 +461,17 @@ async def run_chat_turn(
                 # Only intermediate steps (with tool calls) are narrated here;
                 # the last step's content arrives again as the final event and
                 # would show twice otherwise.
-                if assistant.get("tool_calls") and isinstance(content, str):
+                if show_status and assistant.get("tool_calls") and isinstance(content, str):
                     renderer.narration(content)
+                # Usage rides on thinking_complete per LLM call; sum them so a
+                # multi-step turn reports the whole turn, not just the last call.
+                _accumulate_usage(result["usage"], ev.get("usage"))
             elif t == "heartbeat":
                 if show_status:
                     renderer.thinking_tick()
             elif t == "final":
                 result["summary"] = ev.get("summary") or ""
+                _accumulate_usage(result["usage"], ev.get("usage"))
             elif t == "error":
                 message = str(ev.get("message") or "unknown error")
                 result["errors"].append(message)
@@ -412,28 +507,135 @@ async def run_chat_turn(
 # --------------------------------------------------------------------- REPL
 
 
-def parse_chat_command(line: str) -> Optional[str]:
-    """Map a /-command line to its canonical name, None for normal input."""
+_COMMAND_ALIASES = {
+    "/exit": "exit", "/quit": "exit", "/q": "exit", "/bye": "exit",
+    "/new": "new",
+    "/session": "session",
+    "/sessions": "sessions",
+    "/resume": "resume",
+    "/help": "help", "/?": "help",
+}
+
+
+def parse_chat_command(line: str) -> tuple[Optional[str], str]:
+    """Split a prompt line into (command, payload).
+
+    Only KNOWN aliases are commands. Anything else starting with "/" is a
+    normal message -- "/etc/nginx/nginx.conf pruefen" is ordinary input for a
+    sysadmin agent, and treating it as a typo'd command silently ate it.
+    "//" is the literal escape for a message that really has to start with a
+    command word.
+    """
     stripped = line.strip()
+    if stripped.startswith("//"):
+        return None, stripped[1:]
     if not stripped.startswith("/"):
-        return None
-    word = stripped.split()[0].lower()
-    aliases = {
-        "/exit": "exit", "/quit": "exit", "/q": "exit", "/bye": "exit",
-        "/new": "new",
-        "/session": "session",
-        "/help": "help", "/?": "help",
-    }
-    return aliases.get(word, "unknown")
+        return None, stripped
+    word, _, rest = stripped.partition(" ")
+    command = _COMMAND_ALIASES.get(word.lower())
+    if command is None:
+        return None, stripped
+    return command, rest.strip()
 
 
-_HELP_TEXT = """\
+_HELP_TEXT = '''\
 Commands:
   /exit, /quit, /q   end the chat (Ctrl-D / Ctrl-Z+Enter work too)
   /new               start a fresh session (current one stays saved)
-  /session           show the current session id
+  /session           show the current session and how to resume it
+  /sessions          list recent sessions
+  /resume <id>       continue an earlier session
   /help              this help
-  Ctrl-C             cancel the running turn (the chat keeps going)"""
+
+Input:
+  """               start/end a multi-line message (paste code between them)
+  \\ at line end      continue on the next line
+  //text             send a message that starts with a command word
+
+  Ctrl-C             cancel the running turn; twice at the prompt exits'''
+
+
+_FENCE = '"""'
+
+
+def _silence_stdout_logging() -> list[tuple[Any, int]]:
+    """Mute console log handlers writing to stdout, remembering their levels.
+
+    setup_logging attaches a StreamHandler(sys.stdout) to the root logger.
+    Those lines land in the SAME stream as the live region but are invisible
+    to its line accounting, so every later cursor climb lands too high and
+    overwrites a foreign line. File handlers keep logging -- nothing is lost,
+    it just stops corrupting the display.
+    """
+    silenced: list[tuple[Any, int]] = []
+    for handler in list(logging.getLogger().handlers):
+        if isinstance(handler, logging.FileHandler):
+            continue
+        if not isinstance(handler, logging.StreamHandler):
+            continue
+        if getattr(handler, "stream", None) not in (sys.stdout, sys.stderr):
+            continue
+        silenced.append((handler, handler.level))
+        handler.setLevel(logging.CRITICAL + 1)
+    return silenced
+
+
+def _restore_logging(silenced: list[tuple[Any, int]]) -> None:
+    for handler, level in silenced:
+        try:
+            handler.setLevel(level)
+        except Exception:
+            logger.debug("Could not restore log handler level", exc_info=True)
+
+
+def _read_input(prompt: str, cont_prompt: str = "... ", echo: bool = False) -> str:
+    """Read one message, which may span several lines.
+
+    Pasting a stack trace or a code block used to fire ONE TURN PER LINE:
+    line 1 started a task and the rest sat in the console buffer, launching
+    back to back afterwards. Two ways out, both familiar from peer CLIs:
+    a triple-quote fence around a block, and a trailing backslash.
+    """
+    def _next() -> Optional[str]:
+        try:
+            line = input(cont_prompt)
+        except EOFError:
+            return None
+        if echo:
+            print(line)
+        return line
+
+    first = input(prompt)
+    if echo:
+        print(first)
+
+    stripped = first.strip()
+    if stripped.startswith(_FENCE):
+        rest = stripped[len(_FENCE):]
+        # Whole block on one line: \"\"\"text\"\"\"
+        if rest.endswith(_FENCE) and len(rest) >= len(_FENCE):
+            return rest[: -len(_FENCE)]
+        lines = [rest] if rest else []
+        while (line := _next()) is not None:
+            if line.strip().endswith(_FENCE):
+                head = line.strip()[: -len(_FENCE)]
+                if head:
+                    lines.append(head)
+                break
+            lines.append(line)
+        return "\n".join(lines)
+
+    if first.endswith("\\"):
+        lines = [first[:-1]]
+        while (line := _next()) is not None:
+            if line.endswith("\\"):
+                lines.append(line[:-1])
+                continue
+            lines.append(line)
+            break
+        return "\n".join(lines)
+
+    return first
 
 
 class _ChatContext:
@@ -442,10 +644,13 @@ class _ChatContext:
     def __init__(self, *, agent: Any, entry_name: str, session_service: Any,
                  session_user: str, session_id: str, was_new_session: bool,
                  llm_profile: str, llm_override: Any,
-                 llm_profile_info: Optional[str], show_status: bool) -> None:
+                 llm_profile_info: Optional[str], show_status: bool,
+                 session_manager: Any = None,
+                 template_vars: Optional[dict] = None) -> None:
         self.agent = agent
         self.entry_name = entry_name
         self.session_service = session_service
+        self.session_manager = session_manager
         self.session_user = session_user
         self.session_id = session_id
         self.was_new_session = was_new_session
@@ -453,9 +658,32 @@ class _ChatContext:
         self.llm_override = llm_override
         self.llm_profile_info = llm_profile_info
         self.show_status = show_status
+        # CLI --vars overrides: /new has to re-apply them, otherwise a fresh
+        # session silently falls back to the agent config's defaults.
+        self.template_vars = dict(template_vars or {})
         # Which session id actually reached disk (None until the first save):
         # the exit message must not claim a save that never happened.
         self.last_saved: Optional[str] = None
+        # Cumulative usage across the chat, for the exit line.
+        self.total_usage: dict[str, float] = {}
+
+    def llm_label(self) -> str:
+        """Profile plus the model behind it.
+
+        llm_profile_info only exists when --llm/--llm-params was passed; in the
+        normal case the banner would just echo the profile name back at the
+        user, who already typed it.
+        """
+        if self.llm_profile_info:
+            return self.llm_profile_info
+        try:
+            client = getattr(self.agent, "llm", None)
+            model = getattr(client, "model", None)
+            if model:
+                return f"{self.llm_profile} ({model})"
+        except Exception:
+            logger.debug("Could not resolve model for banner", exc_info=True)
+        return self.llm_profile
 
 
 def _init_fresh_session(ctx: _ChatContext) -> str:
@@ -467,15 +695,108 @@ def _init_fresh_session(ctx: _ChatContext) -> str:
     if tracker is not None:
         tracker.set_session_messages(new_id, [])
         agent_config = getattr(ctx.agent, "agent_config", None)
-        template_vars = getattr(agent_config, "template_vars", None) if agent_config else None
-        if template_vars:
-            tracker.set_session_template_vars(new_id, dict(template_vars))
+        config_vars = getattr(agent_config, "template_vars", None) if agent_config else None
+        # Same order as the CLI bootstrap: config defaults first, then the
+        # --vars the user passed on the command line.
+        merged = dict(config_vars or {})
+        merged.update(ctx.template_vars)
+        if merged:
+            tracker.set_session_template_vars(new_id, merged)
         tracker.set_session_metadata(new_id, {
             "user_id": ctx.session_user,
             "agent_name": ctx.entry_name,
             "llm_profile": ctx.llm_profile,
         })
     return new_id
+
+
+def _resume_hint(ctx: "_ChatContext", session_id: str) -> str:
+    """The exact command that brings this session back."""
+    parts = ["agent-cli chat", f"--session {session_id}", f"--agent {ctx.entry_name}"]
+    if ctx.session_user != "cli_user":
+        parts.append(f"--session-user {ctx.session_user}")
+    return " ".join(parts)
+
+
+def _accumulate_usage(total: dict, usage: Any) -> None:
+    """Add one turn's usage into the running total (best effort)."""
+    if not isinstance(usage, dict):
+        return
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cost"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)):
+            total[key] = total.get(key, 0) + value
+
+
+def _format_usage(usage: dict, elapsed: float, sym: dict) -> str:
+    """One dim footer line: tokens, cost, wall time."""
+    def _short(n: float) -> str:
+        return f"{n / 1000:.1f}k" if n >= 1000 else f"{int(n)}"
+
+    parts = []
+    if usage.get("prompt_tokens") or usage.get("completion_tokens"):
+        up = _short(usage.get("prompt_tokens", 0))
+        down = _short(usage.get("completion_tokens", 0))
+        parts.append(f"{sym['up']}{up} {sym['down']}{down}")
+    elif usage.get("total_tokens"):
+        parts.append(f"{_short(usage['total_tokens'])} tokens")
+    if usage.get("cost"):
+        parts.append(f"${usage['cost']:.4f}")
+    mins, secs = divmod(int(elapsed), 60)
+    parts.append(f"{mins}m{secs:02d}s" if mins else f"{secs}s")
+    return sym["sep"].join(parts)
+
+
+async def _list_sessions(ctx: _ChatContext) -> None:
+    """Show the most recent sessions of this user."""
+    if ctx.session_manager is None:
+        print("Session listing is unavailable.")
+        return
+    try:
+        sessions = await ctx.session_manager.list_sessions(ctx.session_user)
+    except Exception as e:
+        logger.error("Failed to list sessions: %s", e, exc_info=True)
+        print(f"Could not list sessions: {e}")
+        return
+    if not sessions:
+        print(f"No sessions for user '{ctx.session_user}'.")
+        return
+    print(f"Recent sessions for '{ctx.session_user}':")
+    for entry in sessions[:10]:
+        sid = entry.get("session_id", "?")
+        marker = "*" if sid == ctx.session_id else " "
+        title = (entry.get("title") or "Untitled")[:48]
+        count = entry.get("message_count", len(entry.get("messages", []) or []))
+        print(f" {marker} {sid}  {count:>4} msg  {entry.get('agent_name', '?')}  {title}")
+    print("Use /resume <id> to continue one.")
+
+
+async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
+    """Load an earlier session into the running agent."""
+    try:
+        exists, count = await ctx.session_service.load_and_restore_session(
+            ctx.agent, ctx.session_user, session_id
+        )
+    except Exception as e:
+        logger.error("Failed to resume session %s: %s", session_id, e, exc_info=True)
+        print(f"Could not resume '{session_id}': {e}")
+        return False
+    if not exists:
+        print(f"No session '{session_id}' for user '{ctx.session_user}'.")
+        return False
+    ctx.session_id = session_id
+    ctx.was_new_session = False
+    tracker = getattr(ctx.agent, "_session_tracker", None)
+    if tracker is not None:
+        # The turn loop reads metadata for tool context; without this the
+        # resumed session would still carry the previous one's values.
+        tracker.set_session_metadata(session_id, {
+            "user_id": ctx.session_user,
+            "agent_name": ctx.entry_name,
+            "llm_profile": ctx.llm_profile,
+        })
+    print(f"({count} messages restored)")
+    return True
 
 
 async def _save_session(ctx: _ChatContext) -> bool:
@@ -522,15 +843,20 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
                  turn: "asyncio.Task", state: dict, renderer: ChatRenderer) -> dict:
     """Ctrl-C during a turn: graceful cancel first, hard cancel as fallback."""
     renderer.close()
-    print("\nCancelling turn… (Ctrl-C again to force)", file=sys.stderr)
+    print("\nCancelling turn... (Ctrl-C again to force)", file=sys.stderr)
     request_id = state.get("request_id")
     if request_id:
         # Graceful: flips the cancellation token, the agent unwinds and
         # yields its cancelled/end events through the normal path.
+        # KeyboardInterrupt is NOT an Exception -- a second Ctrl-C here has to
+        # be caught explicitly or it escapes the REPL and kills the chat, the
+        # opposite of the "again to force" we just promised.
         try:
             loop.run_until_complete(
                 asyncio.wait_for(ctx.agent.cancel_request(request_id), timeout=5)
             )
+        except KeyboardInterrupt:
+            logger.debug("second Ctrl-C during graceful cancel")
         except Exception:
             logger.debug("cancel_request failed", exc_info=True)
     try:
@@ -587,6 +913,8 @@ def run_chat_loop(
     llm_profile_info: Optional[str] = None,
     show_status: bool = True,
     initial_task: Optional[str] = None,
+    session_manager: Any = None,
+    template_vars: Optional[dict] = None,
 ) -> None:
     """The chat REPL. Owns one event loop for its whole lifetime."""
     ctx = _ChatContext(
@@ -594,11 +922,14 @@ def run_chat_loop(
         session_user=session_user, session_id=session_id,
         was_new_session=was_new_session, llm_profile=llm_profile,
         llm_override=llm_override, llm_profile_info=llm_profile_info,
-        show_status=show_status,
+        show_status=show_status, session_manager=session_manager,
+        template_vars=template_vars,
     )
     ansi = supports_color()
     renderer = ChatRenderer(ansi=ansi)
-    prompt = "❯ " if renderer.sym is _UNICODE_SYMBOLS else "> "
+    unicode_ok = renderer.sym is _UNICODE_SYMBOLS
+    prompt = "❯ " if unicode_ok else "> "
+    cont_prompt = "… " if unicode_ok else "... "
 
     # POSIX line editing + in-process history. NOT on Windows: importing
     # readline there activates pyreadline3 when installed, which replaces
@@ -619,14 +950,19 @@ def run_chat_loop(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    dash = "─" if renderer.sym is _UNICODE_SYMBOLS else "-"
-    llm_label = ctx.llm_profile_info or ctx.llm_profile
-    print(dash * min(shutil.get_terminal_size((80, 20)).columns, 72))
-    print(f"Chat with {ctx.entry_name}   LLM: {llm_label}   Session: {ctx.session_id}")
+    # Console logging would write into the live region behind its back.
+    silenced = _silence_stdout_logging()
+    chat_started = time.monotonic()
+
+    dash = "─" if unicode_ok else "-"
+    rule = dash * min(shutil.get_terminal_size((80, 20)).columns, 72)
+    print(rule)
+    print(f"Chat with {ctx.entry_name}   LLM: {ctx.llm_label()}   Session: {ctx.session_id}")
     print("Type /help for commands, /exit to quit. Ctrl-C cancels the running turn.")
-    print(dash * min(shutil.get_terminal_size((80, 20)).columns, 72))
+    print(rule)
 
     pending: Optional[str] = initial_task.strip() if initial_task else None
+    interrupts = 0  # consecutive Ctrl-C at the prompt; two in a row exit
     try:
         while True:
             if pending is not None:
@@ -635,22 +971,24 @@ def run_chat_loop(
             else:
                 restore_console_input_mode(input_mode)
                 try:
-                    task = input(prompt)
+                    task = _read_input(prompt, cont_prompt=cont_prompt,
+                                       echo=not sys.stdin.isatty())
                 except EOFError:
                     print()
                     break
                 except KeyboardInterrupt:
-                    print("\n(/exit to quit)")
+                    interrupts += 1
+                    if interrupts >= 2:
+                        print("\nBye.")
+                        break
+                    print("\n(Ctrl-C again or /exit to quit)")
                     continue
-                # Piped stdin is not echoed by input(); print it so the
-                # transcript still shows what was asked.
-                if not sys.stdin.isatty():
-                    print(task)
+            interrupts = 0
             task = task.strip()
             if not task:
                 continue
 
-            command = parse_chat_command(task)
+            command, payload = parse_chat_command(task)
             if command == "exit":
                 break
             if command == "new":
@@ -660,14 +998,22 @@ def run_chat_loop(
                 continue
             if command == "session":
                 print(f"Session: {ctx.session_id}  (user: {ctx.session_user})")
+                print(f"Resume with: {_resume_hint(ctx, ctx.session_id)}")
+                continue
+            if command == "sessions":
+                loop.run_until_complete(_list_sessions(ctx))
+                continue
+            if command == "resume":
+                if not payload:
+                    print("Usage: /resume <session-id>   (/sessions lists them)")
+                elif loop.run_until_complete(_resume_session(ctx, payload)):
+                    print(f"Resumed session: {ctx.session_id}")
                 continue
             if command == "help":
                 print(_HELP_TEXT)
                 continue
-            if command == "unknown":
-                print(f"Unknown command: {task.split()[0]}  (/help lists commands)")
-                continue
 
+            started = time.monotonic()
             result = _execute_turn(loop, ctx, task, renderer)
 
             if result.get("cancelled"):
@@ -677,13 +1023,34 @@ def run_chat_loop(
             summary = result.get("summary")
             if summary:
                 _render_answer(loop, ctx, renderer, summary)
+            elif not result.get("errors"):
+                print(renderer._colored("(no answer returned)", "90"))
 
-            if loop.run_until_complete(_save_session(ctx)):
+            usage = result.get("usage") or {}
+            _accumulate_usage(ctx.total_usage, usage)
+            if ctx.show_status:
+                print(renderer._colored(
+                    _format_usage(usage, time.monotonic() - started, renderer.sym), "90"))
+
+            try:
+                saved = loop.run_until_complete(_save_session(ctx))
+            except KeyboardInterrupt:
+                # Ctrl-C during the save must not take the chat down with it.
+                print("\n(save interrupted)", file=sys.stderr)
+                saved = False
+            if saved:
                 ctx.last_saved = ctx.session_id
                 ctx.was_new_session = False
     finally:
+        _restore_logging(silenced)
+        if ctx.total_usage:
+            print(renderer._colored(
+                "Session total: " + _format_usage(
+                    ctx.total_usage, time.monotonic() - chat_started, renderer.sym),
+                "90"))
         if ctx.last_saved:
             print(f"Session saved: {ctx.last_saved}", file=sys.stderr)
+            print(f"Resume with: {_resume_hint(ctx, ctx.last_saved)}", file=sys.stderr)
         try:
             # Mirror asyncio.run's teardown: background tasks spawned during
             # the turns (e.g. the cancellation manager's timeout monitor) must

@@ -702,6 +702,7 @@ def main() -> None:
         p.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
         p.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
         p.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
+        p.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List all sessions for the current user")
         p.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
                        help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
 
@@ -711,7 +712,6 @@ def main() -> None:
     run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
     run_parser.add_argument("--audio", dest="audio", nargs="+", metavar="PATH", help="Path(s) to audio file(s) to attach to the task (mp3, wav, ogg, etc.)")
     run_parser.add_argument("--text", "--files", dest="text_files", nargs="+", metavar="PATH", help="Path(s) to text file(s) to attach to the task (txt, md, py, json, etc.)")
-    run_parser.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List all sessions for the current user")
     _add_agent_session_args(run_parser)
 
     # chat subcommand: interactive REPL that keeps the session across turns
@@ -1569,6 +1569,9 @@ def main() -> None:
     # SessionManager and SessionService already initialized earlier (before Agent creation)
     # to enable passing session_service to Agent constructor
 
+    # Parsed --vars, hoisted so chat mode can re-apply them on /new
+    parsed_cli_vars: dict[str, str] = {}
+
     # Helper async function for session operations
     async def handle_session_operations():
         nonlocal actual_session_id
@@ -1669,6 +1672,8 @@ def main() -> None:
             if cli_vars:
                 agent._session_tracker.set_session_template_vars(actual_session_id, cli_vars)
                 logger.debug(f"[cli] Applied CLI template_vars overrides: {list(cli_vars.keys())}")
+                # Chat's /new creates further sessions and has to re-apply these.
+                parsed_cli_vars.update(cli_vars)
 
         return True, was_new_session  # Continue with task execution
 
@@ -2059,31 +2064,41 @@ def main() -> None:
 
     # Chat mode: hand over to the REPL instead of the one-shot execution.
     # Everything above (bootstrap, agent, session ops, LLM override) is shared.
-    if args.subcommand == "chat":
-        from .cli_utils.chat import run_chat_loop
-        run_chat_loop(
-            agent=agent,
-            entry_name=entry_name,
-            session_service=session_service,
-            session_user=session_user,
-            session_id=actual_session_id,
-            was_new_session=was_new_session,
-            llm_profile=llm_profile_override or agent.agent_config.default_llm_profile,
-            llm_override=llm_override,
-            llm_profile_info=llm_profile_info,
-            show_status=show_status,
-            initial_task=getattr(args, "task", None),
-        )
-        return
+    # Inside the same try/finally as the one-shot path so MCP and the batch
+    # system get shut down the same way -- returning early leaked stdio child
+    # processes and aiohttp sessions until interpreter exit.
+    is_chat = args.subcommand == "chat"
 
     try:
-        if getattr(args, "raw", False):
+        if is_chat:
+            from .cli_utils.chat import run_chat_loop
+            run_chat_loop(
+                agent=agent,
+                entry_name=entry_name,
+                session_service=session_service,
+                session_manager=session_manager,
+                session_user=session_user,
+                session_id=actual_session_id,
+                was_new_session=was_new_session,
+                llm_profile=llm_profile_override or agent.agent_config.default_llm_profile,
+                llm_override=llm_override,
+                llm_profile_info=llm_profile_info,
+                show_status=show_status,
+                initial_task=getattr(args, "task", None),
+                template_vars=parsed_cli_vars,
+            )
+            result = {}
+        elif getattr(args, "raw", False):
             # Raw mode: use run_events with result collection
             from .servers.agent.result_utils import collect_final_result
 
             result = asyncio.run(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
         else:
             result = asyncio.run(_stream_and_run_with_status(agent, task_input, actual_session_id, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+
+        # Chat saved its own sessions per turn and prints its own output.
+        if is_chat:
+            return
 
         # Check if request was cancelled
         if result.get("cancelled", False):
