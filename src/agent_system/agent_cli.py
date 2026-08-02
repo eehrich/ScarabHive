@@ -651,7 +651,7 @@ def main() -> None:
         pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
-    known = ("plugins", "mcp", "hooks", "run", "status", "users", "reload", "-h", "--help")
+    known = ("plugins", "mcp", "hooks", "run", "chat", "status", "users", "reload", "-h", "--help")
     if rest:
         if not rest[0].startswith("-") and rest[0] not in known:
             rest.insert(0, "run")
@@ -692,23 +692,32 @@ def main() -> None:
     parser.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
     subparsers = parser.add_subparsers(dest="subcommand")
 
+    def _add_agent_session_args(p: argparse.ArgumentParser) -> None:
+        """Arguments shared verbatim between `run` and `chat`."""
+        p.add_argument("--agent", dest="agent_override", help="Override the default agent (use agent name from config)")
+        p.add_argument("--llm", dest="llm_profile_override", help="Override the LLM profile (use profile name from llm.yaml)")
+        p.add_argument("--llm-params", dest="llm_params", nargs="+", metavar="KEY=VALUE",
+                       help="Override LLM parameters for this run (e.g. --llm-params thinking_level=max max_tokens=16384). "
+                            "Values are auto-typed (int/float/bool/none); applies to the --llm profile or the agent's default profile.")
+        p.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
+        p.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
+        p.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
+        p.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
+                       help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
+
     # run subcommand (default behavior)
     run_parser = subparsers.add_parser("run", help="Run an agent task (default)")
     run_parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
     run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
     run_parser.add_argument("--audio", dest="audio", nargs="+", metavar="PATH", help="Path(s) to audio file(s) to attach to the task (mp3, wav, ogg, etc.)")
     run_parser.add_argument("--text", "--files", dest="text_files", nargs="+", metavar="PATH", help="Path(s) to text file(s) to attach to the task (txt, md, py, json, etc.)")
-    run_parser.add_argument("--agent", dest="agent_override", help="Override the default agent (use agent name from config)")
-    run_parser.add_argument("--llm", dest="llm_profile_override", help="Override the LLM profile (use profile name from llm.yaml)")
-    run_parser.add_argument("--llm-params", dest="llm_params", nargs="+", metavar="KEY=VALUE",
-                            help="Override LLM parameters for this run (e.g. --llm-params thinking_level=max max_tokens=16384). "
-                                 "Values are auto-typed (int/float/bool/none); applies to the --llm profile or the agent's default profile.")
-    run_parser.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
-    run_parser.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
     run_parser.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List all sessions for the current user")
-    run_parser.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
-    run_parser.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
-                            help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
+    _add_agent_session_args(run_parser)
+
+    # chat subcommand: interactive REPL that keeps the session across turns
+    chat_parser = subparsers.add_parser("chat", help="Interactive chat with an agent (stays in the session)")
+    chat_parser.add_argument("task", nargs="?", default=None, help="Optional first message to send immediately")
+    _add_agent_session_args(chat_parser)
 
 
 
@@ -2047,6 +2056,25 @@ def main() -> None:
             "agent_name": entry_name,
             "llm_profile": effective_llm_profile
         })
+
+    # Chat mode: hand over to the REPL instead of the one-shot execution.
+    # Everything above (bootstrap, agent, session ops, LLM override) is shared.
+    if args.subcommand == "chat":
+        from .cli_utils.chat import run_chat_loop
+        run_chat_loop(
+            agent=agent,
+            entry_name=entry_name,
+            session_service=session_service,
+            session_user=session_user,
+            session_id=actual_session_id,
+            was_new_session=was_new_session,
+            llm_profile=llm_profile_override or agent.agent_config.default_llm_profile,
+            llm_override=llm_override,
+            llm_profile_info=llm_profile_info,
+            show_status=show_status,
+            initial_task=getattr(args, "task", None),
+        )
+        return
 
     try:
         if getattr(args, "raw", False):

@@ -33,6 +33,7 @@ Options:
 | Command | Description |
 |---------|-------------|
 | `run` | Execute an agent task (default command) |
+| `chat` | Interactive chat with an agent (stays in the session) |
 | `plugins` | Manage plugin servers |
 | `mcp` | Manage external MCP servers |
 | `users` | User management (requires auth) |
@@ -95,6 +96,48 @@ agent-cli run --image diagram.png "Explain this architecture diagram"
 # Machine-readable output for scripting
 agent-cli run --raw "List top 3 tech stocks" | jq '.result'
 ```
+
+---
+
+## `agent-cli chat` - Interactive Chat
+
+REPL mode: stay in the session and keep talking to the agent, like `ollama run`.
+The session is saved after every turn and can be resumed later (`--session`).
+
+```bash
+# Chat with the default agent
+agent-cli chat
+
+# Chat with a specific agent and LLM profile
+agent-cli chat --agent amiga_coder --llm deepseek-chat
+
+# Send a first message immediately
+agent-cli chat "Wie ist der Stand?" --agent sysadmin_agent
+
+# Resume an earlier session
+agent-cli chat --session a1b2c3d4
+```
+
+Accepts the same `--agent`, `--llm`, `--llm-params`, `--session`,
+`--session-user`, `--session-title` and `--vars` options as `run`.
+
+**In-chat commands:**
+
+| Command | Effect |
+|---------|--------|
+| `/exit`, `/quit`, `/q` | End the chat (Ctrl-D / Ctrl-Z+Enter work too) |
+| `/new` | Start a fresh session (the current one stays saved) |
+| `/session` | Show the current session id |
+| `/help` | List the commands |
+| Ctrl-C | Cancel the **running turn** -- the chat keeps going |
+
+**Display:** tool activity is rendered like the WebUI front panel -- one line
+per operation that updates in place and collapses into its `✓`/`✗` end state,
+instead of a chronological log. Thinking tokens appear as a live counter
+(`✻ Thinking… (~120 tokens · 4s)`), intermediate agent narration between tool
+calls is shown dimmed, and the final answer is rendered as markdown. On a
+non-ANSI terminal (or when piped) the display falls back to plain
+chronological lines.
 
 ---
 
