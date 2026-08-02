@@ -141,6 +141,37 @@ class AnthropicAsyncClient(LLMClient):
             f"enable_prompt_caching={enable_prompt_caching}"
         )
 
+    #: Model families where ``thinking={"type":"enabled","budget_tokens":N}`` is
+    #: REJECTED with HTTP 400 — adaptive thinking is the only "on" mode there.
+    #: Claude documents this for Fable/Mythos 5, Opus 4.7+ and Sonnet 5; our own
+    #: config/llm.yaml carries the same note per model. Prefix matching is safe:
+    #: "claude-sonnet-5" does not match "claude-sonnet-4-5-…".
+    _ADAPTIVE_ONLY_THINKING = (
+        "claude-fable-", "claude-mythos-",
+        "claude-opus-5", "claude-opus-4-7", "claude-opus-4-8",
+        "claude-sonnet-5",
+    )
+
+    def _build_thinking_param(self) -> Dict[str, Any]:
+        """Thinking config for this model.
+
+        Newer models take only ``{"type": "adaptive"}`` and 400 on a fixed
+        budget; older ones still require ``budget_tokens``. Sending the wrong
+        shape fails the request outright, so pick by model rather than always
+        using the legacy form.
+
+        ``thinking_budget`` stays a config field for the legacy models (and as a
+        soft-cap indicator elsewhere) but must NOT be sent to adaptive-only ones.
+        """
+        if self.model.startswith(self._ADAPTIVE_ONLY_THINKING):
+            if self.thinking_budget:
+                logger.debug(
+                    "thinking_budget=%s ignored: %s accepts adaptive thinking only",
+                    self.thinking_budget, self.model,
+                )
+            return {"type": "adaptive"}
+        return {"type": "enabled", "budget_tokens": self.thinking_budget or 8192}
+
     def _convert_messages(
         self, messages: List[ChatMessage]
     ) -> tuple[Optional[str | List[Dict[str, Any]]], List[Dict[str, Any]]]:
@@ -474,11 +505,7 @@ class AnthropicAsyncClient(LLMClient):
         
         # Handle extended thinking
         if self.include_thinking:
-            budget = self.thinking_budget or 8192
-            request_kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": budget
-            }
+            request_kwargs["thinking"] = self._build_thinking_param()
         
         # Accumulators
         accumulated_content: List[str] = []
