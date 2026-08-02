@@ -6,6 +6,7 @@ line and must stand on its own. Thinking is a counter line, not a token flood.
 """
 import builtins
 import io
+import json
 import logging
 import sys
 
@@ -803,3 +804,116 @@ class TestLastCommand:
         r, _t = _renderer()
         _show_last(_ctx_with([]), r)
         assert "No turn" in capsys.readouterr().out
+
+
+_BIG_ARGS = json.dumps({
+    "filePath": "E:\\ws\\cube.asm",
+    "newString": "DrawLineBlit:\n    movem.l d2-d7,-(sp)\n    rts",
+})
+_BIG_RESULT = json.dumps({
+    "status": "success",
+    "content": "zeile eins\nzeile zwei\nzeile drei",
+    "total_lines": 718,
+})
+
+_TOOL_TURN = [
+    _Msg("user", "baue den blitter um"),
+    _Msg("assistant", "ich schreibe die routine", tool_calls=[
+        {"function": {"name": "coder_file_ops_replace_string_in_file",
+                      "arguments": _BIG_ARGS}}]),
+    _Msg("tool", _BIG_RESULT),
+    _Msg("assistant", "fertig"),
+]
+
+
+class TestHistoryExcludesCommands:
+    """Commands never reach the agent -- but before "/h" became an alias,
+    unknown ones were passed through as messages and sit in old sessions."""
+
+    def test_command_leftovers_are_not_shown(self):
+        messages = [
+            _Msg("user", "echte frage"),
+            _Msg("assistant", "echte antwort"),
+            _Msg("user", "/h"),
+            _Msg("user", "/session"),
+        ]
+        r, out = _renderer()
+        _show_history(_ctx_with(messages), r, "5")
+        text = out.getvalue()
+        assert "echte frage" in text
+        assert "/h" not in text and "/session" not in text
+
+    def test_command_leftovers_do_not_consume_the_count(self):
+        """Counting them would push the real exchanges out of view."""
+        messages = [
+            _Msg("user", "frage eins"), _Msg("assistant", "antwort eins"),
+            _Msg("user", "/h"),
+            _Msg("user", "frage zwei"), _Msg("assistant", "antwort zwei"),
+        ]
+        r, out = _renderer()
+        _show_history(_ctx_with(messages), r, "2")
+        text = out.getvalue()
+        assert "frage eins" in text and "frage zwei" in text
+
+    def test_paths_are_not_mistaken_for_commands(self):
+        messages = [_Msg("user", "/etc/nginx/nginx.conf pruefen"),
+                    _Msg("assistant", "ok")]
+        r, out = _renderer()
+        _show_history(_ctx_with(messages), r, "1")
+        assert "/etc/nginx/nginx.conf" in out.getvalue()
+
+    def test_session_with_only_commands_says_so(self, capsys):
+        r, _t = _renderer()
+        _show_history(_ctx_with([_Msg("user", "/h")]), r, "5")
+        assert "No agent exchanges" in capsys.readouterr().out
+
+
+class TestToolTrafficRendering:
+    def test_history_keeps_tool_traffic_to_one_line_each(self):
+        """The raw JSON dump of a 5000-char newString made /history unreadable."""
+        r, out = _renderer(width=200)
+        _show_history(_ctx_with(_TOOL_TURN), r, "1")
+        lines = [ln for ln in out.getvalue().split("\n") if "→" in ln or "←" in ln]
+        assert len(lines) == 2                      # one request, one result
+        for ln in lines:
+            assert len(ln) < 200
+        assert "coder_file_ops_replace_string_in_file" in out.getvalue()
+
+    def test_history_does_not_leak_escaped_newlines(self):
+        r, out = _renderer(width=200)
+        _show_history(_ctx_with(_TOOL_TURN), r, "1")
+        assert "\\n" not in out.getvalue()
+
+    def test_last_shows_the_full_argument_values(self):
+        r, out = _renderer(width=200)
+        _show_last(_ctx_with(_TOOL_TURN), r)
+        text = out.getvalue()
+        assert "movem.l d2-d7,-(sp)" in text        # nothing truncated away
+        assert "E:\\ws\\cube.asm" in text
+
+    def test_last_renders_newlines_as_lines_not_escapes(self):
+        """The wall of text came from \\n arriving as two characters."""
+        r, out = _renderer(width=200)
+        _show_last(_ctx_with(_TOOL_TURN), r)
+        text = out.getvalue()
+        assert "\\n" not in text
+        assert "zeile eins" in text and "zeile drei" in text
+        # each source line became its own physical line
+        assert sum(1 for ln in text.split("\n") if "zeile" in ln) == 3
+
+    def test_last_counts_every_physical_line(self):
+        """The region's invariant: _total must match printed lines."""
+        r, out = _renderer(width=200)
+        _show_last(_ctx_with(_TOOL_TURN), r)
+        assert out.getvalue().count("\n") > 5       # it really did wrap out
+        assert r._total == 0                        # and committed at the end
+
+    def test_non_json_tool_payloads_still_render(self):
+        messages = [_Msg("user", "x"),
+                    _Msg("assistant", "y", tool_calls=[
+                        {"function": {"name": "t", "arguments": "nicht json"}}]),
+                    _Msg("tool", "auch nicht json")]
+        r, out = _renderer(width=200)
+        _show_last(_ctx_with(messages), r)
+        text = out.getvalue()
+        assert "nicht json" in text and "auch nicht json" in text

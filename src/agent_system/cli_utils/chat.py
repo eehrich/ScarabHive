@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import logging
 import os
 import re
@@ -775,6 +776,102 @@ def _format_usage(usage: dict, elapsed: float, sym: dict) -> str:
     return sym["sep"].join(parts)
 
 
+def _looks_like_command(text: str) -> bool:
+    """Whether a stored user message is really a slash command.
+
+    Commands never reach the agent -- but before "/h" became an alias, unknown
+    ones were passed through as messages and are now sitting in old sessions.
+    They are not part of the conversation and would only add noise.
+    """
+    stripped = text.strip()
+    return bool(stripped) and bool(_COMMAND_WORD.match(stripped.split(" ")[0]))
+
+
+def _decode(text: Any) -> Any:
+    """Parse a JSON payload, or None when it is not JSON."""
+    if not isinstance(text, str):
+        return text if isinstance(text, dict) else None
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def _one_line(value: Any, limit: int = 60) -> str:
+    """Compact single-line form of a tool argument or result value."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _tool_call_summary(call: Any) -> tuple[str, Any]:
+    """(name, arguments) of a tool call in either dict shape."""
+    if not isinstance(call, dict):
+        return "?", None
+    fn = call.get("function") or {}
+    # `or` rather than a get-default: an explicit null would slip through.
+    name = fn.get("name") or call.get("name") or "?"
+    return str(name), fn.get("arguments") or call.get("arguments")
+
+
+def _render_tool_call(renderer: ChatRenderer, call: Any, full: bool) -> None:
+    """One tool request: compact for /history, key-per-line for /last."""
+    name, arguments = _tool_call_summary(call)
+    data = _decode(arguments)
+    if not full:
+        if isinstance(data, dict):
+            inner = ", ".join(f"{k}={_one_line(v, 40)}" for k, v in data.items())
+        else:
+            inner = _one_line(arguments or "", 80)
+        renderer.println(f"  → {name}({_one_line(inner, 100)})", color="34")
+        return
+
+    renderer.println(f"→ {name}", color="34")
+    if not isinstance(data, dict):
+        for line in str(arguments or "").splitlines():
+            renderer.println(f"    {line}", color="90")
+        return
+    for key, value in data.items():
+        # Escaped newlines are what made this a wall of text -- render the
+        # value as the lines it actually is.
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        lines = text.splitlines()
+        if len(lines) <= 1:
+            renderer.println(f"    {key}: {text}", color="90")
+        else:
+            renderer.println(f"    {key}:", color="90")
+            for line in lines:
+                renderer.println(f"      {line}", color="90")
+
+
+def _render_tool_result(renderer: ChatRenderer, message: Any, full: bool) -> None:
+    """One tool result, mirroring _render_tool_call's two modes."""
+    raw = _message_text(message)
+    data = _decode(raw)
+    if not full:
+        if isinstance(data, dict):
+            status = data.get("status", "")
+            body = data.get("content") or data.get("stdout") or data.get("changes") or ""
+            renderer.println(f"  ← {status} {_one_line(body, 70)}".rstrip(), color="32")
+        else:
+            renderer.println(f"  ← {_one_line(raw, 90)}", color="32")
+        return
+
+    if isinstance(data, dict):
+        for key, value in data.items():
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            lines = text.splitlines()
+            if len(lines) <= 1:
+                renderer.println(f"    {key}: {text}", color="32")
+            else:
+                renderer.println(f"    {key}:", color="32")
+                for line in lines:
+                    renderer.println(f"      {line}", color="32")
+    else:
+        for line in raw.splitlines():
+            renderer.println(f"    {line}", color="32")
+
+
 def _message_text(message: Any) -> str:
     """Readable text of a ChatMessage whose content may be multimodal."""
     content = getattr(message, "content", None)
@@ -819,37 +916,48 @@ def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> 
         print("No messages in this session yet.")
         return
 
+    def _is_real_turn(message: Any) -> bool:
+        """A user message that actually went to the agent."""
+        if getattr(message, "role", None) != "user":
+            return False
+        text = _message_text(message).strip()
+        return bool(text) and not _looks_like_command(text)
+
     # Count backwards in USER turns, so "6" means six exchanges rather than
     # six raw messages (a single turn can hold a dozen tool messages).
     start = 0
     seen = 0
     for i in range(len(messages) - 1, -1, -1):
-        if getattr(messages[i], "role", None) == "user":
+        if _is_real_turn(messages[i]):
             seen += 1
             if seen >= limit:
                 start = i
                 break
+    if not seen:
+        print("No agent exchanges in this session yet.")
+        return
 
     print(f"Last {seen} exchange(s) of session {ctx.session_id}:")
     for message in messages[start:]:
         role = getattr(message, "role", "?")
         text = _message_text(message).strip()
-        calls = getattr(message, "tool_calls", None)
 
         if role == "user":
+            # Leftovers from when unknown commands were passed through as
+            # messages; they are not part of the conversation.
+            if not text or _looks_like_command(text):
+                continue
             renderer.println("")
-            renderer.println(f"› {text}" if text else "› [attachment]")
+            renderer.println(f"› {text}")
         elif role == "assistant":
             if text:
                 renderer.println(text, color="90")
-            for call in calls or []:
-                fn = (call or {}).get("function", {}) if isinstance(call, dict) else {}
-                name = fn.get("name", "?")
-                args = str(fn.get("arguments", ""))
-                renderer.println(f"  → {name}({args})", color="34")
+            for call in getattr(message, "tool_calls", None) or []:
+                _render_tool_call(renderer, call, full=False)
         elif role == "tool":
-            renderer.println(f"  ← {text}", color="32")
+            _render_tool_result(renderer, message, full=False)
     renderer.commit()
+    print("(/last shows the last turn's tool traffic in full)")
 
 
 def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
@@ -859,8 +967,15 @@ def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
     RETURNED is invisible -- this is the chat equivalent of run's --show-mcp.
     """
     messages = _session_messages(ctx)
-    last_user = max((i for i, m in enumerate(messages)
-                     if getattr(m, "role", None) == "user"), default=None)
+    last_user = None
+    for i in range(len(messages) - 1, -1, -1):
+        message = messages[i]
+        if getattr(message, "role", None) != "user":
+            continue
+        text = _message_text(message).strip()
+        if text and not _looks_like_command(text):
+            last_user = i
+            break
     if last_user is None:
         print("No turn to show yet.")
         return
@@ -870,12 +985,10 @@ def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
         role = getattr(message, "role", "?")
         if role == "assistant":
             for call in getattr(message, "tool_calls", None) or []:
-                fn = (call or {}).get("function", {}) if isinstance(call, dict) else {}
-                renderer.println(f"→ {fn.get('name', '?')}({fn.get('arguments', '')})",
-                                 color="34")
+                _render_tool_call(renderer, call, full=True)
                 shown += 1
         elif role == "tool":
-            renderer.println(f"← {_message_text(message)}", color="32")
+            _render_tool_result(renderer, message, full=True)
     renderer.commit()
     if not shown:
         print("The last turn used no tools.")
