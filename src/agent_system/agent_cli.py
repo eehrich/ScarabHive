@@ -624,8 +624,10 @@ def main() -> None:
     prelim = argparse.ArgumentParser(add_help=False)
     prelim.add_argument("--config", dest="config", default=str(Path("config/config.yaml")))
     prelim.add_argument("-v", "--verbose", dest="verbose", action="store_true")
-    # color can be set to auto/always/never/ansi/html/text
-    prelim.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="always")
+    # color can be set to auto/always/never/ansi/html/text.
+    # Default 'auto', not 'always': 'always' emitted escape sequences into
+    # redirected output and into consoles that render them literally.
+    prelim.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="auto")
     prelim.add_argument("--no-color", dest="no_color", action="store_true")
     prelim.add_argument("--show-mcp", dest="show_mcp", action="store_true")
     prelim.add_argument("--no-status", dest="no_status", action="store_true")
@@ -682,8 +684,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Agent System CLI")
     parser.add_argument("--config", dest="config", default=str(Path("config/config.yaml")), help="Path to config")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
-    parser.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="always",
-                        help="Output format: auto=ANSI if TTY, always/ansi=ANSI colors, html=HTML, never/text=plain text")
+    parser.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="auto",
+                        help="Output format: auto=ANSI where it renders, always/ansi=force ANSI, html=HTML, never/text=plain text")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
     parser.add_argument("--show-mcp", dest="show_mcp", action="store_true", help="Show MCP call/result details (for debugging)")
     parser.add_argument("--no-status", dest="no_status", action="store_true", help="Hide status messages during execution")
@@ -1795,6 +1797,13 @@ def main() -> None:
         # was streamed - non-streaming LLMs emit thinking_complete with no thinking_delta,
         # which would otherwise produce a stray blank line per LLM call.
         thinking_streamed = False
+
+        def _close_thinking_block() -> None:
+            """Reset the colour and end the streamed line of a thinking block."""
+            if _supports_color():
+                print("\x1b[0m", end="")
+            print()
+
         try:
             async for ev in agent.run_events(task, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 t = ev.get("type")
@@ -1831,20 +1840,25 @@ def main() -> None:
                     # die Session-saved-Zeile).
                     delta = ev.get("delta", "")
                     if delta and show_status:
-                        thinking_streamed = True
+                        # Open the grey block once, not around every token: one
+                        # escape pair per delta buried the text in ESC[90m/ESC[0m.
+                        if not thinking_streamed:
+                            thinking_streamed = True
+                            if _supports_color():
+                                print("\x1b[90m", end="", flush=True)  # Dark gray
                         # Print without newline for streaming effect
-                        if _supports_color():
-                            print(_colorize(delta, "90"), end="", flush=True)  # Dark gray
-                        else:
-                            print(delta, end="", flush=True)
+                        print(delta, end="", flush=True)
                 elif t == "thinking_complete":
                     # Thinking finished - terminate the streamed line, but only if
                     # thinking content was actually printed this step
                     if thinking_streamed:
-                        print()  # Newline after thinking content
+                        _close_thinking_block()
                     thinking_streamed = False
                 elif t == "thinking":
-                    # New step starting - reset streamed-thinking tracker
+                    # New step starting - close any block left open by a step that
+                    # ended without thinking_complete, or the grey leaks onward.
+                    if thinking_streamed:
+                        _close_thinking_block()
                     thinking_streamed = False
                     # Optionally show LLM progress when verbose (backward compatibility)
                     if args.verbose:
@@ -1896,6 +1910,10 @@ def main() -> None:
 
             return final_result
         except (asyncio.CancelledError, KeyboardInterrupt):
+            # Close an open thinking block first, or the exit message is grey
+            if thinking_streamed:
+                _close_thinking_block()
+                thinking_streamed = False
             # User pressed Ctrl-C: provide clean exit message
             msg = "\n✋ Cancelled by user"
             if _supports_color():
@@ -1906,6 +1924,11 @@ def main() -> None:
             # Fallback: surface exception as result
             return {"task": task, "errors": [str(e)]}
         finally:
+            # Safety net: a block left open by an exception would bleed grey
+            # into the shell prompt after we exit.
+            if thinking_streamed:
+                _close_thinking_block()
+                thinking_streamed = False
             # Cleanup background tasks
             # Drain any queued status events deterministically before cancelling
             # the background status subscriber. This avoids a race where the
