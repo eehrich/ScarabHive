@@ -37,6 +37,33 @@ def _tokens(text: str) -> List[str]:
     return [t.lower() for t in _WORD_RE.findall(text or "")]
 
 
+class _NullStatus:
+    """Stand-in when a caller supplies no ``_status``.
+
+    Status reporting is an addition to this server, not a contract change:
+    the tools are also driven directly (tests, the consumer hook, scripts).
+    Swallowing the calls here keeps those callers working instead of forcing
+    every one of them to pass a status object.
+    """
+
+    async def progress(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        pass
+
+    async def end(self, message: str = "completed", meta: Optional[Dict[str, Any]] = None) -> None:
+        pass
+
+    async def error(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        pass
+
+
+_NULL_STATUS = _NullStatus()
+
+
+def _status_of(params: Dict[str, Any]) -> Any:
+    """The caller's status reporter, or a no-op one."""
+    return params.get("_status") or _NULL_STATUS
+
+
 def _atomic_write(path: Path, text: str) -> None:
     """Write via tmp-file + replace so a reader never sees a half-written file
     and a crash can't truncate the target (bundles are git-versioned)."""
@@ -240,25 +267,44 @@ class OkfServer(SchemaBasedMCPServer):
     async def validate(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Check a bundle against OKF producer conformance (every concept has a
         non-empty ``type``); report broken links as warnings."""
+        status = _status_of(params)
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         bundle = self._load_bundle(root)
         report = core.validate_bundle(bundle)
+        d = report.to_dict()
+        # to_dict() already reports errors/warnings as COUNTS, not lists.
+        await status.end(
+            f"{params.get('bundle')}: {len(bundle.concepts)} concept(s), "
+            f"{d.get('errors', 0)} error(s), {d.get('warnings', 0)} warning(s)"
+            f" — {'conformant' if d.get('conformant') else 'NOT conformant'}"
+        )
         return {"status": "ok", "bundle": params.get("bundle"),
-                "concepts": len(bundle.concepts), **report.to_dict()}
+                "concepts": len(bundle.concepts), **d}
 
     async def read_concept(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Return a concept's frontmatter (all keys preserved) and body."""
+        status = _status_of(params)
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
             abs_path = self._resolve_concept(root, params.get("path", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         if not abs_path.is_file():
-            return {"status": "error", "error": f"concept not found: {params.get('path')}"}
-        fm, body, err = core.parse_frontmatter(abs_path.read_text(encoding="utf-8"))
+            msg = f"concept not found: {params.get('path')}"
+            await status.error(msg)
+            return {"status": "error", "error": msg}
+        text = abs_path.read_text(encoding="utf-8")
+        fm, body, err = core.parse_frontmatter(text)
+        await status.end(
+            f"read {params.get('path')} — {len(text)} chars"
+            + (f", type={fm.get('type')}" if fm and fm.get("type") else "")
+            + (" (frontmatter parse error)" if err else "")
+        )
         return {"status": "ok", "path": params.get("path"),
                 "frontmatter": dict(fm) if fm else None, "body": body,
                 "parse_error": err}
@@ -267,33 +313,39 @@ class OkfServer(SchemaBasedMCPServer):
         """Write (create/overwrite) a concept. Enforces the format: a non-empty
         ``type`` frontmatter field is required, else the write is rejected.
         Existing extra frontmatter keys are preserved on overwrite."""
+        status = _status_of(params)
         if self._read_only:
+            await status.error("OKF server is read-only")
             return {"status": "error", "error": "OKF server is read-only"}
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
             abs_path = self._resolve_concept(root, params.get("path", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
 
         # Reserved filenames are NOT concepts (spec MUST) — the producer tool
         # must refuse to write a concept there (use append_log / reindex).
         rel_path = params.get("path", "")
         if core.is_reserved(rel_path):
-            return {"status": "error",
-                    "error": f"'{rel_path}' is a reserved OKF filename "
-                             f"(index.md/log.md) — use okf_append_log / okf_reindex"}
+            msg = (f"'{rel_path}' is a reserved OKF filename "
+                   f"(index.md/log.md) — use okf_append_log / okf_reindex")
+            await status.error(msg)
+            return {"status": "error", "error": msg}
 
         frontmatter = params.get("frontmatter")
         body = params.get("body") or ""
         if not isinstance(frontmatter, dict):
-            return {"status": "error",
-                    "error": "'frontmatter' must be an object with at least a 'type'"}
+            msg = "'frontmatter' must be an object with at least a 'type'"
+            await status.error(msg)
+            return {"status": "error", "error": msg}
 
         # Overwrite: deep-merge the caller's frontmatter INTO the existing one,
         # mutating the parsed CommentedMap so comments/order/quoting and nested
         # producer keys survive (spec: preserve unknown keys on round-trip).
         existing_fm = None
-        if abs_path.is_file():
+        existed = abs_path.is_file()
+        if existed:
             existing_fm, _b, _e = core.parse_frontmatter(
                 abs_path.read_text(encoding="utf-8"))
         merged = core.merge_frontmatter(existing_fm, frontmatter)
@@ -302,20 +354,27 @@ class OkfServer(SchemaBasedMCPServer):
         findings = core.validate_concept_text(rel_path, text)
         errors = [f for f in findings if f.severity == "error"]
         if errors:
+            await status.error(f"{rel_path} rejected: {errors[0].message}")
             return {"status": "error",
                     "error": errors[0].message,
                     "findings": [f.__dict__ for f in errors]}
 
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(abs_path, text)
+        await status.end(
+            f"{'updated' if existed else 'created'} {rel_path} — {len(text)} bytes"
+            + (f", type={frontmatter.get('type')}" if frontmatter.get("type") else "")
+        )
         return {"status": "ok", "path": rel_path, "bytes": len(text)}
 
     async def list(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List concepts in a bundle (optionally under a subdirectory), with
         type + description — the progressive-disclosure view index.md provides."""
+        status = _status_of(params)
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         subdir = (params.get("dir") or "").strip("/")
         bundle = self._load_bundle(root)
@@ -325,6 +384,9 @@ class OkfServer(SchemaBasedMCPServer):
             for p, c in sorted(bundle.concepts.items())
             if p.startswith(prefix)
         ]
+        await status.end(
+            f"{len(items)} concept(s) under {prefix} in {params.get('bundle')}"
+        )
         return {"status": "ok", "bundle": params.get("bundle"),
                 "count": len(items), "concepts": items,
                 "version": bundle.version}
@@ -332,41 +394,58 @@ class OkfServer(SchemaBasedMCPServer):
     async def neighbors(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Return the concepts a given concept links to (its graph neighbors),
         plus any broken links. This is the OKF 'graph, not just tree' surface."""
+        status = _status_of(params)
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         path = params.get("path", "")
         bundle = self._load_bundle(root)
         if path not in bundle.concepts:
+            await status.error(f"concept not found: {path}")
             return {"status": "error", "error": f"concept not found: {path}"}
+        neighbors = bundle.neighbors(path)
+        broken = bundle.broken_links(path)
+        await status.end(
+            f"{path}: {len(neighbors)} neighbor(s)"
+            + (f", {len(broken)} broken link(s)" if broken else "")
+        )
         return {"status": "ok", "path": path,
-                "neighbors": bundle.neighbors(path),
-                "broken_links": bundle.broken_links(path)}
+                "neighbors": neighbors,
+                "broken_links": broken}
 
     async def subgraph(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Breadth-first concept paths reachable from seed concept(s) within a
         depth — the mechanism for pulling a related cluster of context."""
+        status = _status_of(params)
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         seeds = params.get("seeds") or ([params["seed"]] if params.get("seed") else [])
         depth = int(params.get("depth", 1))
         bundle = self._load_bundle(root)
         paths = bundle.subgraph(list(seeds), depth=depth)
+        await status.end(
+            f"{len(paths)} concept(s) within depth {depth} of {', '.join(map(str, seeds)) or 'no seed'}"
+        )
         return {"status": "ok", "seeds": seeds, "depth": depth,
                 "concepts": paths, "count": len(paths)}
 
     async def search(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Rank a bundle's concepts by lexical relevance to a query. (Ranking is
         pluggable — an embedding ranker would replace the same seam.)"""
+        status = _status_of(params)
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         query = params.get("query", "")
         limit = int(params.get("limit", 8))
+        await status.progress(f"Searching {params.get('bundle')} for '{query}'")
         bundle = self._load_bundle(root)
         ranked = self._rank_lexical(bundle, query, limit)
         results = [
@@ -375,6 +454,11 @@ class OkfServer(SchemaBasedMCPServer):
              "description": bundle.concepts[p].description}
             for p, s in ranked
         ]
+        await status.end(
+            f"'{query}': {len(results)} hit(s)"
+            + (f" — best {results[0]['path']} ({results[0]['score']})" if results
+               else f" (searched {len(bundle.concepts)} concepts)")
+        )
         return {"status": "ok", "query": query, "count": len(results),
                 "results": results}
 
@@ -382,40 +466,51 @@ class OkfServer(SchemaBasedMCPServer):
         """Append an entry to a directory's ``log.md`` (ISO date, newest first).
         ``date`` MUST be supplied by the caller (YYYY-MM-DD) — the server never
         reads the clock (determinism + project UTC discipline)."""
+        status = _status_of(params)
         if self._read_only:
+            await status.error("OKF server is read-only")
             return {"status": "error", "error": "OKF server is read-only"}
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         subdir = (params.get("dir") or "").strip("/")
         date = params.get("date")
         action = params.get("action", "Update")
         desc = params.get("description", "")
         if not date or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(date)):
+            await status.error("'date' must be YYYY-MM-DD")
             return {"status": "error", "error": "'date' must be YYYY-MM-DD"}
         log_dir = (root / subdir).resolve() if subdir else root
         if log_dir != root and root not in log_dir.parents:
+            await status.error("'dir' escapes the bundle")
             return {"status": "error", "error": "'dir' escapes the bundle"}
         log_path = log_dir / core.LOG_FILENAME
         existing = log_path.read_text(encoding="utf-8") if log_path.is_file() else None
         text = core.append_log_entry(existing, str(date), str(action), str(desc))
         log_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write(log_path, text)
-        return {"status": "ok", "path": self._bundle_rel(root, log_path)}
+        rel = self._bundle_rel(root, log_path)
+        await status.end(f"logged to {rel} — {date} {action}")
+        return {"status": "ok", "path": rel}
 
     async def reindex(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """(Re)generate ``index.md`` for a bundle directory from the concepts it
         contains (one level), using each concept's frontmatter description."""
+        status = _status_of(params)
         if self._read_only:
+            await status.error("OKF server is read-only")
             return {"status": "error", "error": "OKF server is read-only"}
         try:
             root = self._resolve_bundle(params.get("bundle", ""))
         except ValueError as e:
+            await status.error(str(e))
             return {"status": "error", "error": str(e)}
         subdir = (params.get("dir") or "").strip("/")
         index_dir = (root / subdir).resolve() if subdir else root
         if index_dir != root and root not in index_dir.parents:
+            await status.error("'dir' escapes the bundle")
             return {"status": "error", "error": "'dir' escapes the bundle"}
         bundle = self._load_bundle(root)
         prefix = "/" + subdir + "/" if subdir else "/"
@@ -433,8 +528,9 @@ class OkfServer(SchemaBasedMCPServer):
         index_path = index_dir / core.INDEX_FILENAME
         index_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write(index_path, text)
-        return {"status": "ok", "path": self._bundle_rel(root, index_path),
-                "entries": len(entries)}
+        rel = self._bundle_rel(root, index_path)
+        await status.end(f"regenerated {rel} — {len(entries)} entr(ies)")
+        return {"status": "ok", "path": rel, "entries": len(entries)}
 
     # ------------------------------------------------------------------
     # Consumer hook — fold a bundle into agent context (opt-in per agent)
