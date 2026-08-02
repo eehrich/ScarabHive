@@ -134,7 +134,9 @@ global `--color` and `--no-status`.
 | `/session` | Show the current session and the command that resumes it |
 | `/sessions` | List the 10 most recent sessions |
 | `/resume <id>` | Continue an earlier session without leaving the chat |
-| `/help`, `/?` | List the commands |
+| `/history [n]` | Show the last `n` exchanges (default 6) with their tool traffic |
+| `/last` | Tool calls and results of the last turn, in full |
+| `/help`, `/h`, `/?` | List the commands |
 | Ctrl-C | Cancel the **running turn**; twice at the prompt exits |
 
 **Multi-line input.** A plain Enter sends the message, so pasting a block

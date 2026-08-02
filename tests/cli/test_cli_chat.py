@@ -15,6 +15,8 @@ from agent_system.cli_utils.chat import (
     _accumulate_usage,
     _format_usage,
     _read_input,
+    _show_history,
+    _show_last,
     _restore_logging,
     _silence_stdout_logging,
     display_width,
@@ -314,12 +316,14 @@ class TestParseChatCommand:
     def test_mistyped_command_is_flagged_not_sent_to_the_llm(self):
         """The other half: "/h" is a typo, not a message. Passing it through
         spent a whole LLM turn on it."""
-        assert parse_chat_command("/h") == ("unknown", "/h")
         assert parse_chat_command("/sesion") == ("unknown", "/sesion")
+        assert parse_chat_command("/xyz") == ("unknown", "/xyz")
+        # ...while the short forms people actually type ARE aliases
+        assert parse_chat_command("/h")[0] == "help"
 
     def test_suggests_the_closest_command(self):
-        assert suggest_command("/h") == "/help"
-        assert suggest_command("/sesion") == "/session"
+        assert suggest_command("/hel") == "/help"      # prefix
+        assert suggest_command("/sesion") == "/session"  # difflib
         assert suggest_command("/zzzzz") is None
 
     def test_double_slash_escapes_a_command_word(self):
@@ -693,3 +697,109 @@ class TestTurnUsage:
         r, _t = _renderer()
         result = await run_chat_turn(agent, "x", "s", r)
         assert result["usage"] == {"prompt_tokens": 40, "completion_tokens": 6}
+
+
+class _Msg:
+    """Stand-in for a ChatMessage."""
+
+    def __init__(self, role, content=None, tool_calls=None):
+        self.role = role
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _Tracker:
+    def __init__(self, messages):
+        self._messages = messages
+
+    def get_session_messages(self, session_id):
+        return self._messages
+
+
+class _AgentWithHistory:
+    def __init__(self, messages):
+        self._session_tracker = _Tracker(messages)
+
+
+def _ctx_with(messages):
+    from agent_system.cli_utils.chat import _ChatContext
+    return _ChatContext(
+        agent=_AgentWithHistory(messages), entry_name="a", session_service=None,
+        session_user="u", session_id="s1", was_new_session=False,
+        llm_profile="p", llm_override=None, llm_profile_info=None,
+        show_status=True,
+    )
+
+
+_TURN = [
+    _Msg("user", "erste frage"),
+    _Msg("assistant", "erste antwort"),
+    _Msg("user", "zweite frage"),
+    _Msg("assistant", "ich rufe ein tool", tool_calls=[
+        {"function": {"name": "terminal_execute", "arguments": '{"command":"ls"}'}}]),
+    _Msg("tool", "a.txt\nb.txt"),
+    _Msg("assistant", "zweite antwort"),
+]
+
+
+class TestHistoryCommand:
+    def test_shows_the_requested_number_of_exchanges(self):
+        r, out = _renderer()
+        _show_history(_ctx_with(_TURN), r, "1")
+        text = out.getvalue()
+        assert "zweite frage" in text
+        assert "erste frage" not in text        # only the last exchange
+
+    def test_counts_exchanges_not_raw_messages(self):
+        """One turn holds several tool messages -- "2" must mean two USER
+        turns, not two list entries."""
+        r, out = _renderer()
+        _show_history(_ctx_with(_TURN), r, "2")
+        text = out.getvalue()
+        assert "erste frage" in text and "zweite frage" in text
+
+    def test_shows_tool_calls_and_results(self):
+        r, out = _renderer()
+        _show_history(_ctx_with(_TURN), r, "2")
+        text = out.getvalue()
+        assert "terminal_execute" in text       # the request
+        assert "a.txt" in text                  # the result
+
+    def test_empty_session_says_so(self, capsys):
+        r, _t = _renderer()
+        _show_history(_ctx_with([]), r, "")
+        assert "No messages" in capsys.readouterr().out
+
+    def test_bad_count_is_reported_not_crashed(self, capsys):
+        r, _t = _renderer()
+        _show_history(_ctx_with(_TURN), r, "viele")
+        assert "Usage: /history" in capsys.readouterr().out
+
+    def test_multimodal_content_degrades_readably(self):
+        messages = [_Msg("user", [{"type": "text", "text": "was ist das"},
+                                  {"type": "image", "source": {}}])]
+        r, out = _renderer()
+        _show_history(_ctx_with(messages), r, "1")
+        text = out.getvalue()
+        assert "was ist das" in text and "[image]" in text
+
+
+class TestLastCommand:
+    def test_shows_the_last_turns_tool_traffic_in_full(self):
+        """The live region collapses a tool call to one line, so what it
+        RETURNED is invisible -- this is chat's --show-mcp."""
+        r, out = _renderer()
+        _show_last(_ctx_with(_TURN), r)
+        text = out.getvalue()
+        assert "terminal_execute" in text and "a.txt" in text
+        assert "erste frage" not in text        # only the last turn
+
+    def test_turn_without_tools_says_so(self, capsys):
+        r, _t = _renderer()
+        _show_last(_ctx_with([_Msg("user", "hi"), _Msg("assistant", "hallo")]), r)
+        assert "no tools" in capsys.readouterr().out
+
+    def test_no_turn_yet(self, capsys):
+        r, _t = _renderer()
+        _show_last(_ctx_with([]), r)
+        assert "No turn" in capsys.readouterr().out

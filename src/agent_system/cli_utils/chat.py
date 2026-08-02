@@ -515,7 +515,9 @@ _COMMAND_ALIASES = {
     "/session": "session",
     "/sessions": "sessions",
     "/resume": "resume",
-    "/help": "help", "/?": "help",
+    "/history": "history", "/hist": "history",
+    "/last": "last",
+    "/help": "help", "/?": "help", "/h": "help",
 }
 
 
@@ -569,7 +571,9 @@ Commands:
   /session           show the current session and how to resume it
   /sessions          list recent sessions
   /resume <id>       continue an earlier session
-  /help              this help
+  /history [n]       show the last n exchanges (default 6)
+  /last              tool calls and results of the last turn, in full
+  /help, /h          this help
 
 Input:
   """               start/end a multi-line message (paste code between them)
@@ -769,6 +773,112 @@ def _format_usage(usage: dict, elapsed: float, sym: dict) -> str:
     mins, secs = divmod(int(elapsed), 60)
     parts.append(f"{mins}m{secs:02d}s" if mins else f"{secs}s")
     return sym["sep"].join(parts)
+
+
+def _message_text(message: Any) -> str:
+    """Readable text of a ChatMessage whose content may be multimodal."""
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(item.get("text") or f"[{item.get('type', 'part')}]")
+            else:
+                parts.append(getattr(item, "text", None) or f"[{getattr(item, 'type', 'part')}]")
+        return " ".join(p for p in parts if p)
+    return "" if content is None else str(content)
+
+
+def _session_messages(ctx: "_ChatContext") -> list:
+    tracker = getattr(ctx.agent, "_session_tracker", None)
+    if tracker is None:
+        return []
+    try:
+        return list(tracker.get_session_messages(ctx.session_id) or [])
+    except Exception:
+        logger.debug("Could not read session messages", exc_info=True)
+        return []
+
+
+def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
+    """Print the recent exchange: what was asked, what came back.
+
+    The live region collapses each turn into a few lines and the answer
+    scrolls away -- this is the only way back to it without leaving the chat.
+    """
+    try:
+        limit = max(int(payload), 1) if payload else 6
+    except ValueError:
+        print(f"Usage: /history [count]   (got: {payload})")
+        return
+
+    messages = _session_messages(ctx)
+    if not messages:
+        print("No messages in this session yet.")
+        return
+
+    # Count backwards in USER turns, so "6" means six exchanges rather than
+    # six raw messages (a single turn can hold a dozen tool messages).
+    start = 0
+    seen = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if getattr(messages[i], "role", None) == "user":
+            seen += 1
+            if seen >= limit:
+                start = i
+                break
+
+    print(f"Last {seen} exchange(s) of session {ctx.session_id}:")
+    for message in messages[start:]:
+        role = getattr(message, "role", "?")
+        text = _message_text(message).strip()
+        calls = getattr(message, "tool_calls", None)
+
+        if role == "user":
+            renderer.println("")
+            renderer.println(f"› {text}" if text else "› [attachment]")
+        elif role == "assistant":
+            if text:
+                renderer.println(text, color="90")
+            for call in calls or []:
+                fn = (call or {}).get("function", {}) if isinstance(call, dict) else {}
+                name = fn.get("name", "?")
+                args = str(fn.get("arguments", ""))
+                renderer.println(f"  → {name}({args})", color="34")
+        elif role == "tool":
+            renderer.println(f"  ← {text}", color="32")
+    renderer.commit()
+
+
+def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
+    """Full tool calls and results of the most recent turn.
+
+    Chat collapses every tool call to one status line, so what a tool actually
+    RETURNED is invisible -- this is the chat equivalent of run's --show-mcp.
+    """
+    messages = _session_messages(ctx)
+    last_user = max((i for i, m in enumerate(messages)
+                     if getattr(m, "role", None) == "user"), default=None)
+    if last_user is None:
+        print("No turn to show yet.")
+        return
+
+    shown = 0
+    for message in messages[last_user + 1:]:
+        role = getattr(message, "role", "?")
+        if role == "assistant":
+            for call in getattr(message, "tool_calls", None) or []:
+                fn = (call or {}).get("function", {}) if isinstance(call, dict) else {}
+                renderer.println(f"→ {fn.get('name', '?')}({fn.get('arguments', '')})",
+                                 color="34")
+                shown += 1
+        elif role == "tool":
+            renderer.println(f"← {_message_text(message)}", color="32")
+    renderer.commit()
+    if not shown:
+        print("The last turn used no tools.")
 
 
 async def _list_sessions(ctx: _ChatContext) -> None:
@@ -1032,6 +1142,12 @@ def run_chat_loop(
                     print("Usage: /resume <session-id>   (/sessions lists them)")
                 elif loop.run_until_complete(_resume_session(ctx, payload)):
                     print(f"Resumed session: {ctx.session_id}")
+                continue
+            if command == "history":
+                _show_history(ctx, renderer, payload)
+                continue
+            if command == "last":
+                _show_last(ctx, renderer)
                 continue
             if command == "help":
                 print(_HELP_TEXT)
