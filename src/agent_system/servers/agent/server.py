@@ -2196,6 +2196,9 @@ class Agent(MCPServer):
 
             content = assistant.get("content")
             tool_calls = assistant.get("tool_calls", [])
+            # "length" = the model hit its output cap. With no content that is a
+            # TRUNCATION, not an empty answer — see the empty-response guard below.
+            finish_reason = llm_out.get("finish_reason") if llm_out else None
             # Provider-side encrypted thinking blocks (Gemini 3.x thought_signature
             # via OpenRouter's reasoning_details). MUST be carried through to the
             # next request or upstream returns MALFORMED_FUNCTION_CALL.
@@ -2311,6 +2314,29 @@ class Agent(MCPServer):
                         context.messages.pop()
                     logger.debug("Removed empty assistant message from conversation history")
                 
+                # Output cap exhausted with nothing to show: the model spent its
+                # whole budget (typically on reasoning) and was cut off. This is
+                # NOT "the model had nothing to say", and a 'Continue' nudge just
+                # replays the same runaway — observed as 4 x ~11 min and ~260k
+                # reasoning tokens burned for zero output. Fail fast and say why.
+                if finish_reason == "length":
+                    usage = (llm_out or {}).get("usage") or {}
+                    reasoning_tokens = (
+                        (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+                    )
+                    error_msg = (
+                        "LLM hit its output token limit without producing any content "
+                        f"(finish_reason=length, completion_tokens="
+                        f"{usage.get('completion_tokens', '?')}"
+                        + (f", of which reasoning={reasoning_tokens}" if reasoning_tokens else "")
+                        + "). The model exhausted its budget before answering — lower the "
+                        "thinking/reasoning level, raise max_tokens, or use a different model."
+                    )
+                    logger.error(error_msg)
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg}
+                    return
+
                 if consecutive_empty_responses >= max_consecutive_empty:
                     logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' user message to prompt LLM")
                     # Instead of breaking, inject a "Continue" user message to nudge the LLM

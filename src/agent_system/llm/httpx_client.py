@@ -1672,6 +1672,13 @@ class HTTPXOpenAIClient(LLMClient):
                                     # Add usage if available
                                     if accumulated_usage:
                                         final_result["usage"] = accumulated_usage
+                                    # Carry finish_reason to the caller, not just to
+                                    # the hook: "length" means the answer was CUT OFF,
+                                    # which the agent loop must not mistake for an
+                                    # empty response (a model that spends its whole
+                                    # budget on reasoning returns no content at all).
+                                    if _last_finish_reason:
+                                        final_result["finish_reason"] = _last_finish_reason
 
                                     # Notify post-response hook for streaming
                                     _s_duration = (_time.time() - _streaming_request_start) * 1000
@@ -1843,6 +1850,8 @@ class HTTPXOpenAIClient(LLMClient):
                                     final_result = {"assistant": assistant}
                                     if accumulated_usage:
                                         final_result["usage"] = accumulated_usage
+                                    if _last_finish_reason:  # see note above
+                                        final_result["finish_reason"] = _last_finish_reason
                                     _s_duration = (_time.time() - _streaming_request_start) * 1000
                                     await self._notify_post_response({
                                         "provider": "openai_httpx", "model": self.model,
@@ -2465,6 +2474,11 @@ class HTTPXOpenAIClient(LLMClient):
                 logger.debug(f"Added usage to result: {result['usage']}")
             else:
                 logger.debug("No usage data in response_data")
+
+            # Same contract as the streaming paths: the caller needs to tell a
+            # truncated answer ("length") from an empty one.
+            if finish_reason:
+                result["finish_reason"] = finish_reason
 
             return result
 
