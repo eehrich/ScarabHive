@@ -260,12 +260,24 @@ class ChatRenderer:
     def _wrap(line: str, width: int) -> list[str]:
         """Break `line` into chunks of at most `width` COLUMNS, on words.
 
+        Leading whitespace is preserved and re-applied to every chunk (hanging
+        indent): splitting on " " drops it, which silently un-indented every
+        nested line -- visible only in ANSI mode, since the non-ANSI path
+        writes the string untouched.
+
         textwrap can't be used: it counts code points, so a CJK line would
         come back too wide and wrap again in the terminal -- the exact
         corruption the hard wrap exists to prevent.
         """
         if not line:
             return [""]
+        body = line.lstrip(" ")
+        indent = line[: len(line) - len(body)]
+        if not body:
+            return [line]
+        if indent:
+            inner = max(width - display_width(indent), 8)
+            return [indent + chunk for chunk in ChatRenderer._wrap(body, inner)]
         chunks: list[str] = []
         current = ""
         used = 0
@@ -518,6 +530,8 @@ _COMMAND_ALIASES = {
     "/resume": "resume",
     "/history": "history", "/hist": "history",
     "/last": "last",
+    "/tools": "tools",
+    "/skills": "skills",
     "/help": "help", "/?": "help", "/h": "help",
 }
 
@@ -572,6 +586,8 @@ Commands:
   /session           show the current session and how to resume it
   /sessions          list recent sessions
   /resume <id>       continue an earlier session
+  /tools [filter]    tools this agent really has (not what it claims)
+  /skills            skill bundles it loads
   /history [n]       show the last n exchanges (default 6)
   /last              tool calls and results of the last turn, in full
   /help, /h          this help
@@ -994,6 +1010,92 @@ def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
         print("The last turn used no tools.")
 
 
+async def _show_tools(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
+    """List the tools the agent REALLY has, grouped by server.
+
+    Asking the model instead is unreliable: it answers from the names in its
+    schema, so "do you have tavily_search" gets a No when the tool is called
+    tavily_search_web_search. This reads the same filtered schema the model is
+    given, so the answer is the ground truth.
+    """
+    lister = getattr(ctx.agent, "_list_usable_tools_with_details", None)
+    if lister is None:
+        print("This agent cannot report its tools.")
+        return
+    try:
+        tools = await lister({})
+    except Exception as e:
+        logger.error("Failed to list tools: %s", e, exc_info=True)
+        print(f"Could not list tools: {e}")
+        return
+    if not tools:
+        print("This agent has no tools (tools.allowed is empty = deny-all).")
+        return
+
+    needle = payload.strip().lower()
+    if needle:
+        tools = [t for t in tools
+                 if needle in t.get("name", "").lower()
+                 or needle in (t.get("description") or "").lower()]
+        if not tools:
+            print(f"No tool matches '{payload}'.")
+            return
+
+    # Group by the server prefix, which is how they are configured.
+    groups: dict[str, list[dict]] = {}
+    known = sorted((s for s in _server_names(ctx)), key=len, reverse=True)
+    for tool in tools:
+        name = tool.get("name", "?")
+        server = next((s for s in known if name.startswith(s + "_")), name.split("_")[0])
+        groups.setdefault(server, []).append(tool)
+
+    total = sum(len(v) for v in groups.values())
+    print(f"{total} tool(s) available to {ctx.entry_name}"
+          + (f" matching '{payload}'" if needle else "") + ":")
+    for server in sorted(groups):
+        renderer.println(f"{server}", color="34")
+        for tool in groups[server]:
+            name = tool.get("name", "?")
+            first_line = " ".join((tool.get("description") or "").split())
+            renderer.println(f"  {name}"
+                             + (f"  -- {_one_line(first_line, 70)}" if first_line else ""),
+                             color="90")
+    renderer.commit()
+
+
+def _server_names(ctx: "_ChatContext") -> list:
+    registry = getattr(ctx.agent, "registry", None)
+    try:
+        return list(registry.list()) if registry is not None else []
+    except Exception:
+        logger.debug("Could not read registry server names", exc_info=True)
+        return []
+
+
+def _show_skills(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
+    """Which skill bundles this agent loads, and how."""
+    agent_config = getattr(ctx.agent, "agent_config", None)
+    skills = getattr(agent_config, "skills", None) if agent_config else None
+    if not skills:
+        print(f"{ctx.entry_name} uses no skills.")
+        return
+    always = list(getattr(skills, "always", None) or (
+        skills.get("always") if isinstance(skills, dict) else []) or [])
+    on_demand = list(getattr(skills, "on_demand", None) or (
+        skills.get("on_demand") if isinstance(skills, dict) else []) or [])
+    if always:
+        renderer.println("always (in every prompt):", color="34")
+        for name in always:
+            renderer.println(f"  {name}", color="90")
+    if on_demand:
+        renderer.println("on demand (description only, body pulled when needed):", color="34")
+        for name in on_demand:
+            renderer.println(f"  {name}", color="90")
+    if not always and not on_demand:
+        print(f"{ctx.entry_name} uses no skills.")
+    renderer.commit()
+
+
 async def _list_sessions(ctx: _ChatContext) -> None:
     """Show the most recent sessions of this user."""
     if ctx.session_manager is None:
@@ -1255,6 +1357,12 @@ def run_chat_loop(
                     print("Usage: /resume <session-id>   (/sessions lists them)")
                 elif loop.run_until_complete(_resume_session(ctx, payload)):
                     print(f"Resumed session: {ctx.session_id}")
+                continue
+            if command == "tools":
+                loop.run_until_complete(_show_tools(ctx, renderer, payload))
+                continue
+            if command == "skills":
+                _show_skills(ctx, renderer)
                 continue
             if command == "history":
                 _show_history(ctx, renderer, payload)

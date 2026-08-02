@@ -17,6 +17,8 @@ from agent_system.cli_utils.chat import (
     _format_usage,
     _read_input,
     _show_history,
+    _show_skills,
+    _show_tools,
     _show_last,
     _restore_logging,
     _silence_stdout_logging,
@@ -917,3 +919,179 @@ class TestToolTrafficRendering:
         _show_last(_ctx_with(messages), r)
         text = out.getvalue()
         assert "nicht json" in text and "auch nicht json" in text
+
+
+class _Registry:
+    def __init__(self, names):
+        self._names = names
+
+    def list(self):
+        return self._names
+
+
+class _Skills:
+    def __init__(self, always=None, on_demand=None):
+        self.always = always or []
+        self.on_demand = on_demand or []
+
+
+class _AgentConfig:
+    def __init__(self, skills=None):
+        self.skills = skills
+
+
+class _ToolAgent:
+    def __init__(self, tools, servers=(), skills=None, fail=False):
+        self._tools = tools
+        self.registry = _Registry(list(servers))
+        self.agent_config = _AgentConfig(skills)
+        self._fail = fail
+
+    async def _list_usable_tools_with_details(self, params):
+        if self._fail:
+            raise RuntimeError("registry kaputt")
+        return self._tools
+
+
+def _tool_ctx(agent):
+    from agent_system.cli_utils.chat import _ChatContext
+    return _ChatContext(
+        agent=agent, entry_name="amiga_coder", session_service=None,
+        session_user="u", session_id="s", was_new_session=False,
+        llm_profile="p", llm_override=None, llm_profile_info=None,
+        show_status=True,
+    )
+
+
+_TOOLS = [
+    {"name": "tavily_search_web_search", "description": "AI-powered web search"},
+    {"name": "tavily_search_extract", "description": "Extract content from URLs"},
+    {"name": "terminal_execute", "description": "Execute a shell command"},
+]
+_SERVERS = ["tavily_search", "terminal"]
+
+
+class TestToolsCommand:
+    """The point of this command: the MODEL is an unreliable source. Asked for
+    "tavily_search" it answered "I don't have that" because the tool is named
+    tavily_search_web_search. This reads the schema instead."""
+
+    async def test_lists_the_real_tool_names(self):
+        r, out = _renderer(width=200)
+        await _show_tools(_tool_ctx(_ToolAgent(_TOOLS, _SERVERS)), r, "")
+        text = out.getvalue()
+        assert "tavily_search_web_search" in text
+        assert "terminal_execute" in text
+
+    async def test_groups_by_server_prefix(self):
+        r, out = _renderer(width=200)
+        await _show_tools(_tool_ctx(_ToolAgent(_TOOLS, _SERVERS)), r, "")
+        lines = [ln for ln in out.getvalue().split("\n") if ln.strip()]
+        plain = [ln.replace("\x1b[34m", "").replace("\x1b[90m", "")
+                 .replace("\x1b[0m", "") for ln in lines]
+        # server headers are unindented, their tools are indented below
+        assert "tavily_search" in plain
+        idx = plain.index("tavily_search")
+        assert plain[idx + 1].startswith("  tavily_search_")
+
+    async def test_longest_server_prefix_wins(self):
+        """"coder_file_ops_read_file" must group under coder_file_ops, not
+        under a shorter server that happens to share a prefix."""
+        tools = [{"name": "coder_file_ops_read_file", "description": "d"}]
+        r, out = _renderer(width=200)
+        await _show_tools(_tool_ctx(_ToolAgent(tools, ["coder", "coder_file_ops"])), r, "")
+        plain = out.getvalue().replace("\x1b[34m", "").replace("\x1b[0m", "")
+        assert "\ncoder_file_ops\n" in "\n" + plain
+
+    async def test_filter_narrows_by_name_and_description(self, capsys):
+        r, out = _renderer(width=200)
+        await _show_tools(_tool_ctx(_ToolAgent(_TOOLS, _SERVERS)), r, "tavily")
+        text = out.getvalue()
+        assert "tavily_search_web_search" in text
+        assert "terminal_execute" not in text
+        assert "matching 'tavily'" in capsys.readouterr().out
+
+    async def test_filter_without_match_says_so(self, capsys):
+        r, _t = _renderer()
+        await _show_tools(_tool_ctx(_ToolAgent(_TOOLS, _SERVERS)), r, "nichtsda")
+        assert "No tool matches" in capsys.readouterr().out
+
+    async def test_empty_allowlist_is_reported_as_deny_all(self, capsys):
+        """tools.allowed empty means deny-all -- a silent empty list would look
+        like a bug in the command instead of the config."""
+        r, _t = _renderer()
+        await _show_tools(_tool_ctx(_ToolAgent([], [])), r, "")
+        assert "deny-all" in capsys.readouterr().out
+
+    async def test_listing_failure_is_reported_not_swallowed(self, capsys):
+        r, _t = _renderer()
+        await _show_tools(_tool_ctx(_ToolAgent([], [], fail=True)), r, "")
+        assert "Could not list tools" in capsys.readouterr().out
+
+    async def test_agent_without_the_api_says_so(self, capsys):
+        class _Plain:
+            registry = None
+            agent_config = None
+        r, _t = _renderer()
+        await _show_tools(_tool_ctx(_Plain()), r, "")
+        assert "cannot report its tools" in capsys.readouterr().out
+
+
+class TestSkillsCommand:
+    def test_separates_always_from_on_demand(self):
+        agent = _ToolAgent([], [], skills=_Skills(always=["amiga-coding"],
+                                                  on_demand=["m68k-assembly"]))
+        r, out = _renderer(width=200)
+        _show_skills(_tool_ctx(agent), r)
+        text = out.getvalue()
+        assert "amiga-coding" in text and "m68k-assembly" in text
+        assert "always" in text and "on demand" in text
+
+    def test_dict_shaped_skills_config_also_works(self):
+        agent = _ToolAgent([], [], skills={"always": ["a"], "on_demand": []})
+        r, out = _renderer(width=200)
+        _show_skills(_tool_ctx(agent), r)
+        assert "a" in out.getvalue()
+
+    def test_agent_without_skills(self, capsys):
+        r, _t = _renderer()
+        _show_skills(_tool_ctx(_ToolAgent([], [])), r)
+        assert "no skills" in capsys.readouterr().out
+
+
+class TestIndentPreservation:
+    """Nested output (/tools groups, /last key blocks) relies on indentation.
+    Splitting on " " dropped it -- and only in ANSI mode, so a piped test run
+    looked fine while the real terminal lost every indent."""
+
+    def test_ansi_keeps_leading_spaces(self):
+        r, out = _renderer(width=200)
+        r.println("  eingerueckt")
+        plain = out.getvalue().replace("\x1b[0m", "")
+        assert plain.startswith("  eingerueckt")
+
+    def test_both_modes_agree_on_the_indent(self):
+        ansi_r, ansi_out = _renderer(ansi=True, width=200)
+        plain_r, plain_out = _renderer(ansi=False, width=200)
+        ansi_r.println("    vier spaces")
+        plain_r.println("    vier spaces")
+        assert ansi_out.getvalue().replace("\x1b[0m", "") == plain_out.getvalue()
+
+    def test_wrapped_continuation_keeps_the_indent(self):
+        r, out = _renderer(width=30)
+        r.println("  " + "wort " * 12)
+        lines = [ln for ln in out.getvalue().split("\n") if ln]
+        assert len(lines) > 1
+        assert all(ln.startswith("  ") for ln in lines)
+
+    def test_indented_lines_still_respect_the_width(self):
+        r, out = _renderer(width=30)
+        r.println("    " + "x " * 30)
+        for ln in out.getvalue().split("\n")[:-1]:
+            assert display_width(ln) <= 29
+        assert r._total == out.getvalue().count("\n")
+
+    def test_whitespace_only_line_is_kept(self):
+        r, out = _renderer(width=200)
+        r.println("   ")
+        assert r._total == 1

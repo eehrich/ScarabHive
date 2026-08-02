@@ -134,6 +134,8 @@ global `--color` and `--no-status`.
 | `/session` | Show the current session and the command that resumes it |
 | `/sessions` | List the 10 most recent sessions |
 | `/resume <id>` | Continue an earlier session without leaving the chat |
+| `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
+| `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
 | `/help`, `/h`, `/?` | List the commands |
