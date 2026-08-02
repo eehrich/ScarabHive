@@ -172,6 +172,57 @@ class AnthropicAsyncClient(LLMClient):
             return {"type": "adaptive"}
         return {"type": "enabled", "budget_tokens": self.thinking_budget or 8192}
 
+    #: Both thinking block types. `redacted_thinking` carries encrypted
+    #: reasoning and is just as mandatory on replay as a plain `thinking` block.
+    _THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+    @staticmethod
+    def _serialize_thinking_blocks(message: Any) -> List[Dict[str, Any]]:
+        """Verbatim copy of every thinking/redacted_thinking block, in order.
+
+        Two filters that look reasonable and are NOT allowed here:
+
+        * dropping blocks whose ``thinking`` text is empty — with
+          ``display="omitted"`` (the default on Opus 5 / Sonnet 5 / Fable 5) the
+          text is always empty while the *signature* still carries the encrypted
+          reasoning;
+        * keeping only ``type == "thinking"`` — that silently drops
+          ``redacted_thinking``.
+
+        Either one turns a complete echo into a PARTIAL one, which Anthropic
+        rejects with 400 ("...blocks in the latest assistant message cannot be
+        modified"). Copy everything, in order, unchanged.
+        """
+        blocks: List[Dict[str, Any]] = []
+        for block in getattr(message, "content", None) or []:
+            if getattr(block, "type", None) not in AnthropicAsyncClient._THINKING_BLOCK_TYPES:
+                continue
+            dump = getattr(block, "model_dump", None)
+            if callable(dump):
+                blocks.append(dump(mode="json", exclude_none=True))
+            elif isinstance(block, dict):
+                blocks.append(dict(block))
+        return blocks
+
+    def _replayable_thinking(self, msg: ChatMessage) -> List[Dict[str, Any]]:
+        """This message's thinking blocks, if they may be replayed to THIS model.
+
+        Signatures are model-bound. Replaying them to a different model does not
+        error — the blocks are ignored but still billed as input — so a fallback
+        chain that switched models would silently pay for dead weight.
+        """
+        blocks = getattr(msg, "thinking_blocks", None)
+        if not blocks:
+            return []
+        origin = getattr(msg, "thinking_model", None)
+        if origin and origin != self.model:
+            logger.debug(
+                "Dropping %d thinking block(s) from %s (current model: %s)",
+                len(blocks), origin, self.model,
+            )
+            return []
+        return [dict(b) for b in blocks if isinstance(b, dict)]
+
     def _convert_messages(
         self, messages: List[ChatMessage]
     ) -> tuple[Optional[str | List[Dict[str, Any]]], List[Dict[str, Any]]]:
@@ -238,7 +289,14 @@ class AnthropicAsyncClient(LLMClient):
             # Handle assistant messages with tool calls
             if role == "assistant" and msg.tool_calls:
                 content_blocks: List[Dict[str, Any]] = []
-                
+
+                # Thinking blocks FIRST — that is the order the model emitted
+                # them in ([thinking, text, tool_use]), and the order the
+                # "must match what the model generated" check validates against.
+                # Required when returning tool results: the blocks have to come
+                # back complete and unmodified or the turn is rejected.
+                content_blocks.extend(self._replayable_thinking(msg))
+
                 # Add text content if present
                 text_content = msg.content if isinstance(msg.content, str) else msg.get_text_content()
                 if text_content:
@@ -276,11 +334,24 @@ class AnthropicAsyncClient(LLMClient):
                     "content": content_blocks
                 })
             else:
-                # Simple text content
-                converted_messages.append({
-                    "role": anthropic_role,
-                    "content": msg.content or ""
-                })
+                # Simple text content. An assistant turn that carried thinking
+                # blocks keeps them here too, so the echo stays complete across
+                # the whole history — but only alongside real text: blocks with
+                # no content would produce an empty assistant message.
+                replay = (
+                    self._replayable_thinking(msg)
+                    if anthropic_role == "assistant" else []
+                )
+                if replay and isinstance(msg.content, str) and msg.content:
+                    converted_messages.append({
+                        "role": anthropic_role,
+                        "content": replay + [{"type": "text", "text": msg.content}],
+                    })
+                else:
+                    converted_messages.append({
+                        "role": anthropic_role,
+                        "content": msg.content or ""
+                    })
         
         # Cache-Breakpoint-Sentinels strippen (Sicherheitsnetz, auf dem
         # KONVERTIERTEN Output — Session-Messages bleiben unangetastet):
@@ -510,6 +581,9 @@ class AnthropicAsyncClient(LLMClient):
         # Accumulators
         accumulated_content: List[str] = []
         accumulated_thinking: List[str] = []
+        # Verbatim thinking/redacted_thinking blocks incl. signatures — see
+        # _serialize_thinking_blocks. Reset per attempt with the others below.
+        thinking_blocks: List[Dict[str, Any]] = []
         accumulated_tool_calls: Dict[str, Dict[str, Any]] = {}
         accumulated_usage: Optional[Dict[str, Any]] = None
         current_tool_call_id: Optional[str] = None
@@ -627,6 +701,12 @@ class AnthropicAsyncClient(LLMClient):
                     final_message = await stream.get_final_message()
                     if final_message and final_message.usage:
                         accumulated_usage = self._extract_usage(final_message.usage)
+                    # The accumulated final message is the ONLY place the thinking
+                    # blocks' signatures exist — the stream deltas carry text only
+                    # (and with display="omitted", the default on Opus 5 / Sonnet 5
+                    # / Fable 5, not even that). Capture them verbatim here.
+                    if final_message:
+                        thinking_blocks = self._serialize_thinking_blocks(final_message)
                 
                 # Build final result
                 assistant: Dict[str, Any] = {
@@ -636,7 +716,13 @@ class AnthropicAsyncClient(LLMClient):
                 
                 if accumulated_tool_calls:
                     assistant["tool_calls"] = list(accumulated_tool_calls.values())
-                
+
+                # Inside `assistant` because the agent loop only reads
+                # llm_out["assistant"] when building the ChatMessage.
+                if thinking_blocks:
+                    assistant["thinking_blocks"] = thinking_blocks
+                    assistant["thinking_model"] = self.model
+
                 final_result: Dict[str, Any] = {"assistant": assistant}
                 if accumulated_usage:
                     final_result["usage"] = accumulated_usage
@@ -695,6 +781,7 @@ class AnthropicAsyncClient(LLMClient):
                         # Reset accumulators
                         accumulated_content = []
                         accumulated_thinking = []
+                        thinking_blocks = []
                         accumulated_tool_calls = {}
                         accumulated_usage = None
                         continue
@@ -724,6 +811,7 @@ class AnthropicAsyncClient(LLMClient):
                     # Reset accumulators
                     accumulated_content = []
                     accumulated_thinking = []
+                    thinking_blocks = []
                     accumulated_tool_calls = {}
                     accumulated_usage = None
                     continue

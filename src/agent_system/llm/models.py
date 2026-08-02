@@ -180,6 +180,21 @@ class ChatMessage(BaseModel):
     # LLM client (keep_all strips the now-unverifiable chain remnant) and
     # never sent to providers (client pops it before building the payload).
     rd_orphaned: Optional[bool] = None
+    # Anthropic extended/adaptive thinking blocks, verbatim as returned
+    # (thinking+signature / redacted_thinking+data) in the model's original
+    # order. Inside a tool-use turn these MUST be echoed back COMPLETE and
+    # unmodified; a PARTIAL echo is a 400 ("thinking or redacted_thinking
+    # blocks in the latest assistant message cannot be modified"), so never
+    # filter, dedupe or reorder them. Deliberately NOT reusing
+    # reasoning_details: that list is mutated whole-list by
+    # reasoning_artifacts, is whitelisted into the OpenRouter payload, and its
+    # keep_last mode prunes older entries — all three would corrupt these.
+    # Read only by anthropic_client.
+    thinking_blocks: Optional[List[Dict[str, Any]]] = None
+    # Model that produced them. Signatures are model-bound: another model
+    # ignores them silently but still bills them as input, so replay is
+    # skipped on mismatch (fallback chains DO move messages between models).
+    thinking_model: Optional[str] = None
     # Hook injection tracking: identifies which plugin injected this message.
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.

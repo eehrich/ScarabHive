@@ -2222,6 +2222,12 @@ class Agent(MCPServer):
                 tool_calls=tool_calls if tool_calls else None,
                 reasoning_content=assistant.get("reasoning_content"),
                 reasoning_details=reasoning_details,
+                # Anthropic thinking blocks (+ the model that signed them).
+                # Same contract as reasoning_content above: with tool use they
+                # must be echoed back complete and unmodified, so they have to
+                # survive on the message.
+                thinking_blocks=assistant.get("thinking_blocks"),
+                thinking_model=assistant.get("thinking_model"),
                 timestamp=datetime.now(timezone.utc)
             )
             messages.append(assistant_msg)
