@@ -1945,21 +1945,32 @@ class LayeredCompactionStrategy:
     
     async def get_restoration_context(self) -> str:
         """Generate context section explaining how to restore information.
-        
+
         This is added to the system prompt so the LLM knows how to access
         stored/archived information.
-        
+
+        BYTE-STABIL HALTEN. Der Block wird direkt hinter dem System-Prompt
+        eingefuegt (hooks.py), steht also VOR der gesamten Konversation:
+        jede Aenderung an ihm entwertet den Provider-Prompt-Cache fuer ALLES
+        dahinter. Zaehler wie "There are 47 stored tool results" aendern sich
+        bei jedem ausgelagerten Tool-Ergebnis -- gemessen an einem
+        Multi-Turn-Lauf: Praefix-Bruch bei Message 50 von 197, Cache-Quote
+        8-13 % statt 50-65 %. Die Zahlen sind fuer das Modell auch nicht
+        handlungsleitend: es reagiert auf die Referenz IM Text, nicht auf
+        eine Gesamtzahl. Also nur konstante Beschreibungen hier, nichts,
+        was sich pro Turn bewegt.
+
         Returns:
             System prompt section
         """
         sections = []
-        
+
         # Tool result references - wrap sync SQLite operation
         tool_stats = await asyncio.to_thread(self.tool_store.get_stats)
         if tool_stats["total_entries"] > 0:
             sections.append(
                 "## Tool Results\n"
-                f"There are {tool_stats['total_entries']} stored tool results. "
+                "Some tool results have been stored externally. "
                 "When you see a JSON reference with `type: tool_result_ref`, "
                 "you can retrieve the full result using the `get_tool_result` tool "
                 "with the ref_id."
@@ -1975,8 +1986,7 @@ class LayeredCompactionStrategy:
         if archive_stats["total_messages"] > 0:
             sections.append(
                 "## Conversation Archive\n"
-                f"There are {archive_stats['total_messages']} archived messages "
-                f"({archive_stats['total_tokens']} tokens). "
+                "Older messages have been archived. "
                 "When you see a JSON reference with `type: archived_ref`, the full message "
                 "has been stored and can be retrieved using the `recall` tool."
             )
