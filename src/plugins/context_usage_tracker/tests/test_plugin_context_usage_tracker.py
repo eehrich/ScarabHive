@@ -747,9 +747,10 @@ def pricing_file(tmp_path, monkeypatch):
         "deepseek-chat:\n  input: 0.28\n  output: 0.42\n  cached_input: 0.028\n",
         encoding="utf-8",
     )
-    monkeypatch.chdir(tmp_path)
-    # the pricing module caches by (path, mtime) — reset for isolation
+    # Point the module at the temp table directly. chdir used to work because
+    # the default path was CWD-relative -- that was the bug, not the mechanism.
     from agent_system.llm import pricing as pricing_mod
+    monkeypatch.setattr(pricing_mod, "DEFAULT_PRICING_PATH", cfg / "llm_pricing.yaml")
     pricing_mod._cache.update(path=None, mtime=None, table={})
     return cfg / "llm_pricing.yaml"
 
@@ -805,8 +806,8 @@ async def test_track_usage_batch_discount_applied(plugin, mock_hook_context, tmp
     (cfg / "llm_pricing.yaml").write_text(
         "batchy-model:\n  input: 1.0\n  output: 2.0\n  batch_discount: 0.5\n",
         encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
     from agent_system.llm import pricing as pricing_mod
+    monkeypatch.setattr(pricing_mod, "DEFAULT_PRICING_PATH", cfg / "llm_pricing.yaml")
     pricing_mod._cache.update(path=None, mtime=None, table={})
 
     mock_hook_context.llm.model = "batchy-model"

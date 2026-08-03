@@ -45,12 +45,18 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = REPO_ROOT / "data" / "message_debugger" / "debugger.db"
 DEFAULT_PRICING = REPO_ROOT / "config" / "llm_pricing.yaml"
 LOG_DIR = REPO_ROOT / "logs"
+
+# Standalone script: make the package importable so the pricing formula can be
+# shared instead of copied (the copy here had already drifted from the core).
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+from agent_system.llm.pricing import estimate_cost  # noqa: E402
+from agent_system.llm.pricing import load_pricing as _load_pricing  # noqa: E402
 
 # session_tracking logs: "Request <request_id> acquired lock for session <session_id>"
 _LOCK_RE = re.compile(r"Request (\S+) acquired lock for session (\S+)")
@@ -119,19 +125,12 @@ def scan_session_map(log_files: list[Path]) -> tuple[dict[str, list[str]], dict[
 # ---------------------------------------------------------------------------
 
 def load_pricing(path: Path) -> dict[str, dict[str, float]]:
-    """Load per-model rates from config/llm_pricing.yaml (the single source of
-    truth for pricing — never hard-code rates here, they would drift)."""
-    if not path.exists():
-        print(f"WARNING: pricing file not found: {path} — costs will be $0 "
+    """Per-model rates, via the shared loader (agent_system.llm.pricing)."""
+    table = _load_pricing(path)
+    if not table:
+        print(f"WARNING: no pricing loaded from {path} — costs will be $0 "
               f"unless the usage carries an OpenRouter cost field.", file=sys.stderr)
-        return {}
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    pricing: dict[str, dict[str, float]] = {}
-    for model, prices in data.items():
-        if isinstance(prices, dict):
-            pricing[model] = {k: float(v) for k, v in prices.items()}
-    return pricing
+    return table
 
 
 def compute_cost(
@@ -142,23 +141,25 @@ def compute_cost(
     cached_tokens: int,
     or_cost: float,
     is_batch: bool,
+    path: Path | None = None,
 ) -> float:
-    """Cost for one (model, agent) group. Prefers the billed OpenRouter cost."""
+    """Cost for one (model, agent) group. Prefers the billed OpenRouter cost.
+
+    The formula itself lives in agent_system.llm.pricing.estimate_cost -- this
+    used to be a third private copy of it, and the copies drifted.
+
+    CAVEAT on `or_cost`: callers aggregate it with SUM() over a whole
+    (model, agent, is_batch) group. If only SOME calls in that group carry a
+    provider cost, the partial sum is used for the entire group and the rest
+    are effectively free. Grouping by "has a cost field" is the real fix; this
+    signature keeps the existing behaviour.
+    """
     if or_cost and or_cost > 0:
         return or_cost
-    p = pricing.get(model)
-    if not p:
-        return 0.0  # unknown model → uncounted (surfaced as a warning)
-    uncached = max(0, prompt_tokens - cached_tokens)
-    cached_rate = p.get("cached_input", p.get("input", 0.0))
-    cost = (
-        uncached * p.get("input", 0.0)
-        + cached_tokens * cached_rate
-        + completion_tokens * p.get("output", 0.0)
-    ) / 1_000_000
-    if is_batch:
-        cost *= p.get("batch_discount", 1.0)
-    return cost
+    cost = estimate_cost(model, prompt_tokens, completion_tokens, cached_tokens,
+                         is_batch=is_batch, path=path)
+    # unknown model → uncounted (surfaced as a warning by the caller)
+    return cost if cost is not None else 0.0
 
 
 # ---------------------------------------------------------------------------

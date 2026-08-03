@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.factory import resolve_llm_config_for_agent
-from agent_system.llm.pricing import estimate_cost
+from agent_system.llm.pricing import normalize_usage, resolve_call_cost
 from agent_system.llm.token_utils import estimate_tools_token_count
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .tracker import UsageTracker
@@ -62,30 +62,11 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
             
-            # Extract cached_tokens from OpenAI's prompt_tokens_details
-            # Format: {"prompt_tokens_details": {"cached_tokens": 1920}}
-            cached_tokens = 0
-            cache_write_tokens = 0
-            prompt_tokens_details = usage.get("prompt_tokens_details")
-            if prompt_tokens_details and isinstance(prompt_tokens_details, dict):
-                cached_tokens = prompt_tokens_details.get("cached_tokens", 0) or 0
-                # OpenRouter reports cache WRITES as cache_write_tokens, the
-                # native Anthropic client as cache_creation_tokens.
-                cache_write_tokens = (
-                    prompt_tokens_details.get("cache_write_tokens")
-                    or prompt_tokens_details.get("cache_creation_tokens")
-                    or 0
-                )
-
-            # Billed cost in USD. OpenRouter-backed clients pass the provider's
-            # `cost` through in the usage dict; direct-API providers may not
-            # send one — then it stays None and the panel shows a dash.
-            cost = usage.get("cost")
-            if cost is not None:
-                try:
-                    cost = float(cost)
-                except (TypeError, ValueError):
-                    cost = None
+            # One canonical shape for every provider dialect (OpenAI names,
+            # Anthropic cache_read/cache_creation, Gemini camelCase, ...).
+            call = normalize_usage(usage)
+            cached_tokens = call.cached_tokens
+            cache_write_tokens = call.cache_write_tokens
 
             # Model that actually served the call (respects llm_override)
             model = ""
@@ -101,22 +82,16 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 if isinstance(_lat, (int, float)):
                     latency_ms = float(_lat)
 
-            # No billed cost (direct APIs like DeepSeek/Gemini SDK send none):
-            # fall back to an ESTIMATE from the central pricing table. Flagged
-            # so the panel can render it distinctly — it is not an exact price.
-            cost_is_estimate = False
-            if cost is None and model:
-                # Batch clients (BatchLLMClient.batch_provider = "openai"/...)
-                # bill at the table's batch_discount — without this the
-                # estimate would be ~2x the real price. isinstance-str guard:
-                # plain mocks/exotic clients must not look batchy.
-                bp = getattr(context.llm, 'batch_provider', None)
-                is_batch = isinstance(bp, str) and bool(bp)
-                est = estimate_cost(model, prompt_tokens, completion_tokens,
-                                    cached_tokens, is_batch=is_batch)
-                if est is not None:
-                    cost = est
-                    cost_is_estimate = True
+            # Billed figure first, central estimate second — the shared rule
+            # lives in llm/pricing.resolve_call_cost so every consumer answers
+            # the same for the same call. Batch clients
+            # (BatchLLMClient.batch_provider = "openai"/...) bill at the
+            # table's batch_discount; without it the estimate would be ~2x.
+            # isinstance-str guard: plain mocks must not look batchy.
+            bp = getattr(context.llm, 'batch_provider', None)
+            is_batch = isinstance(bp, str) and bool(bp)
+            cost, cost_is_estimate = resolve_call_cost(
+                usage, model or None, is_batch=is_batch)
 
             # Get context_window from the actual LLM instance (respects llm_override)
             # instead of resolving from agent_config (which uses agent's default profile)
