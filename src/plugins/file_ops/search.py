@@ -384,17 +384,39 @@ class FileSearchEngine:
 
         return False
 
+    #: Bytes read to decide text-vs-binary.
+    _SNIFF_BYTES = 4096
+
     def _is_text_file(self, path: Path) -> bool:
-        """Heuristic check if file is text (by extension)."""
-        text_extensions = {
-            '.py', '.txt', '.md', '.yaml', '.yml', '.json', '.toml',
-            '.js', '.ts', '.jsx', '.tsx', '.css', '.scss', '.html',
-            '.xml', '.csv', '.log', '.ini', '.cfg', '.conf',
-            '.sh', '.bash', '.zsh', '.fish', '.ps1',
-            '.c', '.cpp', '.h', '.hpp', '.java', '.rs', '.go',
-            '.toml'  # Ensure .toml files are indexed
-        }
-        return path.suffix.lower() in text_extensions
+        """Whether the file should be indexed for text search.
+
+        Decided by CONTENT, not by extension. The previous version kept an
+        allow-list of "text" extensions, which silently hid every file type
+        nobody had thought of -- .asm, .s and .inc among them. The only symptom
+        was a search reporting "0 matches in 0 files", which reads like "the
+        string is not there" rather than "this was never indexed".
+
+        No list can be complete, so there is none: a NUL byte in the first few
+        KB is the classic binary marker, and everything else gets indexed. A
+        new language or a homegrown extension is searchable on day one.
+
+        The sniff costs one 4 KB read, and only for files that got this far:
+        the caller already skipped anything above max_file_size_for_indexing_kb
+        and, on incremental runs, everything unchanged since the last index.
+        """
+        try:
+            with open(path, 'rb') as handle:
+                chunk = handle.read(self._SNIFF_BYTES)
+        except OSError:
+            return False  # unreadable -- nothing to index
+        if not chunk:
+            return False  # empty file carries no searchable text
+        if b'\x00' in chunk:
+            return False  # NUL byte: binary
+        # Control characters outside tab/newline/CR/formfeed/escape. Text in
+        # any encoding stays far below the threshold; binaries blow past it.
+        control = sum(1 for byte in chunk if byte < 0x09 or 0x0e <= byte < 0x20)
+        return control / len(chunk) <= 0.10
 
     async def _index_file_content(self, file_path: Path, index: Dict[str, List[tuple[Path, int]]]) -> Optional[str]:
         """
