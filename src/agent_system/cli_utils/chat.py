@@ -1871,6 +1871,18 @@ def run_chat_loop(
             print(f"Session saved: {ctx.last_saved}", file=sys.stderr)
             print(f"Resume with: {_resume_hint(ctx, ctx.last_saved)}", file=sys.stderr)
         try:
+            # Shut MCP down ON THIS loop, before closing it. The caller's
+            # finally also calls shutdown_mcp(), but through asyncio.run() --
+            # i.e. on a FRESH loop, while every subprocess transport (the
+            # terminal plugin's shells) belongs to this one. Their __del__ then
+            # fired against a closed loop and printed a "ValueError: I/O
+            # operation on closed pipe" cascade after the goodbye message.
+            try:
+                from ..mcp.integration import shutdown_mcp
+                loop.run_until_complete(shutdown_mcp())
+            except Exception:
+                logger.debug("MCP shutdown on the chat loop failed", exc_info=True)
+
             # Mirror asyncio.run's teardown: background tasks spawned during
             # the turns (e.g. the cancellation manager's timeout monitor) must
             # be cancelled, or close() logs "Task was destroyed but it is
@@ -1883,6 +1895,10 @@ def run_chat_loop(
                     asyncio.gather(*pending_tasks, return_exceptions=True)
                 )
             loop.run_until_complete(loop.shutdown_asyncgens())
+            # Subprocess transports are torn down by the executor thread pool;
+            # without this the interpreter can outrun it and __del__ still
+            # lands on a closed loop.
+            loop.run_until_complete(loop.shutdown_default_executor())
         except Exception:
             logger.debug("Event loop teardown failed", exc_info=True)
         loop.close()
