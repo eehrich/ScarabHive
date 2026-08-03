@@ -16,4 +16,6 @@ tags = ["okf", "knowledge", "wiki", "markdown", "context"]
 requires = { agent_system = ">=0.6.0" }
 
 # Python package requirements owned by this plugin (aggregated into the install).
-dependencies = ["ruamel.yaml>=0.18"]
+# filelock: cross-process guard for the read-modify-write tools. It was already
+# present transitively; declared here because correctness now depends on it.
+dependencies = ["ruamel.yaml>=0.18", "filelock>=3.12"]

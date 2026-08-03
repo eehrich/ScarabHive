@@ -39,6 +39,37 @@ any other consumer (verified: this plugin validates & traverses Google's real
 
 Paths are **bundle-relative with a leading slash** (`/tables/orders.md`).
 
+## Concurrent writers
+
+The three write tools are read-modify-write: `okf_append_log` reads the whole
+`log.md` and writes it back, `okf_write_concept` merges into the existing
+frontmatter, `okf_reindex` builds the index from a bundle scan. An interleaving
+loses data *silently* — both callers get `ok`.
+
+This is not hypothetical. An agent that spawns itself as a sub-agent writes the
+same bundle, parallel tool calls of a single turn run as concurrent asyncio
+tasks, and `agent-api`, the writer worker and a developer's CLI all share
+`data/okf`. Each write therefore takes two locks:
+
+* an **in-process lock** per bundle root, module-level so it holds even when
+  parent and sub-agent hold different `OkfServer` instances. It is a
+  `threading.Lock`, not an `asyncio.Lock`: the latter binds to the event loop of
+  its first use and raises on the next one, and a process may run several loops
+  over its lifetime while the bundle path stays the same;
+* a **file lock** (`.okf.lock` in the bundle root) for other processes.
+
+The critical section runs off the event loop (`asyncio.to_thread`), so waiting
+for either guard never stalls other turns.
+
+The guard file lives *in* the bundle on purpose: services run under different
+accounts with different temp directories, so a lock outside the bundle would
+silently not be the same lock. Windows removes it on release, POSIX leaves it —
+add `.okf.lock` to `.gitignore` if you version your bundles. It is never read as
+a concept.
+
+If a lock cannot be taken within 30 s the tool returns an error rather than
+hanging the turn.
+
 ## Config (`config/plugins.yaml`)
 
 ```yaml

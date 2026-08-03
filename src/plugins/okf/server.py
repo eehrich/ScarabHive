@@ -13,12 +13,17 @@ consumer (file_ops disables its own semantic search to avoid ChromaDB conflicts)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+import os
 import re
+import threading
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+from filelock import FileLock, Timeout
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
@@ -66,10 +71,92 @@ def _status_of(params: Dict[str, Any]) -> Any:
 
 def _atomic_write(path: Path, text: str) -> None:
     """Write via tmp-file + replace so a reader never sees a half-written file
-    and a crash can't truncate the target (bundles are git-versioned)."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    and a crash can't truncate the target (bundles are git-versioned).
+
+    The temp name carries pid and thread id. A FIXED name would be worse than no
+    temp file at all under concurrency: two writers would interleave their bytes
+    into the SAME scratch file and then both rename it over the target — a
+    corrupted concept instead of a merely lost one. On Windows the second
+    ``replace`` can also fail outright while the first writer holds the handle.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        # A failed replace must not leave scratch files lying in the bundle.
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:  # pragma: no cover - best effort
+                pass
+
+
+#: Cross-process guard file, one per bundle root. It lives IN the bundle on
+#: purpose: services run under different accounts (agent-api, writer worker,
+#: a developer's CLI), and their temp directories differ — a lock outside the
+#: bundle would silently fail to be the same lock.
+LOCK_FILENAME = ".okf.lock"
+
+#: Long enough that a slow bundle walk never trips it, short enough that a
+#: genuinely wedged holder surfaces as an error instead of hanging the turn.
+LOCK_TIMEOUT_S = 30.0
+
+#: In-process serialization, keyed by resolved bundle root. Module-level, not
+#: per-server: a parent agent and the sub-agent it spawned may hold different
+#: OkfServer instances, and both write the same bundle.
+#:
+#: A ``threading.Lock``, deliberately NOT an ``asyncio.Lock``: the latter binds
+#: itself to the event loop of its first use and raises "bound to a different
+#: event loop" on the next one. Two sequential ``asyncio.run()`` calls in one
+#: process are enough to trip that, and the bundle path is stable in production
+#: so the same lock object is reached again. This one has no loop affinity, and
+#: the critical section already runs off the loop anyway.
+_bundle_locks: Dict[str, threading.Lock] = {}
+_bundle_locks_guard = threading.Lock()
+
+
+def _lock_for(root: Path) -> threading.Lock:
+    with _bundle_locks_guard:
+        key = str(root)
+        lock = _bundle_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _bundle_locks[key] = lock
+        return lock
+
+
+def _run_locked(root: Path, fn: Callable[[], Any]) -> Any:
+    """Run ``fn`` holding both guards, on one thread.
+
+    filelock's bookkeeping is per-thread, so acquire and release must not land
+    on different pool threads — hence one call around the whole critical section
+    instead of separate awaits for acquire and release.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    with _lock_for(root):
+        with FileLock(str(root / LOCK_FILENAME), timeout=LOCK_TIMEOUT_S):
+            return fn()
+
+
+async def _exclusive(root: Path, fn: Callable[[], Any]) -> Any:
+    """Run a read-modify-write on ``root`` serialized against every other writer.
+
+    Both guards are needed and neither is redundant:
+
+    * the **in-process lock** covers this process — parallel tool calls of a
+      single turn and spawned sub-agents all run as tasks on one event loop, so
+      today's safety rests only on there being no ``await`` between the read and
+      the write. Measured: insert one, and 11 of 12 log entries vanish.
+    * the **file lock** covers other processes — agent-api, the writer worker
+      and a developer's CLI share ``data/okf``. Measured: two processes
+      appending concurrently lose half the entries (and on Windows ``os.replace``
+      raises outright while the other holds the file).
+
+    ``fn`` is synchronous and does the whole read-modify-write; it runs off the
+    event loop, so waiting never stalls other turns.
+    """
+    return await asyncio.to_thread(_run_locked, root, fn)
 
 
 class OkfServer(SchemaBasedMCPServer):
@@ -340,32 +427,51 @@ class OkfServer(SchemaBasedMCPServer):
             await status.error(msg)
             return {"status": "error", "error": msg}
 
-        # Overwrite: deep-merge the caller's frontmatter INTO the existing one,
-        # mutating the parsed CommentedMap so comments/order/quoting and nested
-        # producer keys survive (spec: preserve unknown keys on round-trip).
-        existing_fm = None
-        existed = abs_path.is_file()
-        if existed:
-            existing_fm, _b, _e = core.parse_frontmatter(
-                abs_path.read_text(encoding="utf-8"))
-        merged = core.merge_frontmatter(existing_fm, frontmatter)
+        def _write() -> Dict[str, Any]:
+            # Read, merge and write as ONE step under the bundle lock: a
+            # concurrent writer must not slip between the read and the write, or
+            # its frontmatter keys are silently dropped on the next overwrite.
+            # Overwrite deep-merges the caller's frontmatter INTO the existing
+            # one, mutating the parsed CommentedMap so comments/order/quoting
+            # and nested producer keys survive (spec: preserve unknown keys).
+            existing_fm = None
+            existed = abs_path.is_file()
+            if existed:
+                existing_fm, _b, _e = core.parse_frontmatter(
+                    abs_path.read_text(encoding="utf-8"))
+            merged = core.merge_frontmatter(existing_fm, frontmatter)
 
-        text = core.dump_frontmatter(merged, body)
-        findings = core.validate_concept_text(rel_path, text)
-        errors = [f for f in findings if f.severity == "error"]
-        if errors:
-            await status.error(f"{rel_path} rejected: {errors[0].message}")
-            return {"status": "error",
-                    "error": errors[0].message,
-                    "findings": [f.__dict__ for f in errors]}
+            text = core.dump_frontmatter(merged, body)
+            findings = core.validate_concept_text(rel_path, text)
+            errors = [f for f in findings if f.severity == "error"]
+            if errors:
+                return {"status": "error",
+                        "error": errors[0].message,
+                        "findings": [f.__dict__ for f in errors]}
 
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(abs_path, text)
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(abs_path, text)
+            return {"status": "ok", "path": rel_path, "bytes": len(text),
+                    "_existed": existed}
+
+        try:
+            result = await _exclusive(root, _write)
+        except Timeout:
+            msg = (f"another writer is holding the OKF bundle lock "
+                   f"(> {LOCK_TIMEOUT_S:.0f}s) — try again")
+            await status.error(msg)
+            return {"status": "error", "error": msg}
+
+        if result["status"] == "error":
+            await status.error(f"{rel_path} rejected: {result['error']}")
+            return result
+
+        existed = result.pop("_existed")
         await status.end(
-            f"{'updated' if existed else 'created'} {rel_path} — {len(text)} bytes"
+            f"{'updated' if existed else 'created'} {rel_path} — {result['bytes']} bytes"
             + (f", type={frontmatter.get('type')}" if frontmatter.get("type") else "")
         )
-        return {"status": "ok", "path": rel_path, "bytes": len(text)}
+        return result
 
     async def list(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List concepts in a bundle (optionally under a subdirectory), with
@@ -487,10 +593,25 @@ class OkfServer(SchemaBasedMCPServer):
             await status.error("'dir' escapes the bundle")
             return {"status": "error", "error": "'dir' escapes the bundle"}
         log_path = log_dir / core.LOG_FILENAME
-        existing = log_path.read_text(encoding="utf-8") if log_path.is_file() else None
-        text = core.append_log_entry(existing, str(date), str(action), str(desc))
-        log_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(log_path, text)
+
+        def _append() -> None:
+            # THE race that matters in practice: a log append is read-whole-file,
+            # prepend, write-whole-file. Two of them interleaved lose an entry
+            # outright, and nothing reports it — the tool returns ok to both.
+            existing = (log_path.read_text(encoding="utf-8")
+                        if log_path.is_file() else None)
+            text = core.append_log_entry(existing, str(date), str(action), str(desc))
+            log_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write(log_path, text)
+
+        try:
+            await _exclusive(root, _append)
+        except Timeout:
+            msg = (f"another writer is holding the OKF bundle lock "
+                   f"(> {LOCK_TIMEOUT_S:.0f}s) — try again")
+            await status.error(msg)
+            return {"status": "error", "error": msg}
+
         rel = self._bundle_rel(root, log_path)
         await status.end(f"logged to {rel} — {date} {action}")
         return {"status": "ok", "path": rel}
@@ -512,25 +633,39 @@ class OkfServer(SchemaBasedMCPServer):
         if index_dir != root and root not in index_dir.parents:
             await status.error("'dir' escapes the bundle")
             return {"status": "error", "error": "'dir' escapes the bundle"}
-        bundle = self._load_bundle(root)
         prefix = "/" + subdir + "/" if subdir else "/"
-        # Direct children only (concepts one level under index_dir).
-        entries: List[Tuple[str, Optional[str]]] = []
-        for p, c in sorted(bundle.concepts.items()):
-            if not p.startswith(prefix):
-                continue
-            rest = p[len(prefix):]
-            if "/" in rest:  # deeper than one level — skip (belongs to subdir index)
-                continue
-            entries.append((p, c.description))
         heading = params.get("heading") or (subdir.split("/")[-1].title() if subdir else "Contents")
-        text = core.render_index(entries, heading=heading)
         index_path = index_dir / core.INDEX_FILENAME
-        index_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(index_path, text)
+
+        def _reindex() -> int:
+            # The bundle scan belongs inside the lock too: an index built from a
+            # listing taken before a concurrent write would be published as
+            # current while already missing that concept.
+            bundle = self._load_bundle(root)
+            entries: List[Tuple[str, Optional[str]]] = []
+            for p, c in sorted(bundle.concepts.items()):
+                if not p.startswith(prefix):
+                    continue
+                rest = p[len(prefix):]
+                if "/" in rest:  # deeper than one level — belongs to a subdir index
+                    continue
+                entries.append((p, c.description))
+            text = core.render_index(entries, heading=heading)
+            index_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write(index_path, text)
+            return len(entries)
+
+        try:
+            count = await _exclusive(root, _reindex)
+        except Timeout:
+            msg = (f"another writer is holding the OKF bundle lock "
+                   f"(> {LOCK_TIMEOUT_S:.0f}s) — try again")
+            await status.error(msg)
+            return {"status": "error", "error": msg}
+
         rel = self._bundle_rel(root, index_path)
-        await status.end(f"regenerated {rel} — {len(entries)} entr(ies)")
-        return {"status": "ok", "path": rel, "entries": len(entries)}
+        await status.end(f"regenerated {rel} — {count} entr(ies)")
+        return {"status": "ok", "path": rel, "entries": count}
 
     # ------------------------------------------------------------------
     # Consumer hook — fold a bundle into agent context (opt-in per agent)

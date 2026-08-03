@@ -394,3 +394,228 @@ class TestContextHook:
         result = await srv.on_pre_llm_call(ctx)
         # no lexical overlap -> nothing injected
         assert result.modified is False
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — an agent that spawns itself writes the SAME bundle
+# ---------------------------------------------------------------------------
+
+class TestConcurrentWrites:
+    """Parallel tool calls of one turn, spawned sub-agents and other services
+    all write one bundle. Every write path here is read-modify-write, so an
+    interleaving loses data silently: the tool answers ok to both callers.
+
+    Each test WIDENS the critical section artificially. Without that the race
+    is invisible on a fast machine — and it would have stayed invisible, since
+    the pre-lock code was safe only by accident (no await between read and
+    write). The delay makes the guarantee testable instead of incidental.
+    """
+
+    @staticmethod
+    def _slow(monkeypatch, target: str, seconds: float = 0.02):
+        """Make one core step slow, so any unguarded interleaving happens."""
+        import time
+        from plugins.okf import core
+        real = getattr(core, target)
+
+        def slowed(*a, **kw):
+            time.sleep(seconds)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(core, target, slowed)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_log_appends_keep_every_entry(
+            self, server, tmp_path, monkeypatch):
+        import asyncio
+        root = tmp_path / "conc"
+        root.mkdir()
+        self._slow(monkeypatch, "append_log_entry")
+
+        n = 8
+        results = await asyncio.gather(*[
+            server.append_log({"bundle": str(root), "date": "2026-08-03",
+                               "action": f"A{i}", "description": f"entry {i}"})
+            for i in range(n)])
+
+        assert all(r["status"] == "ok" for r in results)
+        log = (root / "log.md").read_text(encoding="utf-8")
+        missing = [i for i in range(n) if f"**A{i}**" not in log]
+        assert not missing, f"log entries lost: {missing}"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_writes_keep_every_frontmatter_key(
+            self, server, tmp_path, monkeypatch):
+        """Overwrite merges into the EXISTING frontmatter, so a lost update
+        drops another writer's keys — the sub-agent's contribution vanishes."""
+        import asyncio
+        root = tmp_path / "conc2"
+        root.mkdir()
+        self._slow(monkeypatch, "merge_frontmatter")
+
+        n = 8
+        results = await asyncio.gather(*[
+            server.write_concept({"bundle": str(root), "path": "/shared.md",
+                                  "frontmatter": {"type": "note", f"key{i}": i},
+                                  "body": f"body {i}"})
+            for i in range(n)])
+
+        assert all(r["status"] == "ok" for r in results)
+        text = (root / "shared.md").read_text(encoding="utf-8")
+        missing = [i for i in range(n) if f"key{i}:" not in text]
+        assert not missing, f"frontmatter keys lost: {missing}"
+
+    def test_scratch_name_is_unique_per_writer(self, tmp_path, monkeypatch):
+        """A FIXED temp name is worse than none: two writers interleave their
+        bytes into one scratch file, then both rename it over the target — a
+        corrupted concept rather than a merely lost one.
+
+        Tested on _atomic_write directly: the bundle lock now makes this
+        unreachable WITHIN a process, so the property only shows across
+        processes, where no in-process test can observe it.
+        """
+        import threading
+        from plugins.okf import server as srv
+
+        target = tmp_path / "c.md"
+        names = []
+        real_write = type(target).write_text
+
+        def capture(self, *a, **kw):
+            names.append(self.name)
+            return real_write(self, *a, **kw)
+
+        monkeypatch.setattr(type(target), "write_text", capture)
+        srv._atomic_write(target, "one")
+        t = threading.Thread(target=srv._atomic_write, args=(target, "two"))
+        t.start(); t.join()
+
+        scratch = [n for n in names if n.endswith(".tmp")]
+        assert len(scratch) == 2
+        assert scratch[0] != scratch[1], f"writers shared a scratch file: {scratch}"
+
+    @pytest.mark.asyncio
+    async def test_no_scratch_files_are_left_behind(self, server, tmp_path):
+        import asyncio
+        root = tmp_path / "conc3"
+        root.mkdir()
+        await asyncio.gather(*[
+            server.write_concept({"bundle": str(root), "path": f"/c{i}.md",
+                                  "frontmatter": {"type": "note"},
+                                  "body": "x" * 2000})
+            for i in range(6)])
+        assert not list(root.glob("*.tmp")), "scratch files left in the bundle"
+        for i in range(6):
+            assert (root / f"c{i}.md").read_text(encoding="utf-8").count("---") == 2
+
+    @pytest.mark.asyncio
+    async def test_lock_file_is_not_mistaken_for_a_concept(self, server, tmp_path):
+        """The guard file lives IN the bundle (services run under different
+        accounts, so a temp-dir lock would not be the same lock). Whether it
+        survives a release is platform-dependent — Windows removes it, POSIX
+        leaves it — so what must hold is that a PRESENT one is invisible to
+        every read path."""
+        root = tmp_path / "conc4"
+        root.mkdir()
+        await server.write_concept({"bundle": str(root), "path": "/a.md",
+                                    "frontmatter": {"type": "note"}, "body": "x"})
+        (root / ".okf.lock").write_text("", encoding="utf-8")  # as POSIX leaves it
+
+        listed = await server.list({"bundle": str(root)})
+        assert [c["path"] for c in listed["concepts"]] == ["/a.md"]
+        report = await server.validate({"bundle": str(root)})
+        assert report["conformant"] is True
+
+    def test_lock_survives_a_new_event_loop(self, server, tmp_path):
+        """The guard is reached again on a LATER event loop: the bundle path is
+        stable in production, and a process may run more than one loop over its
+        lifetime. An asyncio.Lock binds to the loop of its first use and then
+        raises 'bound to a different event loop' — a threading.Lock does not.
+
+        The per-test tmp bundle hides this: every test gets a fresh key. Only a
+        second loop on the SAME bundle shows it.
+        """
+        import asyncio
+        root = tmp_path / "loops"
+        root.mkdir()
+
+        async def round_of(tag):
+            await asyncio.gather(*[
+                server.append_log({"bundle": str(root), "date": "2026-08-03",
+                                   "action": f"{tag}{i}", "description": "x"})
+                for i in range(3)])
+
+        asyncio.run(round_of("A"))
+        asyncio.run(round_of("B"))      # new loop, same lock object
+
+        log = (root / "log.md").read_text(encoding="utf-8")
+        missing = [f"{t}{i}" for t in ("A", "B") for i in range(3)
+                   if f"**{t}{i}**" not in log]
+        assert not missing, f"entries lost across event loops: {missing}"
+
+    @pytest.mark.asyncio
+    async def test_reindex_sees_concepts_written_just_before_it(
+            self, server, tmp_path, monkeypatch):
+        """The bundle scan runs INSIDE the lock: an index built from a listing
+        taken before a concurrent write would be published as current while
+        already missing that concept."""
+        import asyncio
+        root = tmp_path / "conc5"
+        root.mkdir()
+        await asyncio.gather(
+            *[server.write_concept({"bundle": str(root), "path": f"/n{i}.md",
+                                    "frontmatter": {"type": "note",
+                                                    "description": f"d{i}"},
+                                    "body": "x"}) for i in range(5)],
+        )
+        result = await server.reindex({"bundle": str(root)})
+        assert result["entries"] == 5
+        index = (root / "index.md").read_text(encoding="utf-8")
+        for i in range(5):
+            assert f"/n{i}.md" in index
+
+
+class TestCrossProcessWrites:
+    """agent-api, the writer worker and a developer's CLI share data/okf. The
+    asyncio lock does not reach across processes — only the file lock does, and
+    only a real second process can show it."""
+
+    WORKER = (
+        "import sys, asyncio\n"
+        "sys.path.insert(0, 'src')\n"
+        "from unittest.mock import MagicMock\n"
+        "from agent_system.config.models import MCPConfig\n"
+        "from plugins.okf.server import OkfServer\n"
+        "root, tag = sys.argv[1], sys.argv[2]\n"
+        "cfg = MCPConfig(type='okf', enabled=True,\n"
+        "                config={'allowed_directories': [root]})\n"
+        "s = OkfServer('okf', MagicMock(), cfg)\n"
+        "async def main():\n"
+        "    await asyncio.gather(*[\n"
+        "        s.append_log({'bundle': root, 'date': '2026-08-03',\n"
+        "                      'action': f'{tag}{i}', 'description': 'x'})\n"
+        "        for i in range(4)])\n"
+        "asyncio.run(main())\n"
+    )
+
+    @pytest.mark.timeout(120)
+    def test_two_processes_lose_no_log_entries(self, tmp_path):
+        import subprocess
+        import sys
+        root = tmp_path / "shared"
+        root.mkdir()
+        script = tmp_path / "worker.py"
+        script.write_text(self.WORKER, encoding="utf-8")
+
+        procs = [subprocess.Popen([sys.executable, str(script), str(root), tag],
+                                  cwd=".", stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+                 for tag in ("P", "Q")]
+        for p in procs:
+            _out, err = p.communicate(timeout=110)
+            assert p.returncode == 0, f"worker failed: {err[-800:]}"
+
+        log = (root / "log.md").read_text(encoding="utf-8")
+        missing = [f"{t}{i}" for t in ("P", "Q") for i in range(4)
+                   if f"**{t}{i}**" not in log]
+        assert not missing, f"entries lost across processes: {missing}"
