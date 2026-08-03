@@ -49,18 +49,12 @@ into `references/`.
 Only `name` and `description` are required. The body is used **verbatim** —
 `{{ ... }}` stays literal text, so a skill about templating survives intact.
 
-### Legacy manifest (still supported)
+### Retired: the `skill.toml` manifest
 
-Skills predating the standard used a `skill.toml` next to `SKILL.md`:
-
-```toml
-[skill]
-name = "my-skill"                 # unique; defaults to the directory name
-version = "1.0.0"
-description = "One line: what this covers and WHEN to use it."
-tags = ["writing"]
-entry = "SKILL.md"                # optional, this is the default
-```
+Skills predating the standard kept their metadata in a `skill.toml` next to
+`SKILL.md`, and their body ran through Jinja. Both are gone — one format, one
+contract. A directory that still has a `skill.toml` but no frontmatter is
+**reported** at discovery, naming the fix, instead of quietly not loading.
 
 ## Using a skill
 
@@ -108,12 +102,12 @@ read bundled reference files.
 
 ## Writing a skill body
 
-`SKILL.md` is an ordinary prompt template:
+`SKILL.md` is plain markdown, used **verbatim**:
 
-* Jinja variables work (`{{ current_date }}`, `{{ tools }}`, custom
-  `template_vars`).
-* `{% include %}` works — partials resolve next to the skill and from
-  `config/prompts/`.
+* No Jinja. `{{ current_date }}` stays literal text — a skill about templating
+  survives intact, and nothing gets blanked by an unknown variable.
+* Shared prompt fragments belong in the prompt *templates* via `{% include %}`,
+  not in skills (see `docs/skills_design.md` §8).
 
 **Keep bodies byte-stable.** No timestamps, relative times or random IDs in the
 text: the system prompt is the cached prefix, and content that changes per call

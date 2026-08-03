@@ -8,9 +8,9 @@ from plugins.skills.server import MAX_READ_CHARS, SkillsServer
 def _write_skill(root, name, body, *, description="d", extra=None):
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(body, encoding="utf-8")
-    (d / "skill.toml").write_text(
-        f'[skill]\nname = "{name}"\nversion = "1.0.0"\ndescription = "{description}"\n',
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n"
+        f"metadata:\n  version: '1.0.0'\n---\n\n{body}",
         encoding="utf-8",
     )
     for rel, content in (extra or {}).items():

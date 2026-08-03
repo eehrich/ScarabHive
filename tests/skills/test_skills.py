@@ -1,6 +1,6 @@
 """Tests for the skills feature (docs/skills_design.md).
 
-Covers discovery/manifest handling and the prompt merge, including the
+Covers discovery of the Agent Skills layout and the prompt merge, including the
 properties that matter operationally: deterministic order (prompt-cache
 stability), loud failure on a missing skill, and a broken skill never taking
 the run down.
@@ -14,17 +14,21 @@ from agent_system.servers.agent.prompt_strategies import PromptContext, PromptRe
 from agent_system.skills.registry import SkillRegistry, default_skill_dirs
 
 
-def _write_skill(root, name, body, *, manifest=None, entry="SKILL.md"):
-    """Create a skill directory; returns its path."""
+def _write_standard_skill(root, name, frontmatter, body="# Body\n\nInstructions.\n"):
+    """A skill directory, frontmatter given verbatim; returns its path."""
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / entry).write_text(body, encoding="utf-8")
-    (d / "skill.toml").write_text(
-        manifest if manifest is not None
-        else f'[skill]\nname = "{name}"\nversion = "1.0.0"\ndescription = "d"\n',
-        encoding="utf-8",
-    )
+    (d / "SKILL.md").write_text(f"---\n{frontmatter}\n---\n\n{body}", encoding="utf-8")
     return d
+
+
+def _write_skill(root, name, body, *, description="d", version="1.0.0"):
+    """The common case: a skill with a given body and boilerplate frontmatter."""
+    return _write_standard_skill(
+        root, name,
+        f"name: {name}\ndescription: {description}\nmetadata:\n  version: '{version}'",
+        body=body,
+    )
 
 
 @pytest.fixture
@@ -57,36 +61,36 @@ class TestDiscovery:
         assert skill.version == "1.0.0"
         assert reg.names() == ["alpha"]
 
-    def test_name_from_manifest_wins_over_dirname(self, skill_root):
-        _write_skill(
-            skill_root, "dir-name", "B",
-            manifest='[skill]\nname = "manifest-name"\n',
-        )
-        reg = SkillRegistry()
-        reg.discover([str(skill_root)])
-        assert reg.names() == ["manifest-name"]
-
-    def test_directory_without_manifest_is_ignored(self, skill_root):
-        (skill_root / "no-manifest").mkdir(parents=True)
-        (skill_root / "no-manifest" / "SKILL.md").write_text("x", encoding="utf-8")
+    def test_directory_without_frontmatter_is_ignored(self, skill_root):
+        (skill_root / "no-header").mkdir(parents=True)
+        (skill_root / "no-header" / "SKILL.md").write_text("x", encoding="utf-8")
         reg = SkillRegistry()
         reg.discover([str(skill_root)])
         assert reg.names() == []
 
-    def test_broken_manifest_is_skipped_not_raised(self, skill_root):
-        _write_skill(skill_root, "good", "GOOD")
-        _write_skill(skill_root, "bad", "BAD", manifest="this is not toml {{{")
+    def test_missing_entry_file_is_ignored(self, skill_root):
+        (skill_root / "no-body").mkdir(parents=True)
+        (skill_root / "no-body" / "notes.md").write_text("x", encoding="utf-8")
         reg = SkillRegistry()
-        reg.discover([str(skill_root)])  # must not raise
-        assert reg.names() == ["good"]
+        reg.discover([str(skill_root)])
+        assert reg.names() == []
 
-    def test_missing_entry_file_is_skipped(self, skill_root):
-        d = skill_root / "no-body"
+    def test_retired_manifest_layout_is_reported_not_silent(self, skill_root, caplog):
+        """A skill.toml used to define a skill. Dropping out of discovery
+        without a word turns the directory into a mystery — name the fix."""
+        d = skill_root / "old-style"
         d.mkdir(parents=True)
-        (d / "skill.toml").write_text('[skill]\nname = "no-body"\n', encoding="utf-8")
-        reg = SkillRegistry()
-        reg.discover([str(skill_root)])
-        assert reg.names() == []
+        (d / "SKILL.md").write_text("Instructions without a header.\n", encoding="utf-8")
+        (d / "skill.toml").write_text('[skill]\nname = "old-style"\n', encoding="utf-8")
+        _write_skill(skill_root, "good", "GOOD")
+
+        with caplog.at_level(logging.WARNING, logger="agent_system.skills.registry"):
+            reg = SkillRegistry()
+            reg.discover([str(skill_root)])  # must not raise
+
+        assert reg.names() == ["good"]
+        assert any("skill.toml" in r.getMessage() and "frontmatter" in r.getMessage()
+                   for r in caplog.records)
 
     def test_missing_root_is_tolerated(self, tmp_path):
         reg = SkillRegistry()
@@ -99,7 +103,7 @@ class TestDiscovery:
         _write_skill(b, "dup", "FROM-B")
         reg = SkillRegistry()
         reg.discover([str(a), str(b)])
-        assert reg.get("dup").entry_path.read_text(encoding="utf-8") == "FROM-A"
+        assert reg.get("dup").body().strip() == "FROM-A"
 
     def test_rediscover_replaces_contents(self, skill_root):
         _write_skill(skill_root, "alpha", "A")
@@ -235,20 +239,15 @@ class TestOnDemandIndex:
         return PromptRenderer().render(_context(cfg, [skill_root]))[0]
 
     def test_index_lists_description_not_body(self, monkeypatch, skill_root):
-        _write_skill(
-            skill_root, "alpha", "FULL-BODY-TEXT",
-            manifest='[skill]\nname = "alpha"\ndescription = "Covers X, use when Y."\n',
-        )
+        _write_skill(skill_root, "alpha", "FULL-BODY-TEXT",
+                     description="Covers X, use when Y.")
         out = self._render(monkeypatch, skill_root, {"on_demand": ["alpha"]})
         assert "Covers X, use when Y." in out
         assert "FULL-BODY-TEXT" not in out  # body stays out of the prompt
 
     def test_always_and_on_demand_combine(self, monkeypatch, skill_root):
         _write_skill(skill_root, "core", "CORE-BODY")
-        _write_skill(
-            skill_root, "deep", "DEEP-BODY",
-            manifest='[skill]\nname = "deep"\ndescription = "Deep material."\n',
-        )
+        _write_skill(skill_root, "deep", "DEEP-BODY", description="Deep material.")
         out = self._render(
             monkeypatch, skill_root, {"always": ["core"], "on_demand": ["deep"]}
         )
@@ -320,35 +319,32 @@ class TestPromptMerge:
         assert "ALPHA-BODY" in out
         assert "ghost" in caplog.text  # loud, not silent
 
-    def test_jinja_variables_render_in_skill_body(self, monkeypatch, skill_root):
-        _write_skill(skill_root, "alpha", "steps={{ max_steps }}")
+    def test_body_is_not_templated(self, monkeypatch, skill_root):
+        """Bodies are verbatim. A skill ABOUT templating must survive intact —
+        rendering would blank {{ max_steps }}'s neighbours silently."""
+        _write_skill(skill_root, "alpha", "steps={{ max_steps }} and {{ unknown }}")
         out = self._render(monkeypatch, skill_root, ["alpha"])
-        assert "steps=5" in out
+        assert "steps={{ max_steps }} and {{ unknown }}" in out
 
-    def test_include_works_in_skill_body(self, monkeypatch, skill_root):
-        d = _write_skill(skill_root, "alpha", 'X {% include "partial.md" %} Y')
-        (d / "partial.md").write_text("PARTIAL-CONTENT", encoding="utf-8")
-        out = self._render(monkeypatch, skill_root, ["alpha"])
-        assert "PARTIAL-CONTENT" in out
-
-    def test_broken_skill_body_does_not_kill_the_run(self, monkeypatch, skill_root):
+    def test_unreadable_body_does_not_kill_the_run(self, monkeypatch, skill_root):
+        """The body is read at render time, so it can disappear between
+        discovery and use — one broken skill must not take the turn down."""
         _write_skill(skill_root, "alpha", "ALPHA-BODY")
-        _write_skill(skill_root, "broken", '{% include "nope-missing.md" %}')
-        out = self._render(monkeypatch, skill_root, ["alpha", "broken"])
+        gone = _write_skill(skill_root, "broken", "GONE-BODY")
+        skill_root.mkdir(parents=True, exist_ok=True)
+        reg = SkillRegistry()
+        reg.discover([str(skill_root)])
+        (gone / "SKILL.md").unlink()          # vanished after discovery
+        monkeypatch.setattr("agent_system.skills.get_skill_registry", lambda *a, **k: reg)
+
+        cfg = AgentConfig(system_prompt="BASE-PROMPT", skills=["alpha", "broken"])
+        out = PromptRenderer().render(_context(cfg, [skill_root]))[0]
         assert "BASE-PROMPT" in out and "ALPHA-BODY" in out
 
 
 # ---------------------------------------------------------------------------
 # Agent Skills standard (https://agentskills.io/specification)
 # ---------------------------------------------------------------------------
-
-def _write_standard_skill(root, name, frontmatter, body="# Body\n\nInstructions.\n"):
-    """A skill in the PORTABLE layout: frontmatter in SKILL.md, no manifest."""
-    d = root / name
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(f"---\n{frontmatter}\n---\n\n{body}", encoding="utf-8")
-    return d
-
 
 class TestAgentSkillsStandard:
     """A skill written for Claude Code / Codex / Cursor must load here as-is."""
@@ -363,7 +359,6 @@ class TestAgentSkillsStandard:
         skill = reg.get("pdf-processing")
         assert skill is not None
         assert skill.description == "Extract PDF text. Use for PDFs."
-        assert skill.templated is False        # standard bodies are verbatim
 
     def test_no_manifest_needed(self, skill_root):
         d = _write_standard_skill(skill_root, "solo", "name: solo\ndescription: d")
@@ -508,7 +503,7 @@ class TestSpecValidation:
         (d / "SKILL.md").write_text("---\nname: [unclosed\n---\n\nThe content.\n",
                                     encoding="utf-8")
         reg = SkillRegistry(); reg.discover([str(skill_root)])
-        # No frontmatter and no manifest -> not a skill, but nothing raised
+        # No usable frontmatter -> not a skill, but nothing raised
         assert reg.names() == []
 
     def test_a_bad_skill_does_not_hide_the_others(self, skill_root):
@@ -519,23 +514,16 @@ class TestSpecValidation:
         assert reg.names() == ["good"]
 
 
-class TestBothFormatsCoexist:
-    def test_legacy_and_standard_side_by_side(self, skill_root):
-        _write_skill(skill_root, "legacy-one", "Legacy body")
-        _write_standard_skill(skill_root, "standard-one",
-                              "name: standard-one\ndescription: d")
-        reg = SkillRegistry(); reg.discover([str(skill_root)])
-        assert reg.names() == ["legacy-one", "standard-one"]
-        assert reg.get("legacy-one").templated is True
-        assert reg.get("standard-one").templated is False
-
-    def test_frontmatter_wins_over_a_stale_manifest(self, skill_root):
+    def test_a_leftover_manifest_is_ignored_but_the_skill_loads(self, skill_root):
+        """Migrated bundles may still carry the old file — it must neither
+        block the skill nor show up as bundled knowledge."""
         d = _write_standard_skill(skill_root, "both",
                                   "name: both\ndescription: from frontmatter")
         (d / "skill.toml").write_text(
-            '[skill]\nname = "both"\ndescription = "from manifest"\n', encoding="utf-8")
+            '[skill]\nname = "both"\ndescription = "stale"\n', encoding="utf-8")
         reg = SkillRegistry(); reg.discover([str(skill_root)])
         assert reg.get("both").description == "from frontmatter"
+        assert reg.get("both").list_files() == ["SKILL.md"]
 
 
 class TestForeignBodyIsNotTemplated:

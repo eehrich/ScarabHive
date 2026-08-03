@@ -1,8 +1,6 @@
 """Discovery and lookup of skills.
 
-Two layouts are read, and the layout decides the contract.
-
-**Agent Skills standard** (https://agentskills.io) -- the portable one::
+One layout, the Agent Skills standard (https://agentskills.io)::
 
     skills/
     └── my-skill/
@@ -12,20 +10,16 @@ Two layouts are read, and the layout decides the contract.
         └── assets/         # optional: templates, data
 
 Skills in this layout work unchanged in Claude Code, Codex, Cursor, Copilot,
-Gemini CLI and the rest of the ecosystem -- and theirs work here. Their body is
-used VERBATIM: the standard says nothing about templating, and our Jinja
-environment renders unknown variables as empty, so treating a foreign ``{{ }}``
-as a template would silently delete text.
+Gemini CLI and the rest of the ecosystem -- and theirs work here.
 
-**Legacy manifest** -- ours, still supported so existing skills keep working::
+The body is used VERBATIM. The standard says nothing about templating, and our
+Jinja environment renders unknown variables as empty: rendering a foreign body
+would silently delete every literal ``{{ ... }}`` its author wrote. For our own
+prompts the answer is ``{% include %}`` in the prompt TEMPLATES, not in skills
+(docs/skills_design.md §8).
 
-    skills/
-    └── my-skill/
-        ├── skill.toml      # manifest, mirrors plugin.toml
-        └── SKILL.md        # markdown, Jinja2-rendered ({% include %} works)
-
-Frontmatter wins when both are present. Dependency-light: stdlib ``tomllib``
-plus ``yaml``, which the config layer already requires.
+An earlier layout kept the metadata in a ``skill.toml`` beside the body. It is
+gone -- a directory that still has one is reported, not silently skipped.
 """
 from __future__ import annotations
 
@@ -38,11 +32,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
-
-try:  # pragma: no cover - trivial import guard
-    import tomllib  # Python >=3.11 stdlib
-except ModuleNotFoundError:  # pragma: no cover
-    tomllib = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +55,9 @@ def default_skill_dirs() -> tuple[str, ...]:
         return DEFAULT_SKILL_DIRS
     return tuple(p for p in (part.strip() for part in raw.split(os.pathsep)) if p)
 
-MANIFEST_NAME = "skill.toml"
+#: The retired manifest. Only still named so a leftover one can be reported
+#: and kept out of the bundle listing.
+LEGACY_MANIFEST_NAME = "skill.toml"
 DEFAULT_ENTRY = "SKILL.md"
 
 #: Skill files are decoded with ``utf-8-sig``, not ``utf-8``: editors on Windows
@@ -125,9 +116,6 @@ class Skill:
     metadata: Mapping[str, str] = field(default_factory=dict, hash=False)
     #: Declared by the skill, NOT enforced here — see the warning at discovery.
     allowed_tools: tuple[str, ...] = ()
-    #: True only for the legacy manifest layout. Standard skills are used
-    #: verbatim -- see the module docstring for why.
-    templated: bool = False
 
     @property
     def entry(self) -> str:
@@ -135,10 +123,14 @@ class Skill:
         return str(self.entry_path)
 
     def body(self) -> str:
-        """The instructions, with any frontmatter stripped."""
+        """The instructions, with any frontmatter stripped.
+
+        Leading blank lines go with it: the ``---`` block is conventionally
+        followed by one, and it belongs to the header, not to the instructions.
+        """
         text = self.entry_path.read_text(encoding=TEXT_ENCODING)
         _front, body = split_frontmatter(text)
-        return body
+        return body.lstrip("\n")
 
     def resolve(self, relative_path: str) -> Path:
         """Absolute path of a bundled file, confined to the skill directory.
@@ -169,12 +161,12 @@ class Skill:
     def list_files(self) -> List[str]:
         """Bundled files as skill-relative POSIX paths, sorted.
 
-        The manifest itself is omitted — it is plumbing, not knowledge.
+        A leftover legacy manifest is omitted — it is plumbing, not knowledge.
         """
         root = self.path.resolve()
         out = []
         for p in root.rglob("*"):
-            if not p.is_file() or p.name == MANIFEST_NAME:
+            if not p.is_file() or p.name == LEGACY_MANIFEST_NAME:
                 continue
             try:
                 out.append(p.resolve().relative_to(root).as_posix())
@@ -303,55 +295,6 @@ def _parse_frontmatter(skill_dir: Path) -> Optional[Skill]:
                                 MAX_COMPATIBILITY_LEN, "compatibility", skill_dir),
         metadata=meta,
         allowed_tools=tools,
-        templated=False,
-    )
-
-
-def _parse_manifest(skill_dir: Path) -> Optional[Skill]:
-    """Build a Skill from ``<skill_dir>/skill.toml``; None if unusable.
-
-    A malformed skill is skipped with a warning rather than raising: one broken
-    directory must not stop the whole system from starting.
-    """
-    manifest = skill_dir / MANIFEST_NAME
-    if not manifest.is_file():
-        return None
-    if tomllib is None:  # pragma: no cover - Python <3.11
-        logger.warning("Cannot read %s: tomllib unavailable (needs Python 3.11+)", manifest)
-        return None
-
-    try:
-        with open(manifest, "rb") as fh:
-            data = tomllib.load(fh) or {}
-    except Exception as e:  # noqa: BLE001 - one bad manifest must not break startup
-        logger.warning("Skipping skill at %s: unreadable %s (%s)", skill_dir, MANIFEST_NAME, e)
-        return None
-
-    section = data.get("skill") or {}
-    name = str(section.get("name") or skill_dir.name).strip()
-    if not name:
-        logger.warning("Skipping skill at %s: empty name", skill_dir)
-        return None
-
-    entry_path = skill_dir / str(section.get("entry") or DEFAULT_ENTRY)
-    if not entry_path.is_file():
-        logger.warning(
-            "Skipping skill '%s' at %s: entry file '%s' not found",
-            name, skill_dir, entry_path.name,
-        )
-        return None
-
-    tags = section.get("tags") or []
-    return Skill(
-        name=name,
-        path=skill_dir,
-        entry_path=entry_path,
-        version=str(section.get("version") or "0.0.0"),
-        description=str(section.get("description") or "").strip(),
-        tags=tuple(str(t) for t in tags) if isinstance(tags, (list, tuple)) else (),
-        # Legacy skills were always Jinja-rendered; keep it that way so
-        # {% include %} in existing bundles goes on working.
-        templated=True,
     )
 
 
@@ -383,10 +326,17 @@ class SkillRegistry:
             for child in sorted(root.iterdir()):
                 if not child.is_dir():
                     continue
-                # Standard first: a skill carrying frontmatter is portable, and
-                # its declaration wins even if a legacy manifest sits next to it.
-                skill = _parse_frontmatter(child) or _parse_manifest(child)
+                skill = _parse_frontmatter(child)
                 if skill is None:
+                    if (child / LEGACY_MANIFEST_NAME).is_file():
+                        # It used to define a skill. Vanishing without a word is
+                        # how a directory turns into a mystery -- name the fix.
+                        logger.warning(
+                            "Skill at %s has a %s but no YAML frontmatter in %s "
+                            "- the manifest layout is gone; move name/description "
+                            "into the %s header to make it discoverable again",
+                            child, LEGACY_MANIFEST_NAME, DEFAULT_ENTRY, DEFAULT_ENTRY,
+                        )
                     continue
                 if skill.name in found:
                     logger.warning(

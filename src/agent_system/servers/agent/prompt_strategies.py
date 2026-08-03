@@ -267,10 +267,10 @@ class PromptRenderer:
         system prompt is the stable cache prefix, so a deterministic order keeps
         it byte-identical between calls (see docs/prompt_cache_design.md).
 
-        Skill bodies are ordinary prompt templates — they get the same Jinja
-        context and support ``{% include %}``. ``on_demand`` skills contribute
-        only their one-line description: without that index the agent would
-        never know they exist and would never fetch them.
+        Skill bodies are taken verbatim (Agent Skills standard — see
+        ``skills/registry.py``). ``on_demand`` skills contribute only their
+        one-line description: without that index the agent would never know
+        they exist and would never fetch them.
         """
         skills_cfg = getattr(context.agent_config, "skills", None)
         wanted = list(getattr(skills_cfg, "always", []) or []) if skills_cfg else []
@@ -289,7 +289,6 @@ class PromptRenderer:
         )
         registry = get_skill_registry()
         registry.ensure_discovered(configured or list(default_skill_dirs()))
-        context_vals = build_context_values(context)
         parts = [system_prompt.rstrip()] if system_prompt.strip() else []
 
         for name in wanted:
@@ -306,18 +305,12 @@ class PromptRenderer:
                     )
                 continue
             try:
-                if skill.templated:
-                    # Legacy manifest layout: a prompt template, so {% include %}
-                    # and shared variables keep working.
-                    rendered = render_prompts(
-                        skill.entry, context_vals, auto_datetime=False
-                    ).get("system_prompt", "").strip()
-                else:
-                    # Agent Skills standard: the body is instructions, not a
-                    # template. Rendering it would strip the frontmatter's
-                    # meaning AND silently blank any literal {{ ... }} the
-                    # author wrote, because unknown variables render empty.
-                    rendered = skill.body().strip()
+                # Verbatim, never templated: the body is instructions, not a
+                # template. Rendering it would silently blank any literal
+                # {{ ... }} the author wrote, because unknown variables render
+                # empty. Shared prompt fragments belong in the prompt TEMPLATES
+                # via {% include %} (docs/skills_design.md §8), not in skills.
+                rendered = skill.body().strip()
             except Exception as e:  # noqa: BLE001 - a broken skill must not kill the run
                 logger.error(
                     "Agent %s: skill '%s' failed to render (%s) — skipped",
