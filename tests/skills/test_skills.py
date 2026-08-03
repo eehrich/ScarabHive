@@ -6,6 +6,7 @@ stability), loud failure on a missing skill, and a broken skill never taking
 the run down.
 """
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -180,6 +181,93 @@ class TestSkillDirsConfig:
         assert reg.names() == ["from-a"]
         reg.ensure_discovered([str(b)])
         assert reg.names() == ["from-b"]
+
+
+class TestWildcardRoots:
+    """skill_dirs accepts glob patterns, like the config `includes` do — that is
+    what lets skills be grouped in subdirectories."""
+
+    def test_pattern_finds_grouped_skills(self, tmp_path):
+        """skills/<group>/<skill>/SKILL.md — the reason wildcards exist."""
+        root = tmp_path / "skills"
+        _write_skill(root / "amiga", "copper-tricks", "COPPER")
+        _write_skill(root / "writing", "house-style", "STYLE")
+        reg = SkillRegistry()
+        reg.discover([str(root / "*")])
+        assert reg.names() == ["copper-tricks", "house-style"]
+
+    def test_recursive_pattern_finds_any_depth(self, tmp_path):
+        root = tmp_path / "skills"
+        _write_skill(root, "flat", "FLAT")
+        _write_skill(root / "group" / "nested", "deep", "DEEP")
+        reg = SkillRegistry()
+        reg.discover([str(root / "**")])
+        assert reg.names() == ["deep", "flat"]
+
+    def test_overlapping_roots_are_scanned_once(self, tmp_path, caplog):
+        """`skills` and `skills/**/` overlap. Without deduplication the second
+        pass would report every skill of the first as a duplicate."""
+        root = tmp_path / "skills"
+        _write_skill(root, "alpha", "A")
+        with caplog.at_level(logging.WARNING, logger="agent_system.skills.registry"):
+            reg = SkillRegistry()
+            reg.discover([str(root), str(root / "**")])
+        assert reg.names() == ["alpha"]
+        assert not any("Duplicate" in r.getMessage() for r in caplog.records)
+
+    def test_pattern_without_matches_is_reported(self, tmp_path, caplog):
+        """An empty skill list with no explanation is the failure mode here."""
+        with caplog.at_level(logging.WARNING, logger="agent_system.skills.registry"):
+            reg = SkillRegistry()
+            reg.discover([str(tmp_path / "nowhere" / "*")])
+        assert reg.names() == []
+        assert any("matched no directory" in r.getMessage() for r in caplog.records)
+
+    def test_plain_roots_still_work_beside_patterns(self, tmp_path):
+        plain, grouped = tmp_path / "plain", tmp_path / "grouped"
+        _write_skill(plain, "direct", "D")
+        _write_skill(grouped / "team", "via-pattern", "P")
+        reg = SkillRegistry()
+        reg.discover([str(plain), str(grouped / "*")])
+        assert reg.names() == ["direct", "via-pattern"]
+
+    def test_first_root_still_wins_across_patterns(self, tmp_path):
+        """Precedence is by position, and an expanded pattern keeps its place."""
+        first, second = tmp_path / "first", tmp_path / "second"
+        _write_skill(first / "g", "dup", "FROM-FIRST")
+        _write_skill(second / "g", "dup", "FROM-SECOND")
+        reg = SkillRegistry()
+        reg.discover([str(first / "*"), str(second / "*")])
+        assert reg.get("dup").body().strip() == "FROM-FIRST"
+
+
+class TestSkillDirsResolutionInConfig:
+    """The loader resolves skill_dirs config-folder-first, then repo root. A
+    pattern cannot be tested with exists(), so it needs its own base choice."""
+
+    def _load(self, tmp_path, entry):
+        from agent_system.config.settings import load_settings
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
+            f'name: t\nskills:\n  skill_dirs:\n    - "{entry}"\n', encoding="utf-8")
+        return load_settings(str(cfg_dir / "config.yaml")).skills.skill_dirs[0]
+
+    def test_pattern_is_rooted_where_it_matches(self, tmp_path):
+        """Repo root here — not the config folder, which is where a naive
+        exists() check would silently put it."""
+        _write_skill(tmp_path / "skills" / "group", "grouped", "G")
+        resolved = self._load(tmp_path, "skills/*/")
+
+        assert Path(resolved).is_absolute()
+        assert Path(resolved).parent == (tmp_path / "skills").resolve()
+        reg = SkillRegistry(); reg.discover([resolved])
+        assert reg.names() == ["grouped"]
+
+    def test_config_folder_wins_when_it_is_the_match(self, tmp_path):
+        _write_skill(tmp_path / "config" / "skills" / "g", "local", "L")
+        resolved = self._load(tmp_path, "skills/*/")
+        assert Path(resolved).parent == (tmp_path / "config" / "skills").resolve()
 
 
 class TestBundleAccess:

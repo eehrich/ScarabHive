@@ -23,6 +23,7 @@ gone -- a directory that still has one is reported, not silently skipped.
 """
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import re
@@ -298,6 +299,49 @@ def _parse_frontmatter(skill_dir: Path) -> Optional[Skill]:
     )
 
 
+def _expand_roots(skill_dirs: Sequence[str]) -> List[Path]:
+    """Discovery roots with glob patterns expanded, in order, deduplicated.
+
+    ``skills/*/`` lets skills be grouped in subdirectories
+    (``skills/<group>/<skill>/SKILL.md``) — the same wildcards the config
+    ``includes`` already accept. ``**`` works too and needs no ``recursive``
+    flag from the caller.
+
+    Deduplication is not cosmetic: ``skills`` and ``skills/**/`` overlap, and
+    scanning a root twice would report every skill in it as a duplicate.
+    """
+    roots: List[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        if not path.is_dir():
+            return
+        try:
+            key = path.resolve()
+        except OSError:  # pragma: no cover - unresolvable path
+            key = path
+        if key not in seen:
+            seen.add(key)
+            roots.append(path)
+
+    for raw in skill_dirs:
+        if any(ch in raw for ch in "*?["):
+            matches = sorted(glob.glob(raw, recursive=True))
+            if not matches:
+                # A pattern that matches nothing is almost always a typo. Saying
+                # so beats an empty skill list with no explanation.
+                logger.warning("Skill dir pattern %r matched no directory", raw)
+            for match in matches:
+                _add(Path(match))
+        else:
+            path = Path(raw)
+            if path.is_dir():
+                _add(path)
+            else:
+                logger.debug("Skill dir %s does not exist, skipping", path)
+    return roots
+
+
 class SkillRegistry:
     """Discovered skills, keyed by name."""
 
@@ -310,6 +354,8 @@ class SkillRegistry:
     def discover(self, skill_dirs: Sequence[str]) -> None:
         """Scan the given roots; each immediate subdirectory may be a skill.
 
+        Roots may be glob patterns (``skills/*/``) — see :func:`_expand_roots`.
+
         Re-scanning replaces the previous contents, so an operator can add a
         skill and reload without a restart. First definition of a name wins, so
         the earlier root in the list takes precedence (mirrors plugin_dirs).
@@ -317,11 +363,7 @@ class SkillRegistry:
         found: Dict[str, Skill] = {}
         scanned: List[str] = []
 
-        for raw_root in skill_dirs:
-            root = Path(raw_root)
-            if not root.is_dir():
-                logger.debug("Skill dir %s does not exist, skipping", root)
-                continue
+        for root in _expand_roots(skill_dirs):
             scanned.append(str(root))
             for child in sorted(root.iterdir()):
                 if not child.is_dir():

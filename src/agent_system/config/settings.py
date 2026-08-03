@@ -242,6 +242,29 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             for p in entries:
                 if isinstance(p, str) and p:
                     ppath = Path(p)
+                    if not ppath.is_absolute() and any(ch in p for ch in "*?["):
+                        # A wildcard entry (e.g. "skills/*/") cannot be tested
+                        # with exists() — the literal path never exists, so the
+                        # plain branch below would silently root it at the
+                        # config folder. Ask glob which base actually matches;
+                        # expansion itself happens at discovery.
+                        # Resolve the BASE, not the pattern: Path.resolve() on
+                        # "skills/*" would keep the star as a literal component.
+                        # Absolute matters here — a relative pattern would move
+                        # with the working directory at discovery time.
+                        base_pattern = str(base_dir.resolve().joinpath(ppath))
+                        repo_pattern = str(repo_root.resolve().joinpath(ppath))
+                        if glob_module.glob(base_pattern, recursive=True):
+                            p = base_pattern
+                        elif glob_module.glob(repo_pattern, recursive=True):
+                            p = repo_pattern
+                        else:
+                            # No match either way: keep it repo-rooted, which is
+                            # where a skills/... pattern is meant, so the
+                            # "matched nothing" warning names a sane path.
+                            p = repo_pattern
+                        resolved.append(p)
+                        continue
                     if not ppath.is_absolute():
                         # Try config-folder-relative first
                         try:

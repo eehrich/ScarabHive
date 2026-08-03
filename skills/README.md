@@ -16,18 +16,21 @@ here works there, and one downloaded from anywhere works here.
 
 ```
 skills/
-└── my-skill/
-    ├── SKILL.md              # YAML frontmatter + instructions
-    ├── references/           # optional: depth, read on demand
-    ├── scripts/              # optional: executable code
-    └── assets/               # optional: templates, data
+└── coding/                       # a group — see "Where skills are found"
+    └── amiga-coding/
+        ├── SKILL.md              # YAML frontmatter + instructions
+        └── reference/            # optional: depth, read on demand
 ```
+
+The standard also names `scripts/` (executable code) and `assets/` (templates,
+data). Any subdirectory works — the names only matter for humans and for other
+tools that look for them; discovery cares about `SKILL.md` alone.
 
 `SKILL.md`:
 
 ```markdown
 ---
-name: my-skill                    # 1-64 chars, lowercase a-z/0-9 and single
+name: amiga-coding                # 1-64 chars, lowercase a-z/0-9 and single
                                   # hyphens; must equal the directory name
 description: One line — what this covers and WHEN to use it. This is the only
   text the agent sees before deciding to load the skill, so name the trigger.
@@ -43,7 +46,7 @@ metadata:                         # optional free-form string map
 # The instructions
 
 Markdown, no format restrictions. Keep it under ~500 lines and move detail
-into `references/`.
+into `reference/`.
 ```
 
 Only `name` and `description` are required. The body is used **verbatim** —
@@ -62,12 +65,15 @@ Reference it by name from the agent config — no prompt file has to be touched:
 
 ```yaml
 agent_config:
-  skills: ["house-style"]          # shorthand for always
-  # or, explicit:
+  skills: ["amiga-coding"]          # shorthand for always
+  # or, explicit (this is what config/agents/amiga_coder.yaml does):
   skills:
-    always:    ["house-style"]     # full body goes into the system prompt
-    on_demand: ["clause-catalog"]  # only a one-line index goes in
+    always:    ["amiga-coding"]     # full body goes into the system prompt
+    on_demand: ["m68k-assembly"]    # only a one-line index goes in
 ```
+
+Skills are addressed by **name**, never by path — moving a skill between groups
+changes nothing for the agents that use it.
 
 **`always`** — the body is appended to the system prompt at render time. The
 agent *has* the knowledge; it cannot forget to fetch it. Use this for anything
@@ -77,6 +83,12 @@ needed most of the time.
 agent knows it exists; it pulls the body (and any `reference/` files) with the
 `skills` plugin's tools when a task needs them. Use this for large material
 needed occasionally.
+
+`on_demand` is a **hint, not a permission**: an agent that has the `skills`
+plugin can list and read *every* discovered skill, whether or not its config
+names it. What the entry buys is the description sitting in the (cached) system
+prompt, so the agent knows the skill exists without spending a `skills_list()`
+call — and without having to think of making it.
 
 ## Reading a bundle (the `skills` plugin)
 
@@ -115,17 +127,37 @@ breaks that cache for everything after it (see `docs/prompt_cache_design.md`).
 
 ## Where skills are found
 
-Configured in `config/config.yaml`, exactly like `plugins.plugin_dirs`:
+Configured in `config/config.yaml`, exactly like `plugins.plugin_dirs`. This is
+what the repo currently uses:
 
 ```yaml
 skills:
   skill_dirs:
-    - skills
-    - /opt/team-skills
+    - .claude/skills    # what other tools drop into the project
+    - skills/*/         # our own, grouped: skills/<group>/<skill>/SKILL.md
 ```
 
-Relative paths resolve config-folder-first, then repo root. The first root
-defining a name wins. If the block is missing or empty, the defaults are
+Wildcards work like in the config `includes`. **A pattern expands to roots**, and
+each expanded root is then scanned for skills the usual way — which is exactly
+what makes grouping work:
+
+| Entry | Finds |
+|---|---|
+| `skills` | `skills/<skill>/SKILL.md` — flat only |
+| `skills/*/` | `skills/<group>/<skill>/SKILL.md` — grouped only |
+| `skills/**/` | both, at any depth |
+
+Note the middle row: `skills/*/` does **not** include flat skills sitting
+directly in `skills/`. Either list `skills` alongside it, or use `**`.
+
+Overlapping entries (`skills` and `skills/**/`) are scanned once, so mixing plain
+roots and patterns is safe. A pattern that matches nothing is logged — an empty
+skill list is otherwise hard to explain.
+
+Relative paths resolve config-folder-first, then repo root — for a pattern that
+is decided by which base actually matches, since a wildcard path never exists as
+such. The first root defining a name wins. If the block is missing or empty, the
+defaults are
 `skills/` **and `.claude/skills/`** — the latter is where the ecosystem drops
 project-local skills, so a downloaded one works without any config. `skills/`
 is listed first, so ours win a name collision. `$AGENT_SKILL_DIRS`
@@ -134,7 +166,11 @@ is listed first, so ours win a name collision. `$AGENT_SKILL_DIRS`
 Being discovered does not put a skill into any prompt: that only happens when an
 agent config names it under `always` or `on_demand`.
 
-A skill with a broken manifest or a missing entry file is skipped with a
-warning — one bad directory never stops startup. A skill referenced by an agent
+A directory without a readable `SKILL.md` frontmatter is not a skill and is
+skipped — one bad directory never stops startup. A skill referenced by an agent
 but not found is logged as an ERROR (once per agent) and omitted, so a typo is
 visible instead of silently changing behaviour.
+
+Two cases are reported louder, because the failure is otherwise invisible: a
+directory that still carries a retired `skill.toml`, and a `skill_dirs` pattern
+that matches nothing. Both look identical to "there are simply no skills here".
