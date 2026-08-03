@@ -397,7 +397,7 @@ def _resolve_server_inheritance(
     parent_type, parent_dict = _resolve_server_inheritance(typ, config, visited)
     
     # Merge: parent config first, then child overrides
-    merged = _deep_merge_dict(parent_dict, server_dict)
+    merged = _deep_merge_dict(parent_dict, server_dict, server_name)
     # The final type comes from the resolved parent chain
     merged["type"] = parent_type
     
@@ -467,111 +467,141 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     
     # Start with default config, then merge resolved (inherited) config
     merged_config = default_config_dict.copy()
-    merged_config = _deep_merge_dict(merged_config, resolved_config_dict)
+    merged_config = _deep_merge_dict(merged_config, resolved_config_dict, server_name)
     
     # Create and return final MCPConfig instance
     return MCPConfig.model_validate(merged_config)
 
 
-def _deep_merge_dict(base: dict, override: dict) -> dict:
+def _deep_merge_dict(base: dict, override: dict, _path: str = "") -> dict:
     """Deep merge two dictionaries, with override values taking precedence.
-    
-    Supports explicit list merge syntax:
-    - `+item`: Append item to parent list
-    - `!pattern`: Remove matching items from parent list (supports wildcards)
-    - Items without prefix: If any +/! exists, also appended; otherwise list is replaced
-    
+
+    A list is either MERGED into the inherited one or REPLACES it, never both:
+
+    - `+item` appends to the inherited list
+    - `!pattern` removes matching items from it (supports wildcards)
+    - a list with no prefixes at all replaces the inherited one wholesale
+
     Examples:
-        # Replace entire list (no +/! prefix)
+        # Replace the entire list (no +/! anywhere)
         tools:
-          allowed: ["new_tool/*"]  # Replaces parent's list
-        
-        # Merge with parent list
+          allowed: ["new_tool/*"]
+
+        # Merge with the inherited list
         tools:
           allowed:
-            - "+new_tool/*"     # Add to parent
-            - "!old_tool/*"     # Remove from parent
-            - "another_tool/*"  # Also added (merge mode active)
-    
+            - "+new_tool/*"     # add
+            - "!old_tool/*"     # remove
+
+    Mixing the two forms raises — see :func:`_merge_lists_with_syntax`.
+
     Args:
         base: Base dictionary (default values)
         override: Override dictionary (specific values that override base)
-        
+        _path: Dotted key path, used only to make error messages locatable.
+
     Returns:
         New dictionary with merged values
     """
     result = base.copy()
-    
+
     for key, value in override.items():
-        if (key in result and 
-            isinstance(result[key], dict) and 
+        path = f"{_path}.{key}" if _path else str(key)
+        if (key in result and
+            isinstance(result[key], dict) and
             isinstance(value, dict)):
             # Recursively merge nested dictionaries
-            result[key] = _deep_merge_dict(result[key], value)
-        elif (key in result and 
-              isinstance(result[key], list) and 
-              isinstance(value, list)):
-            # Check if list uses explicit merge syntax (+/!)
-            result[key] = _merge_lists_with_syntax(result[key], value)
+            result[key] = _deep_merge_dict(result[key], value, path)
+        elif isinstance(value, list):
+            # Also for a key the parent does not have: without this, a "+x"
+            # would survive into the value as a literal and match nothing.
+            parent = result.get(key)
+            base_list = parent if isinstance(parent, list) else []
+            result[key] = _merge_lists_with_syntax(base_list, value, path)
         elif value is not None:
             # Override with non-None values
             result[key] = value
         # Skip None values to preserve defaults
-    
+
     return result
 
 
-def _merge_lists_with_syntax(parent_list: list, child_list: list) -> list:
-    """Merge two lists using explicit +/! syntax.
-    
-    If the child list contains any items with + or ! prefix, merge mode is activated:
-    - +item: Add item (without prefix) to result
-    - !pattern: Remove matching items from parent (supports * wildcard)
-    - item (no prefix): Also added in merge mode
-    
-    If no +/! prefixes found, the child list completely replaces the parent.
-    
+def _merge_lists_with_syntax(parent_list: list, child_list: list,
+                             path: str = "list") -> list:
+    """Merge a child list into the inherited one, or let it replace it.
+
+    Two mutually exclusive intents:
+
+    - **merge** — every string carries ``+`` (add) or ``!`` (remove pattern)
+    - **replace** — no string carries a prefix; the child list wins wholesale
+
+    Mixing them raises ``ValueError``. The mix is almost always a forgotten
+    ``+``, and it is unrecoverable by guessing: read as "replace", the prefixed
+    entries would be the only survivors; read as "merge", the bare one silently
+    joins the inherited list. Both readings are defensible, which is exactly why
+    the config must say which one it means.
+
     Args:
-        parent_list: The base list from parent config
-        child_list: The override list from child config
-        
+        parent_list: The inherited list
+        child_list: The override list from the child config
+        path: Dotted key path, for the error message
+
     Returns:
         Merged or replaced list
+
+    Raises:
+        ValueError: if the child list mixes prefixed and bare string entries.
     """
-    # Check if any item uses merge syntax
-    has_merge_syntax = any(
-        isinstance(item, str) and (item.startswith('+') or item.startswith('!'))
-        for item in child_list
-    )
-    
-    if not has_merge_syntax:
+    strings = [item for item in child_list if isinstance(item, str)]
+    prefixed = [s for s in strings if s.startswith(('+', '!'))]
+    bare = [s for s in strings if not s.startswith(('+', '!'))]
+
+    if prefixed and bare:
+        raise ValueError(
+            f"Config '{path}' mixes list merge syntax with replacement entries. "
+            f"Prefixed: {prefixed} — these add to / remove from the inherited "
+            f"list. Without a prefix: {bare} — a list of those REPLACES the "
+            f"inherited list entirely. One list cannot mean both. "
+            f"Most likely a '+' was forgotten on {bare}; add it, or drop every "
+            f"prefix to replace the list instead."
+        )
+
+    if not prefixed:
         # No merge syntax - complete replacement (original behavior)
         return child_list
-    
-    # Merge mode: start with parent list
-    result = list(parent_list)
-    
-    for item in child_list:
+
+    # The inherited list may itself still carry prefixes: a server's own "+x" is
+    # only stripped when it is merged against default_config, and that happens
+    # AFTER inheritance is resolved. Normalise it against an empty base first —
+    # otherwise the "+" rides along into the child's result and later looks like
+    # an authoring error that nobody made.
+    return _apply_list_ops(_apply_list_ops([], parent_list), child_list)
+
+
+def _apply_list_ops(base: list, items: list) -> list:
+    """Apply ``+``/``!``/bare entries of *items* onto *base*.
+
+    Deliberately permissive — mixing is rejected by the caller, which is the
+    only place that knows whether the list was author-written or already merged.
+    """
+    result = list(base)
+
+    for item in items:
         if not isinstance(item, str):
             # Non-string items are added as-is
             if item not in result:
                 result.append(item)
             continue
-            
+
         if item.startswith('!'):
             # Remove pattern from result
             pattern = item[1:]  # Strip ! prefix
             result = [r for r in result if not _matches_pattern(r, pattern)]
-        elif item.startswith('+'):
-            # Add item (strip + prefix)
-            clean_item = item[1:]
+        else:
+            clean_item = item[1:] if item.startswith('+') else item
             if clean_item not in result:
                 result.append(clean_item)
-        else:
-            # Regular item in merge mode - also add
-            if item not in result:
-                result.append(item)
-    
+
     return result
 
 

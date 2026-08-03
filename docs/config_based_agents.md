@@ -109,9 +109,9 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `llm_profile` | string | Yes | - | LLM profile from `config/llm.yaml` |
-| `llm_profile_fallbacks` | list[string] | No | [] | Fallback profiles on rate limit/quota errors |
-| `fallback_recovery_seconds` | integer | No | 3600 | Seconds before retrying original LLM after fallback (1 hour default) |
+| `llm_profile` | list[string] | Yes | - | Profile CHAIN from `config/llm.yaml`: `[primary, fallback1, ...]` |
+| `llm_profile_advanced` | list[string] | No | [] | Same chain shape for the advanced model |
+| `fallback_recovery_seconds` | integer | No | 3600 | Seconds before retrying the primary after a fallback (1 hour default) |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
@@ -129,12 +129,15 @@ When the primary LLM profile hits rate limits (HTTP 429) or quota exhaustion, th
 my_agent:
   type: basic_agent
   agent_config:
-    llm_profile: "gemini"              # Primary profile
-    llm_profile_fallbacks:             # Tried in order on rate limit
-      - "openai"                       # First fallback
-      - "anthropic"                    # Second fallback
-    fallback_recovery_seconds: 1800    # Try primary again after 30min (default: 3600)
+    llm_profile: ["gemini", "openai", "anthropic"]   # chain: primary, then fallbacks
+    fallback_recovery_seconds: 1800                  # retry primary after 30min (default: 3600)
 ```
+
+> `llm_profile_fallbacks` was **removed**. The positional `[standard, advanced]`
+> reading is gone; a chain lives in `llm_profile` itself, and the advanced model
+> gets its own chain in `llm_profile_advanced`. A config that still sets
+> `llm_profile_fallbacks` is rejected at load with a migration hint rather than
+> run with `llm_profile[1]` silently meaning something else.
 
 **Behavior:**
 1. Agent tries primary `llm_profile` first
@@ -189,7 +192,23 @@ When an agent inherits from another agent via `type:`, lists are **replaced by d
 |--------|----------|---------|
 | `+item` | Append item to parent list | `+new_tool/*` |
 | `!pattern` | Remove matching items from parent | `!old_tool/*` |
-| `item` (no prefix) | In merge mode: also appended | `regular_tool/*` |
+| `item` (no prefix) | Replace mode — the list replaces the parent's | `regular_tool/*` |
+
+A list is either **merged** or a **replacement**, never both. Mixing prefixed and
+unprefixed entries in one list raises a `ValueError` at config load, naming the
+key and the offending entries:
+
+```yaml
+tools:
+  allowed:
+    - "linear_book/*"   # ERROR: '+' forgotten -- this reads as "replace"
+    - "+v4_sam/*"       #        while this one reads as "add"
+```
+
+The mix is almost always a forgotten `+`, and it cannot be resolved by guessing:
+read as "replace", only the prefixed entries survive; read as "merge", the bare
+one silently joins the inherited list. Both are defensible, so the config has to
+say which it means.
 
 **Example:**
 
@@ -228,7 +247,8 @@ tools:
     - "only_this_tool/*"  # Replaces entire parent list
 ```
 
-This syntax works for **any list** in the config, not just tools - including `template_vars`, `llm_profile_fallbacks`, etc.
+This syntax works for **any list** in the config, not just tools — including
+`llm_profile`, `blocked`, `allowed_agents`, etc.
 
 ### self_tool_descriptions Configuration
 

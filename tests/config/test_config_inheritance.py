@@ -422,15 +422,47 @@ class TestListMergeSyntax:
         assert "datetime/*" in result["agent_config"]["tools"]["allowed"]
         assert "todo/*" in result["agent_config"]["tools"]["allowed"]
 
-    def test_items_without_prefix_in_merge_mode(self):
-        """Test that items without prefix are also added when merge mode is active."""
+    def test_mixing_prefixed_and_bare_entries_raises(self):
+        """A list either merges or replaces — never both.
+
+        Read as "replace", the prefixed entries would be the only survivors;
+        read as "merge", the bare one silently joins the inherited list. Both
+        readings are defensible, so guessing would make a forgotten '+' change
+        an agent's tools without a word.
+        """
         base = {"items": ["a", "b"]}
         override = {"items": ["+c", "d"]}  # d has no prefix but + exists
-        
-        result = _deep_merge_dict(base, override)
-        
-        # Both c and d should be added
-        assert result["items"] == ["a", "b", "c", "d"]
+
+        with pytest.raises(ValueError) as exc:
+            _deep_merge_dict(base, override)
+        assert "'d'" in str(exc.value) or "['d']" in str(exc.value)
+
+    def test_error_names_the_offending_entries_and_where(self):
+        """The message has to be actionable: which key, which entries."""
+        base = {"agent_config": {"tools": {"allowed": ["a/*"]}}}
+        override = {"agent_config": {"tools": {"allowed": ["forgot/*", "+ok/*"]}}}
+
+        with pytest.raises(ValueError) as exc:
+            _deep_merge_dict(base, override, "my_agent")
+        message = str(exc.value)
+        assert "my_agent.agent_config.tools.allowed" in message
+        assert "forgot/*" in message
+        assert "+ok/*" in message
+
+    def test_prefix_without_an_inherited_list_is_stripped(self):
+        """Nothing to merge into is not a reason to keep the '+': a literal
+        '+okf/*' in the resolved config matches no tool at all."""
+        result = _deep_merge_dict({}, {"items": ["+c", "!gone/*"]})
+        assert result["items"] == ["c"]
+
+    def test_parent_prefixes_do_not_leak_into_the_child(self):
+        """A server's own '+x' is only stripped when it is merged against
+        default_config, which happens AFTER inheritance. Without normalising the
+        inherited list here, that '+' rides along and later reads as a mixed
+        list nobody wrote."""
+        base = {"items": ["+inherited/*"]}          # parent, not yet normalised
+        override = {"items": ["+own/*"]}
+        assert _deep_merge_dict(base, override)["items"] == ["inherited/*", "own/*"]
 
     def test_wildcard_removal_pattern(self):
         """Test that ! with wildcard removes multiple matching items."""
