@@ -4,19 +4,25 @@ The renderer contract mirrors the WebUI (see chat_module.js): one line per
 operation key, progress rewritten in place, the end line REPLACES the progress
 line and must stand on its own. Thinking is a counter line, not a token flood.
 """
+import asyncio
 import builtins
 import io
 import json
 import logging
 import sys
 
+import pytest
+
 from agent_system.cli_utils.chat import (
     _ASCII_SYMBOLS,
+    _KeyReader,
+    _poll_typed_input,
     ChatRenderer,
     _accumulate_usage,
     _format_usage,
     _read_input,
     _show_history,
+    _show_costs,
     _show_skills,
     _show_tools,
     _show_last,
@@ -575,19 +581,21 @@ class TestResize:
         assert "\x1b[1A" not in text                # no climb across the resize
         assert text.count("\n") == 2                # appended instead
 
-
 class TestUsage:
-    def test_accumulates_across_llm_calls(self):
+    """Cost is resolved PER CALL in _accumulate_usage (a session can span
+    several models); _format_usage only renders what was already decided."""
+
+    def test_accumulates_tokens_across_calls(self):
         total = {}
         _accumulate_usage(total, {"prompt_tokens": 100, "completion_tokens": 20})
-        _accumulate_usage(total, {"prompt_tokens": 50, "completion_tokens": 5, "cost": 0.01})
-        assert total == {"prompt_tokens": 150, "completion_tokens": 25, "cost": 0.01}
+        _accumulate_usage(total, {"prompt_tokens": 50, "completion_tokens": 5})
+        assert total["prompt_tokens"] == 150
+        assert total["completion_tokens"] == 25
 
     def test_ignores_malformed_usage(self):
         total = {}
         _accumulate_usage(total, None)
         _accumulate_usage(total, "nonsense")
-        _accumulate_usage(total, {"prompt_tokens": "many"})
         assert total == {}
 
     def test_format_is_compact(self):
@@ -596,9 +604,61 @@ class TestUsage:
         assert "1.2k" in line and "830" in line and "$0.0213" in line
         assert "3m41s" in line
 
+    def test_cached_tokens_are_extracted_like_the_usage_tracker(self):
+        total = {}
+        _accumulate_usage(total, {"prompt_tokens": 1000,
+                                  "prompt_tokens_details": {"cached_tokens": 900}})
+        _accumulate_usage(total, {"prompt_tokens": 1000,
+                                  "prompt_tokens_details": {"cached_tokens": 500}})
+        assert total["cached_tokens"] == 1400
+        assert total["prompt_tokens"] == 2000
+
+    def test_cache_rate_is_shown(self):
+        line = _format_usage({"prompt_tokens": 1000, "completion_tokens": 10,
+                              "cached_tokens": 940, "cost": 0.01},
+                             1.0, _ASCII_SYMBOLS)
+        assert "94% cached" in line
+
+    def test_no_cache_rate_without_cached_tokens(self):
+        line = _format_usage({"prompt_tokens": 1000, "completion_tokens": 10},
+                             1.0, _ASCII_SYMBOLS)
+        assert "cached" not in line
+
+    def test_provider_cost_is_billing_and_carries_no_tilde(self):
+        total = {}
+        _accumulate_usage(total, {"prompt_tokens": 10, "cost": 0.02}, "any-model")
+        assert total["cost"] == 0.02
+        assert total["cost_is_estimate"] is False
+        assert "~" not in _format_usage(total, 1.0, _ASCII_SYMBOLS)
+
+    def test_one_estimated_call_makes_the_whole_sum_an_estimate(self, monkeypatch):
+        """Otherwise a partly guessed total would be presented as billing."""
+        import agent_system.llm.pricing as pricing
+        monkeypatch.setattr(pricing, "estimate_cost", lambda *a, **k: 0.5)
+        total = {}
+        _accumulate_usage(total, {"prompt_tokens": 10, "cost": 0.02}, "m")
+        _accumulate_usage(total, {"prompt_tokens": 10}, "m")
+        assert total["cost"] == pytest.approx(0.52)
+        assert total["cost_is_estimate"] is True
+        assert "~$0.5200" in _format_usage(total, 1.0, _ASCII_SYMBOLS)
+
+    def test_unpriceable_calls_are_named_not_dropped(self):
+        """Mixed providers used to yield a total that silently omitted every
+        call without a price -- too low AND labelled exact."""
+        total = {}
+        _accumulate_usage(total, {"prompt_tokens": 10, "cost": 0.02}, "m")
+        _accumulate_usage(total, {"prompt_tokens": 999}, "gibt-es-nicht-xyz")
+        assert total["cost_unpriced_calls"] == 1
+        assert "+1 unpriced" in _format_usage(total, 1.0, _ASCII_SYMBOLS)
+
+    def test_tokens_still_count_when_the_price_is_unknown(self):
+        total = {}
+        _accumulate_usage(total, {"prompt_tokens": 999}, "gibt-es-nicht-xyz")
+        assert total["prompt_tokens"] == 999
+        assert "cost" not in total
+
     def test_format_without_usage_still_shows_time(self):
         assert _format_usage({}, 5.0, _ASCII_SYMBOLS) == "5s"
-
 
 def _feed(lines):
     """Replacement for input() that yields the given lines, then EOF."""
@@ -699,7 +759,8 @@ class TestTurnUsage:
         ])
         r, _t = _renderer()
         result = await run_chat_turn(agent, "x", "s", r)
-        assert result["usage"] == {"prompt_tokens": 40, "completion_tokens": 6}
+        assert result["usage"]["prompt_tokens"] == 40
+        assert result["usage"]["completion_tokens"] == 6
 
 
 class _Msg:
@@ -1095,3 +1156,485 @@ class TestIndentPreservation:
         r, out = _renderer(width=200)
         r.println("   ")
         assert r._total == 1
+
+
+class TestKeyReaderBuffer:
+    """Key handling is pure string work -- the platform source is mocked."""
+
+    def _reader(self, keys):
+        r = _KeyReader(active=False)
+        r.enabled = True
+        r._read_chars = lambda: keys        # type: ignore[method-assign]
+        return r
+
+    def test_enter_submits_and_clears(self):
+        r = self._reader("hallo\r")
+        assert r.poll() == ["hallo"]
+        assert r.buffer == ""
+
+    def test_every_line_of_a_paste_survives(self):
+        """_read_chars drains the whole batch at once; a single result slot
+        silently dropped all but the last line of a multi-line paste."""
+        r = self._reader("erste\rzweite\rdritte\r")
+        assert r.poll() == ["erste", "zweite", "dritte"]
+
+    def test_arrow_keys_do_not_leak_their_escape_body(self):
+        """Only the ESC byte was skipped before, so "[A" landed in the text."""
+        r = self._reader("ab\x1b[Acd\x1b[3~ef")
+        r.poll()
+        assert r.buffer == "abcdef"
+
+    def test_ctrl_c_as_data_discards_instead_of_typing(self):
+        """A child shell can leave the console without ENABLE_PROCESSED_INPUT,
+        and then Ctrl-C arrives as 0x03 rather than as a signal."""
+        r = self._reader("halber satz\x03")
+        assert r.poll() == []
+        assert r.buffer == ""
+
+    def test_partial_line_stays_in_the_buffer(self):
+        r = self._reader("halb")
+        assert r.poll() == []
+        assert r.buffer == "halb"
+
+    def test_backspace_deletes(self):
+        r = self._reader("abc\bd")
+        assert r.poll() == []
+        assert r.buffer == "abd"
+
+    def test_ctrl_u_clears_the_line(self):
+        r = self._reader("weg damit\x15neu")
+        r.poll()
+        assert r.buffer == "neu"
+
+    def test_control_characters_never_enter_the_buffer(self):
+        r = self._reader("a\x01b\x1bc")
+        r.poll()
+        assert r.buffer == "abc"
+
+    def test_empty_line_submits_nothing(self):
+        r = self._reader("   \r")
+        assert r.poll() == []         # whitespace-only is not a message
+
+    def test_inactive_reader_reads_nothing(self):
+        r = _KeyReader(active=False)
+        assert r.enabled is False
+        assert r.poll() == []
+
+    def test_platform_failure_disables_instead_of_raising(self, monkeypatch):
+        """Type-ahead is a convenience; a broken console must not take the turn
+        down. This exercises the REAL _read_chars, not a stubbed one."""
+        import os as _os
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("console weg")
+
+        r = _KeyReader(active=False)
+        r.enabled = True
+        if _os.name == "nt":
+            import msvcrt
+            monkeypatch.setattr(msvcrt, "kbhit", _boom)
+        else:
+            import select as _select
+            monkeypatch.setattr(_select, "select", _boom)
+
+        assert r.poll() == []
+        assert r.enabled is False       # and it stops trying
+
+
+class TestInputRow:
+    """The input line sits on the cursor's RESTING line -- it carries no
+    newline, so it must not appear in the region's line accounting."""
+
+    def test_input_row_is_not_counted_as_a_region_line(self):
+        r, out = _renderer()
+        r.handle_status(_ev(request_id="a", message="läuft"))
+        before = r._total
+        r.set_input_row("» tippt gerade")
+        assert r._total == before
+        assert r._lines == {"a": 0}
+
+    def test_updates_still_reach_their_own_line_with_input_showing(self):
+        """The whole point: type-ahead must not break the offset arithmetic."""
+        r, out = _renderer()
+        r.handle_status(_ev(request_id="a", message="step 1"))
+        r.set_input_row("» hallo")
+        r.handle_status(_ev(request_id="a", message="step 2"))
+        text = out.getvalue()
+        assert "\x1b[1A" in text        # still climbed exactly one line
+        assert text.count("\n") == 1    # no extra region line appeared
+
+    def test_writes_erase_and_redraw_the_input_row(self):
+        r, out = _renderer()
+        r.set_input_row("» abc")
+        start = len(out.getvalue())
+        r.handle_status(_ev(message="etwas"))
+        written = out.getvalue()[start:]
+        assert written.startswith("\r\x1b[K")   # erased first
+        assert written.rstrip().endswith("\x1b[0m")
+        assert "» abc" in written               # and redrawn after
+
+    def test_input_row_never_ends_with_a_newline(self):
+        r, out = _renderer()
+        r.set_input_row("» abc")
+        assert not out.getvalue().endswith("\n")
+
+    def test_close_removes_the_input_row(self):
+        r, out = _renderer()
+        r.set_input_row("» abc")
+        r.close()
+        assert r._input_row is None
+        assert out.getvalue().endswith("\r\x1b[K")
+
+    def test_long_input_is_capped_to_one_physical_line(self):
+        """A soft-wrapped input line would add a physical row the region does
+        not know about and shift every offset above it."""
+        r, out = _renderer(width=30)
+        r.set_input_row("» " + "x" * 200)
+        drawn = out.getvalue()
+        assert "\n" not in drawn
+        plain = drawn.replace("\x1b[36m", "").replace("\x1b[0m", "").replace("\r\x1b[K", "")
+        assert display_width(plain) <= 29
+
+    def test_non_ansi_mode_has_no_input_row(self):
+        r, out = _renderer(ansi=False)
+        r.set_input_row("» abc")
+        assert out.getvalue() == ""
+        assert r._input_row is None
+
+
+class _ScriptedReader:
+    """Feeds a fixed sequence of poll() results, then idles."""
+
+    def __init__(self, script):
+        self.buffer = ""
+        self.enabled = True
+        self._script = list(script)
+
+    def poll(self):
+        if self._script:
+            item = self._script.pop(0)
+            if isinstance(item, tuple):
+                self.buffer = item[1]
+                return [item[0]]
+            self.buffer = item or ""
+            return []
+        return []
+
+    def close(self):
+        self.enabled = False
+
+
+class _InjectAgent:
+    def __init__(self, accept=True):
+        self.accept = accept
+        self.injected = []
+
+    async def append_user_message(self, request_id, content):
+        self.injected.append((request_id, content))
+        return self.accept
+
+
+def _inject_ctx(agent):
+    from agent_system.cli_utils.chat import _ChatContext
+    return _ChatContext(
+        agent=agent, entry_name="a", session_service=None, session_user="u",
+        session_id="s", was_new_session=False, llm_profile="p",
+        llm_override=None, llm_profile_info=None, show_status=True,
+    )
+
+
+class TestTypeAheadPoller:
+    """A line typed mid-turn goes to the agent via append_user_message, which
+    the agent drains at its next step boundary -- the same contract the WebUI
+    has. It does not interrupt the running step."""
+
+    async def test_submitted_line_is_injected_into_the_running_turn(self):
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("mach lieber X", "")])
+        r, out = _renderer(width=200)
+        state = {"request_id": "req-1"}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == [("req-1", "mach lieber X")]
+        assert "mach lieber X" in out.getvalue()
+        assert "queued" in out.getvalue()
+
+    async def test_line_without_a_running_request_is_kept_for_next_turn(self):
+        """No request_id yet (or already finished): the typed text must not be
+        thrown away."""
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("spaeter dann", "")])
+        r, out = _renderer(width=200)
+        state = {}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == []
+        assert state.get("typed_ahead") == "spaeter dann"
+        assert "kept for the next turn" in out.getvalue()
+
+    async def test_rejected_injection_is_also_kept(self):
+        agent = _InjectAgent(accept=False)
+        reader = _ScriptedReader([("abgelehnt", "")])
+        r, _t = _renderer(width=200)
+        state = {"request_id": "req-9"}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == [("req-9", "abgelehnt")]
+        assert state.get("typed_ahead") == "abgelehnt"
+
+    async def test_partial_buffer_is_shown_on_the_input_row(self):
+        agent = _InjectAgent()
+        reader = _ScriptedReader(["hal", "halb", "halbe"])
+        r, out = _renderer(width=200)
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), {"request_id": "r"}))
+        await asyncio.sleep(0.25)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        text = out.getvalue()
+        assert "» halbe" in text
+        assert agent.injected == []          # nothing submitted yet
+        assert text.count("\n") == 0         # the input row never adds a line
+
+    async def test_agent_failure_does_not_kill_the_poller(self):
+        class _Boom:
+            async def append_user_message(self, request_id, content):
+                raise RuntimeError("agent weg")
+
+        reader = _ScriptedReader([("text", ""), ("noch einer", "")])
+        r, _t = _renderer(width=200)
+        state = {"request_id": "r"}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(_Boom()), state))
+        await asyncio.sleep(0.2)
+        done = task.done()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert not done, "the poller must survive an injection failure"
+        assert state.get("typed_ahead")     # and keep the text
+
+
+class TestTurnUsageNotDoubleCounted:
+    """The final event repeats the LAST call's usage (server.py sets
+    final_event["usage"] = llm_out["usage"]). Summing both counted that call
+    twice -- with 20 steps that silently inflated the reported cost."""
+
+    async def test_single_call_is_counted_once(self):
+        usage = {"prompt_tokens": 1000, "completion_tokens": 10}
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete",
+             "assistant": {"content": "fertig", "tool_calls": None},
+             "usage": usage},
+            {"type": "final", "summary": "fertig", "usage": usage},
+            {"type": "end"},
+        ])
+        r, _t = _renderer()
+        result = await run_chat_turn(agent, "x", "s", r)
+        assert result["usage"]["prompt_tokens"] == 1000     # not 2000
+
+    async def test_multi_step_sums_every_call_exactly_once(self):
+        step1 = {"prompt_tokens": 1000, "completion_tokens": 10}
+        step2 = {"prompt_tokens": 1500, "completion_tokens": 20}
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete",
+             "assistant": {"content": "zwischenstand", "tool_calls": [{"id": "t"}]},
+             "usage": step1},
+            {"type": "thinking_complete",
+             "assistant": {"content": "fertig", "tool_calls": None},
+             "usage": step2},
+            {"type": "final", "summary": "fertig", "usage": step2},
+            {"type": "end"},
+        ])
+        r, _t = _renderer()
+        result = await run_chat_turn(agent, "x", "s", r)
+        assert result["usage"]["prompt_tokens"] == 2500     # not 4000
+
+    async def test_separate_final_answer_call_still_counts(self):
+        """After max_steps a SEPARATE final-answer call runs which has no
+        thinking_complete of its own -- dropping it would undercount."""
+        step = {"prompt_tokens": 1000, "completion_tokens": 10}
+        final_call = {"prompt_tokens": 1200, "completion_tokens": 30}
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete",
+             "assistant": {"content": "a", "tool_calls": [{"id": "t"}]},
+             "usage": step},
+            {"type": "final", "summary": "notgedrungen", "usage": final_call},
+            {"type": "end"},
+        ])
+        r, _t = _renderer()
+        result = await run_chat_turn(agent, "x", "s", r)
+        assert result["usage"]["prompt_tokens"] == 2200
+
+    async def test_cached_tokens_survive_the_turn(self):
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete",
+             "assistant": {"content": "fertig", "tool_calls": None},
+             "usage": {"prompt_tokens": 2000, "completion_tokens": 5,
+                       "prompt_tokens_details": {"cached_tokens": 1900}}},
+            {"type": "end"},
+        ])
+        r, _t = _renderer()
+        result = await run_chat_turn(agent, "x", "s", r)
+        assert result["usage"]["cached_tokens"] == 1900
+
+
+class _StatsTracker:
+    def __init__(self, stats):
+        self._stats = stats
+        self.asked_for = None
+
+    def get_statistics(self, session_id=None):
+        self.asked_for = session_id
+        return self._stats
+
+
+class _CostAgent:
+    def __init__(self, tracker=None, registry_raises=False):
+        class _Reg:
+            def get(_self, name):
+                if registry_raises or tracker is None:
+                    raise KeyError(name)
+                return type("S", (), {"tracker": tracker})()
+        self.registry = _Reg()
+
+
+class TestCostsCommand:
+    """The turn footer only sums the coordinator's own event stream. Sub-agents
+    bill against the same wallet through their own sub-sessions, so /costs has
+    to read the tracker -- the only place that sees every call in the process."""
+
+    def _ctx(self, agent):
+        from agent_system.cli_utils.chat import _ChatContext
+        return _ChatContext(
+            agent=agent, entry_name="a", session_service=None, session_user="u",
+            session_id="sess-1", was_new_session=False, llm_profile="p",
+            llm_override=None, llm_profile_info=None, show_status=True)
+
+    def test_asks_the_tracker_for_this_session(self):
+        tracker = _StatsTracker({"totals": {"cost": 1.0, "prompt_tokens": 10,
+                                            "completion_tokens": 2,
+                                            "cost_known_calls": 1,
+                                            "cost_estimated_calls": 0,
+                                            "cache_hit_rate": 0.0},
+                                 "timespan": {"sample_count": 1}})
+        r, out = _renderer(width=200)
+        _show_costs(self._ctx(_CostAgent(tracker)), r)
+        assert tracker.asked_for == "sess-1"   # the tree filter needs the id
+        assert "$1.0000" in out.getvalue()
+
+    def test_estimated_totals_are_marked(self, capsys):
+        tracker = _StatsTracker({"totals": {"cost": 0.5, "prompt_tokens": 100,
+                                            "completion_tokens": 10,
+                                            "cost_known_calls": 2,
+                                            "cost_estimated_calls": 2,
+                                            "cache_hit_rate": 50.0},
+                                 "timespan": {"sample_count": 2}})
+        r, out = _renderer(width=200)
+        _show_costs(self._ctx(_CostAgent(tracker)), r)
+        assert "~$0.5000" in out.getvalue()
+        assert "not provider billing" in capsys.readouterr().out
+
+    def test_unpriced_calls_are_named(self):
+        """3 calls seen, only 1 priced -- the total is incomplete and says so."""
+        tracker = _StatsTracker({"totals": {"cost": 0.1, "prompt_tokens": 10,
+                                            "completion_tokens": 1,
+                                            "cost_known_calls": 1,
+                                            "cost_estimated_calls": 0,
+                                            "cache_hit_rate": 0.0},
+                                 "timespan": {"sample_count": 3}})
+        r, out = _renderer(width=200)
+        _show_costs(self._ctx(_CostAgent(tracker)), r)
+        assert "(2 unpriced)" in out.getvalue()
+
+    def test_missing_plugin_says_so_and_falls_back(self, capsys):
+        r, _t = _renderer(width=200)
+        ctx = self._ctx(_CostAgent(None))
+        ctx.total_usage = {"prompt_tokens": 5, "completion_tokens": 1}
+        _show_costs(ctx, r)
+        printed = capsys.readouterr().out
+        assert "not active" in printed
+        assert "This chat's own turns" in printed
+
+    def test_tracker_failure_is_reported(self, capsys):
+        class _Boom:
+            def get_statistics(self, session_id=None):
+                raise RuntimeError("tracker kaputt")
+        r, _t = _renderer(width=200)
+        _show_costs(self._ctx(_CostAgent(_Boom())), r)
+        assert "Could not read usage statistics" in capsys.readouterr().out
+
+    def test_empty_session_says_so(self, capsys):
+        r, _t = _renderer(width=200)
+        _show_costs(self._ctx(_CostAgent(_StatsTracker({}))), r)
+        assert "No LLM calls recorded" in capsys.readouterr().out
+
+
+class _AsyncOnlyServer:
+    """A hybrid plugin: async list_tools() and deliberately NO get_tools().
+
+    This is what every sub_agent_manager instance looks like -- asking only for
+    get_tools() skipped them entirely.
+    """
+
+    def __init__(self, tools):
+        self._tools = tools
+
+    async def list_tools(self):
+        return self._tools
+
+
+class _MCPToolLike:
+    def __init__(self, name, description="", input_schema=None):
+        self.name = name
+        self.description = description
+        # The real MCPTool always carries one; the schema builder reads it
+        # unconditionally, so a fake without it vanishes from the result.
+        self.input_schema = input_schema or {"type": "object", "properties": {}}
+
+
+class TestToolGrouping:
+    def _ctx_with_servers(self, tools, servers):
+        class _Reg:
+            def list(_s):
+                return list(servers)
+        agent = _ToolAgent(tools, servers)
+        agent.registry = _Reg()
+        return _tool_ctx(agent)
+
+    async def test_single_tool_server_groups_under_itself(self):
+        """A server whose one tool carries its bare name (sequential_thinking,
+        todo) used to be split at "_" and invented a bogus group."""
+        tools = [{"name": "sequential_thinking", "description": "d"},
+                 {"name": "todo", "description": "d"}]
+        r, out = _renderer(width=200)
+        await _show_tools(self._ctx_with_servers(tools, ["sequential_thinking", "todo"]), r, "")
+        plain = out.getvalue().replace("\x1b[34m", "").replace("\x1b[90m", "").replace("\x1b[0m", "")
+        headers = [ln for ln in plain.split("\n") if ln and not ln.startswith(" ")]
+        assert "sequential_thinking" in headers
+        assert "todo" in headers
+        assert "sequential" not in headers          # the invented group
+        assert "(unknown server)" not in headers
+
+    async def test_unmatched_tool_is_named_not_guessed(self):
+        tools = [{"name": "voellig_fremd_tool", "description": "d"}]
+        r, out = _renderer(width=200)
+        await _show_tools(self._ctx_with_servers(tools, ["andere"]), r, "")
+        assert "(unknown server)" in out.getvalue()

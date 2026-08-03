@@ -26,6 +26,7 @@ import time
 import unicodedata
 from typing import Any, Optional, TextIO
 
+from ..llm.pricing import normalize_usage, resolve_call_cost
 from .common import (
     format_output_with_hooks,
     reassert_vt,
@@ -128,6 +129,11 @@ class ChatRenderer:
         self._thinking_tokens = 0
         self._thinking_t0 = 0.0
         self._last_paint = 0.0
+        # Text shown on the cursor's resting line while a turn runs (what the
+        # user is typing). It carries NO newline, so it occupies the line the
+        # cursor rests on anyway and never enters _total/_lines -- the offset
+        # arithmetic stays exactly as it is without it.
+        self._input_row: Optional[str] = None
 
     # ------------------------------------------------------------------ util
 
@@ -198,6 +204,7 @@ class ChatRenderer:
         # everything from here on renders as literal escapes.
         reassert_vt()
         self._check_resize()
+        self._erase_input_row()
         offset = self._total - self._lines[key] if key in self._lines else None
         if offset is not None and offset <= self._usable_height():
             self.out.write(f"\x1b[{offset}A\r\x1b[K{text}\x1b[{offset}B\r")
@@ -205,7 +212,31 @@ class ChatRenderer:
             self._lines[key] = self._total
             self._total += 1
             self.out.write(text + "\n")
+        self._draw_input_row()
         self.out.flush()
+
+    # ------------------------------------------------------------ input row
+
+    def set_input_row(self, text: Optional[str]) -> None:
+        """Show (or clear with None) the live input line below the region."""
+        if not self.ansi:
+            return
+        self._erase_input_row()
+        self._input_row = text
+        self._draw_input_row()
+        self.out.flush()
+
+    def _erase_input_row(self) -> None:
+        """Blank the resting line so a region write starts from a clean row."""
+        if self.ansi and self._input_row is not None:
+            self.out.write("\r\x1b[K")
+
+    def _draw_input_row(self) -> None:
+        """Redraw the input line WITHOUT a newline -- it must not become a row."""
+        if self.ansi and self._input_row is not None:
+            # _fit keeps it to one physical line: a soft wrap here would add a
+            # line the region does not know about and shift every offset.
+            self.out.write(self._colored(self._fit(self._input_row), "36"))
 
     def _check_resize(self) -> None:
         """End the region when the terminal width changed under us."""
@@ -248,12 +279,14 @@ class ChatRenderer:
             return
         reassert_vt()  # see _paint
         self._check_resize()
+        self._erase_input_row()
         width = max(self._width() - 1, 10)
         for logical in text.splitlines() or [""]:
             for chunk in self._wrap(logical.expandtabs(4), width):
                 self.out.write(self._colored(chunk, color) if chunk else "")
                 self.out.write("\n")
                 self._total += 1
+        self._draw_input_row()
         self.out.flush()
 
     @staticmethod
@@ -307,6 +340,10 @@ class ChatRenderer:
         """End of turn: nothing may stay live or half-counted."""
         if self._thinking_active:
             self.thinking_done()
+        if self.ansi and self._input_row is not None:
+            self._erase_input_row()
+            self._input_row = None
+            self.out.flush()
         self._commit_region()
 
     # ---------------------------------------------------------- status events
@@ -437,6 +474,7 @@ async def run_chat_turn(
 
     result: dict[str, Any] = {"summary": None, "cancelled": False, "errors": [],
                               "usage": {}}
+    last_call_usage: Any = None  # to spot the final event repeating it
     if state is None:
         state = {}
 
@@ -480,13 +518,25 @@ async def run_chat_turn(
                     renderer.narration(content)
                 # Usage rides on thinking_complete per LLM call; sum them so a
                 # multi-step turn reports the whole turn, not just the last call.
-                _accumulate_usage(result["usage"], ev.get("usage"))
+                _accumulate_usage(result["usage"], ev.get("usage"),
+                                  *_call_pricing_key(agent))
+                last_call_usage = ev.get("usage")
             elif t == "heartbeat":
                 if show_status:
                     renderer.thinking_tick()
             elif t == "final":
                 result["summary"] = ev.get("summary") or ""
-                _accumulate_usage(result["usage"], ev.get("usage"))
+                # The final event usually REPEATS the last LLM call's usage
+                # (server.py: final_event["usage"] = llm_out["usage"]), which
+                # already arrived as thinking_complete -- summing both counted
+                # that call twice and inflated every turn.
+                # But after max_steps a SEPARATE final-answer call runs that has
+                # no thinking_complete of its own, and that one must count. Same
+                # payload => the repeat; anything else => a real extra call.
+                final_usage = ev.get("usage")
+                if final_usage is not None and final_usage != last_call_usage:
+                    _accumulate_usage(result["usage"], final_usage,
+                                      *_call_pricing_key(agent))
             elif t == "error":
                 message = str(ev.get("message") or "unknown error")
                 result["errors"].append(message)
@@ -532,6 +582,7 @@ _COMMAND_ALIASES = {
     "/last": "last",
     "/tools": "tools",
     "/skills": "skills",
+    "/costs": "costs", "/cost": "costs",
     "/help": "help", "/?": "help", "/h": "help",
 }
 
@@ -588,6 +639,7 @@ Commands:
   /resume <id>       continue an earlier session
   /tools [filter]    tools this agent really has (not what it claims)
   /skills            skill bundles it loads
+  /costs             session cost so far, including sub-agents
   /history [n]       show the last n exchanges (default 6)
   /last              tool calls and results of the last turn, in full
   /help, /h          this help
@@ -601,6 +653,143 @@ Input:
 
 
 _FENCE = '"""'
+# Key polling cadence while a turn runs. The loop is awake anyway (run_events
+# polls its LLM task every 0.1s), so this costs nothing new.
+_KEY_POLL_S = 0.05
+
+
+class _KeyReader:
+    """Non-blocking keyboard reader for the duration of one turn.
+
+    Windows uses msvcrt, which reads the console through CONIN$ WITHOUT
+    touching the console mode -- important here, because every child shell a
+    tool spawns resets that mode (see common.reassert_vt) and a mode-based
+    reader would silently lose its setting mid-turn.
+
+    POSIX uses select() on stdin, which needs cbreak+noecho to deliver keys
+    before Enter; the original terminal attributes are restored in close(),
+    because tools spawn shells that inherit this terminal and expect canonical
+    mode.
+
+    Any failure disables the reader rather than taking the turn down: typing
+    ahead is a convenience, the turn is the work.
+    """
+
+    def __init__(self, active: bool = True) -> None:
+        self.buffer = ""
+        self.enabled = False
+        self._saved_attrs = None
+        self._fd = None
+        if not active:
+            return
+        try:
+            if not sys.stdin.isatty():
+                return  # piped input: kbhit never sees it, select would lie
+        except Exception:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt  # noqa: F401
+                self.enabled = True
+            else:
+                import termios
+                import tty
+                self._fd = sys.stdin.fileno()
+                # POSIX-only; mypy runs against the Windows stubs of these.
+                self._saved_attrs = termios.tcgetattr(self._fd)  # type: ignore[attr-defined]
+                tty.setcbreak(self._fd)  # type: ignore[attr-defined]
+                self.enabled = True
+        except Exception as e:
+            logger.debug("Type-ahead disabled: %s", e)
+            self.enabled = False
+
+    def close(self) -> None:
+        if self._saved_attrs is not None and self._fd is not None:
+            try:
+                import termios
+                termios.tcsetattr(  # type: ignore[attr-defined]
+                    self._fd, termios.TCSADRAIN, self._saved_attrs)  # type: ignore[attr-defined]
+            except Exception:
+                logger.debug("Could not restore terminal attributes", exc_info=True)
+        self._saved_attrs = None
+        self.enabled = False
+
+    def _read_chars(self) -> str:
+        """All characters available right now, without blocking."""
+        if not self.enabled:
+            return ""
+        chars = []
+        try:
+            if os.name == "nt":
+                import msvcrt
+                while msvcrt.kbhit():
+                    ch = msvcrt.getwch()
+                    # Arrow/function keys arrive as a two-call prefix; consume
+                    # the second half so it does not land in the buffer.
+                    if ch in ("\x00", "\xe0"):
+                        if msvcrt.kbhit():
+                            msvcrt.getwch()
+                        continue
+                    chars.append(ch)
+            else:
+                import select
+                # Read from the RAW fd, not sys.stdin: TextIOWrapper.read(1)
+                # pulls up to 8 KB into its own decode buffer and hands back one
+                # character -- select() only polls the fd and would report "not
+                # ready" while the rest sits there unread.
+                fd = sys.stdin.fileno()
+                while select.select([fd], [], [], 0)[0]:
+                    data = os.read(fd, 1024)
+                    if not data:
+                        break
+                    chars.append(data.decode(sys.stdin.encoding or "utf-8",
+                                             errors="replace"))
+        except Exception as e:
+            logger.debug("Key read failed, disabling type-ahead: %s", e)
+            self.enabled = False
+        return "".join(chars)
+
+    def poll(self) -> list[str]:
+        """Consume pending keys. Returns every line finished in this batch.
+
+        A list, not one line: _read_chars drains everything available at once,
+        so a paste of several lines arrives in a single call. Keeping one slot
+        silently dropped all but the last.
+        """
+        submitted: list[str] = []
+        chars = self._read_chars()
+        index = 0
+        while index < len(chars):
+            ch = chars[index]
+            index += 1
+            if ch == "\x1b":
+                # CSI/SS3 escape sequence (arrow keys, Home, F-keys). Only the
+                # ESC byte was skipped before, so the rest ("[A") landed in the
+                # buffer as ordinary printable text.
+                if index < len(chars) and chars[index] in ("[", "O"):
+                    index += 1
+                    while index < len(chars) and not ("@" <= chars[index] <= "~"):
+                        index += 1
+                    index += 1  # the final byte terminates the sequence
+                continue
+            if ch in ("\r", "\n"):
+                text = self.buffer.strip()
+                self.buffer = ""
+                if text:  # a bare Enter is not a message
+                    submitted.append(text)
+            elif ch in ("\b", "\x7f"):
+                self.buffer = self.buffer[:-1]
+            elif ch == "\x15":            # Ctrl-U: clear the line
+                self.buffer = ""
+            elif ch == "\x03":
+                # Ctrl-C as DATA rather than a signal -- happens when a child
+                # shell left the console without ENABLE_PROCESSED_INPUT. Treat
+                # it as "discard what I typed", never as text.
+                self.buffer = ""
+                submitted.clear()
+            elif ch >= " ":
+                self.buffer += ch
+        return submitted
 
 
 def _silence_stdout_logging() -> list[tuple[Any, int]]:
@@ -712,6 +901,16 @@ class _ChatContext:
         # Cumulative usage across the chat, for the exit line.
         self.total_usage: dict[str, float] = {}
 
+    def pricing_key(self) -> tuple[Optional[str], bool]:
+        """(model id, is_batch) for the central cost estimator."""
+        client = self.llm_override or getattr(self.agent, "llm", None)
+        model = getattr(client, "model", None)
+        # isinstance-str guard mirrors the usage tracker: a plain mock must not
+        # look batchy and halve the estimate.
+        provider = getattr(client, "batch_provider", None)
+        return (str(model) if model else None,
+                isinstance(provider, str) and bool(provider))
+
     def llm_label(self) -> str:
         """Profile plus the model behind it.
 
@@ -763,30 +962,92 @@ def _resume_hint(ctx: "_ChatContext", session_id: str) -> str:
     return " ".join(parts)
 
 
-def _accumulate_usage(total: dict, usage: Any) -> None:
-    """Add one turn's usage into the running total (best effort)."""
-    if not isinstance(usage, dict):
-        return
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cost"):
-        value = usage.get(key)
+def _call_pricing_key(agent: Any) -> tuple[Optional[str], bool]:
+    """(model, is_batch) of the client that just ran -- read per call.
+
+    Pricing the whole session with one model was wrong as soon as a fallback
+    switched profiles or a step used a different client.
+    """
+    client = getattr(agent, "llm", None)
+    model = getattr(client, "model", None)
+    provider = getattr(client, "batch_provider", None)
+    # isinstance-str guard mirrors the usage tracker: a bare mock must not look
+    # batchy and halve the estimate.
+    return (str(model) if model else None,
+            isinstance(provider, str) and bool(provider))
+
+
+def _merge_totals(total: dict, turn: dict) -> None:
+    """Fold a finished turn's already-resolved totals into the session sum."""
+    for key in ("prompt_tokens", "completion_tokens", "cached_tokens",
+                "cache_write_tokens", "cost", "cost_unpriced_calls"):
+        value = turn.get(key)
         if isinstance(value, (int, float)):
             total[key] = total.get(key, 0) + value
+    if turn.get("cost_is_estimate"):
+        total["cost_is_estimate"] = True
 
 
-def _format_usage(usage: dict, elapsed: float, sym: dict) -> str:
-    """One dim footer line: tokens, cost, wall time."""
+def _accumulate_usage(total: dict, usage: Any, model: Optional[str] = None,
+                      is_batch: bool = False) -> None:
+    """Add one LLM call's usage AND its resolved cost into the running total.
+
+    Cost is resolved per call, not once over the summed tokens: a session can
+    span several models, and mixing a billed figure from one provider with
+    estimated tokens from another produced a number that was both too low and
+    labelled as exact.
+    """
+    if not isinstance(usage, dict):
+        return
+    call = normalize_usage(usage)
+    total["prompt_tokens"] = total.get("prompt_tokens", 0) + call.prompt_tokens
+    total["completion_tokens"] = (
+        total.get("completion_tokens", 0) + call.completion_tokens)
+    total["cached_tokens"] = total.get("cached_tokens", 0) + call.cached_tokens
+    total["cache_write_tokens"] = (
+        total.get("cache_write_tokens", 0) + call.cache_write_tokens)
+
+    cost, estimated = resolve_call_cost(usage, model, is_batch=is_batch)
+    if cost is not None:
+        total["cost"] = total.get("cost", 0.0) + cost
+        # One estimated call makes the SUM an estimate -- anything else would
+        # present a partly guessed total as billing.
+        total["cost_is_estimate"] = total.get("cost_is_estimate", False) or estimated
+    else:
+        # Tokens counted, price unknown: the total is incomplete and has to say so.
+        total["cost_unpriced_calls"] = total.get("cost_unpriced_calls", 0) + 1
+
+
+def _format_usage(totals: dict, elapsed: float, sym: dict) -> str:
+    """One dim footer line: tokens, cache hit rate, cost, wall time.
+
+    The cost is already resolved per call by _accumulate_usage -- this only
+    renders it. An estimated total carries a leading ~, and calls whose price
+    could not be determined are named rather than silently omitted.
+    """
     def _short(n: float) -> str:
         return f"{n / 1000:.1f}k" if n >= 1000 else f"{int(n)}"
 
+    prompt = totals.get("prompt_tokens", 0) or 0
+    completion = totals.get("completion_tokens", 0) or 0
+    cached = totals.get("cached_tokens", 0) or 0
+
     parts = []
-    if usage.get("prompt_tokens") or usage.get("completion_tokens"):
-        up = _short(usage.get("prompt_tokens", 0))
-        down = _short(usage.get("completion_tokens", 0))
-        parts.append(f"{sym['up']}{up} {sym['down']}{down}")
-    elif usage.get("total_tokens"):
-        parts.append(f"{_short(usage['total_tokens'])} tokens")
-    if usage.get("cost"):
-        parts.append(f"${usage['cost']:.4f}")
+    if prompt or completion:
+        head = f"{sym['up']}{_short(prompt)}"
+        if prompt and cached:
+            head += f" ({cached * 100 // prompt}% cached)"
+        parts.append(f"{head} {sym['down']}{_short(completion)}")
+
+    cost = totals.get("cost")
+    if cost is not None:
+        marker = "~$" if totals.get("cost_is_estimate") else "$"
+        text = f"{marker}{cost:.4f}"
+        unpriced = totals.get("cost_unpriced_calls", 0)
+        if unpriced:
+            text += f" +{unpriced} unpriced"
+        parts.append(text)
+
     mins, secs = divmod(int(elapsed), 60)
     parts.append(f"{mins}m{secs:02d}s" if mins else f"{secs}s")
     return sym["sep"].join(parts)
@@ -1010,6 +1271,75 @@ def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
         print("The last turn used no tools.")
 
 
+def _usage_tracker(ctx: "_ChatContext") -> Any:
+    """The registered context_usage_tracker's UsageTracker, or None.
+
+    It hooks every LLM call in the process, so it is the ONLY source that also
+    sees sub-agent calls -- those run in their own sub-sessions and never
+    appear in the coordinator's run_events stream.
+    """
+    registry = getattr(ctx.agent, "registry", None)
+    if registry is None:
+        return None
+    try:
+        server = registry.get("context_usage_tracker")
+    except Exception:
+        logger.debug("Usage tracker not registered", exc_info=True)
+        return None
+    tracker = getattr(server, "tracker", None)
+    return tracker if hasattr(tracker, "get_statistics") else None
+
+
+def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
+    """Session cost INCLUDING sub-agents, from the usage tracker.
+
+    The turn footer only sums what the coordinator's own event stream carries.
+    Sub-agents bill against the same wallet but report through their own
+    sub-sessions, so a number built from the stream alone is silently too low.
+    """
+    tracker = _usage_tracker(ctx)
+    if tracker is None:
+        print("The context_usage_tracker plugin is not active -- no per-call "
+              "records to add up.")
+        print(f"This chat's own turns: {_format_usage(ctx.total_usage, 0, renderer.sym)}")
+        return
+    try:
+        stats = tracker.get_statistics(session_id=ctx.session_id)
+    except Exception as e:
+        logger.error("Failed to read usage statistics: %s", e, exc_info=True)
+        print(f"Could not read usage statistics: {e}")
+        return
+    totals = (stats or {}).get("totals")
+    if not totals:
+        print("No LLM calls recorded for this session yet.")
+        return
+
+    def _short(n: float) -> str:
+        return f"{n / 1000:.1f}k" if n >= 1000 else f"{int(n)}"
+
+    known = totals.get("cost_known_calls", 0)
+    estimated = totals.get("cost_estimated_calls", 0)
+    samples = (stats.get("timespan") or {}).get("sample_count", 0)
+    # Calls the tracker saw but could price neither way -- naming them keeps
+    # the total from looking complete when it is not.
+    unpriced = max(0, samples - known)
+
+    print(f"Session {ctx.session_id} (incl. sub-agents):")
+    renderer.println(
+        f"  calls        {samples}"
+        + (f"  ({estimated} estimated)" if estimated else ""), color="90")
+    renderer.println(
+        f"  tokens       {renderer.sym['up']}{_short(totals.get('prompt_tokens', 0))}"
+        f"  {renderer.sym['down']}{_short(totals.get('completion_tokens', 0))}"
+        f"  cache {totals.get('cache_hit_rate', 0.0):.0f}%", color="90")
+    marker = "~$" if estimated else "$"
+    renderer.println(f"  cost         {marker}{totals.get('cost', 0.0):.4f}"
+                     + (f"  ({unpriced} unpriced)" if unpriced else ""), color="90")
+    renderer.commit()
+    if estimated:
+        print("  ~ = estimated from config/llm_pricing.yaml, not provider billing")
+
+
 async def _show_tools(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
     """List the tools the agent REALLY has, grouped by server.
 
@@ -1043,10 +1373,18 @@ async def _show_tools(ctx: "_ChatContext", renderer: ChatRenderer, payload: str)
 
     # Group by the server prefix, which is how they are configured.
     groups: dict[str, list[dict]] = {}
-    known = sorted((s for s in _server_names(ctx)), key=len, reverse=True)
+    known = sorted(_server_names(ctx), key=len, reverse=True)
     for tool in tools:
         name = tool.get("name", "?")
-        server = next((s for s in known if name.startswith(s + "_")), name.split("_")[0])
+        # Longest registered server prefix wins, so coder_file_ops_read_file
+        # groups under coder_file_ops and not under a shorter "coder". The
+        # equality case covers single-tool servers, where the tool carries the
+        # server's bare name (sequential_thinking, todo).
+        server = next((s for s in known if name == s or name.startswith(s + "_")), None)
+        if server is None:
+            # No registered server matches. Splitting on "_" invented groups
+            # ("sequential" next to "sequential_thinking"); say it plainly.
+            server = "(unknown server)"
         groups.setdefault(server, []).append(tool)
 
     total = sum(len(v) for v in groups.values())
@@ -1164,6 +1502,60 @@ async def _save_session(ctx: _ChatContext) -> bool:
         return False
 
 
+async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
+                            ctx: "_ChatContext", state: dict) -> None:
+    """Show what the user types mid-turn and hand finished lines to the agent.
+
+    The agent drains injected messages at step boundaries, so a line sent here
+    lands in the conversation at the next step -- it does not interrupt the
+    running one. That is the same contract the WebUI has.
+    """
+    prompt = "» "
+    last_shown = None
+    try:
+        while reader.enabled:
+            for submitted in reader.poll():
+                command, _payload = parse_chat_command(submitted)
+                if command is not None or submitted.startswith("/"):
+                    # Slash commands are REPL-level, not messages. Sending
+                    # "/exit" to the LLM because it was typed a second earlier
+                    # would give identical keystrokes two different meanings.
+                    renderer.println(
+                        f"» {submitted}  (commands only work at the prompt)",
+                        color="33")
+                    continue
+                request_id = state.get("request_id")
+                delivered = False
+                if request_id:
+                    try:
+                        delivered = bool(
+                            await ctx.agent.append_user_message(request_id, submitted)
+                        )
+                    except Exception:
+                        logger.debug("append_user_message failed", exc_info=True)
+                if delivered:
+                    renderer.println(f"» {submitted}", color="36")
+                    renderer.println("  (queued -- the agent picks it up at its "
+                                     "next step)", color="90")
+                else:
+                    # Nothing running to take it: queue it for the next prompt
+                    # rather than dropping what the user typed. A list, so a
+                    # second line does not overwrite the first.
+                    state.setdefault("typed_queue", []).append(submitted)
+                    state["typed_ahead"] = state["typed_queue"][0]
+                    renderer.println(f"» {submitted}  (kept for the next turn)",
+                                     color="36")
+                last_shown = None
+            if reader.buffer != last_shown:
+                renderer.set_input_row(prompt + reader.buffer if reader.buffer else None)
+                last_shown = reader.buffer
+            await asyncio.sleep(_KEY_POLL_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Type-ahead poller stopped", exc_info=True)
+
+
 def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
                   task: str, renderer: ChatRenderer) -> dict:
     """One turn on the persistent loop, with two-stage Ctrl-C handling."""
@@ -1175,17 +1567,57 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         llm_profile_info=ctx.llm_profile_info,
         state=state,
     ))
+    # Type-ahead needs the live region to place its input line, so it rides
+    # along with ANSI mode.
+    reader = _KeyReader(active=renderer.ansi)
+    poller = (loop.create_task(_poll_typed_input(reader, renderer, ctx, state))
+              if reader.enabled else None)
     try:
-        return loop.run_until_complete(turn)
+        result = loop.run_until_complete(turn)
     except KeyboardInterrupt:
-        return _cancel_turn(loop, ctx, turn, state, renderer)
+        result = _cancel_turn(loop, ctx, turn, state, renderer)
     except Exception as e:
         # One broken turn (LLM auth, network, agent bug) must not end the
         # whole chat: report it and hand the user the next prompt.
         logger.error("Chat turn failed: %s", e, exc_info=True)
         renderer.close()
         print(f"Turn failed: {e}", file=sys.stderr)
-        return {"summary": None, "cancelled": False, "errors": [str(e)]}
+        result = {"summary": None, "cancelled": False, "errors": [str(e)]}
+    finally:
+        # The reader owns terminal state on POSIX -- it has to be restored on
+        # every exit, including Ctrl-C, or the shell stays in cbreak.
+        _stop_typing(loop, reader, poller, renderer, state)
+    for key in ("typed_ahead", "typed_partial"):
+        if state.get(key):
+            result[key] = state[key]
+    return result
+
+
+def _stop_typing(loop: asyncio.AbstractEventLoop, reader: _KeyReader,
+                 poller: Optional["asyncio.Task"], renderer: ChatRenderer,
+                 state: dict) -> None:
+    """End the type-ahead poller and hand a half-typed line to the next prompt."""
+    # reader.close() restores the POSIX terminal; it must run even if the
+    # teardown below is interrupted. KeyboardInterrupt is a BaseException, so
+    # `except Exception` around the loop call would NOT have covered a second
+    # Ctrl-C -- and the shell would stay in cbreak/noecho afterwards.
+    try:
+        if poller is not None:
+            poller.cancel()
+            try:
+                loop.run_until_complete(asyncio.gather(poller, return_exceptions=True))
+            except BaseException:
+                logger.debug("Type-ahead poller teardown failed", exc_info=True)
+        renderer.set_input_row(None)
+        # A line typed but NEVER SUBMITTED is kept under its own key: it must
+        # not become the next task. state["typed_ahead"] auto-runs, and running
+        # a half sentence the user never pressed Enter on -- as a full billed
+        # turn, right after they hit Ctrl-C to stop spending -- is the opposite
+        # of what they asked for. It gets shown, not executed.
+        if reader.buffer.strip():
+            state["typed_partial"] = reader.buffer.strip()
+    finally:
+        reader.close()
 
 
 def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
@@ -1364,6 +1796,9 @@ def run_chat_loop(
             if command == "skills":
                 _show_skills(ctx, renderer)
                 continue
+            if command == "costs":
+                _show_costs(ctx, renderer)
+                continue
             if command == "history":
                 _show_history(ctx, renderer, payload)
                 continue
@@ -1383,7 +1818,22 @@ def run_chat_loop(
             started = time.monotonic()
             result = _execute_turn(loop, ctx, task, renderer)
 
+            # A line the user SUBMITTED during the turn but that never reached
+            # the agent becomes the next task -- they pressed Enter on it.
+            pending = result.get("typed_ahead") or None
+            # A half-typed fragment is only shown; auto-running it would spend
+            # money on something the user never sent.
+            if result.get("typed_partial"):
+                print(renderer._colored(
+                    f"(unsent: {result['typed_partial']})", "90"))
+
             if result.get("cancelled"):
+                # Cancel means STOP. Anything queued from this turn is dropped:
+                # firing a new billed turn right after Ctrl-C is the opposite of
+                # what was asked for.
+                if pending:
+                    print(renderer._colored(f"(dropped: {pending})", "90"))
+                    pending = None
                 print("Turn cancelled.", file=sys.stderr)
                 continue  # nothing new worth saving; next turn saves anyway
 
@@ -1394,10 +1844,11 @@ def run_chat_loop(
                 print(renderer._colored("(no answer returned)", "90"))
 
             usage = result.get("usage") or {}
-            _accumulate_usage(ctx.total_usage, usage)
+            _merge_totals(ctx.total_usage, usage)
             if ctx.show_status:
                 print(renderer._colored(
-                    _format_usage(usage, time.monotonic() - started, renderer.sym), "90"))
+                    _format_usage(usage, time.monotonic() - started,
+                                  renderer.sym), "90"))
 
             try:
                 saved = loop.run_until_complete(_save_session(ctx))
@@ -1413,7 +1864,8 @@ def run_chat_loop(
         if ctx.total_usage:
             print(renderer._colored(
                 "Session total: " + _format_usage(
-                    ctx.total_usage, time.monotonic() - chat_started, renderer.sym),
+                    ctx.total_usage, time.monotonic() - chat_started,
+                    renderer.sym),
                 "90"))
         if ctx.last_saved:
             print(f"Session saved: {ctx.last_saved}", file=sys.stderr)
