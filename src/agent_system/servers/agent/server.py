@@ -1060,36 +1060,38 @@ class Agent(MCPServer):
         """
         try:
             status = params.get("_status")
+
+            # EXACTLY the pipeline that builds the LLM schema -- discovery
+            # (deny-all on empty allowed, _mcp_tool_visible, externals) plus
+            # ToolSchemaBuilder (tool-level allow/block, both tool interfaces,
+            # every schema dialect). This method used to re-implement about
+            # half of that and diverged on every point it skipped: hybrid
+            # plugins (list_tools-only) were missing entirely, an empty
+            # allowlist meant allow-all here but deny-all in the schema, and
+            # blocked patterns were never applied. An agent asking what it can
+            # do got a different answer than the schema it was running with.
+            usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
+
+            schema_builder = ToolSchemaBuilder(
+                agent_name=self.name,
+                mcp_integration_manager=self._mcp_integration_manager,
+                server_getter_func=self._get_server_from_any_registry,
+            )
+            tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
+                usable_tools,
+                allowed_patterns=allowed_patterns,
+                blocked_patterns=blocked_patterns,
+            )
+
             all_tools: list[Dict[str, Any]] = []
-
-            # Use agent's tools.allowed configuration for filtering
-            allowed_patterns = self.agent_config.tools.allowed if self.agent_config.tools else None
-
-            # Guard against non-iterable / MagicMock truthy values in tests
-            if allowed_patterns and not isinstance(allowed_patterns, (list, tuple, set)):
-                allowed_patterns = None
-
-            if self.registry:
-                server_names = list(self.registry.list())
-
-                # Apply server-level filtering when allow patterns defined
-                if allowed_patterns:
-                    filtered_server_names = [s for s in server_names if self._is_tool_allowed(s, allowed_patterns)]
-                else:
-                    filtered_server_names = server_names
-
-                for server_name in filtered_server_names:
-                    try:
-                        server = self.registry.get(server_name)
-                        if not server or not hasattr(server, 'get_tools'):
-                            continue
-                        tools = server.get_tools()
-                        for tool in tools:
-                            name = tool.get("function", {}).get("name", "unknown")
-                            description = tool.get("function", {}).get("description", "")
-                            all_tools.append({"name": name, "description": description})
-                    except Exception as e:
-                        logger.debug(f"Could not get tools from server '{server_name}': {e}")
+            for entry in tools_schema:
+                function = entry.get("function", {}) if isinstance(entry, dict) else {}
+                if not isinstance(function, dict):
+                    continue
+                all_tools.append({
+                    "name": function.get("name", "unknown"),
+                    "description": function.get("description", "") or "",
+                })
 
             if status:
                 await status.end(f"Listed available tools ({len(all_tools)} tools)")
@@ -1617,6 +1619,7 @@ class Agent(MCPServer):
             accumulated_content = []
             final_assistant = None
             final_usage = None  # Store usage data from final chunk
+            final_finish_reason = None  # "length", "content_filter", ...
 
             async for chunk in llm.chat_tools_streaming(
                 messages, tools_schema, 
@@ -1654,16 +1657,61 @@ class Agent(MCPServer):
                     # Preserve usage data from final chunk
                     if "usage" in chunk:
                         final_usage = chunk["usage"]
+                    if chunk.get("finish_reason"):
+                        final_finish_reason = chunk["finish_reason"]
 
             # Yield any remaining status events after streaming completes
             for status_event in yield_pending_status_fn():
                 yield status_event
+
+            # The streaming assembler builds its assistant dict itself and
+            # never produces the "error" key that _format_response sets in the
+            # non-streaming path -- so the fallback-profile switch below was
+            # unreachable while streaming. Two finish reasons mean the same
+            # thing there as they do in _format_response: this model will not
+            # deliver, move on instead of nudging it with "Continue".
+            if final_assistant is not None and "error" not in final_assistant:
+                _model = getattr(llm, "model", "?")
+                if final_finish_reason == "content_filter" and not final_assistant.get(
+                    "tool_calls"
+                ):
+                    # Deterministic per content -- retrying the same model is
+                    # pointless, which is exactly what the fallback chain is for.
+                    # The tool_calls guard mirrors _format_response exactly:
+                    # Gemini reports a non-standard finish_reason while STILL
+                    # returning usable tool calls, and erroring there would
+                    # throw away a perfectly good turn.
+                    final_assistant["error"] = {
+                        "message": (f"Provider content filter blocked the streamed "
+                                    f"response (model={_model})"),
+                        "type": "content_filter",
+                    }
+                elif final_finish_reason == "incomplete_stream":
+                    # Deliberately NOT an error, not even when empty. An error
+                    # here switches the fallback profile PERSISTENTLY (an hour)
+                    # -- and for an agent with no fallback chain it ends the run
+                    # outright, where the existing empty-response guard would
+                    # simply have retried. Far too heavy a hammer for what is
+                    # usually a transient network hiccup. Say it and move on.
+                    logger.warning(
+                        "[%s] Stream ended without a [DONE] marker; the answer may be "
+                        "truncated (model=%s, chars=%d, tool_calls=%d)",
+                        self.name, _model, len(final_assistant.get("content") or ""),
+                        len(final_assistant.get("tool_calls") or []),
+                    )
 
             # Yield final response with usage data
             if final_assistant:
                 result = {"type": "thinking_complete", "step": step + 1, "assistant": final_assistant}
                 if final_usage:
                     result["usage"] = final_usage
+                # Without carrying it here the truncation guard below never
+                # sees a "length" and silently accepts a cut-off answer.
+                # NOTE: only httpx and the gemini clients report finish_reason
+                # at all -- anthropic, ollama and openai_responses never set it,
+                # so the guard stays inactive for those providers.
+                if final_finish_reason:
+                    result["finish_reason"] = final_finish_reason
                 yield result
             else:
                 yield {"type": "thinking_complete", "step": step + 1, "assistant": {"role": "assistant", "content": "".join(accumulated_content)}}
@@ -1730,6 +1778,8 @@ class Agent(MCPServer):
             # Preserve usage data if present
             if "usage" in llm_out:
                 result["usage"] = llm_out["usage"]
+            if llm_out.get("finish_reason"):
+                result["finish_reason"] = llm_out["finish_reason"]
             yield result
 
     async def _execute_llm_loop(
@@ -2027,6 +2077,10 @@ class Agent(MCPServer):
                             # Preserve usage data if present in event
                             if "usage" in event:
                                 llm_out["usage"] = event["usage"]
+                            # ...and finish_reason, which the truncation guard
+                            # below reads off llm_out.
+                            if event.get("finish_reason"):
+                                llm_out["finish_reason"] = event["finish_reason"]
                             # Store event — DON'T yield yet, check for upstream errors first
                             pending_thinking_complete = event
 

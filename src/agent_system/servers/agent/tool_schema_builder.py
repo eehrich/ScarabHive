@@ -424,6 +424,7 @@ class ToolSchemaBuilder:
                 continue
 
             # Try modern multi-tool interface first (list_tools)
+            added_tools: List[str] = []
             if hasattr(server, 'list_tools'):
                 added_tools = await self._build_from_list_tools(
                     server,
@@ -432,8 +433,10 @@ class ToolSchemaBuilder:
                     tool_name_mapping
                 )
                 internal_tools_to_add.extend(added_tools)
-            # Fallback to get_tools()
-            elif hasattr(server, 'get_tools'):
+            # Fallback to get_tools() -- ALSO when list_tools() existed but
+            # produced nothing: a broken/raising list_tools used to lose the
+            # server from the LLM schema entirely, silently.
+            if not added_tools and hasattr(server, 'get_tools'):
                 added_tools = await self._build_from_get_tools(
                     server,
                     tool_name,

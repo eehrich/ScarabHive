@@ -37,18 +37,21 @@ class PluginMCPAdapter(MCPServer):
 
         tools = []
 
-        # If the plugin_server is already an MCPServer with list_tools(), delegate to it
-        # (Agent.list_tools() now applies custom self_tool_descriptions automatically)
-        if hasattr(self.plugin_server, 'list_tools') and hasattr(self.plugin_server.__class__, '__bases__'):
-            # Check if it inherits from MCPServer (not just has the method)
-            from ..mcp.base import MCPServer
-            if any(issubclass(base, MCPServer) for base in self.plugin_server.__class__.__bases__):
-                try:
-                    tools = await self.plugin_server.list_tools()
-                    self._tools_cache = tools
-                    return tools
-                except (NotImplementedError, AttributeError):
-                    pass
+        # If the plugin_server offers list_tools(), delegate to it. Duck-typed
+        # on purpose: the old check additionally required MCPServer among the
+        # DIRECT bases, which a hybrid wrapper (plain class delegating
+        # list_tools to its inner server, e.g. SubAgentManagerHybridPlugin)
+        # never satisfies -- the adapter then fell through all fallbacks and
+        # FABRICATED a single tool named like the server. TypeError joins the
+        # excused set so a sync list_tools() drops through to get_tools()
+        # instead of erroring out.
+        if hasattr(self.plugin_server, 'list_tools'):
+            try:
+                tools = await self.plugin_server.list_tools()
+                self._tools_cache = tools
+                return tools
+            except (NotImplementedError, AttributeError, TypeError):
+                pass
 
         # Handle plugins with get_tools() method (OpenAI function format)
         if hasattr(self.plugin_server, 'get_tools'):

@@ -1880,6 +1880,11 @@ class HTTPXOpenAIClient(LLMClient):
                         # Stream ended without [DONE] - yield final result anyway
                         # This can happen with some API implementations
                         logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
+                        # ...but say so. Without a marker we cannot tell a
+                        # complete answer from one cut off mid-generation, and
+                        # accepting the latter as final is silent truncation.
+                        if not _last_finish_reason:
+                            _last_finish_reason = "incomplete_stream"
                         assistant: dict[str, Any] = {
                             "role": "assistant",
                             "content": "".join(accumulated_content) if accumulated_content else ""
@@ -1897,6 +1902,8 @@ class HTTPXOpenAIClient(LLMClient):
                         final_result = {"assistant": assistant}
                         if accumulated_usage:
                             final_result["usage"] = accumulated_usage
+                        if _last_finish_reason:
+                            final_result["finish_reason"] = _last_finish_reason
                         _s_duration = (_time.time() - _streaming_request_start) * 1000
                         await self._notify_post_response({
                             "provider": "openai_httpx", "model": self.model,

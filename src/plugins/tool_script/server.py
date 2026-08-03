@@ -419,8 +419,23 @@ class ToolScriptServer(SchemaBasedMCPServer):
 
     @staticmethod
     def _find_tool_schema(agent: Any, tool_name: str) -> Optional[Dict[str, Any]]:
-        """The target tool's parameters schema, via the agent's resolution."""
+        """The target tool's parameters schema, via the agent's resolution.
+
+        Primary source is the agent's LIVE tool schema -- the exact list the
+        LLM runs with, request-scoped, sync to read, and covering every tool
+        interface. The old get_tools()-only lookup returned None for hybrid
+        plugins (all sub_agent_manager instances), which silently skipped the
+        jsonschema validation for exactly those calls.
+        """
         try:
+            live_schema = getattr(agent, "_current_tools_schema", None) or []
+            for tool in live_schema:
+                fn = (tool.get("function") or {}) if isinstance(tool, dict) else {}
+                if fn.get("name") == tool_name:
+                    return fn.get("parameters") or None
+
+            # Fallback for tools outside the live schema (e.g. internal-only
+            # dispatch targets): the legacy per-server lookup.
             resolver = getattr(agent, "_resolve_flat_tool_name", None)
             if resolver is None:
                 return None

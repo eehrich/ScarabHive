@@ -140,8 +140,15 @@ class TestBasicAgentServer:
         system_config.llm_system.profiles = {"normal": Mock(model_ref="gpt-5-nano")}
         system_config.llm_system.models = {"gpt-5-nano": Mock(provider="openai", model="gpt-5-nano")}
         
-        # Create MCP config
-        agent_config = AgentConfig(llm_profile="normal")
+        # Create MCP config. tools.allowed is EXPLICIT: an agent without it is
+        # deny-all in the LLM schema (tool_discovery), and the detail listing
+        # follows the same pipeline now -- it used to silently mean allow-all
+        # here, reporting tools the model never had.
+        from agent_system.config.models import ToolConfig
+        agent_config = AgentConfig(
+            llm_profile="normal",
+            tools=ToolConfig(allowed=["datetime/*", "script_interpreter/*", "weather/*"]),
+        )
         mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
@@ -169,7 +176,10 @@ class TestBasicAgentServer:
 
     @pytest.mark.asyncio
     async def test_list_available_tools_success(self):
-        """Test successful listing of available tools."""
+        """The listing follows the SAME pipeline as the LLM schema. The mock
+        servers here are MagicMocks whose auto-generated list_tools cannot be
+        awaited -- the builder's get_tools fallback has to rescue them, which
+        doubles as a regression test for that fallback."""
         params = {}
         
         result = await self.agent._list_usable_tools_with_details(params)
