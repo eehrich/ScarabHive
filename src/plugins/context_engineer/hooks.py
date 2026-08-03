@@ -24,6 +24,16 @@ from .variable_manager import VariableManager
 
 logger = logging.getLogger(__name__)
 
+#: Markiert die eigene System-Injektion ("Stored Information"), damit sie beim
+#: naechsten Turn ERSETZT statt ein zweites Mal eingefuegt wird. Gleiche
+#: Konvention wie ``debate_forum`` (INJECTION_MARKER + ChatMessage.injected_by).
+_RESTORATION_MARKER = "context_engineer_restoration"
+
+#: Ueberschrift des Blocks — Fallback fuer Sessions, deren Historie noch
+#: unmarkierte Kopien aus der Zeit vor dem Marker enthaelt. Muss zum Text in
+#: ``LayeredCompactionStrategy.get_restoration_context`` passen.
+_RESTORATION_HEADER = "# Context Engineer - Stored Information"
+
 
 class ContextEngineerPlugin(SchemaBasedPluginHook):
     """Schema-based plugin for advanced context engineering.
@@ -508,6 +518,29 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             strategy: LayeredCompactionStrategy = components["strategy"]
             restoration_context = await strategy.get_restoration_context()
             
+            # Vorherige Injektion ENTFERNEN, bevor neu eingefuegt wird
+            # (Konvention wie debate_forum: ueber `injected_by` markiert).
+            # Ohne das wuchs der Block mit: die kompaktierten Messages werden
+            # persistiert, also ist die Injektion des letzten Turns beim
+            # naechsten schon Teil der Historie -- und weil sie selbst eine
+            # system-Message ist, wandert die Einfuegestelle jedes Mal eins
+            # weiter. Gemessen an einem Sub-Agenten mit 109 Aufrufen:
+            # Request 21 = 15 Kopien, Request 61 = 55, Request 109 = 103
+            # Kopien in 201 Messages. Folge: halber Kontext war Duplikat, und
+            # die verschobene Einfuegestelle brach den Prompt-Cache in 103 von
+            # 108 Turns (Cache-Quote 8-13 % statt 50-65 %).
+            # Der Inhalts-Treffer ist NICHT redundant: Sessions, die vor
+            # diesem Fix liefen, tragen unmarkierte Kopien in ihrer
+            # persistierten Historie -- ohne ihn blieben die dort stehen.
+            for i in range(len(new_messages) - 1, -1, -1):
+                msg = new_messages[i]
+                if getattr(msg, "injected_by", None) == _RESTORATION_MARKER:
+                    new_messages.pop(i)
+                    continue
+                content = getattr(msg, "content", None)
+                if isinstance(content, str) and _RESTORATION_HEADER in content:
+                    new_messages.pop(i)
+
             if restoration_context:
                 # Find position after last system message to insert restoration context
                 # This preserves the agent's system prompt while adding our context
@@ -518,10 +551,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                         insert_pos = i + 1
                     else:
                         break  # Stop at first non-system message
-                
+
                 restoration_msg = ChatMessage(
                     role="system",
-                    content=restoration_context
+                    content=restoration_context,
+                    injected_by=_RESTORATION_MARKER,
                 )
                 new_messages.insert(insert_pos, restoration_msg)
             

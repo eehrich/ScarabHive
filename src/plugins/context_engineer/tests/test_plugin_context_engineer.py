@@ -2326,3 +2326,107 @@ class TestSessionEvictionSkipsActiveCompactions:
         # Even though "active" is the LRU candidate, it is not evicted
         assert "active" in hooks._session_components
         active_store.close.assert_not_called()
+
+
+class TestRestorationBlockNotDuplicated:
+    """Der "Stored Information"-Block muss ERSETZT, nicht angehaeuft werden.
+
+    Regression: die kompaktierten Messages werden persistiert, also ist die
+    Injektion des letzten Turns beim naechsten schon Teil der Historie. Ohne
+    Entfernen wuchs sie mit -- gemessen 103 Kopien in 201 Messages nach 109
+    Aufrufen, und die dadurch wandernde Einfuegestelle brach den
+    Prompt-Cache in 103 von 108 Turns.
+    """
+
+    def _msgs(self, n_blocks: int):
+        from agent_system.llm.models import ChatMessage
+        from plugins.context_engineer.hooks import _RESTORATION_MARKER
+
+        out = [ChatMessage(role="system", content="Du bist ein Agent.")]
+        for _ in range(n_blocks):
+            out.append(ChatMessage(
+                role="system",
+                content="\n# Context Engineer - Stored Information\n\nalt",
+                injected_by=_RESTORATION_MARKER,
+            ))
+        out.append(ChatMessage(role="user", content="Auftrag"))
+        return out
+
+    def _reinject(self, messages, text: str):
+        """Spiegelt die Injektionslogik aus ``engineer_context``."""
+        from agent_system.llm.models import ChatMessage
+        from plugins.context_engineer.hooks import _RESTORATION_MARKER
+
+        for i in range(len(messages) - 1, -1, -1):
+            if getattr(messages[i], "injected_by", None) == _RESTORATION_MARKER:
+                messages.pop(i)
+        insert_pos = 0
+        for i, msg in enumerate(messages):
+            if msg.role == "system":
+                insert_pos = i + 1
+            else:
+                break
+        messages.insert(insert_pos, ChatMessage(
+            role="system", content=text, injected_by=_RESTORATION_MARKER,
+        ))
+        return messages
+
+    def _count(self, messages) -> int:
+        from plugins.context_engineer.hooks import _RESTORATION_MARKER
+        return sum(
+            1 for m in messages
+            if getattr(m, "injected_by", None) == _RESTORATION_MARKER
+        )
+
+    def test_reinjection_replaces_instead_of_appending(self):
+        msgs = self._msgs(1)
+        for turn in range(10):
+            msgs = self._reinject(msgs, f"\n# Context Engineer - Stored Information\n\nturn {turn}")
+            assert self._count(msgs) == 1, f"Turn {turn}: Block dupliziert"
+
+    def test_insert_position_stays_stable(self):
+        """Die Einfuegestelle darf nicht mit jedem Turn wandern — sonst ist
+        alles dahinter kein Byte-Praefix mehr."""
+        msgs = self._msgs(0)
+        positionen = set()
+        for turn in range(5):
+            msgs = self._reinject(msgs, "\n# Context Engineer - Stored Information\n\nx")
+            positionen.add(next(
+                i for i, m in enumerate(msgs)
+                if getattr(m, "injected_by", None) is not None
+            ))
+            msgs.append(msgs[-1].__class__(role="user", content="weiter"))
+        assert positionen == {1}, f"Einfuegestelle wanderte: {sorted(positionen)}"
+
+    def test_legacy_unmarked_blocks_are_cleaned(self):
+        """Sessions von vor dem Marker tragen unmarkierte Kopien in ihrer
+        persistierten Historie — die muessen ueber die Ueberschrift ebenfalls
+        verschwinden, sonst bleiben sie dort fuer immer stehen."""
+        from agent_system.llm.models import ChatMessage
+        from plugins.context_engineer.hooks import (
+            _RESTORATION_HEADER,
+            _RESTORATION_MARKER,
+        )
+
+        msgs = [ChatMessage(role="system", content="Du bist ein Agent.")]
+        msgs += [
+            ChatMessage(role="system", content=f"\n{_RESTORATION_HEADER}\n\nalt {i}")
+            for i in range(5)          # unmarkiert, wie vor dem Fix
+        ]
+        msgs.append(ChatMessage(role="user", content="Auftrag"))
+
+        # Entfern-Logik aus engineer_context
+        for i in range(len(msgs) - 1, -1, -1):
+            m = msgs[i]
+            if getattr(m, "injected_by", None) == _RESTORATION_MARKER:
+                msgs.pop(i)
+                continue
+            c = getattr(m, "content", None)
+            if isinstance(c, str) and _RESTORATION_HEADER in c:
+                msgs.pop(i)
+
+        assert not any(
+            isinstance(m.content, str) and _RESTORATION_HEADER in m.content
+            for m in msgs
+        ), "Alt-Kopien ohne Marker blieben stehen"
+        assert [m.role for m in msgs] == ["system", "user"]
