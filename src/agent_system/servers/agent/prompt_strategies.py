@@ -306,9 +306,18 @@ class PromptRenderer:
                     )
                 continue
             try:
-                rendered = render_prompts(
-                    skill.entry, context_vals, auto_datetime=False
-                ).get("system_prompt", "").strip()
+                if skill.templated:
+                    # Legacy manifest layout: a prompt template, so {% include %}
+                    # and shared variables keep working.
+                    rendered = render_prompts(
+                        skill.entry, context_vals, auto_datetime=False
+                    ).get("system_prompt", "").strip()
+                else:
+                    # Agent Skills standard: the body is instructions, not a
+                    # template. Rendering it would strip the frontmatter's
+                    # meaning AND silently blank any literal {{ ... }} the
+                    # author wrote, because unknown variables render empty.
+                    rendered = skill.body().strip()
             except Exception as e:  # noqa: BLE001 - a broken skill must not kill the run
                 logger.error(
                     "Agent %s: skill '%s' failed to render (%s) — skipped",

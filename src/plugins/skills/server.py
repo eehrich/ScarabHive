@@ -15,7 +15,7 @@ from typing import Any, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.skills import get_skill_registry
-from agent_system.skills.registry import DEFAULT_ENTRY
+from agent_system.skills.registry import DEFAULT_ENTRY, TEXT_ENCODING
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
@@ -124,7 +124,15 @@ class SkillsServer(SchemaBasedMCPServer):
             return {"status": "error", "error": str(e), "files": skill.list_files()}
 
         try:
-            content = target.read_text(encoding="utf-8")
+            if not rel:
+                # The entry: hand over the instructions, not the YAML header.
+                # The frontmatter is plumbing for discovery -- the agent already
+                # has name and description from the index.
+                content = skill.body()
+            else:
+                # utf-8-sig: a bundled reference saved with a BOM would
+                # otherwise start with a stray '﻿' in the agent's context.
+                content = target.read_text(encoding=TEXT_ENCODING)
         except (OSError, UnicodeDecodeError) as e:
             await status.error(f"Cannot read '{rel or target.name}': {e}")
             return {"status": "error",

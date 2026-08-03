@@ -692,8 +692,10 @@ class SkillsSystemConfig(BaseModel):
     subdirectories may be a skill. Relative paths resolve like plugin dirs
     (config-folder first, then repo root). The first root defining a name wins.
 
-    Empty means "use the default" (``skills/``, or ``$AGENT_SKILL_DIRS``), so an
-    existing config without this block keeps working.
+    Empty means "use the defaults" (``skills/`` and ``.claude/skills/``, or
+    ``$AGENT_SKILL_DIRS``), so an existing config without this block keeps
+    working. Note the inverse: a config that DOES list roots replaces the
+    defaults entirely — listing only ``skills`` hides ``.claude/skills``.
     """
 
     skill_dirs: List[str] = Field(default_factory=list)

@@ -57,11 +57,15 @@ default_agent: chat_agent
 # root that carries a skill.toml is one skill. The first root defining a name
 # wins. Relative paths resolve config-folder-first, then repo root.
 # Which skills an agent actually gets is set per agent (agent_config.skills).
-# Omit or leave empty to use the default ("skills"); $AGENT_SKILL_DIRS overrides
-# the default too.
+# Omit or leave empty to use the defaults ("skills" and ".claude/skills");
+# $AGENT_SKILL_DIRS overrides the defaults too.
 skills:
   skill_dirs:
     - skills
+    # Where the ecosystem drops project-local skills (Claude Code, Codex,
+    # Cursor ...). Listed second, so our own names win a collision. Being
+    # discovered puts nothing into a prompt -- only an agent's skills: block does.
+    - .claude/skills
 
 # Multi-user authentication and authorization (optional)
 auth:

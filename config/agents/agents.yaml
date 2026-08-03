@@ -1,0 +1,104 @@
+# simple chat agent
+plugins:
+  servers:
+
+    # base class agent for multipl uses
+    multi_turn_agent:
+      type: basic_agent
+      enabled: true
+      description: "Agent for tool usage"
+      
+      agent_config:
+        max_steps: 100
+
+        llm_params:
+          "*":
+            context_window: 200000
+            prompt_cache_mode: multi_turn
+
+        tools:
+          allowed:
+            - "+context_engineer/*"
+            
+        hooks:
+          enabled: true
+          overrides:
+            context_engineer.engineer_context:
+              enabled: true      
+
+      metadata:
+        visibility: "tool"
+        tags:
+          - multi_turn
+
+
+    # generic agent that use skills
+
+    skills_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "Sub-Agent-Manager for skills agent"
+      max_nesting_depth: 5
+      max_sub_agents_per_type: 5
+      max_sub_agents_per_session: 20
+      default_wait_timeout: 7200
+      auto_archive_on_limit: true
+      allowed_agents:
+        - "skills_agent"    # fork self
+
+    skills_agent:
+      type: multi_turn_agent
+      enabled: true
+      description: "Agent that uses skills"
+
+      agent_config:
+        tools:
+          allowed:
+            - "+skills/*"
+            - "+skills_sam/*"
+            - "+terminal/*"
+            - "+datetime/*"
+            - "+basic_operations/*"
+            - "+todo/*"
+            - "+tool_script"
+            - "+tavily_search/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+
+        system_prompt: |
+          You are a skills agent. You have access to a set of skills that you can use to answer questions and solve problems. You can use the skills to read reference material
+
+      metadata:
+        visibility: "both"
+        tags:
+          - skills
+
+
+
+    # simple chat agent
+    chat_agent:
+      type: basic_agent
+      enabled: true
+      description: "Simple chat agent"
+      
+      agent_config:
+        llm_profile: [chat]
+        llm_profile_advanced: []
+        max_steps: 30
+                
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+      
+      metadata:
+        visibility: "both"
+        tags:
+          - chat
+          - simple
+          - assistant

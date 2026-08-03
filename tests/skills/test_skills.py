@@ -5,6 +5,8 @@ properties that matter operationally: deterministic order (prompt-cache
 stability), loud failure on a missing skill, and a broken skill never taking
 the run down.
 """
+import logging
+
 import pytest
 
 from agent_system.config.models import AgentConfig, AgentSystemConfig, SkillsConfig
@@ -109,7 +111,7 @@ class TestDiscovery:
 
     def test_env_var_overrides_default_dirs(self, monkeypatch):
         monkeypatch.delenv("AGENT_SKILL_DIRS", raising=False)
-        assert default_skill_dirs() == ("skills",)
+        assert default_skill_dirs() == ("skills", ".claude/skills")
         import os
         monkeypatch.setenv("AGENT_SKILL_DIRS", f"one{os.pathsep}two")
         assert default_skill_dirs() == ("one", "two")
@@ -334,3 +336,232 @@ class TestPromptMerge:
         _write_skill(skill_root, "broken", '{% include "nope-missing.md" %}')
         out = self._render(monkeypatch, skill_root, ["alpha", "broken"])
         assert "BASE-PROMPT" in out and "ALPHA-BODY" in out
+
+
+# ---------------------------------------------------------------------------
+# Agent Skills standard (https://agentskills.io/specification)
+# ---------------------------------------------------------------------------
+
+def _write_standard_skill(root, name, frontmatter, body="# Body\n\nInstructions.\n"):
+    """A skill in the PORTABLE layout: frontmatter in SKILL.md, no manifest."""
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(f"---\n{frontmatter}\n---\n\n{body}", encoding="utf-8")
+    return d
+
+
+class TestAgentSkillsStandard:
+    """A skill written for Claude Code / Codex / Cursor must load here as-is."""
+
+    def test_frontmatter_skill_is_discovered(self, skill_root):
+        _write_standard_skill(
+            skill_root, "pdf-processing",
+            "name: pdf-processing\ndescription: Extract PDF text. Use for PDFs.")
+        reg = SkillRegistry()
+        reg.discover([str(skill_root)])
+
+        skill = reg.get("pdf-processing")
+        assert skill is not None
+        assert skill.description == "Extract PDF text. Use for PDFs."
+        assert skill.templated is False        # standard bodies are verbatim
+
+    def test_no_manifest_needed(self, skill_root):
+        d = _write_standard_skill(skill_root, "solo", "name: solo\ndescription: d")
+        assert not (d / "skill.toml").exists()
+        reg = SkillRegistry()
+        reg.discover([str(skill_root)])
+        assert reg.names() == ["solo"]
+
+    def test_frontmatter_is_stripped_from_the_body(self, skill_root):
+        _write_standard_skill(skill_root, "clean", "name: clean\ndescription: d",
+                              body="# Title\n\nReal content.\n")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        body = reg.get("clean").body()
+        assert "name: clean" not in body       # the YAML header is plumbing
+        assert "Real content." in body
+
+    def test_all_optional_spec_fields_are_read(self, skill_root):
+        _write_standard_skill(skill_root, "full", "\n".join([
+            "name: full",
+            "description: Does things",
+            "license: Apache-2.0",
+            "compatibility: Requires git and jq",
+            "allowed-tools: Bash(git:*) Read",
+            "metadata:",
+            "  author: example-org",
+            "  version: '2.1'",
+        ]))
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        s = reg.get("full")
+        assert s.license == "Apache-2.0"
+        assert s.compatibility == "Requires git and jq"
+        assert s.allowed_tools == ("Bash(git:*)", "Read")
+        assert s.metadata["author"] == "example-org"
+        assert s.version == "2.1"              # version lives in metadata per spec
+
+    def test_unenforced_allowed_tools_is_reported(self, skill_root, caplog):
+        """We have no per-skill tool gating. Dropping a declared RESTRICTION
+        silently would widen it — the skill must at least say so out loud."""
+        _write_standard_skill(skill_root, "gated",
+                              "name: gated\ndescription: d\nallowed-tools: Read Grep")
+        with caplog.at_level(logging.WARNING, logger="agent_system.skills.registry"):
+            reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.get("gated").allowed_tools == ("Read", "Grep")
+        assert any("allowed-tools" in r.getMessage() for r in caplog.records)
+
+    def test_missing_description_falls_back_to_first_paragraph(self, skill_root):
+        """Without ANY description an on-demand skill is invisible -- the index
+        line is all the agent ever sees of it."""
+        _write_standard_skill(skill_root, "terse", "name: terse",
+                              body="# Heading\n\nWhat it actually does.\n\nMore.\n")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.get("terse").description == "What it actually does."
+
+    def test_bundled_dirs_of_the_spec_are_reachable(self, skill_root):
+        """The spec names references/, scripts/ and assets/."""
+        d = _write_standard_skill(skill_root, "bundled", "name: bundled\ndescription: d")
+        for sub, fname in (("references", "REFERENCE.md"), ("scripts", "run.py"),
+                           ("assets", "template.txt")):
+            (d / sub).mkdir()
+            (d / sub / fname).write_text("x", encoding="utf-8")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        s = reg.get("bundled")
+        files = s.list_files()
+        assert "references/REFERENCE.md" in files
+        assert "scripts/run.py" in files
+        assert "assets/template.txt" in files
+        assert s.resolve("references/REFERENCE.md").is_file()
+
+    def test_a_bom_does_not_hide_the_skill(self, skill_root):
+        """Windows editors save a BOM. Decoded as plain utf-8 the '﻿' sits
+        in front of the opening '---', the frontmatter goes undetected, and the
+        skill disappears from discovery — the exact opposite of portable."""
+        d = skill_root / "bom-skill"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_bytes(
+            "﻿---\nname: bom-skill\ndescription: Saved on Windows.\n---\n\nBody.\n"
+            .encode("utf-8"))
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+
+        skill = reg.get("bom-skill")
+        assert skill is not None
+        assert skill.description == "Saved on Windows."
+        assert not skill.body().startswith("﻿")   # nor may it leak into the prompt
+
+    def test_skill_stays_hashable(self, skill_root):
+        """``Skill`` is a frozen dataclass, so it carries a generated __hash__;
+        the metadata dict must not turn every hash() into a TypeError."""
+        _write_standard_skill(skill_root, "hashable",
+                              "name: hashable\ndescription: d\nmetadata:\n  author: x")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        skill = reg.get("hashable")
+        assert skill.metadata["author"] == "x"
+        assert len({skill, skill}) == 1
+
+    def test_project_local_claude_skills_are_scanned(self, tmp_path, monkeypatch):
+        """A skill dropped into .claude/skills — where the ecosystem puts them —
+        must be found without any config."""
+        monkeypatch.delenv("AGENT_SKILL_DIRS", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _write_standard_skill(tmp_path / ".claude" / "skills", "foreign",
+                              "name: foreign\ndescription: From another tool.")
+        reg = SkillRegistry(); reg.discover(default_skill_dirs())
+        assert reg.names() == ["foreign"]
+
+    def test_own_skills_win_a_name_collision(self, tmp_path, monkeypatch):
+        """``skills/`` is listed first, so a downloaded skill cannot shadow ours."""
+        monkeypatch.delenv("AGENT_SKILL_DIRS", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _write_standard_skill(tmp_path / "skills", "shared", "name: shared\ndescription: OURS")
+        _write_standard_skill(tmp_path / ".claude" / "skills", "shared",
+                              "name: shared\ndescription: THEIRS")
+        reg = SkillRegistry(); reg.discover(default_skill_dirs())
+        assert reg.get("shared").description == "OURS"
+
+
+class TestSpecValidation:
+    """Lenient by design: the point is to LOAD a foreign skill, not grade it."""
+
+    @pytest.mark.parametrize("bad", ["PDF-Processing", "-lead", "trail-",
+                                     "double--hyphen", "x" * 65])
+    def test_invalid_names_fall_back_to_the_directory(self, skill_root, bad):
+        _write_standard_skill(skill_root, "dirname", f"name: {bad}\ndescription: d")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.names() == ["dirname"]       # loaded, not rejected
+
+    def test_name_mismatch_is_tolerated(self, skill_root):
+        """The spec wants name == directory, but a mismatch must not cost the
+        skill -- foreign bundles get renamed on download all the time."""
+        _write_standard_skill(skill_root, "on-disk", "name: declared\ndescription: d")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.names() == ["declared"]
+
+    def test_overlong_description_is_truncated_not_dropped(self, skill_root):
+        _write_standard_skill(skill_root, "wordy",
+                              f"name: wordy\ndescription: {'x' * 2000}")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert len(reg.get("wordy").description) == 1024
+
+    def test_broken_yaml_keeps_the_body(self, skill_root):
+        """A malformed header must not swallow the instructions."""
+        d = skill_root / "broken"; d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: [unclosed\n---\n\nThe content.\n",
+                                    encoding="utf-8")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        # No frontmatter and no manifest -> not a skill, but nothing raised
+        assert reg.names() == []
+
+    def test_a_bad_skill_does_not_hide_the_others(self, skill_root):
+        (skill_root / "junk").mkdir(parents=True)
+        (skill_root / "junk" / "README.md").write_text("no skill here", encoding="utf-8")
+        _write_standard_skill(skill_root, "good", "name: good\ndescription: d")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.names() == ["good"]
+
+
+class TestBothFormatsCoexist:
+    def test_legacy_and_standard_side_by_side(self, skill_root):
+        _write_skill(skill_root, "legacy-one", "Legacy body")
+        _write_standard_skill(skill_root, "standard-one",
+                              "name: standard-one\ndescription: d")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.names() == ["legacy-one", "standard-one"]
+        assert reg.get("legacy-one").templated is True
+        assert reg.get("standard-one").templated is False
+
+    def test_frontmatter_wins_over_a_stale_manifest(self, skill_root):
+        d = _write_standard_skill(skill_root, "both",
+                                  "name: both\ndescription: from frontmatter")
+        (d / "skill.toml").write_text(
+            '[skill]\nname = "both"\ndescription = "from manifest"\n', encoding="utf-8")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.get("both").description == "from frontmatter"
+
+
+class TestForeignBodyIsNotTemplated:
+    """Our Jinja environment renders unknown variables as EMPTY. Treating a
+    foreign body as a template would silently delete text -- worse than an
+    error, because nothing reports it."""
+
+    def test_double_braces_survive_in_a_standard_skill(self, skill_root, tmp_path):
+        _write_standard_skill(
+            skill_root, "templating-doc",
+            "name: templating-doc\ndescription: d",
+            body="Use {{ variable_name }} in your template.\n")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert "{{ variable_name }}" in reg.get("templating-doc").body()
+
+    def test_prompt_merge_keeps_the_literal_braces(self, skill_root, monkeypatch):
+        """End to end: what lands in the system prompt still has the braces."""
+        skill_root.mkdir(parents=True, exist_ok=True)
+        _write_standard_skill(
+            skill_root, "braces", "name: braces\ndescription: d",
+            body="Literal {{ not_a_variable }} here.\n")
+        reg = SkillRegistry()
+        monkeypatch.setattr(
+            "agent_system.skills.get_skill_registry", lambda *a, **k: reg
+        )
+        cfg = AgentConfig(system_prompt="BASE", skills={"always": ["braces"]})
+        out = PromptRenderer().render(_context(cfg, [skill_root]))[0]
+        assert "{{ not_a_variable }}" in out
+        assert "name: braces" not in out       # frontmatter stays out too

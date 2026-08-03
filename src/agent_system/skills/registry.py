@@ -1,23 +1,43 @@
 """Discovery and lookup of skills.
 
-A skill directory looks like::
+Two layouts are read, and the layout decides the contract.
+
+**Agent Skills standard** (https://agentskills.io) -- the portable one::
+
+    skills/
+    └── my-skill/
+        ├── SKILL.md        # YAML frontmatter (name, description) + markdown
+        ├── references/     # optional: docs loaded on demand
+        ├── scripts/        # optional: executable code
+        └── assets/         # optional: templates, data
+
+Skills in this layout work unchanged in Claude Code, Codex, Cursor, Copilot,
+Gemini CLI and the rest of the ecosystem -- and theirs work here. Their body is
+used VERBATIM: the standard says nothing about templating, and our Jinja
+environment renders unknown variables as empty, so treating a foreign ``{{ }}``
+as a template would silently delete text.
+
+**Legacy manifest** -- ours, still supported so existing skills keep working::
 
     skills/
     └── my-skill/
         ├── skill.toml      # manifest, mirrors plugin.toml
-        └── SKILL.md        # the knowledge (markdown, Jinja2-rendered)
+        └── SKILL.md        # markdown, Jinja2-rendered ({% include %} works)
 
-Deliberately dependency-light: stdlib ``tomllib`` only, same as
-``plugins.plugin_manifest``.
+Frontmatter wins when both are present. Dependency-light: stdlib ``tomllib``
+plus ``yaml``, which the config layer already requires.
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import yaml
 
 try:  # pragma: no cover - trivial import guard
     import tomllib  # Python >=3.11 stdlib
@@ -27,7 +47,12 @@ except ModuleNotFoundError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 #: Default roots scanned for skills, relative to the working directory.
-DEFAULT_SKILL_DIRS: tuple[str, ...] = ("skills",)
+#: ``.claude/skills`` is where the ecosystem puts project-local skills (Claude
+#: Code, Codex, Cursor …) — scanning it is what makes a downloaded skill usable
+#: without any config. ``skills`` comes first, so our own names win a collision.
+#: Discovery alone injects nothing: a skill only reaches a prompt when an agent
+#: config names it under ``always``/``on_demand``.
+DEFAULT_SKILL_DIRS: tuple[str, ...] = ("skills", ".claude/skills")
 
 #: Operator override, os.pathsep-separated (e.g. "skills:/opt/team-skills").
 #: Keeps skill locations configurable without a config-schema change.
@@ -44,6 +69,42 @@ def default_skill_dirs() -> tuple[str, ...]:
 MANIFEST_NAME = "skill.toml"
 DEFAULT_ENTRY = "SKILL.md"
 
+#: Skill files are decoded with ``utf-8-sig``, not ``utf-8``: editors on Windows
+#: happily save a BOM, and a leading ``﻿`` would push the ``---`` off the
+#: first column — the frontmatter would go undetected and the skill would vanish
+#: from discovery entirely. ``utf-8-sig`` strips a BOM if present and is plain
+#: utf-8 otherwise.
+TEXT_ENCODING = "utf-8-sig"
+
+#: Frontmatter delimiters per the Agent Skills spec: the file OPENS with ``---``.
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?", re.DOTALL)
+
+#: Spec: 1-64 chars, lowercase alphanumeric + hyphens, no leading/trailing
+#: hyphen, no consecutive hyphens.
+_VALID_NAME_RE = re.compile(r"\A[a-z0-9]+(-[a-z0-9]+)*\Z")
+
+MAX_NAME_LEN = 64
+MAX_DESCRIPTION_LEN = 1024
+MAX_COMPATIBILITY_LEN = 500
+
+
+def split_frontmatter(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """``(frontmatter, body)``; ``(None, text)`` when there is no frontmatter.
+
+    The body is returned without the frontmatter block -- otherwise the raw
+    ``---name: …---`` header would be pasted into the system prompt.
+    """
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return None, text
+    try:
+        data = yaml.safe_load(match.group(1))
+    except Exception:  # noqa: BLE001 - a broken header must not lose the body
+        return None, text
+    if not isinstance(data, dict):
+        return None, text
+    return data, text[match.end():]
+
 
 @dataclass(frozen=True)
 class Skill:
@@ -55,11 +116,29 @@ class Skill:
     version: str = "0.0.0"
     description: str = ""
     tags: tuple[str, ...] = ()
+    #: Agent Skills spec fields (empty when the skill does not declare them).
+    license: str = ""
+    compatibility: str = ""
+    #: hash=False because a dict is unhashable and this dataclass is frozen:
+    #: without it every ``hash(skill)`` would raise. Still compared, so equal
+    #: skills keep equal hashes.
+    metadata: Mapping[str, str] = field(default_factory=dict, hash=False)
+    #: Declared by the skill, NOT enforced here — see the warning at discovery.
+    allowed_tools: tuple[str, ...] = ()
+    #: True only for the legacy manifest layout. Standard skills are used
+    #: verbatim -- see the module docstring for why.
+    templated: bool = False
 
     @property
     def entry(self) -> str:
         """Body path as a string (what the prompt renderer wants)."""
         return str(self.entry_path)
+
+    def body(self) -> str:
+        """The instructions, with any frontmatter stripped."""
+        text = self.entry_path.read_text(encoding=TEXT_ENCODING)
+        _front, body = split_frontmatter(text)
+        return body
 
     def resolve(self, relative_path: str) -> Path:
         """Absolute path of a bundled file, confined to the skill directory.
@@ -107,6 +186,127 @@ class Skill:
         return sorted(out)
 
 
+def _clean_name(raw: str, skill_dir: Path) -> str:
+    """A usable skill name, preferring the directory when the field is unfit.
+
+    The spec requires ``name`` to match the parent directory, so the directory
+    is the safe fallback -- and the goal here is to LOAD a foreign skill, not
+    to grade it. Violations are reported, never fatal.
+    """
+    candidate = (raw or "").strip()
+    if not candidate:
+        return skill_dir.name
+    if len(candidate) > MAX_NAME_LEN or not _VALID_NAME_RE.match(candidate):
+        logger.warning(
+            "Skill at %s: name %r violates the Agent Skills naming rules "
+            "(1-%d chars, lowercase a-z/0-9 and single hyphens) - using the "
+            "directory name %r instead",
+            skill_dir, candidate, MAX_NAME_LEN, skill_dir.name,
+        )
+        return skill_dir.name
+    if candidate != skill_dir.name:
+        logger.warning(
+            "Skill at %s: name %r does not match the directory name - the spec "
+            "requires them to be equal; using %r",
+            skill_dir, candidate, candidate,
+        )
+    return candidate
+
+
+def _first_paragraph(body: str) -> str:
+    """First prose paragraph of a body, for skills without a description.
+
+    Same fallback Claude Code applies. Without SOME description an on-demand
+    skill is invisible: the index line is all the agent ever sees of it.
+    """
+    for block in body.split("\n\n"):
+        text = " ".join(
+            line.strip() for line in block.strip().splitlines()
+            if line.strip() and not line.lstrip().startswith(("#", "---", "```"))
+        ).strip()
+        if text:
+            return text[:MAX_DESCRIPTION_LEN]
+    return ""
+
+
+def _truncate(value: str, limit: int, field_name: str, skill_dir: Path) -> str:
+    text = (value or "").strip()
+    if len(text) > limit:
+        logger.warning("Skill at %s: %s exceeds %d characters - truncating",
+                       skill_dir, field_name, limit)
+        return text[:limit]
+    return text
+
+
+def _parse_frontmatter(skill_dir: Path) -> Optional[Skill]:
+    """Build a Skill from ``SKILL.md`` YAML frontmatter (Agent Skills standard).
+
+    Returns None when there is no readable SKILL.md with frontmatter, so the
+    caller can fall back to the legacy manifest.
+    """
+    entry_path = skill_dir / DEFAULT_ENTRY
+    if not entry_path.is_file():
+        return None
+    try:
+        text = entry_path.read_text(encoding=TEXT_ENCODING)
+    except Exception as e:  # noqa: BLE001 - one unreadable file must not stop startup
+        logger.warning("Skipping skill at %s: unreadable %s (%s)",
+                       skill_dir, DEFAULT_ENTRY, e)
+        return None
+
+    front, body = split_frontmatter(text)
+    if front is None:
+        return None
+
+    name = _clean_name(str(front.get("name") or ""), skill_dir)
+    description = _truncate(str(front.get("description") or ""),
+                            MAX_DESCRIPTION_LEN, "description", skill_dir)
+    if not description:
+        description = _first_paragraph(body)
+        logger.debug("Skill '%s': no description field, using the first paragraph", name)
+
+    # metadata is a free-form string map; version/tags are ours and live there
+    # by convention, so a round-trip through our own format keeps working.
+    raw_meta = front.get("metadata")
+    meta: Dict[str, str] = {}
+    if isinstance(raw_meta, dict):
+        meta = {str(k): str(v) for k, v in raw_meta.items()}
+
+    raw_tools = front.get("allowed-tools") or front.get("allowed_tools") or ""
+    if isinstance(raw_tools, (list, tuple)):
+        tools = tuple(str(t) for t in raw_tools if str(t).strip())
+    else:
+        tools = tuple(str(raw_tools).split())
+    if tools:
+        # We read the field but have no per-skill tool gating: an agent's tools
+        # come from its own config. Silently dropping a declared RESTRICTION
+        # would widen it, so say so rather than let it pass unnoticed.
+        logger.warning(
+            "Skill at %s declares allowed-tools %s - this system does not gate "
+            "tools per skill; the agent's own tool config applies unchanged",
+            skill_dir, " ".join(tools),
+        )
+
+    raw_tags = front.get("tags") or meta.get("tags") or ()
+    if isinstance(raw_tags, str):
+        raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
+    return Skill(
+        name=name,
+        path=skill_dir,
+        entry_path=entry_path,
+        version=str(front.get("version") or meta.get("version") or "0.0.0"),
+        description=description,
+        tags=tuple(str(t) for t in raw_tags) if isinstance(raw_tags, (list, tuple)) else (),
+        license=str(front.get("license") or "").strip(),
+        compatibility=_truncate(str(front.get("compatibility") or ""),
+                                MAX_COMPATIBILITY_LEN, "compatibility", skill_dir),
+        metadata=meta,
+        allowed_tools=tools,
+        templated=False,
+    )
+
+
 def _parse_manifest(skill_dir: Path) -> Optional[Skill]:
     """Build a Skill from ``<skill_dir>/skill.toml``; None if unusable.
 
@@ -149,6 +349,9 @@ def _parse_manifest(skill_dir: Path) -> Optional[Skill]:
         version=str(section.get("version") or "0.0.0"),
         description=str(section.get("description") or "").strip(),
         tags=tuple(str(t) for t in tags) if isinstance(tags, (list, tuple)) else (),
+        # Legacy skills were always Jinja-rendered; keep it that way so
+        # {% include %} in existing bundles goes on working.
+        templated=True,
     )
 
 
@@ -180,7 +383,9 @@ class SkillRegistry:
             for child in sorted(root.iterdir()):
                 if not child.is_dir():
                     continue
-                skill = _parse_manifest(child)
+                # Standard first: a skill carrying frontmatter is portable, and
+                # its declaration wins even if a legacy manifest sits next to it.
+                skill = _parse_frontmatter(child) or _parse_manifest(child)
                 if skill is None:
                     continue
                 if skill.name in found:

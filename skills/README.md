@@ -10,16 +10,48 @@ Every immediate subdirectory of a skill root is one skill. A skill is a
 **bundle**: `SKILL.md` is the index/instructions, and the files next to it carry
 depth that is loaded only when a task needs it.
 
+We follow the [Agent Skills standard](https://agentskills.io) — the same format
+Claude Code, Codex, Cursor, Copilot, Gemini CLI and others read. A skill written
+here works there, and one downloaded from anywhere works here.
+
 ```
 skills/
 └── my-skill/
-    ├── skill.toml            # manifest (mirrors plugin.toml)
-    ├── SKILL.md              # the index — markdown, Jinja2-rendered
-    └── reference/
-        └── catalog.md        # depth: read on demand via the skills tools
+    ├── SKILL.md              # YAML frontmatter + instructions
+    ├── references/           # optional: depth, read on demand
+    ├── scripts/              # optional: executable code
+    └── assets/               # optional: templates, data
 ```
 
-`skill.toml`:
+`SKILL.md`:
+
+```markdown
+---
+name: my-skill                    # 1-64 chars, lowercase a-z/0-9 and single
+                                  # hyphens; must equal the directory name
+description: One line — what this covers and WHEN to use it. This is the only
+  text the agent sees before deciding to load the skill, so name the trigger.
+license: Apache-2.0               # optional
+compatibility: Requires git, jq   # optional, only if the skill needs it
+allowed-tools: Read Grep          # optional; READ but NOT enforced here — we
+                                  # have no per-skill tool gating, so this logs
+                                  # a warning and the agent's own config applies
+metadata:                         # optional free-form string map
+  version: '1.0.0'
+---
+
+# The instructions
+
+Markdown, no format restrictions. Keep it under ~500 lines and move detail
+into `references/`.
+```
+
+Only `name` and `description` are required. The body is used **verbatim** —
+`{{ ... }}` stays literal text, so a skill about templating survives intact.
+
+### Legacy manifest (still supported)
+
+Skills predating the standard used a `skill.toml` next to `SKILL.md`:
 
 ```toml
 [skill]
@@ -99,8 +131,14 @@ skills:
 ```
 
 Relative paths resolve config-folder-first, then repo root. The first root
-defining a name wins. If the block is missing or empty, the default `skills/`
-is used — or `$AGENT_SKILL_DIRS` (os.pathsep-separated) if set.
+defining a name wins. If the block is missing or empty, the defaults are
+`skills/` **and `.claude/skills/`** — the latter is where the ecosystem drops
+project-local skills, so a downloaded one works without any config. `skills/`
+is listed first, so ours win a name collision. `$AGENT_SKILL_DIRS`
+(os.pathsep-separated) replaces both.
+
+Being discovered does not put a skill into any prompt: that only happens when an
+agent config names it under `always` or `on_demand`.
 
 A skill with a broken manifest or a missing entry file is skipped with a
 warning — one bad directory never stops startup. A skill referenced by an agent

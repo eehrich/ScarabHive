@@ -1,3 +1,12 @@
+---
+name: example-house-style
+description: 'Example skill: house writing style for user-facing text. Use it when
+  an agent produces prose, summaries or reports that a human will read.'
+metadata:
+  version: 1.0.0
+  tags: example, writing, style
+---
+
 # House Writing Style
 
 This is an **example skill** shipped to show the format — copy it as a starting
