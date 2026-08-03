@@ -16,6 +16,11 @@ from plugins.okf.server import OkfServer
 def mock_system_config():
     c = MagicMock()
     c.ssl_verify = True
+    # Real strings, not Mocks: the server reads context.timezone to stamp log
+    # times, and a Mock there would silently fall back to UTC — which differs
+    # from the local date for two hours of every day.
+    c.context.timezone = "Europe/Berlin"
+    c.context.location = "Germany"
     return c
 
 
@@ -619,3 +624,76 @@ class TestCrossProcessWrites:
         missing = [f"{t}{i}" for t in ("P", "Q") for i in range(4)
                    if f"**{t}{i}**" not in log]
         assert not missing, f"entries lost across processes: {missing}"
+
+
+class TestAppendLogTime:
+    """The date alone cannot order a burst of entries written the same day."""
+
+    @pytest.mark.asyncio
+    async def test_time_is_stamped_automatically(self, server, tmp_path):
+        from datetime import datetime
+
+        import pytz
+        root = tmp_path / "t1"
+        root.mkdir()
+        # today IN THE CONFIGURED ZONE — the same date the agent would pass
+        today = datetime.now(pytz.timezone("Europe/Berlin")).strftime("%Y-%m-%d")
+        res = await server.append_log({"bundle": str(root), "date": today,
+                                       "action": "Creation", "description": "x"})
+        assert res["status"] == "ok"
+        assert res["time"] and len(res["time"]) == len("HH:MM:SS")
+        log = (root / "log.md").read_text(encoding="utf-8")
+        assert f"* {res['time']} **Creation**: x" in log
+
+    @pytest.mark.asyncio
+    async def test_explicit_time_wins(self, server, tmp_path):
+        root = tmp_path / "t2"
+        root.mkdir()
+        res = await server.append_log({"bundle": str(root), "date": "2026-08-04",
+                                       "time": "07:15:00", "action": "A",
+                                       "description": "x"})
+        assert res["time"] == "07:15:00"
+        assert "* 07:15:00 **A**: x" in (root / "log.md").read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_a_past_date_gets_no_invented_time(self, server, tmp_path):
+        """Stamping the current clock onto a backfilled entry would not be a
+        missing detail but a wrong one."""
+        root = tmp_path / "t3"
+        root.mkdir()
+        res = await server.append_log({"bundle": str(root), "date": "2001-01-01",
+                                       "action": "Backfill", "description": "x"})
+        assert res["time"] is None
+        assert "* **Backfill**: x" in (root / "log.md").read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_malformed_time_is_rejected(self, server, tmp_path):
+        root = tmp_path / "t4"
+        root.mkdir()
+        res = await server.append_log({"bundle": str(root), "date": "2026-08-04",
+                                       "time": "half past two", "description": "x"})
+        assert res["status"] == "error"
+        assert "HH:MM" in res["error"]
+        assert not (root / "log.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_time_follows_the_configured_timezone(
+            self, mock_system_config, tmp_path):
+        """The caller's date comes from {{ current_date }}, which uses the
+        agent's configured zone. A UTC time beside a local date would disagree
+        by hours — and around midnight by a whole day."""
+        from datetime import datetime
+        import pytz
+        mock_system_config.context.timezone = "Pacific/Kiritimati"  # UTC+14
+        cfg = MCPConfig(type="okf", enabled=True,
+                        config={"allowed_directories": [str(tmp_path)]})
+        srv = OkfServer("okf", mock_system_config, cfg)
+        root = tmp_path / "t5"
+        root.mkdir()
+
+        there = datetime.now(pytz.timezone("Pacific/Kiritimati"))
+        res = await srv.append_log({"bundle": str(root),
+                                    "date": there.strftime("%Y-%m-%d"),
+                                    "action": "A", "description": "x"})
+        assert res["time"] is not None, "date valid in that zone was treated as past"
+        assert res["time"][:2] == there.strftime("%H")

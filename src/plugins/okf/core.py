@@ -53,6 +53,9 @@ _FRONTMATTER_RE = re.compile(
 # links (``![alt](src)``) are excluded — they are assets, not concept edges.
 _LINK_RE = re.compile(r"(?<!\!)\[(?P<text>[^\]]*)\]\((?P<target>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
+# log.md date heading (spec §4): ``## YYYY-MM-DD``.
+_DATE_HEADING_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+
 
 def _yaml() -> YAML:
     """A round-trip YAML 1.2 handler. Fresh per call — ruamel's YAML objects are
@@ -422,16 +425,23 @@ def render_index(entries: List[Tuple[str, Optional[str]]],
 
 
 def append_log_entry(existing: Optional[str], date_iso: str, action: str,
-                     description: str) -> str:
+                     description: str, time_str: Optional[str] = None) -> str:
     """Return ``log.md`` text with a new entry prepended under its date (spec §4:
     ISO ``YYYY-MM-DD`` headings, newest first, ``**Action**: desc``).
 
     A new date heading is inserted at the top (after the ``# ...Log`` title);
     an existing same-date heading gets the entry appended beneath it. ``date_iso``
-    is passed in by the caller (this module never reads the clock — determinism
-    and the project's UTC-timestamp discipline stay with the caller).
+    and ``time_str`` are passed in by the caller (this module never reads the
+    clock — determinism and the project's UTC-timestamp discipline stay with the
+    caller).
+
+    ``time_str`` (``HH:MM:SS``) is prefixed to the entry. It stays OUT of the
+    heading on purpose: the spec's date grouping is what other OKF tooling reads,
+    and a run that writes a dozen entries in one day needs them distinguishable
+    *within* the day, not a dozen headings.
     """
-    entry_line = f"* **{action}**: {description}"
+    entry_line = (f"* {time_str} **{action}**: {description}" if time_str
+                  else f"* **{action}**: {description}")
     title = "# Update Log"
     if not existing or not existing.strip():
         return f"{title}\n\n## {date_iso}\n{entry_line}\n"
@@ -448,11 +458,37 @@ def append_log_entry(existing: Optional[str], date_iso: str, action: str,
         lines.insert(date_idx + 1, entry_line)
         return "\n".join(lines).rstrip("\n") + "\n"
 
-    # New date section, newest-first: place it directly after the title (and any
-    # blank line following it), before older date sections.
+    # New date section: slot it before the first OLDER section, not blindly at
+    # the top. Blind-at-the-top is right for the common case (today's entry) and
+    # wrong for a backfilled one, which would then sit above newer dates and
+    # break the very ordering this function promises. ISO dates compare as
+    # strings, so no parsing is needed.
     insert_at = title_idx + 1 if title_idx != -1 else 0
     while insert_at < len(lines) and not lines[insert_at].strip():
         insert_at += 1
+    def _heading_date(line: str) -> Optional[str]:
+        """The ISO date of a ``## YYYY-MM-DD`` heading, else None.
+
+        Only date-shaped headings take part in the ordering — a hand-written
+        ``## Notes`` section must not be compared against a date and shuffled.
+        """
+        stripped = line.strip()
+        if not stripped.startswith("## "):
+            return None
+        candidate = stripped[3:].strip()
+        return candidate if _DATE_HEADING_RE.match(candidate) else None
+
+    dated = [(i, d) for i, ln in enumerate(lines) if (d := _heading_date(ln))]
+    older = next((i for i, d in dated if d < date_iso), None)
+    if older is not None:
+        insert_at = older
+    elif dated:
+        # Older than every existing section -> at the end.
+        insert_at = len(lines)
     block = [f"## {date_iso}", entry_line, ""]
+    if insert_at > 0 and lines[insert_at - 1].strip():
+        # Appending after a section that does not end in a blank line (the
+        # oldest-date case) — keep sections visually separated.
+        block = [""] + block
     new_lines = lines[:insert_at] + block + lines[insert_at:]
     return "\n".join(new_lines).rstrip("\n") + "\n"

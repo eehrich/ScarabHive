@@ -34,10 +34,37 @@ any other consumer (verified: this plugin validates & traverses Google's real
 | `okf_neighbors` | A concept's graph neighbors + broken links |
 | `okf_subgraph` | BFS concepts reachable from seed(s) within N hops |
 | `okf_search` | Lexical relevance ranking over a bundle |
-| `okf_append_log` | `log.md` entry (ISO date, newest first) |
+| `okf_append_log` | `log.md` entry (ISO date heading, time-stamped, newest first) |
 | `okf_reindex` | Regenerate `index.md` from concept descriptions |
 
 Paths are **bundle-relative with a leading slash** (`/tables/orders.md`).
+
+## Log entries
+
+`log.md` keeps the spec's date grouping and adds a time per entry — a single run
+can write a dozen entries under one heading, and the date alone neither orders
+them nor spaces them:
+
+```markdown
+## 2026-08-04
+* 14:03:07 **MAP-Extraktion**: Kapitel 3 …
+* 09:12:44 **Creation**: Zustandsgraph SOLL-Schicht …
+```
+
+The time stays **out of the heading** on purpose: other OKF tooling groups by
+the date heading, and one heading per entry would break that for no gain.
+
+The server stamps the current time itself — an LLM cannot read a clock, and the
+date already has to be supplied. Two details follow from that:
+
+* the time uses the agent's **configured timezone**, not UTC, because the date
+  the caller passes comes from `{{ current_date }}`, which uses that same zone.
+  A UTC time beside a local date disagrees by hours, and around midnight by a day;
+* an entry dated in the **past** gets no time at all. Stamping the current clock
+  onto a backfilled entry would not be a missing detail but a wrong one. Pass
+  `time` explicitly to set one.
+
+Entries written before this existed keep the plain `* **Action**: …` form.
 
 ## Concurrent writers
 

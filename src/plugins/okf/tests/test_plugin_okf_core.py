@@ -269,3 +269,89 @@ class TestIndexAndLog:
         out = core.append_log_entry(existing, "2026-07-22", "Update", "second.")
         assert out.count("## 2026-07-22") == 1
         assert "first." in out and "second." in out
+
+
+class TestLogEntryTime:
+    """A day heading alone is not enough once a run writes a dozen entries."""
+
+    def test_time_is_prefixed_to_the_entry(self):
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-04", "Creation", "did a thing",
+                               "14:03:07")
+        assert "## 2026-08-04" in out
+        assert "* 14:03:07 **Creation**: did a thing" in out
+
+    def test_time_stays_out_of_the_heading(self):
+        """Other OKF tooling groups by the date heading — a per-entry heading
+        would break that grouping for no gain."""
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-04", "A", "x", "09:00:00")
+        headings = [ln for ln in out.splitlines() if ln.startswith("## ")]
+        assert headings == ["## 2026-08-04"]
+
+    def test_entries_of_one_day_share_the_heading(self):
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-04", "First", "a", "09:00:00")
+        out = append_log_entry(out, "2026-08-04", "Second", "b", "11:30:00")
+        assert out.count("## 2026-08-04") == 1
+        # newest first within the day
+        assert out.index("11:30:00") < out.index("09:00:00")
+
+    def test_without_time_the_old_form_is_kept(self):
+        """Existing logs and callers that pass no time must not change shape."""
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-04", "Creation", "did a thing")
+        assert "* **Creation**: did a thing" in out
+
+
+class TestLogDateOrdering:
+    """Spec §4: newest first. A backfilled date must not jump the queue."""
+
+    def test_newer_date_goes_on_top(self):
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-03", "A", "x")
+        out = append_log_entry(out, "2026-08-04", "B", "y")
+        assert out.index("## 2026-08-04") < out.index("## 2026-08-03")
+
+    def test_older_date_is_slotted_below_newer_ones(self):
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-04", "A", "x")
+        out = append_log_entry(out, "2026-08-03", "Backfill", "y")
+        assert out.index("## 2026-08-04") < out.index("## 2026-08-03")
+
+    def test_date_lands_between_its_neighbours(self):
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-05", "A", "x")
+        out = append_log_entry(out, "2026-08-01", "C", "z")
+        out = append_log_entry(out, "2026-08-03", "B", "y")
+        headings = [ln.strip() for ln in out.splitlines() if ln.startswith("## ")]
+        assert headings == ["## 2026-08-05", "## 2026-08-03", "## 2026-08-01"]
+
+    def test_entry_joins_an_existing_section_wherever_it_sits(self):
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-05", "A", "x")
+        out = append_log_entry(out, "2026-08-01", "C", "z")
+        out = append_log_entry(out, "2026-08-01", "D", "w", "08:00:00")
+        assert out.count("## 2026-08-01") == 1
+        headings = [ln.strip() for ln in out.splitlines() if ln.startswith("## ")]
+        assert headings == ["## 2026-08-05", "## 2026-08-01"]
+
+    def test_sections_stay_separated_by_a_blank_line(self):
+        from plugins.okf.core import append_log_entry
+        out = append_log_entry(None, "2026-08-05", "A", "x")
+        out = append_log_entry(out, "2026-08-01", "C", "z")
+        lines = out.splitlines()
+        for i, ln in enumerate(lines):
+            if ln.startswith("## ") and i > 0:
+                assert lines[i - 1].strip() == "", f"no blank line before {ln!r}"
+
+    def test_a_non_date_heading_is_not_shuffled(self):
+        """Logs get hand-edited. A '## Notes' section must not be compared
+        against a date and used as the insertion point."""
+        from plugins.okf.core import append_log_entry
+        existing = ("# Update Log\n\n## Notes\nfreitext\n\n"
+                    "## 2026-08-05\n* **A**: x\n")
+        out = append_log_entry(existing, "2026-08-03", "B", "y")
+        headings = [ln.strip() for ln in out.splitlines() if ln.startswith("## ")]
+        assert headings == ["## Notes", "## 2026-08-05", "## 2026-08-03"]
+        assert "freitext" in out

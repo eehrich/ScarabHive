@@ -160,7 +160,9 @@ tools:
       name: "{{ name }}_append_log"
       description: |
         Append an entry to a directory's log.md (OKF change history: ISO date
-        headings, newest first). Supply the date explicitly as YYYY-MM-DD.
+        headings, newest first). Supply the date explicitly as YYYY-MM-DD. The
+        entry is stamped with the current time automatically — pass 'time' only
+        to backdate an entry.
       parameters:
         type: object
         properties:
@@ -173,6 +175,9 @@ tools:
           date:
             type: string
             description: "Entry date in ISO form YYYY-MM-DD."
+          time:
+            type: string
+            description: "Optional entry time HH:MM:SS. Omit and the server stamps the current time; it is left off entirely when 'date' is not today."
           action:
             type: string
             description: "Short action word, e.g. Creation, Update, Deprecation."

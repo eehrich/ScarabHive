@@ -588,6 +588,14 @@ class OkfServer(SchemaBasedMCPServer):
         if not date or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(date)):
             await status.error("'date' must be YYYY-MM-DD")
             return {"status": "error", "error": "'date' must be YYYY-MM-DD"}
+
+        time_str = str(params.get("time") or "").strip()
+        if time_str:
+            if not re.match(r"^\d{2}:\d{2}(:\d{2})?$", time_str):
+                await status.error("'time' must be HH:MM or HH:MM:SS")
+                return {"status": "error", "error": "'time' must be HH:MM or HH:MM:SS"}
+        else:
+            time_str = self._clock_time_for(str(date))
         log_dir = (root / subdir).resolve() if subdir else root
         if log_dir != root and root not in log_dir.parents:
             await status.error("'dir' escapes the bundle")
@@ -600,7 +608,8 @@ class OkfServer(SchemaBasedMCPServer):
             # outright, and nothing reports it — the tool returns ok to both.
             existing = (log_path.read_text(encoding="utf-8")
                         if log_path.is_file() else None)
-            text = core.append_log_entry(existing, str(date), str(action), str(desc))
+            text = core.append_log_entry(existing, str(date), str(action),
+                                         str(desc), time_str or None)
             log_dir.mkdir(parents=True, exist_ok=True)
             _atomic_write(log_path, text)
 
@@ -613,8 +622,32 @@ class OkfServer(SchemaBasedMCPServer):
             return {"status": "error", "error": msg}
 
         rel = self._bundle_rel(root, log_path)
-        await status.end(f"logged to {rel} — {date} {action}")
-        return {"status": "ok", "path": rel}
+        await status.end(
+            f"logged to {rel} — {date}{' ' + time_str if time_str else ''} {action}")
+        return {"status": "ok", "path": rel, "date": str(date),
+                "time": time_str or None}
+
+    def _clock_time_for(self, date_iso: str) -> str:
+        """``HH:MM:SS`` for an entry dated TODAY, else ``""``.
+
+        The caller supplies the date, so it may well be a past one (a backfilled
+        entry). Stamping the current clock time onto it would not be a missing
+        detail but a wrong one, so the time is simply omitted there.
+
+        Both values come from ``get_datetime_context`` — the very function that
+        produces the agent's ``{{ current_date }}``. Reading the clock here
+        directly would work today and drift the moment the timezone handling
+        changes on one side only; a UTC time beside a local date disagrees by
+        hours, and around midnight by a whole day.
+        """
+        from agent_system.utils.prompt_renderer import get_datetime_context
+
+        ctx_cfg = getattr(self.system_config, "context", None)
+        tz = getattr(ctx_cfg, "timezone", None)
+        location = getattr(ctx_cfg, "location", None)
+        now = get_datetime_context(tz if isinstance(tz, str) else "UTC",
+                                   location if isinstance(location, str) else "")
+        return now["current_time"] if now["current_date"] == date_iso else ""
 
     async def reindex(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """(Re)generate ``index.md`` for a bundle directory from the concepts it
