@@ -1,4 +1,9 @@
 *.log
+# Operator-Secrets des Servers (Tokens, Deploy-Keys) + die Backups,
+# die das writer-admin-Panel bei jeder Aenderung anlegt. Kommt nie
+# ins Repo. `envrc.example` (ohne Punkt) bleibt getrackt.
+.envrc
+.envrc.*
 *.db
 *.7z
 *.zip
