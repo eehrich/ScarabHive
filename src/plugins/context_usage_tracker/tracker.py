@@ -75,6 +75,13 @@ class AgentStats:
     total_cached_tokens: int = 0  # Accumulated cached tokens (cache reads)
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
+    # Cache-rate numerator and denominator, incremented in LOCKSTEP so the ratio
+    # always covers the same calls. The all-time sums above cannot do that: they
+    # were introduced at different times and keep accumulating across upgrades,
+    # so an agent active before total_prompt_tokens existed carries cache reads
+    # with no matching prompt tokens — measured in production at up to 799 %.
+    cache_rate_cached_tokens: int = 0
+    cache_rate_prompt_tokens: int = 0
     total_cache_write_tokens: int = 0
     total_cost: float = 0.0  # Sum of costs (billed + estimated; no-cost calls contribute 0)
     cost_known_calls: int = 0  # How many calls carried a cost at all
@@ -170,6 +177,10 @@ class UsageTracker:
             stats.total_cached_tokens += cached_tokens
             stats.total_prompt_tokens += prompt_tokens
             stats.total_completion_tokens += completion_tokens
+            # One statement, one call: whatever the ratio is later divided by
+            # covers exactly the calls its numerator came from.
+            stats.cache_rate_cached_tokens += cached_tokens
+            stats.cache_rate_prompt_tokens += prompt_tokens
             stats.total_cache_write_tokens += cache_write_tokens
             if cost is not None:
                 stats.total_cost += cost
@@ -505,9 +516,40 @@ class UsageTracker:
                 if latest_data:
                     self._latest_snapshot = _snapshot_from_dict(latest_data)
 
+                self._seed_cache_rate_from_history()
+
             logger.info(
                 f"📂 Loaded usage data: {len(agents_data)} agents, "
                 f"{len(history_data)} snapshots from {self.storage_path}"
             )
         except Exception as e:
             logger.warning(f"Failed to load usage data: {e}")
+
+    def _seed_cache_rate_from_history(self) -> None:
+        """Fill an empty cache-rate pair from the retained snapshots.
+
+        Files written before the pair existed carry all-time sums that cannot
+        be divided (see :class:`AgentStats`), which would leave every agent
+        without a rate until it next runs. The history holds per-call prompt
+        and cached counts that ARE matched, so seeding from those states a
+        measured window instead of an empty one.
+
+        Only for agents whose pair is still empty: a file written by this
+        version already counted those very snapshots at record time, and
+        seeding again would count them twice. Caller holds the lock.
+        """
+        seeded: Dict[str, List[int]] = {}
+        for snap in self._history:
+            stats = self._agent_stats.get(snap.agent_id)
+            if stats is None or stats.cache_rate_prompt_tokens:
+                continue
+            acc = seeded.setdefault(snap.agent_id, [0, 0])
+            acc[0] += snap.prompt_tokens
+            acc[1] += snap.cached_tokens
+        for agent_id, (prompt, cached) in seeded.items():
+            stats = self._agent_stats[agent_id]
+            stats.cache_rate_prompt_tokens = prompt
+            stats.cache_rate_cached_tokens = cached
+        if seeded:
+            logger.info("Seeded cache-rate window for %d agent(s) from history",
+                        len(seeded))

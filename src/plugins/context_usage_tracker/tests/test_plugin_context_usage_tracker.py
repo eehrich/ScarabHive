@@ -833,3 +833,97 @@ def test_estimated_calls_tracked_in_rollups(tmp_path):
     assert totals["cost_estimated_calls"] == 1
     s_stats = tracker.get_agent_stats(session_id="s1")["a1"]
     assert s_stats["cost_estimated_calls"] == 1
+
+
+class TestCacheRateStaysBelowOneHundred:
+    """Measured in production: 10 of 56 agents showed a cache rate above 100%,
+    one at 799%. Per call the numbers were always sound — the aggregate was not.
+
+    total_cached_tokens and total_prompt_tokens were introduced in different
+    releases and keep accumulating across upgrades, so an agent active before
+    the newer counter existed carries cache reads with no matching prompt
+    tokens. The ratio then compares a long history against a short one.
+    """
+
+    def _record(self, tracker, *, prompt, cached, n=1):
+        for _ in range(n):
+            tracker.record_usage(
+                agent_id="a", agent_name="A", session_id="s",
+                total_tokens=prompt + 10, prompt_tokens=prompt,
+                completion_tokens=10, message_count=1, context_window=8000,
+                cached_tokens=cached)
+
+    def test_pair_moves_in_lockstep(self, plugin):
+        self._record(plugin.tracker, prompt=1000, cached=900, n=3)
+        s = plugin.tracker.get_agent_stats()["a"]
+        assert s["cache_rate_prompt_tokens"] == 3000
+        assert s["cache_rate_cached_tokens"] == 2700
+        assert s["cache_rate_cached_tokens"] <= s["cache_rate_prompt_tokens"]
+
+    def test_legacy_stats_do_not_produce_a_rate(self, plugin, tmp_path):
+        """The real shape on disk: cached tokens accumulated, the paired base
+        absent. The rate must be unavailable, not wrong."""
+        import json
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        path = tmp_path / "usage.json"
+        path.write_text(json.dumps({"agents": {"old": {
+            "agent_id": "old", "agent_name": "v4_request_analyzer",
+            "total_calls": 127, "total_tokens": 320639,
+            "total_cached_tokens": 179968,     # accumulated since the old release
+            "total_prompt_tokens": 22531,      # only since the newer one
+            "total_completion_tokens": 5587,
+        }}, "history": []}), encoding="utf-8")
+
+        stats = UsageTracker(storage_path=path).get_agent_stats()["old"]
+        # what the panel used to divide -> 799%
+        assert stats["total_cached_tokens"] / stats["total_prompt_tokens"] > 7
+        # what it divides now -> no base, so no number is claimed
+        assert stats["cache_rate_prompt_tokens"] == 0
+
+    def test_a_later_call_makes_the_rate_available_again(self, plugin, tmp_path):
+        """Self-healing: the next call for that agent establishes the pair."""
+        self._record(plugin.tracker, prompt=500, cached=100)
+        s = plugin.tracker.get_agent_stats()["a"]
+        rate = s["cache_rate_cached_tokens"] / s["cache_rate_prompt_tokens"] * 100
+        assert 0 < rate <= 100
+
+    def test_legacy_stats_are_seeded_from_retained_history(self, tmp_path):
+        """Otherwise every agent shows '–' until it next runs. The snapshots
+        still on disk carry matched per-call numbers, so the window can start
+        from measured data instead of empty."""
+        import json
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        history = [{
+            "timestamp": 1.0 + i, "agent_id": "old", "agent_name": "A",
+            "session_id": "s", "total_tokens": 1010, "prompt_tokens": 1000,
+            "completion_tokens": 10, "message_count": 1, "context_window": 8000,
+            "usage_percentage": 12.6, "cached_tokens": 800,
+        } for i in range(5)]
+        path = tmp_path / "usage.json"
+        path.write_text(json.dumps({"agents": {"old": {
+            "agent_id": "old", "agent_name": "A",
+            "total_cached_tokens": 179968,   # long history
+            "total_prompt_tokens": 22531,    # short history -> 799% before
+        }}, "history": history}), encoding="utf-8")
+
+        s = UsageTracker(storage_path=path).get_agent_stats()["old"]
+        assert s["cache_rate_prompt_tokens"] == 5000
+        assert s["cache_rate_cached_tokens"] == 4000
+        assert s["cache_rate_cached_tokens"] / s["cache_rate_prompt_tokens"] == 0.8
+
+    def test_seeding_does_not_double_count_on_reload(self, plugin, tmp_path):
+        """A file written by this version already counted those snapshots at
+        record time — seeding them again would inflate the window."""
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        path = tmp_path / "usage.json"
+        plugin.tracker.storage_path = path
+        self._record(plugin.tracker, prompt=1000, cached=800, n=4)
+        plugin.tracker.force_save()
+        before = plugin.tracker.get_agent_stats()["a"]
+
+        after = UsageTracker(storage_path=path).get_agent_stats()["a"]
+        assert after["cache_rate_prompt_tokens"] == before["cache_rate_prompt_tokens"] == 4000
+        assert after["cache_rate_cached_tokens"] == before["cache_rate_cached_tokens"] == 3200

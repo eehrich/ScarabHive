@@ -58,15 +58,19 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 logger.warning(f"No usage data in llm_response (keys: {list(llm_response.keys())}), skipping tracking")
                 return HookResult(success=True, modified=False, context=context)
 
-            total_tokens = usage.get("total_tokens", 0)
-            prompt_tokens = usage.get("prompt_tokens", 0)
-            completion_tokens = usage.get("completion_tokens", 0)
-            
             # One canonical shape for every provider dialect (OpenAI names,
             # Anthropic cache_read/cache_creation, Gemini camelCase, ...).
+            # ALL four counts come from here: reading prompt/completion raw
+            # while normalising the cache fields is what makes a rate divide
+            # one dialect by another — for an Anthropic-shaped usage dict
+            # 'prompt_tokens' is simply absent, so the denominator would be 0
+            # while the numerator is not.
             call = normalize_usage(usage)
+            prompt_tokens = call.prompt_tokens
+            completion_tokens = call.completion_tokens
             cached_tokens = call.cached_tokens
             cache_write_tokens = call.cache_write_tokens
+            total_tokens = usage.get("total_tokens") or (prompt_tokens + completion_tokens)
 
             # Model that actually served the call (respects llm_override)
             model = ""

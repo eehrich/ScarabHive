@@ -385,7 +385,12 @@ const panel = {
         ${th('Σ Cost', 'total_cost')}${th('Ø ¢/Call', 'avg_cost')}${th('Ø Lat', 'avg_latency')}${th('Peak', 'peak_tokens')}${th('Last', 'last_activity')}
       </tr>
       ${rows.map(a => {
-        const hit = a.total_prompt_tokens ? (a.total_cached_tokens / a.total_prompt_tokens * 100) : 0;
+        // From the lockstep pair, never from the all-time sums: those were
+        // introduced at different times, so their ratio compares a long history
+        // against a short one and can exceed 100%. No pair yet (agent has not
+        // been called since the fix) -> say so instead of inventing a number.
+        const hit = a.cache_rate_prompt_tokens
+          ? (a.cache_rate_cached_tokens / a.cache_rate_prompt_tokens * 100) : null;
         const avg = a.cost_known_calls ? a.total_cost / a.cost_known_calls : null;
         return `<tr>
           <td class="name" title="${this.esc(a.agent_id)}">${this.esc(a.agent_name)}</td>
@@ -393,7 +398,7 @@ const panel = {
           <td>${this.n(a.total_tokens)}</td>
           <td>${this.n(a.total_prompt_tokens ?? 0)}</td>
           <td>${this.n(a.total_completion_tokens ?? 0)}</td>
-          <td class="cached">${this.n(a.total_cached_tokens)} <span class="muted">(${hit.toFixed(0)}%)</span></td>
+          <td class="cached">${this.n(a.total_cached_tokens)} <span class="muted"${hit === null ? ' title="no cache rate yet — this agent has not been called since the counters were paired; the Σ left of this is all-time"' : ''}>(${hit === null ? '–' : hit.toFixed(0) + '%'})</span></td>
           <td>${this.n(a.total_cache_write_tokens ?? 0)}</td>
           <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}"${a.cost_estimated_calls ? ' title="includes pricing-table estimates"' : ''}>${a.cost_estimated_calls ? '~' : ''}${this.cents(a.total_cost ?? 0, false)}</td>
           <td class="${a.cost_estimated_calls ? 'cost-est' : 'cost'}">${avg === null ? '<span class="muted">–</span>' : (a.cost_estimated_calls ? '~' : '') + this.cents(avg, false)}</td>
