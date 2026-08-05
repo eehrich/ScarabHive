@@ -16,6 +16,7 @@ from typing import Any, TYPE_CHECKING
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.skills import get_skill_registry
 from agent_system.skills.registry import DEFAULT_ENTRY, TEXT_ENCODING
+from agent_system.utils.suggest import suggest_path
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
@@ -55,11 +56,16 @@ class SkillsServer(SchemaBasedMCPServer):
         if wanted:
             skill = registry.get(wanted)
             if skill is None:
-                await status.error(f"Unknown skill '{wanted}'")
+                names = registry.names()
+                hint = suggest_path(wanted, names)
+                msg = (f"Unknown skill '{wanted}'"
+                       + (f" — did you mean '{hint}'?" if hint else ""))
+                await status.error(msg)
                 return {
                     "status": "error",
-                    "error": f"Unknown skill '{wanted}'",
-                    "available": registry.names(),
+                    "error": msg,
+                    "did_you_mean": hint,
+                    "available": names,
                 }
             files = skill.list_files()
             await status.end(
@@ -109,9 +115,13 @@ class SkillsServer(SchemaBasedMCPServer):
 
         skill = registry.get(name)
         if skill is None:
-            await status.error(f"Unknown skill '{name}'")
-            return {"status": "error", "error": f"Unknown skill '{name}'",
-                    "available": registry.names()}
+            names = registry.names()
+            hint = suggest_path(name, names)
+            msg = (f"Unknown skill '{name}'"
+                   + (f" — did you mean '{hint}'?" if hint else ""))
+            await status.error(msg)
+            return {"status": "error", "error": msg,
+                    "did_you_mean": hint, "available": names}
 
         rel = (params.get("path") or "").strip()
         await status.progress(f"Reading {name}/{rel or DEFAULT_ENTRY}")
@@ -120,8 +130,12 @@ class SkillsServer(SchemaBasedMCPServer):
         except (ValueError, FileNotFoundError) as e:
             # Path escapes the bundle, or simply is not there — both are the
             # caller's problem, not a server error: report and list what exists.
-            await status.error(f"{name}: {e}")
-            return {"status": "error", "error": str(e), "files": skill.list_files()}
+            files = skill.list_files()
+            hint = suggest_path(rel, files)
+            message = str(e) + (f" — did you mean '{hint}'?" if hint else "")
+            await status.error(f"{name}: {message}")
+            return {"status": "error", "error": message,
+                    "did_you_mean": hint, "files": files}
 
         try:
             if not rel:

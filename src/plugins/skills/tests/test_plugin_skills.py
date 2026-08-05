@@ -167,3 +167,41 @@ class TestStatusMessages:
         await srv.read({"name": "ghost", "_status": status})
         assert any(kind == "error" for kind, _ in status.messages)
         assert "ghost" in status.text()
+
+
+class TestNotFoundGuidance:
+    """From a real run: the agent asked for 'reference/seitenformat.md' where
+    the bundle holds 'references/seitenformat.md', and burned a turn finding
+    out. Both spellings exist across our own skills, which is what invites it."""
+
+    async def test_singular_plural_slip_is_named(self, server, status):
+        srv, _ = server                       # 'alpha' holds reference/deep.md
+        res = await srv.read({"name": "alpha", "path": "references/deep.md",
+                              "_status": status})
+        assert res["status"] == "error"
+        assert res["did_you_mean"] == "reference/deep.md"
+        assert "did you mean" in res["error"]
+        assert "did you mean" in status.text()   # visible in the panel too
+
+    async def test_unknown_skill_name_is_guided(self, server, status):
+        srv, root = server
+        _write_skill(root, "zustandsgraph", "body")
+        res = await srv.read({"name": "zustandgraph", "_status": status})
+        assert res["did_you_mean"] == "zustandsgraph"
+
+    async def test_very_short_names_get_no_guess(self, server, status):
+        """One character off a four-letter name is not a typo the machine can
+        tell from a different name — 'alfa' is as close to 'alpha' as to
+        'alba'. Guessing there buys a wrong answer, not a saved turn."""
+        srv, _ = server
+        res = await srv.read({"name": "alfa", "_status": status})
+        assert res["did_you_mean"] is None
+        assert res["available"] == ["alpha"]
+
+    async def test_unrelated_path_gets_no_guess(self, server, status):
+        """Better a plain not-found than a confident wrong answer."""
+        srv, _ = server
+        res = await srv.read({"name": "alpha", "path": "voellig/anderes.md",
+                              "_status": status})
+        assert res["did_you_mean"] is None
+        assert res["files"] == ["SKILL.md", "reference/deep.md"]

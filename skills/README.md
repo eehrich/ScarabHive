@@ -109,6 +109,13 @@ It provides:
 Reads are confined to the skill directory (no `..`, no absolute paths, symlinks
 resolved) and truncated at 100k characters so one file cannot flood the context.
 
+A miss returns `files` (what the bundle actually holds) and, when the request was
+close enough to be a typo, `did_you_mean`. Agents slip on `reference/` vs
+`references/` in particular — **pick one spelling per repo**; ours currently uses
+both, which is what invites the slip. No suggestion is offered when the only
+difference is a number: `kapitel_15.md` and `kapitel_16.md` are two chapters, not
+two spellings, and pointing an agent at the neighbour is worse than the miss.
+
 Without the plugin, `always` skills still work — you just lose the ability to
 read bundled reference files.
 

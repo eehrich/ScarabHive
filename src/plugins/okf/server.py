@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 from filelock import FileLock, Timeout
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.utils.suggest import siblings_of, suggest_path
 
 from . import core
 
@@ -382,9 +383,18 @@ class OkfServer(SchemaBasedMCPServer):
             await status.error(str(e))
             return {"status": "error", "error": str(e)}
         if not abs_path.is_file():
-            msg = f"concept not found: {params.get('path')}"
+            wanted = str(params.get("path") or "")
+            known = list(self._load_bundle(root).concepts)
+            hint = suggest_path(wanted, known)
+            msg = f"concept not found: {wanted}"
+            if hint:
+                msg += f" — did you mean '{hint}'?"
             await status.error(msg)
-            return {"status": "error", "error": msg}
+            # Without the listing the agent can only guess again. With it, the
+            # "not a typo, it genuinely is not written yet" case is visible too.
+            return {"status": "error", "error": msg,
+                    "did_you_mean": hint,
+                    "available": siblings_of(wanted, known)}
         text = abs_path.read_text(encoding="utf-8")
         fm, body, err = core.parse_frontmatter(text)
         await status.end(
@@ -509,8 +519,15 @@ class OkfServer(SchemaBasedMCPServer):
         path = params.get("path", "")
         bundle = self._load_bundle(root)
         if path not in bundle.concepts:
-            await status.error(f"concept not found: {path}")
-            return {"status": "error", "error": f"concept not found: {path}"}
+            known = list(bundle.concepts)
+            hint = suggest_path(path, known)
+            msg = f"concept not found: {path}"
+            if hint:
+                msg += f" — did you mean '{hint}'?"
+            await status.error(msg)
+            return {"status": "error", "error": msg,
+                    "did_you_mean": hint,
+                    "available": siblings_of(path, known)}
         neighbors = bundle.neighbors(path)
         broken = bundle.broken_links(path)
         await status.end(

@@ -697,3 +697,39 @@ class TestAppendLogTime:
                                     "action": "A", "description": "x"})
         assert res["time"] is not None, "date valid in that zone was treated as past"
         assert res["time"][:2] == there.strftime("%H")
+
+
+class TestNotFoundGuidance:
+    """A miss should cost one turn, not a guessing game — but a wrong guess
+    costs more than the miss."""
+
+    @pytest.mark.asyncio
+    async def test_typo_gets_a_suggestion(self, server, bundle):
+        res = await server.read_concept(
+            {"bundle": str(bundle), "path": "/tables/oders.md"})
+        assert res["status"] == "error"
+        assert res["did_you_mean"] == "/tables/orders.md"
+        assert "did you mean" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_numeric_sibling_gets_no_suggestion(self, server, tmp_path):
+        """kapitel_15 missing, kapitel_16 present: different chapters."""
+        root = tmp_path / "buch"
+        (root / "kapitel").mkdir(parents=True)
+        for i in (11, 16, 17):
+            (root / "kapitel" / f"kapitel_{i}.md").write_text(
+                "---\ntype: kapitel\n---\n\nx\n", encoding="utf-8")
+        res = await server.read_concept(
+            {"bundle": str(root), "path": "/kapitel/kapitel_15.md"})
+        assert res["did_you_mean"] is None
+        assert "did you mean" not in res["error"]
+        # ... but what DOES exist is listed, so the agent sees the gap
+        assert res["available"] == ["/kapitel/kapitel_11.md",
+                                    "/kapitel/kapitel_16.md",
+                                    "/kapitel/kapitel_17.md"]
+
+    @pytest.mark.asyncio
+    async def test_neighbors_guides_too(self, server, bundle):
+        res = await server.neighbors(
+            {"bundle": str(bundle), "path": "/tables/oders.md"})
+        assert res["did_you_mean"] == "/tables/orders.md"

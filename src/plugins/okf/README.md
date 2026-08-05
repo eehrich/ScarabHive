@@ -39,6 +39,15 @@ any other consumer (verified: this plugin validates & traverses Google's real
 
 Paths are **bundle-relative with a leading slash** (`/tables/orders.md`).
 
+A path that does not resolve comes back with `available` (the concepts sitting in
+the same directory) and, when it was close enough to be a typo, `did_you_mean` —
+so a slip costs one turn instead of a guessing game.
+
+No suggestion is made when the only difference is a **number**. `kapitel_15.md`
+missing while `kapitel_16.md` exists is not a typo but a gap, and naming the
+neighbour invites the agent to write the right content into the wrong document —
+silently, and past every conformance check. There the listing is the answer.
+
 ## Log entries
 
 `log.md` keeps the spec's date grouping and adds a time per entry — a single run
