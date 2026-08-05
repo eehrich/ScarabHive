@@ -51,6 +51,12 @@
   td { padding: 5px 8px; border-bottom: 1px solid #2d2d30; text-align: right; white-space: nowrap; }
   td.name { text-align: left; color: #9cdcfe; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
   td.model { text-align: left; color: #858585; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+  /* Request ids are hierarchical and long (root_003_sub_x_021_async_y_242).
+     Clipped here with the full pair in the tooltip; the row detail has both
+     values in full and selectable. */
+  td.ids { text-align: left; color: #858585; max-width: 240px; overflow: hidden;
+           text-overflow: ellipsis; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 11px; }
+  td.ids .sid { color: #9cdcfe; }
   tr:hover td { background: #2a2d2e; }
   tr.clickable { cursor: pointer; }
   /* fixed-width digits so stacked prices align column-wise */
@@ -182,7 +188,11 @@ const panel = {
   },
 
   // ---- formatting ----
-  esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; },
+  // Quotes are escaped too: esc() output goes into title="..." attributes in
+  // several places, where innerHTML alone would let a quote break out of the
+  // attribute. As element content &quot; still renders as a plain quote.
+  esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? '');
+           return d.innerHTML.replace(/"/g, '&quot;'); },
   n(x) { return (x ?? 0).toLocaleString('en-US'); },
   // Costs are stored in USD but rendered in cents (¢): per-call prices like
   // $0.001 are hard to read (leading zeros), 0.1¢ is not.
@@ -414,11 +424,13 @@ const panel = {
     // via the request-id tree) get a ↳ marker.
     const scopeSid = this.scopeSession ? this.getCurrentSessionId() : null;
     el.innerHTML = `<table>
-      <tr><th>Time</th><th class="left">Agent</th><th class="left">Model</th><th>Prompt</th><th>Output</th>
+      <tr><th>Time</th><th class="left">Agent</th><th class="left">Session / Request</th>
+          <th class="left">Model</th><th>Prompt</th><th>Output</th>
           <th>Cached</th><th>Write</th><th>Ctx&nbsp;%</th><th>Lat</th><th>¢</th></tr>
       ${rows.map((s, i) => `<tr class="clickable" onclick="panel.showDetail(${i})" data-i="${i}">
         <td class="name muted">${this.t(s.timestamp)}</td>
         <td class="name">${scopeSid && s.session_id !== scopeSid ? '<span class="muted" title="sub-agent call">↳ </span>' : ''}${this.esc(s.agent_name)}</td>
+        <td class="ids" title="session: ${this.esc(s.session_id || '–')}&#10;request: ${this.esc(s.request_id || '–')}"><span class="sid">${this.esc(s.session_id || '–')}</span>${s.request_id ? ' · ' + this.esc(s.request_id) : ''}</td>
         <td class="model" title="${this.esc(s.model || '')}">${this.esc(s.model || '–')}</td>
         <td>${this.n(s.prompt_tokens)}</td>
         <td>${this.n(s.completion_tokens)}</td>
