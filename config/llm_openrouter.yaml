@@ -299,9 +299,9 @@ llm_system:
     # QWEN MODELS via OpenRouter
     # ---------------------------------------------------------------------------
 
-    openrouter-qwen3.5-flash:
+    openrouter-qwen3.7-flash:
       provider: openai_httpx
-      model: qwen/qwen3.5-flash-02-23
+      model: qwen/qwen3.7-flash
       api_key: "***REMOVED***"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
@@ -311,50 +311,14 @@ llm_system:
       capabilities:
         tools: true
         function_calling: true
-        streaming: false
+        streaming: true
         json_mode: true
 
-      # Notes:
-      # - Qwen3.5 Flash: hybrid MoE + linear attention, 1M native context
-      # - Extremely cheap: $0.065 input / $0.26 output per 1M tokens
-      # - Good multilingual support (100+ languages)
-      # - Pricing: 11.5x cheaper output than Gemini Flash
 
-    openrouter-qwen3.5-flash-unlimited:
-      provider: openai_httpx
-      model: qwen/qwen3.5-flash-02-23
-      api_key: "***REMOVED***"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
+    # ---------------------------------------------------------------------------
+    # Mini Max
+    # ---------------------------------------------------------------------------
 
-    openrouter-qwen3.5-9b:
-      provider: openai_httpx
-      model: qwen/qwen3.5-9b
-      api_key: "***REMOVED***"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 256000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      max_tokens: 16384
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-
-      # Notes:
-      # - Qwen3.5-9B: Dense 9B model, 256K context
-      # - Ultra cheap: $0.05 input / $0.15 output per 1M tokens
-      # - Good for cross-scene analysis: whole book fits in context
-      # - Cheaper than Flash, good multilingual support
 
     openrouter-minimax-m3:
       provider: openai_httpx
@@ -397,26 +361,6 @@ llm_system:
         streaming: false
         json_mode: true
         multimodal: true
-
-    openrouter-qwen3.5-full:
-      provider: openai_httpx
-      model: qwen/qwen3.5-397b-a17b
-      api_key: "***REMOVED***"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 262000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      max_tokens: 16384
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-
-      # Notes:
-      # - Qwen3.5 397B-A17B: Full flagship model, 262K context
-      # - MoE architecture with linear attention, state-of-the-art performance
-      # - Pricing: $0.39 input / $2.34 output per 1M tokens
 
     # ---------------------------------------------------------------------------
     # META LLAMA MODELS via OpenRouter
@@ -1040,23 +984,8 @@ llm_system:
       max_steps: 500
 
     or-qwen-flash:
-      model_ref: openrouter-qwen3.5-flash
-      description: "OpenRouter Qwen3.5 Flash - Ultra cheap, 1M context, good multilingual"
-      max_steps: 500
-
-    or-qwen-flash-unlimited:
-      model_ref: openrouter-qwen3.5-flash-unlimited
-      description: "OpenRouter Qwen3.5 Flash - No output token limit"
-      max_steps: 500
-
-    or-qwen-9b:
-      model_ref: openrouter-qwen3.5-9b
-      description: "OpenRouter Qwen3.5 9B - Ultra cheap 256K context, cross-scene analysis"
-      max_steps: 500
-
-    or-qwen-full:
-      model_ref: openrouter-qwen3.5-full
-      description: "OpenRouter Qwen3.5 397B Full - Flagship model, state-of-the-art performance"
+      model_ref: openrouter-qwen3.7-flash
+      description: "OpenRouter Qwen3.7 Flash - Ultra cheap, 1M context, good multilingual"
       max_steps: 500
 
     or-minimax-m3:
