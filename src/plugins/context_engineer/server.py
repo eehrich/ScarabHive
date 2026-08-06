@@ -755,74 +755,45 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
     # ------------------------------------------------------------------
 
     async def list(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Browse what is stored: addresses and summaries, never bodies.
+        """Browse or filter what is stored: refs and summaries, never bodies.
 
         Tool name: {{ name }}_list
         """
         status = params.get("_status")
-        section = params.get("section") or "history"
+        needle = params.get("filter")
         try:
             result = await self._hooks_impl._handle_context_list(
-                section=section,
+                section=params.get("section"),
                 offset=int(params.get("offset") or 0),
                 limit=int(params.get("limit") or 20),
                 role=params.get("role"),
+                filter=needle,
                 session_id=params.get("_session_id", "default"),
             )
             if result.get("status") == "success":
-                # Marks this answer as content just pulled OUT of storage,
-                # so compaction does not put it straight back (see
+                # Marks this answer as content just pulled OUT of storage, so
+                # compaction does not put it straight back (see
                 # compaction._is_retrieval_result).
                 result[RETRIEVAL_MARKER] = True
             if status:
                 if result.get("status") == "error":
                     await status.error(result["error"])
-                else:
-                    shown = result["offset"] + result["count"]
-                    more = f", {result['total'] - shown} more" if result.get("next_offset") else ""
-                    await status.end(
-                        f"{section}: {result['count']} of {result['total']}"
-                        f" (from #{result['offset']}{more})")
-            return result
-        except Exception as e:
-            logger.exception("Error in list: %s", e)
-            if status:
-                await status.error(str(e))
-            return {"status": "error", "error": str(e)}
-
-    async def search(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Find stored content — pointers with a snippet, never bodies.
-
-        Tool name: {{ name }}_search
-        """
-        status = params.get("_status")
-        query = params.get("query") or ""
-        try:
-            if status:
-                await status.progress(f"Searching stored context for '{query}'")
-            result = await self._hooks_impl._handle_context_search(
-                query=query,
-                limit=int(params.get("limit") or 8),
-                section=params.get("section") or "all",
-                session_id=params.get("_session_id", "default"),
-            )
-            if result.get("status") == "success":
-                # Marks this answer as content just pulled OUT of storage,
-                # so compaction does not put it straight back (see
-                # compaction._is_retrieval_result).
-                result[RETRIEVAL_MARKER] = True
-            if status:
-                if result.get("status") == "error":
-                    await status.error(result["error"])
-                else:
+                elif needle:
                     kinds: dict[str, int] = {}
                     for e in result["entries"]:
                         kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
                     detail = ", ".join(f"{n} {k}" for k, n in kinds.items()) or "nothing"
-                    await status.end(f"'{query}': {detail}")
+                    await status.end(f"'{needle}': {detail}")
+                else:
+                    shown = result["offset"] + result["count"]
+                    more = (f", {result['total'] - shown} more"
+                            if result.get("next_offset") else "")
+                    await status.end(
+                        f"{result['section']}: {result['count']} of "
+                        f"{result['total']} (from #{result['offset']}{more})")
             return result
         except Exception as e:
-            logger.exception("Error in search: %s", e)
+            logger.exception("Error in list: %s", e)
             if status:
                 await status.error(str(e))
             return {"status": "error", "error": str(e)}

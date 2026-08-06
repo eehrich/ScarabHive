@@ -1575,152 +1575,150 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
     async def _handle_context_list(
         self,
-        section: str = "history",
+        section: str | None = None,
         offset: int = 0,
         limit: int = 20,
         role: str | None = None,
+        filter: str | None = None,
         session_id: str = "default",
     ) -> dict[str, Any]:
-        """A map of what is stored: addresses and one-line summaries, no bodies."""
+        """What is stored: addresses and one-line summaries, never bodies.
+
+        With ``filter`` the same rows come back narrowed to what matches, each
+        carrying the matching excerpt. Browsing and finding are one verb because
+        they answer one question and hand back one shape — the caller either has
+        words to go on or does not.
+
+        The two differ in one respect, which is why the section default depends
+        on it: browsing pages through ONE store in a defined order, so it
+        defaults to the conversation; filtering has no natural order across
+        stores and searches all of them. Both are overridable, and the reply
+        echoes which section it used.
+        """
         limit = max(1, min(int(limit), MAX_LIST_LIMIT))
         offset = max(0, int(offset))
+        needle = (filter or "").strip()
+        section = section or ("all" if needle else "history")
         components = self._get_session_components(session_id)
-        entries: list[dict[str, Any]]
 
-        if section == "history":
+        if section not in CONTEXT_SECTIONS and section != "all":
+            return {
+                "status": "error",
+                "error": f"unknown section '{section}'",
+                "sections": ["all", *CONTEXT_SECTIONS],
+            }
+        if section == "all" and not needle:
+            return {
+                "status": "error",
+                "error": "section='all' needs a filter",
+                "hint": ("browsing pages through one store — pick a section "
+                         f"({', '.join(CONTEXT_SECTIONS)}), or pass a filter"),
+            }
+
+        wanted = CONTEXT_SECTIONS if section == "all" else (section,)
+        entries: list[dict[str, Any]] = []
+        total = 0
+
+        if "history" in wanted:
             archival: ArchivalMemory = components["archival_memory"]
-            total = archival.count_session_messages(session_id, role=role)
-            entries = [
-                {
-                    "ref": m.id,
-                    "kind": "message",
-                    "role": m.role,
-                    "tool": m.tool_name,
-                    "tokens": m.token_count,
+            if needle:
+                found = archival.search(needle, session_id=session_id, limit=limit)
+                if role:
+                    # The index cannot filter by role, so do it here. Accepting
+                    # the parameter and ignoring it would be worse than not
+                    # offering it: the caller believes it narrowed the result.
+                    found = [m for m in found if m.role == role]
+            else:
+                found = archival.get_session_messages(
+                    session_id=session_id, limit=limit, role=role, offset=offset)
+                total += archival.count_session_messages(session_id, role=role)
+            for m in found:
+                row = {
+                    "ref": m.id, "kind": "message", "role": m.role,
+                    "tool": m.tool_name, "tokens": m.token_count,
                     "at": m.timestamp.isoformat(),
                     "summary": _one_line(m.summary or "", 200),
                 }
-                for m in archival.get_session_messages(
-                    session_id=session_id, limit=limit, role=role, offset=offset)
-            ]
-        elif section == "tool_results":
+                if needle:
+                    row["match"] = _one_line(_around(m.content, needle, 200), 460)
+                entries.append(row)
+
+        if "tool_results" in wanted:
             tool_store: ToolResultStore = components["tool_store"]
-            total = tool_store.count_entries(session_id)
-            entries = [
-                {
+            if needle:
+                rows = tool_store.search_entries(needle, session_id=session_id, limit=limit)
+            else:
+                rows = tool_store.list_entries(session_id, offset=offset, limit=limit)
+                total += tool_store.count_entries(session_id)
+            for r in rows:
+                row = {
                     "ref": r["ref"], "kind": "tool_result", "tool": r["tool"],
                     "tokens": r["tokens"], "at": r["at"], "chars": r["chars"],
-                    "summary": _one_line(r.get("summary") or "", 200),
                 }
-                for r in tool_store.list_entries(session_id, offset=offset, limit=limit)
-            ]
-        elif section == "variables":
+                if needle:
+                    row["match"] = _one_line(r["match"], 460)
+                else:
+                    row["summary"] = _one_line(r.get("summary") or "", 200)
+                entries.append(row)
+
+        if "variables" in wanted:
             variable_manager: VariableManager = components["variable_manager"]
             rows = variable_manager.get_stats().get("variables", [])
-            total = len(rows)
-            entries = [
-                {
+            if needle:
+                rows = [r for r in rows
+                        if needle.lower() in (r.get("preview") or "").lower()
+                        or needle.lower() in r["name"].lower()]
+            else:
+                total += len(rows)
+                rows = rows[offset:offset + limit]
+            for r in rows[:limit]:
+                entries.append({
                     "ref": r["name"], "kind": "variable",
                     "content_type": r.get("content_type"), "tokens": r.get("tokens"),
                     "summary": _one_line(r.get("preview") or "", 200),
-                }
-                for r in rows[offset:offset + limit]
-            ]
-        elif section == "facts":
+                })
+
+        if "facts" in wanted:
             core_memory: CoreMemory = components["core_memory"]
             facts = list(core_memory.facts)
-            total = len(facts)
-            entries = [
-                {
+            if needle:
+                facts = [f for f in facts
+                         if needle.lower() in getattr(f, "content", "").lower()][:limit]
+            else:
+                total += len(facts)
+                facts = facts[offset:offset + limit]
+            for f in facts:
+                row = {
                     "ref": None, "kind": "fact",
                     "category": getattr(f, "category", None),
                     "importance": getattr(f, "importance", None),
                     "summary": _one_line(getattr(f, "content", ""), 400),
                 }
-                for f in facts[offset:offset + limit]
-            ]
+                if needle:
+                    row["match"] = _one_line(getattr(f, "content", ""), 460)
+                entries.append(row)
+
+        out: dict[str, Any] = {
+            "status": "success",
+            "section": section,
+            "count": len(entries),
+            "entries": entries,
+        }
+        if needle:
+            # Filtered results are ranked, not ordered, so there is no stable
+            # "next page" to hand out — say so rather than imply one exists.
+            out["filter"] = needle
+            out["hint"] = (
+                "nothing matched — drop the filter to see what is stored"
+                if not entries else
+                "the match is often the whole answer; read a ref only if you "
+                "need more of that item (find= gets just its matching parts)")
         else:
-            return {
-                "status": "error",
-                "error": f"unknown section '{section}'",
-                "sections": list(CONTEXT_SECTIONS),
-            }
-
-        shown = offset + len(entries)
-        return {
-            "status": "success",
-            "section": section,
-            "total": total,
-            "offset": offset,
-            "count": len(entries),
-            "next_offset": shown if shown < total else None,
-            "entries": entries,
-        }
-
-    async def _handle_context_search(
-        self,
-        query: str,
-        session_id: str = "default",
-        limit: int = 8,
-        section: str = "all",
-    ) -> dict[str, Any]:
-        """Find stored content — returns POINTERS with a matching snippet.
-
-        Never bodies: the agent picks a ref and reads it with an explicit
-        budget. A search that returns content is how a retrieval tool ends up
-        refilling the very context it was meant to relieve.
-        """
-        if not query or not str(query).strip():
-            return {"status": "error", "error": "query is required",
-                    "hint": "to browse without a query use the list tool"}
-        query = str(query).strip()
-        limit = max(1, min(int(limit), 20))
-        components = self._get_session_components(session_id)
-        entries: list[dict[str, Any]] = []
-
-        if section in ("all", "history"):
-            archival: ArchivalMemory = components["archival_memory"]
-            for m in archival.search(query, session_id=session_id, limit=limit):
-                entries.append({
-                    "ref": m.id, "kind": "message", "role": m.role,
-                    "tool": m.tool_name, "tokens": m.token_count,
-                    "at": m.timestamp.isoformat(),
-                    "summary": _one_line(m.summary or "", 200),
-                    "match": _one_line(_around(m.content, query, 200), 460),
-                })
-
-        if section in ("all", "tool_results"):
-            tool_store: ToolResultStore = components["tool_store"]
-            for r in tool_store.search_entries(query, session_id=session_id, limit=limit):
-                entries.append({
-                    "ref": r["ref"], "kind": "tool_result", "tool": r["tool"],
-                    "tokens": r["tokens"], "at": r["at"], "chars": r["chars"],
-                    "match": _one_line(r["match"], 460),
-                })
-
-        if section in ("all", "facts"):
-            core_memory: CoreMemory = components["core_memory"]
-            needle = query.lower()
-            for f in core_memory.facts:
-                content = getattr(f, "content", "")
-                if needle in content.lower():
-                    entries.append({
-                        "ref": None, "kind": "fact",
-                        "category": getattr(f, "category", None),
-                        "match": _one_line(content, 460),
-                    })
-
-        return {
-            "status": "success",
-            "query": query,
-            "section": section,
-            "count": len(entries),
-            "entries": entries,
-            "hint": ("nothing matched — the list tool shows what is stored"
-                     if not entries else
-                     "read a ref for its content (bounded; find= returns just the "
-                     "matching parts of a large item)"),
-        }
+            shown = offset + len(entries)
+            out["total"] = total
+            out["offset"] = offset
+            out["next_offset"] = shown if shown < total else None
+        return out
 
     async def _handle_context_read(
         self,

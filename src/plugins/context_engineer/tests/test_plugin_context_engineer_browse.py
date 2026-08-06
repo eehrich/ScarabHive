@@ -144,16 +144,29 @@ class TestListMakesTheHistoryVisible:
         assert {e["role"] for e in page["entries"]} == {"user"}
 
     @pytest.mark.asyncio
+    async def test_role_narrows_a_filtered_search_too(self, hooks, session):
+        """Accepting the parameter and ignoring it is worse than not offering
+        it: the caller believes the result was narrowed."""
+        all_hits = await hooks._handle_context_list(
+            section="history", filter="blitter", limit=50, session_id=session)
+        user_only = await hooks._handle_context_list(
+            section="history", filter="blitter", role="user", limit=50,
+            session_id=session)
+
+        assert user_only["count"] < all_hits["count"]
+        assert {e["role"] for e in user_only["entries"]} == {"user"}
+
+    @pytest.mark.asyncio
     async def test_unknown_section_names_the_valid_ones(self, hooks, session):
         result = await hooks._handle_context_list(section="nope", session_id=session)
         assert result["status"] == "error"
         assert "history" in result["sections"]
 
 
-class TestSearchReturnsPointers:
+class TestFilteringReturnsExcerpts:
     @pytest.mark.asyncio
     async def test_hits_carry_refs_and_snippets_not_bodies(self, hooks, session):
-        result = await hooks._handle_context_search(query="blitter", session_id=session)
+        result = await hooks._handle_context_list(filter="blitter", session_id=session)
         assert result["count"] > 0
         for e in result["entries"]:
             assert "content" not in e
@@ -163,7 +176,7 @@ class TestSearchReturnsPointers:
     async def test_finds_inside_stored_tool_output(self, hooks, session):
         """Most of an agent's archived context IS tool output — a search that
         only covers messages misses what it is usually asked about."""
-        result = await hooks._handle_context_search(query="Kapitel 3", session_id=session)
+        result = await hooks._handle_context_list(filter="Kapitel 3", session_id=session)
         hits = [e for e in result["entries"] if e["kind"] == "tool_result"]
         assert hits, "stored tool results were not searched"
         assert "Kapitel 3" in hits[0]["match"]
@@ -171,17 +184,37 @@ class TestSearchReturnsPointers:
     @pytest.mark.asyncio
     async def test_a_hit_can_be_read(self, hooks, session):
         """The two verbs must compose: search gives a ref, read takes it."""
-        found = await hooks._handle_context_search(query="blitter", session_id=session)
+        found = await hooks._handle_context_list(filter="blitter", session_id=session)
         ref = next(e["ref"] for e in found["entries"] if e["kind"] == "message")
         result = await hooks._handle_context_read(ref=ref, session_id=session)
         assert result["status"] == "success"
         assert "blitter" in result["content"]
 
     @pytest.mark.asyncio
-    async def test_empty_query_points_at_list(self, hooks, session):
-        result = await hooks._handle_context_search(query="  ", session_id=session)
+    async def test_all_without_a_filter_is_refused(self, hooks, session):
+        """Browsing pages through ONE store in a defined order; 'all' has no
+        order to page through, so it only means something with a filter."""
+        result = await hooks._handle_context_list(section="all", session_id=session)
         assert result["status"] == "error"
-        assert "list" in result["hint"]
+        assert "filter" in result["hint"]
+
+    @pytest.mark.asyncio
+    async def test_the_section_default_follows_the_intent(self, hooks, session):
+        """Browsing defaults to the conversation, filtering to everything —
+        and the reply says which it used, so it is visible, not hidden."""
+        browsing = await hooks._handle_context_list(session_id=session)
+        filtering = await hooks._handle_context_list(filter="blitter", session_id=session)
+        assert browsing["section"] == "history"
+        assert filtering["section"] == "all"
+
+    @pytest.mark.asyncio
+    async def test_browsing_pages_but_filtering_does_not_pretend_to(self, hooks, session):
+        """Filtered hits are ranked, not ordered — offering a next_offset would
+        promise a stable page that does not exist."""
+        browsing = await hooks._handle_context_list(session_id=session, limit=5)
+        filtering = await hooks._handle_context_list(filter="blitter", session_id=session)
+        assert browsing["next_offset"] == 5
+        assert "next_offset" not in filtering
 
 
 class TestReferencesAreDeclaredNotGuessed:
@@ -410,11 +443,11 @@ class TestRetrievalResultsSurviveCompaction:
         srv._hooks_impl = hooks
 
         listed = await srv.list({"_session_id": session})
-        found = await srv.search({"query": "blitter", "_session_id": session})
+        found = await srv.list({"filter": "blitter", "_session_id": session})
         got = await srv.read({"ref": listed["entries"][0]["ref"],
                               "_session_id": session})
 
-        for name, result in (("list", listed), ("search", found), ("read", got)):
+        for name, result in (("list", listed), ("list+filter", found), ("read", got)):
             assert result.get(RETRIEVAL_MARKER) is True, f"{name} did not mark its answer"
 
 

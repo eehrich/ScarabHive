@@ -40,8 +40,8 @@ The Context Engineer plugin provides intelligent context management to prevent t
 │                    └───────────────────────┘                        │
 │                                                                     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Hook: pre_llm_call  │  Tools: recall, store_fact, get_variable,   │
-│                      │         get_tool_result, stats, compact      │
+│  Hook: pre_llm_call  │  Tools: list, read, store_fact,             │
+│                      │         stats, compact  (recall: deprecated) │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -173,25 +173,40 @@ The plugin exposes these tools to the agent:
 
 | Tool | Description |
 |------|-------------|
-| `list` | Browse what is stored — refs and summaries, no content |
-| `search` | Find stored content — refs plus a matching snippet, no content |
+| `list` | Browse what is stored, or filter it — refs, summaries, excerpts; no bodies |
 | `read` | Read ONE ref, always bounded, says how to continue |
 | `store_fact` | Add important fact to core memory |
 | `stats` | Get current context statistics |
 | `compact` | Manually trigger compaction |
-| `recall` | **Deprecated** — the single guessing tool the three verbs replace |
+| `recall` | **Deprecated** — the single guessing tool these two replace |
 
-### list / search / read
+### list / read
 
-The retrieval surface is the triad every model is already fluent in — `ls`,
-`grep`, `read` — pointed at the agent's own conversation instead of a
-filesystem. Three properties carry it:
+Browsing and finding are ONE verb: they answer one question and hand back one
+shape. `list` alone pages through what is stored; `list(filter=…)` narrows the
+same rows to what matches, each carrying the matching excerpt. `read` is the
+only thing that returns a whole item, and only in bounded pieces.
 
-**Search and list return pointers, never bodies.** Content comes only from an
-explicit `read`. The tool these replaced returned a stored tool result whole:
-measured in production at 134k characters in a single call, which undid the
-compaction that had put it away and usually delivered far more than the agent
-needed.
+Two tools rather than three because a separate `search` duplicated the row
+format for one extra parameter — and rather than one, because `read` needs `ref`
+to be a *required* field. Folding it in would leave `operation` as the only
+thing the schema can demand, and a `read` without a ref would stop being an
+API-level rejection and become a runtime error.
+
+**Neither returns bodies.** Content comes only from an explicit `read`. The tool
+these replaced returned a stored tool result whole: measured in production at
+134k characters in a single call, which undid the compaction that had put it
+away and usually delivered far more than the agent needed. A filter's excerpt
+(~460 chars around the hit) is frequently the whole answer, so the ref is an
+option rather than a second required round-trip.
+
+**Browsing and filtering differ in one respect, and it is visible.** Browsing
+pages through ONE store in a defined order, so `section` defaults to the
+conversation and the reply carries `next_offset`. Filtering has no order across
+stores, so it searches all of them and offers no `next_offset` — promising a
+stable next page that does not exist would be the same silent untruth as a
+truncated answer with no way to continue. The reply always echoes the `section`
+it used.
 
 **Every read is bounded and says how to continue.** `next_offset` in the reply is
 the difference between a truncated answer and a dead end. For a large item,
@@ -219,11 +234,12 @@ view.
 
 ```yaml
 # What is in my archived history?
-list: {section: history, limit: 20}          # -> refs + summaries + next_offset
+list: {}                                     # -> refs + summaries + next_offset
+list: {offset: 20}                           # next page
 list: {section: tool_results}                # stored tool outputs
 
-# Find it by keyword (searches messages, tool outputs and facts)
-search: {query: "database optimization"}     # -> refs + snippets
+# Find it by keyword (messages, tool outputs, variables and facts)
+list: {filter: "database optimization"}      # -> refs + matching excerpts
 
 # Read one of them
 read: {ref: "TR_abc123"}                     # first 2000 chars + next_offset

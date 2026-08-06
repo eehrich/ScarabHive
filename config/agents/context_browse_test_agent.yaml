@@ -25,12 +25,11 @@ plugins:
 
         tools:
           allowed:
-            # Bewusst NUR die drei Verben: mit store_fact würde der Agent die
+            # Bewusst NUR die beiden Verben: mit store_fact würde der Agent die
             # gesuchte Information in den System-Prompt legen und käme nie ans
             # Archiv — der Test prüfte dann etwas anderes als gemeint. recall
             # ist ebenfalls draußen, damit der neue Weg allein tragen muss.
             - "context_engineer/context_engineer_list"
-            - "context_engineer/context_engineer_search"
             - "context_engineer/context_engineer_read"
             - "datetime/*"
 
