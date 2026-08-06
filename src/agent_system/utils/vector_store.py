@@ -376,6 +376,33 @@ class VectorStore:
             return None
     
     @_synchronized
+    def list_ids(self, collection: str) -> List[str]:
+        """Alle IDs einer Collection.
+
+        Gebraucht fuer inkrementelles Indizieren: wer wissen will, WAS
+        fehlt, braucht die Menge des Vorhandenen — ``count()`` allein
+        sagt nur, wie viel. Ohne diese Methode musste jeder Aufrufer
+        entweder alles neu indizieren oder am Backend vorbei selbst in
+        die Ablage greifen.
+
+        Existiert die Collection nicht, ist die Antwort eine leere Liste
+        (kein Fehler): "noch nichts indiziert" ist ein gueltiger Zustand,
+        kein Ausnahmefall.
+        """
+        if self._backend == "chromadb":
+            try:
+                coll = self._get_chromadb_collection(collection)
+                return list(coll.get(include=[]).get("ids") or [])
+            except Exception as e:
+                logger.debug("list_ids(%s): %s", collection, e)
+                return []
+        self._ensure_sqlite_vec_table(collection)
+        rows = self._get_sqlite_conn().execute(
+            f"SELECT item_id FROM meta_{collection}"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    @_synchronized
     def count(self, collection: str) -> int:
         """Get the number of documents in a collection."""
         if self._backend == "chromadb":
@@ -684,10 +711,19 @@ class VectorStore:
         conn = self._get_sqlite_conn()
         
         # Create vec0 virtual table
+        # ``distance_metric=cosine`` ist TRAGEND, nicht Geschmack: ohne die
+        # Angabe rechnet vec0 mit L2, ChromaDB aber mit Cosinus. Beide
+        # Backends lieferten dann Distanzen auf VERSCHIEDENEN Skalen, und
+        # jeder Konsument, der daraus eine Aehnlichkeit macht, bekommt beim
+        # Fallback stillschweigend falsche Werte. Gemessen 2026-08-06:
+        # dieselbe Suche ergab unter Chroma Distanz ~0,46 (Aehnlichkeit
+        # 0,77) und unter sqlite-vec ~1,36 (0,32) — unter einem
+        # Mindest-Schwellwert von 0,5 fiel im Fallback JEDER Treffer weg.
+        # Die Suche meldete dann null Ergebnisse statt eines Fehlers.
         conn.execute(f'''
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_{collection} USING vec0(
                 item_id TEXT PRIMARY KEY,
-                embedding FLOAT[{EMBEDDING_DIM}]
+                embedding FLOAT[{EMBEDDING_DIM}] distance_metric=cosine
             )
         ''')
         
