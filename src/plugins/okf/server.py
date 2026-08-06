@@ -397,14 +397,44 @@ class OkfServer(SchemaBasedMCPServer):
                     "available": siblings_of(wanted, known)}
         text = abs_path.read_text(encoding="utf-8")
         fm, body, err = core.parse_frontmatter(text)
+
+        # Seitenweise lesen. Eine Wiki-Seite kann gross werden, ohne die
+        # harte Grenze zu reissen — der Fall-Ledger eines Buchs lag
+        # gemessen bei 70 KB (2026-08-06), also rund 17.000 Token fuer
+        # EINEN Aufruf. Das flutet den Kontext, lange bevor irgendetwas
+        # abgeschnitten wird. Zeilenbasiert und mit denselben Parameter-
+        # namen wie `writer_content_batch_scene`, damit ein Agent nicht
+        # zwei Konventionen lernen muss.
+        alle = body.split("\n")
+        start = max(1, int(params.get("start_line") or 1))
+        anzahl = params.get("line_count")
+        anzahl = int(anzahl) if anzahl else None
+        ausschnitt = alle[start - 1:(start - 1 + anzahl) if anzahl else None]
+        rest = len(alle) - (start - 1) - len(ausschnitt)
+
         await status.end(
             f"read {params.get('path')} — {len(text)} chars"
+            + (f", Zeilen {start}-{start + len(ausschnitt) - 1} von {len(alle)}"
+               if (anzahl or start > 1) else "")
             + (f", type={fm.get('type')}" if fm and fm.get("type") else "")
             + (" (frontmatter parse error)" if err else "")
         )
-        return {"status": "ok", "path": params.get("path"),
-                "frontmatter": dict(fm) if fm else None, "body": body,
-                "parse_error": err}
+        out = {"status": "ok", "path": params.get("path"),
+               "frontmatter": dict(fm) if fm else None,
+               "body": "\n".join(ausschnitt),
+               "parse_error": err,
+               "lines_total": len(alle),
+               "line_start": start,
+               "lines_returned": len(ausschnitt)}
+        # Der Rest darf NICHT stillschweigend fehlen: wer eine halbe Seite
+        # fuer die ganze haelt, urteilt ueber Text, den er nie gesehen hat.
+        if rest > 0:
+            out["lines_remaining"] = rest
+            out["hint"] = (
+                f"{rest} Zeile(n) folgen noch — weiterlesen mit "
+                f"start_line={start + len(ausschnitt)}."
+            )
+        return out
 
     async def write_concept(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Write (create/overwrite) a concept. Enforces the format: a non-empty

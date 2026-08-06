@@ -26,6 +26,9 @@ tools:
       description: |
         Read one concept document: returns its YAML frontmatter (all keys
         preserved, including producer-specific extras) and its markdown body.
+        The body can be read in slices via start_line/line_count — the reply
+        always carries lines_total, and lines_remaining plus a hint whenever
+        something is left, so a partial read is never mistaken for the whole.
       parameters:
         type: object
         properties:
@@ -35,6 +38,15 @@ tools:
           path:
             type: string
             description: "Bundle-relative concept path, e.g. /tables/orders.md"
+          start_line:
+            type: integer
+            minimum: 1
+            default: 1
+            description: "First body line to return (1-based). Omit for the whole body."
+          line_count:
+            type: integer
+            minimum: 1
+            description: "How many body lines to return. Omit for everything from start_line on."
         required: ["bundle", "path"]
         additionalProperties: false
 

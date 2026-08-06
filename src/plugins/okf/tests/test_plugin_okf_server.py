@@ -733,3 +733,57 @@ class TestNotFoundGuidance:
         res = await server.neighbors(
             {"bundle": str(bundle), "path": "/tables/oders.md"})
         assert res["did_you_mean"] == "/tables/orders.md"
+
+
+class TestReadConceptPaginierung:
+    """Eine Wiki-Seite kann gross werden, ohne die harte Lesegrenze zu
+    reissen: der Fall-Ledger eines Buchs lag gemessen bei 70 KB
+    (2026-08-06). Wer sie stueckweise lesen will, muss das koennen — und
+    wer nur ein Stueck bekommt, MUSS es erfahren, sonst urteilt er ueber
+    Text, den er nie gesehen hat."""
+
+    @pytest.fixture
+    def gross(self, tmp_path):
+        root = tmp_path / "gross_bundle"
+        root.mkdir()
+        (root / "lang.md").write_text(
+            "---\ntype: notiz\n---\n"
+            + "\n".join(f"Zeile {i}" for i in range(1, 51)),
+            encoding="utf-8")
+        return root
+
+    @pytest.mark.asyncio
+    async def test_ohne_angabe_kommt_alles(self, server, gross):
+        """Der Default darf sich NICHT aendern — bestehende Aufrufer
+        bekommen weiter die ganze Seite."""
+        res = await server.read_concept({"bundle": str(gross),
+                                         "path": "lang.md"})
+        assert res["status"] == "ok"
+        assert res["lines_total"] == 50
+        assert "lines_remaining" not in res
+        assert res["body"].splitlines()[-1] == "Zeile 50"
+
+    @pytest.mark.asyncio
+    async def test_ausschnitt_und_hinweis_auf_den_rest(self, server, gross):
+        res = await server.read_concept({
+            "bundle": str(gross), "path": "lang.md",
+            "start_line": 11, "line_count": 5,
+        })
+        assert res["body"].splitlines() == [f"Zeile {i}" for i in range(11, 16)]
+        assert res["lines_returned"] == 5
+        assert res["lines_remaining"] == 35
+        assert "start_line=16" in res["hint"], (
+            "der Hinweis muss sagen, WIE es weitergeht — sonst raet der "
+            "Aufrufer die naechste Position"
+        )
+
+    @pytest.mark.asyncio
+    async def test_letzter_ausschnitt_meldet_keinen_rest(self, server, gross):
+        res = await server.read_concept({
+            "bundle": str(gross), "path": "lang.md", "start_line": 16,
+        })
+        assert res["body"].splitlines()[-1] == "Zeile 50"
+        assert "lines_remaining" not in res, (
+            "ein vollstaendig gelesener Rest darf keinen Weiterlese-Hinweis "
+            "tragen — sonst laeuft ein Agent im Kreis"
+        )
