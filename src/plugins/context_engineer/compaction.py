@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -135,6 +136,49 @@ class CompactionResult:
         if self.original_tokens == 0:
             return 0.0
         return ((self.original_tokens - self.final_tokens) / self.original_tokens) * 100
+
+
+#: Marker of the JSON placeholder that replaces an archived message in place.
+ARCHIVED_REF_TYPE = "archived_ref"
+
+#: Key the retrieval tools put in their own answers so compaction can recognise
+#: them. Deliberately NOT a tool-name match: the tool names are built from the
+#: server name in plugins.yaml, so renaming the server there would silently
+#: switch the exemption off and bring the retrieval loop back. The answer
+#: identifying itself survives any renaming.
+RETRIEVAL_MARKER = "retrieval_result"
+
+
+def _is_retrieval_result(message: dict[str, Any]) -> bool:
+    """Whether a tool message is an answer from the context-retrieval tools.
+
+    Their output is content the agent just pulled OUT of storage; putting it
+    straight back is a loop with no exit (see the call site).
+    """
+    content = message.get("content")
+    if not isinstance(content, str) or RETRIEVAL_MARKER not in content:
+        return False
+    try:
+        data = json.loads(content)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get(RETRIEVAL_MARKER) is True
+
+
+def _is_archive_pointer(message: dict[str, Any]) -> bool:
+    """Whether a message is ALREADY the placeholder left by a previous archival.
+
+    Cheap substring test before the JSON parse: this runs over every message on
+    every compaction, and the vast majority are ordinary text.
+    """
+    content = message.get("content")
+    if not isinstance(content, str) or ARCHIVED_REF_TYPE not in content[:120]:
+        return False
+    try:
+        data = json.loads(content)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("type") == ARCHIVED_REF_TYPE
 
 
 class LayeredCompactionStrategy:
@@ -1391,7 +1435,19 @@ class LayeredCompactionStrategy:
                 should_archive = token_count >= self.config.tool_result_min_size and (
                     is_extremely_large or is_too_large or is_old_enough
                 )
-                
+
+                # A retrieval tool's OWN answer must stay in the conversation.
+                # Storing it away replaces the content the agent just fetched
+                # with a reference to it — the agent asks again, that answer is
+                # stored too, and retrieval can never complete. Observed live:
+                # 25 read results externalised in one turn, the first of which
+                # already contained the answer the agent then reported missing.
+                if should_archive and _is_retrieval_result(msg):
+                    logger.debug(
+                        "Keeping retrieval result %s inline (externalising it "
+                        "would undo the retrieval)", msg.get("name"))
+                    should_archive = False
+
                 if should_archive:
                     # Store and replace with reference
                     tool_name = msg.get("name", "unknown")
@@ -1491,15 +1547,25 @@ class LayeredCompactionStrategy:
         
         for i, msg in enumerate(messages):
             role = msg.get("role")
-            
+
             # Never archive system messages if configured
             if role == "system" and self.config.keep_system_messages:
                 continue
-            
+
+            # Already a pointer into the archive — archiving it again stores a
+            # pointer to a pointer and gains nothing, because the content is
+            # long gone from this message. Measured before this guard: chains 20
+            # levels deep, 637 of 1286 entries in one session being nothing but
+            # pointers, and the summaries degrading to `User: {"type":
+            # "archived_ref"...}`. An agent following such a ref never reaches
+            # the text, which is what made retrieval look broken.
+            if _is_archive_pointer(msg):
+                continue
+
             # Calculate message age in turns
             message_turn = sum(1 for ui in user_indices if ui <= i)
             turns_old = current_turn - message_turn
-            
+
             if turns_old >= self.config.archive_after_turns:
                 indices_to_archive.add(i)
                 
@@ -1515,6 +1581,13 @@ class LayeredCompactionStrategy:
                     if tc_id and tc_id in tool_map:
                         indices_to_archive.update(tool_map[tc_id])
         
+        # Drop placeholders that entered through the tool-pair expansion above:
+        # that branch adds indices directly, so the per-message guard never sees
+        # them. Measured after guarding only the loop, 13 of 57 entries in a live
+        # session were still pointers — all of them halves of a tool pair.
+        indices_to_archive = {i for i in indices_to_archive
+                              if not _is_archive_pointer(messages[i])}
+
         # Archive collected messages
         for i in indices_to_archive:
             msg = messages[i]

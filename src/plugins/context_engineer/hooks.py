@@ -6,7 +6,9 @@ layered compaction strategies to optimize context usage.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -19,10 +21,110 @@ from .archival_memory import ArchivalMemory
 from .compaction import CompactionConfig, LayeredCompactionStrategy
 from .core_memory import CoreMemory
 from .media_store import MediaStore
+from .paging import (
+    DEFAULT_READ_CHARS,
+    MAX_READ_CHARS,
+    find_in_text,
+    slice_text,
+)
 from .tool_result_store import ToolResultStore
 from .variable_manager import VariableManager
 
 logger = logging.getLogger(__name__)
+
+#: What the list tool can browse. Named sections, not guessed ones — the whole
+#: point of replacing `recall` is that the caller says which store it means.
+CONTEXT_SECTIONS = ("history", "tool_results", "variables", "facts")
+
+#: Rows per list page. A map has to fit in the context it is describing.
+MAX_LIST_LIMIT = 50
+
+#: Reference shapes, in the order they are tested. Each store owns a distinct
+#: prefix, so dispatch is a lookup rather than the heuristic `recall` used.
+_REF_PATTERNS = (
+    ("variable", re.compile(r"\A\$?VAR_\d+\Z", re.IGNORECASE)),
+    ("tool_result", re.compile(r"\A\$?(TR_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+)\Z")),
+    ("message", re.compile(r"\Aarch_[A-Za-z0-9]+\Z")),
+)
+
+#: File suffixes that mean "a stored media file", not a text reference.
+_MEDIA_SUFFIXES = frozenset({
+    ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+    ".mp4", ".webm", ".avi", ".mov",
+})
+
+
+def _ref_kind(ref: str) -> str | None:
+    """Which store a reference belongs to, or None if it is not a reference."""
+    candidate = (ref or "").strip()
+    if not candidate:
+        return None
+    for kind, pattern in _REF_PATTERNS:
+        if pattern.match(candidate):
+            return kind
+    if Path(candidate).suffix.lower() in _MEDIA_SUFFIXES:
+        return "media"
+    return None
+
+
+#: How far a pointer chain is followed before giving up. Chains are a defect
+#: (see _is_archive_pointer in compaction.py); archives written before the fix
+#: hold them up to 20 deep, so the walk has to be generous — but bounded, or a
+#: cycle in damaged data would hang the turn.
+MAX_ARCHIVE_HOPS = 32
+
+
+def _resolve_archive_chain(archival: "ArchivalMemory", ref: str):
+    """Follow ``archived_ref`` pointers to the entry that holds real content.
+
+    Archives written before compaction stopped re-archiving its own
+    placeholders contain pointers to pointers — measured 20 levels deep, with
+    the original text alive at the bottom. Without this walk every read of such
+    a ref returns another placeholder, and the content is unreachable even
+    though it is still there.
+
+    Returns ``(entry_or_None, hops_followed)``.
+    """
+    seen: set[str] = set()
+    current = ref
+    hops = 0
+    while hops <= MAX_ARCHIVE_HOPS:
+        if current in seen:          # damaged data can point in a circle
+            return None, hops
+        seen.add(current)
+        entry = archival.get(current)
+        if entry is None:
+            return None, hops
+        content = entry.content or ""
+        if "archived_ref" not in content[:120]:
+            return entry, hops
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            return entry, hops
+        nxt = data.get("ref_id") if isinstance(data, dict) else None
+        if not isinstance(nxt, str) or not nxt:
+            return entry, hops
+        current, hops = nxt, hops + 1
+    return None, hops
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse to a single bounded line — list rows must stay scannable."""
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _around(content: str, needle: str, context_chars: int) -> str:
+    """The part of ``content`` around the first hit, or its head if none."""
+    text = content or ""
+    idx = text.lower().find((needle or "").lower())
+    if idx < 0:
+        return text[: context_chars * 2]
+    start = max(0, idx - context_chars)
+    end = min(len(text), idx + len(needle) + context_chars)
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
 #: Markiert die eigene System-Injektion ("Stored Information"), damit sie beim
 #: naechsten Turn ERSETZT statt ein zweites Mal eingefuegt wird. Gleiche
@@ -1459,3 +1561,264 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             del self._session_components[session_id]
             
             logger.debug(f"Cleaned up session components for {session_id}")
+
+    # ------------------------------------------------------------------
+    # list / search / read — the browsing surface over stored context
+    #
+    # Replaces the single `recall` tool, which took a free-text query and
+    # guessed from its shape which of five stores was meant. The guess was
+    # documented as misfiring (agents writing "$TR_…" landed in the variable
+    # handler), and the stores answered in four different shapes, so no stable
+    # expectation could form. These three verbs are the ones every model is
+    # already fluent in: what is there, where is it, give me a piece of it.
+    # ------------------------------------------------------------------
+
+    async def _handle_context_list(
+        self,
+        section: str = "history",
+        offset: int = 0,
+        limit: int = 20,
+        role: str | None = None,
+        session_id: str = "default",
+    ) -> dict[str, Any]:
+        """A map of what is stored: addresses and one-line summaries, no bodies."""
+        limit = max(1, min(int(limit), MAX_LIST_LIMIT))
+        offset = max(0, int(offset))
+        components = self._get_session_components(session_id)
+        entries: list[dict[str, Any]]
+
+        if section == "history":
+            archival: ArchivalMemory = components["archival_memory"]
+            total = archival.count_session_messages(session_id, role=role)
+            entries = [
+                {
+                    "ref": m.id,
+                    "kind": "message",
+                    "role": m.role,
+                    "tool": m.tool_name,
+                    "tokens": m.token_count,
+                    "at": m.timestamp.isoformat(),
+                    "summary": _one_line(m.summary or "", 200),
+                }
+                for m in archival.get_session_messages(
+                    session_id=session_id, limit=limit, role=role, offset=offset)
+            ]
+        elif section == "tool_results":
+            tool_store: ToolResultStore = components["tool_store"]
+            total = tool_store.count_entries(session_id)
+            entries = [
+                {
+                    "ref": r["ref"], "kind": "tool_result", "tool": r["tool"],
+                    "tokens": r["tokens"], "at": r["at"], "chars": r["chars"],
+                    "summary": _one_line(r.get("summary") or "", 200),
+                }
+                for r in tool_store.list_entries(session_id, offset=offset, limit=limit)
+            ]
+        elif section == "variables":
+            variable_manager: VariableManager = components["variable_manager"]
+            rows = variable_manager.get_stats().get("variables", [])
+            total = len(rows)
+            entries = [
+                {
+                    "ref": r["name"], "kind": "variable",
+                    "content_type": r.get("content_type"), "tokens": r.get("tokens"),
+                    "summary": _one_line(r.get("preview") or "", 200),
+                }
+                for r in rows[offset:offset + limit]
+            ]
+        elif section == "facts":
+            core_memory: CoreMemory = components["core_memory"]
+            facts = list(core_memory.facts)
+            total = len(facts)
+            entries = [
+                {
+                    "ref": None, "kind": "fact",
+                    "category": getattr(f, "category", None),
+                    "importance": getattr(f, "importance", None),
+                    "summary": _one_line(getattr(f, "content", ""), 400),
+                }
+                for f in facts[offset:offset + limit]
+            ]
+        else:
+            return {
+                "status": "error",
+                "error": f"unknown section '{section}'",
+                "sections": list(CONTEXT_SECTIONS),
+            }
+
+        shown = offset + len(entries)
+        return {
+            "status": "success",
+            "section": section,
+            "total": total,
+            "offset": offset,
+            "count": len(entries),
+            "next_offset": shown if shown < total else None,
+            "entries": entries,
+        }
+
+    async def _handle_context_search(
+        self,
+        query: str,
+        session_id: str = "default",
+        limit: int = 8,
+        section: str = "all",
+    ) -> dict[str, Any]:
+        """Find stored content — returns POINTERS with a matching snippet.
+
+        Never bodies: the agent picks a ref and reads it with an explicit
+        budget. A search that returns content is how a retrieval tool ends up
+        refilling the very context it was meant to relieve.
+        """
+        if not query or not str(query).strip():
+            return {"status": "error", "error": "query is required",
+                    "hint": "to browse without a query use the list tool"}
+        query = str(query).strip()
+        limit = max(1, min(int(limit), 20))
+        components = self._get_session_components(session_id)
+        entries: list[dict[str, Any]] = []
+
+        if section in ("all", "history"):
+            archival: ArchivalMemory = components["archival_memory"]
+            for m in archival.search(query, session_id=session_id, limit=limit):
+                entries.append({
+                    "ref": m.id, "kind": "message", "role": m.role,
+                    "tool": m.tool_name, "tokens": m.token_count,
+                    "at": m.timestamp.isoformat(),
+                    "summary": _one_line(m.summary or "", 200),
+                    "match": _one_line(_around(m.content, query, 200), 460),
+                })
+
+        if section in ("all", "tool_results"):
+            tool_store: ToolResultStore = components["tool_store"]
+            for r in tool_store.search_entries(query, session_id=session_id, limit=limit):
+                entries.append({
+                    "ref": r["ref"], "kind": "tool_result", "tool": r["tool"],
+                    "tokens": r["tokens"], "at": r["at"], "chars": r["chars"],
+                    "match": _one_line(r["match"], 460),
+                })
+
+        if section in ("all", "facts"):
+            core_memory: CoreMemory = components["core_memory"]
+            needle = query.lower()
+            for f in core_memory.facts:
+                content = getattr(f, "content", "")
+                if needle in content.lower():
+                    entries.append({
+                        "ref": None, "kind": "fact",
+                        "category": getattr(f, "category", None),
+                        "match": _one_line(content, 460),
+                    })
+
+        return {
+            "status": "success",
+            "query": query,
+            "section": section,
+            "count": len(entries),
+            "entries": entries,
+            "hint": ("nothing matched — the list tool shows what is stored"
+                     if not entries else
+                     "read a ref for its content (bounded; find= returns just the "
+                     "matching parts of a large item)"),
+        }
+
+    async def _handle_context_read(
+        self,
+        ref: str,
+        session_id: str = "default",
+        offset: int = 0,
+        limit: int | None = None,
+        find: str | None = None,
+    ) -> dict[str, Any]:
+        """Read ONE stored item by address, always bounded.
+
+        The address decides the store — a declared reference, not a guess from
+        free text. An unrecognised ref is an error naming the valid shapes,
+        never a silent fallback into a keyword search.
+        """
+        ref = str(ref or "").strip()
+        if not ref:
+            return {"status": "error", "error": "ref is required",
+                    "hint": "get a ref from the list or search tool"}
+
+        kind = _ref_kind(ref)
+        if kind is None:
+            return {
+                "status": "error",
+                "error": f"'{ref}' is not a known reference",
+                "hint": ("refs look like arch_… (archived message), TR_… (tool "
+                         "result), $VAR_n (variable) or a media file path; "
+                         "list and search return valid refs"),
+            }
+
+        components = self._get_session_components(session_id)
+
+        if kind == "message":
+            archival: ArchivalMemory = components["archival_memory"]
+            entry, hops = _resolve_archive_chain(archival, ref)
+            if entry is None:
+                return {"status": "error", "ref": ref, "kind": kind,
+                        "error": f"no archived message '{ref}'",
+                        "hint": "list(section='history') shows valid refs"}
+            base = {
+                "status": "success", "ref": ref, "kind": "message",
+                "role": entry.role, "tool": entry.tool_name,
+                "tokens": entry.token_count, "at": entry.timestamp.isoformat(),
+                "summary": _one_line(entry.summary or "", 200),
+            }
+            if hops:
+                # Say it rather than quietly hand back different content than
+                # the ref names — the chain is a defect being worked around.
+                base["resolved_ref"] = entry.id
+                base["resolved_through"] = hops
+            if find:
+                return {**base, **find_in_text(entry.content, find)}
+            return {**base, **slice_text(entry.content, offset=offset, limit=limit)}
+
+        if kind == "media":
+            result = await self._handle_restore_multimodal(path=ref, session_id=session_id)
+            return {"status": "success", "ref": ref, "kind": "media", **result}
+
+        # Variables and tool results already page internally — reuse that instead
+        # of implementing the slicing a third time, then normalise the answer so
+        # every read looks the same to the model.
+        if kind == "variable":
+            legacy = await self._handle_get_variable(
+                variable_name=ref, session_id=session_id,
+                mode="search" if find else "chunk",
+                offset=offset, limit=min(int(limit or DEFAULT_READ_CHARS), MAX_READ_CHARS),
+                search=find)
+            name_key = "variable_name"
+        else:
+            legacy = await self._handle_get_tool_result(
+                reference=ref.lstrip("$"), session_id=session_id,
+                mode="search" if find else "chunk",
+                offset=offset, limit=min(int(limit or DEFAULT_READ_CHARS), MAX_READ_CHARS),
+                search=find)
+            name_key = "tool_name"
+
+        if not legacy.get("found"):
+            return {"status": "error", "ref": ref, "kind": kind,
+                    "error": legacy.get("error", "not found"),
+                    "hint": "list and search return valid refs"}
+
+        out: dict[str, Any] = {
+            "status": "success", "ref": ref, "kind": kind,
+            "tool": legacy.get(name_key),
+            "total_chars": legacy.get("total_chars"),
+        }
+        if find:
+            matches = legacy.get("matches", [])
+            return {**out, "matches": matches, "match_count": len(matches)}
+
+        returned = legacy.get("returned_chars", 0)
+        total = legacy.get("total_chars") or 0
+        end = offset + returned
+        return {
+            **out,
+            "content": legacy.get("content", ""),
+            "offset": offset,
+            "returned_chars": returned,
+            "truncated": end < total or offset > 0,
+            "next_offset": end if end < total else None,
+        }

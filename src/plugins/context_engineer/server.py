@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 from agent_system.hooks.plugin_hook import HookContext, HookResult, PluginHook
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
+from .compaction import RETRIEVAL_MARKER
+
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
 
@@ -744,6 +746,126 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             
         except Exception as e:
             logger.exception(f"Error in restore_multimodal: {e}")
+            if status:
+                await status.error(str(e))
+            return {"status": "error", "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # list / search / read — see hooks._handle_context_* for the rationale
+    # ------------------------------------------------------------------
+
+    async def list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Browse what is stored: addresses and summaries, never bodies.
+
+        Tool name: {{ name }}_list
+        """
+        status = params.get("_status")
+        section = params.get("section") or "history"
+        try:
+            result = await self._hooks_impl._handle_context_list(
+                section=section,
+                offset=int(params.get("offset") or 0),
+                limit=int(params.get("limit") or 20),
+                role=params.get("role"),
+                session_id=params.get("_session_id", "default"),
+            )
+            if result.get("status") == "success":
+                # Marks this answer as content just pulled OUT of storage,
+                # so compaction does not put it straight back (see
+                # compaction._is_retrieval_result).
+                result[RETRIEVAL_MARKER] = True
+            if status:
+                if result.get("status") == "error":
+                    await status.error(result["error"])
+                else:
+                    shown = result["offset"] + result["count"]
+                    more = f", {result['total'] - shown} more" if result.get("next_offset") else ""
+                    await status.end(
+                        f"{section}: {result['count']} of {result['total']}"
+                        f" (from #{result['offset']}{more})")
+            return result
+        except Exception as e:
+            logger.exception("Error in list: %s", e)
+            if status:
+                await status.error(str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def search(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Find stored content — pointers with a snippet, never bodies.
+
+        Tool name: {{ name }}_search
+        """
+        status = params.get("_status")
+        query = params.get("query") or ""
+        try:
+            if status:
+                await status.progress(f"Searching stored context for '{query}'")
+            result = await self._hooks_impl._handle_context_search(
+                query=query,
+                limit=int(params.get("limit") or 8),
+                section=params.get("section") or "all",
+                session_id=params.get("_session_id", "default"),
+            )
+            if result.get("status") == "success":
+                # Marks this answer as content just pulled OUT of storage,
+                # so compaction does not put it straight back (see
+                # compaction._is_retrieval_result).
+                result[RETRIEVAL_MARKER] = True
+            if status:
+                if result.get("status") == "error":
+                    await status.error(result["error"])
+                else:
+                    kinds: dict[str, int] = {}
+                    for e in result["entries"]:
+                        kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
+                    detail = ", ".join(f"{n} {k}" for k, n in kinds.items()) or "nothing"
+                    await status.end(f"'{query}': {detail}")
+            return result
+        except Exception as e:
+            logger.exception("Error in search: %s", e)
+            if status:
+                await status.error(str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def read(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read one stored item by reference, always bounded.
+
+        Tool name: {{ name }}_read
+        """
+        status = params.get("_status")
+        ref = params.get("ref") or ""
+        try:
+            if status:
+                await status.progress(f"Reading {ref}")
+            result = await self._hooks_impl._handle_context_read(
+                ref=ref,
+                offset=int(params.get("offset") or 0),
+                limit=params.get("limit"),
+                find=params.get("find"),
+                session_id=params.get("_session_id", "default"),
+            )
+            if result.get("status") == "success":
+                # Marks this answer as content just pulled OUT of storage,
+                # so compaction does not put it straight back (see
+                # compaction._is_retrieval_result).
+                result[RETRIEVAL_MARKER] = True
+            if status:
+                if result.get("status") == "error":
+                    await status.error(result["error"])
+                elif result.get("match_count") is not None:
+                    await status.end(
+                        f"{ref}: {result['match_count']} match(es) for '{params.get('find')}'")
+                elif result.get("kind") == "media":
+                    await status.end(f"{ref}: media queued for restoration")
+                else:
+                    total = result.get("total_chars") or 0
+                    got = result.get("returned_chars") or 0
+                    rest = (f", {total - (result.get('offset') or 0) - got} left"
+                            if result.get("next_offset") else "")
+                    await status.end(f"{ref}: {got} of {total} chars{rest}")
+            return result
+        except Exception as e:
+            logger.exception("Error in read: %s", e)
             if status:
                 await status.error(str(e))
             return {"status": "error", "error": str(e)}

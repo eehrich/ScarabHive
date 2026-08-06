@@ -173,34 +173,72 @@ The plugin exposes these tools to the agent:
 
 | Tool | Description |
 |------|-------------|
-| `recall` | Search archived conversation history |
+| `list` | Browse what is stored — refs and summaries, no content |
+| `search` | Find stored content — refs plus a matching snippet, no content |
+| `read` | Read ONE ref, always bounded, says how to continue |
 | `store_fact` | Add important fact to core memory |
-| `get_variable` | Retrieve full content of a variable |
-| `get_tool_result` | Retrieve full tool output by reference |
 | `stats` | Get current context statistics |
 | `compact` | Manually trigger compaction |
+| `recall` | **Deprecated** — the single guessing tool the three verbs replace |
 
-### Tool Examples
+### list / search / read
+
+The retrieval surface is the triad every model is already fluent in — `ls`,
+`grep`, `read` — pointed at the agent's own conversation instead of a
+filesystem. Three properties carry it:
+
+**Search and list return pointers, never bodies.** Content comes only from an
+explicit `read`. The tool these replaced returned a stored tool result whole:
+measured in production at 134k characters in a single call, which undid the
+compaction that had put it away and usually delivered far more than the agent
+needed.
+
+**Every read is bounded and says how to continue.** `next_offset` in the reply is
+the difference between a truncated answer and a dead end. For a large item,
+`find=` returns only the parts that mention something instead of paging through
+all of it.
+
+**References are declared, not guessed.** `recall` inferred from the shape of a
+free-text query which of five stores was meant, and was documented misrouting
+agents who wrote `$TR_…`. Every store owns a prefix, so dispatch is a lookup:
+
+| Ref | Store |
+|---|---|
+| `arch_…` | an archived message |
+| `TR_…`, `call_…` | a stored tool result |
+| `$VAR_n` | a stored content block |
+| `…/file.png` | media to restore |
+
+A ref that is not one of these is an error naming the valid shapes — never a
+silent fallback into a keyword search.
+
+The addresses need not be looked up at all in the common case: compaction leaves
+`{"type":"archived_ref","ref_id":"arch_…","summary":"…"}` exactly where the
+message stood, so the shortest path back is to read the ref that is already in
+view.
 
 ```yaml
-# Recall past conversations
-recall:
-  query: "database optimization"
-  limit: 5
+# What is in my archived history?
+list: {section: history, limit: 20}          # -> refs + summaries + next_offset
+list: {section: tool_results}                # stored tool outputs
 
+# Find it by keyword (searches messages, tool outputs and facts)
+search: {query: "database optimization"}     # -> refs + snippets
+
+# Read one of them
+read: {ref: "TR_abc123"}                     # first 2000 chars + next_offset
+read: {ref: "TR_abc123", offset: 2000}       # the next piece
+read: {ref: "TR_abc123", find: "Kapitel 3"}  # only the matching parts
+```
+
+### Other tools
+
+```yaml
 # Store important fact
 store_fact:
   fact: "User prefers async code patterns"
   category: "preferences"
   importance: 0.9
-
-# Get variable content
-get_variable:
-  name: "$VAR_3"
-
-# Get tool result
-get_tool_result:
-  reference: "call_abc123"
 
 # View stats
 stats: {}

@@ -331,6 +331,91 @@ class ToolResultStore:
         return ToolResultEntry.from_row(row) if row else None
     
     @_synchronized
+    def list_entries(self, session_id: str | None = None, offset: int = 0,
+                     limit: int = 20) -> list[dict[str, Any]]:
+        """Stored results as METADATA rows, newest first — never the content.
+
+        This is the browse half of the contract: an agent asks what is there,
+        picks one, and only then reads it with an explicit budget. Returning
+        bodies here would rebuild the very context the store emptied (measured
+        in production at 134k characters from a single retrieval).
+        """
+        session_id = session_id or self.session_id or "default"
+        cursor = self._db.execute(
+            """
+            SELECT short_id, id, tool_name, token_count, timestamp,
+                   summary, LENGTH(content)
+            FROM tool_results
+            WHERE session_id = ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (session_id, limit, offset),
+        )
+        return [
+            {
+                "ref": row[0] or row[1],
+                "tool_call_id": row[1],
+                "tool": row[2],
+                "tokens": row[3],
+                "at": row[4],
+                "summary": row[5],
+                "chars": row[6],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    @_synchronized
+    def search_entries(self, query: str, session_id: str | None = None,
+                       limit: int = 10, context_chars: int = 200) -> list[dict[str, Any]]:
+        """Find stored results containing ``query``; return a snippet, not the body.
+
+        The bulk of an agent's archived context is tool output, so a search that
+        only covers archived messages misses most of what it is asked about.
+        Plain LIKE rather than an FTS table: results are per-session and few,
+        and a second index would have to be kept in step with the first.
+        """
+        session_id = session_id or self.session_id or "default"
+        if not query:
+            return []
+        # LIKE wildcards inside the needle would silently widen the search.
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cursor = self._db.execute(
+            """
+            SELECT short_id, id, tool_name, token_count, timestamp, content
+            FROM tool_results
+            WHERE session_id = ? AND content LIKE ? ESCAPE '\\'
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (session_id, f"%{escaped}%", limit),
+        )
+        out: list[dict[str, Any]] = []
+        for short_id, entry_id, tool_name, tokens, ts, content in cursor.fetchall():
+            idx = content.lower().find(query.lower())
+            start = max(0, idx - context_chars)
+            end = min(len(content), idx + len(query) + context_chars)
+            out.append({
+                "ref": short_id or entry_id,
+                "tool": tool_name,
+                "tokens": tokens,
+                "at": ts,
+                "chars": len(content),
+                "match": ("…" if start else "") + content[start:end]
+                         + ("…" if end < len(content) else ""),
+            })
+        return out
+
+    @_synchronized
+    def count_entries(self, session_id: str | None = None) -> int:
+        """Total stored results for a session (so a pager can say what's left)."""
+        session_id = session_id or self.session_id or "default"
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM tool_results WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    @_synchronized
     def get_stats(self, session_id: str | None = None) -> dict[str, Any]:
         """Get statistics about stored tool results.
         

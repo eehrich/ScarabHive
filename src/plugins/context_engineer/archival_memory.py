@@ -486,40 +486,84 @@ class ArchivalMemory:
         self,
         session_id: str | None = None,
         limit: int | None = None,
-        role: str | None = None
+        role: str | None = None,
+        offset: int = 0
     ) -> list[ArchivedMessage]:
-        """Get all archived messages for a session.
-        
+        """Get archived messages for a session, oldest first.
+
         Args:
             session_id: Session ID
             limit: Optional limit
             role: Optional role filter
-            
+            offset: Skip this many entries — the other half of paging. Without
+                it a caller can only ever see the first page, which is why the
+                agent-facing tools could not walk the history at all.
+
         Returns:
             List of archived messages
         """
         session_id = session_id or self.session_id or "default"
-        
+
         query = """
             SELECT id, role, content, summary, timestamp, session_id,
                    token_count, metadata, tool_call_id, tool_name
             FROM archived_messages
             WHERE session_id = ?
         """
-        params = [session_id]
-        
+        params: list[Any] = [session_id]
+
         if role:
             query += " AND role = ?"
             params.append(role)
-        
-        query += " ORDER BY timestamp ASC"
-        
+
+        # id as tiebreaker: same-second timestamps are common (a tool call and
+        # its result), and an unstable order would make paging skip or repeat.
+        query += " ORDER BY timestamp ASC, id ASC"
+
         if limit:
             query += " LIMIT ?"
             params.append(limit)
-        
+        elif offset:
+            query += " LIMIT -1"  # SQLite requires a LIMIT before OFFSET
+        if offset:
+            query += " OFFSET ?"
+            params.append(offset)
+
         cursor = self._db.execute(query, params)
         return [ArchivedMessage.from_row(row) for row in cursor.fetchall()]
+
+    @_synchronized
+    def get(self, entry_id: str) -> ArchivedMessage | None:
+        """One archived message by its id — a primary-key lookup.
+
+        The context leaves ``{"type":"archived_ref","ref_id":"arch_…"}`` exactly
+        where the message stood, so reading by that address is the shortest path
+        back to the content. Going through the full-text index for it happens to
+        work but is a coincidence of the id being indexed, not a contract.
+        """
+        row = self._db.execute(
+            """
+            SELECT id, role, content, summary, timestamp, session_id,
+                   token_count, metadata, tool_call_id, tool_name
+            FROM archived_messages WHERE id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        return ArchivedMessage.from_row(row) if row else None
+
+    @_synchronized
+    def count_session_messages(self, session_id: str | None = None,
+                               role: str | None = None) -> int:
+        """How many archived messages a session has — the total a pager needs
+        to tell the agent whether more pages exist."""
+        session_id = session_id or self.session_id or "default"
+        query = "SELECT COUNT(*) FROM archived_messages WHERE session_id = ?"
+        params: list[Any] = [session_id]
+        if role:
+            query += " AND role = ?"
+            params.append(role)
+        row = self._db.execute(query, params).fetchone()
+        return int(row[0]) if row else 0
     
     @_synchronized
     def get_stats(self, session_id: str | None = None) -> dict[str, Any]:

@@ -13,11 +13,138 @@ hooks:
       before: ["context_summarization", "context_optimization", "prompt_injection"]
 
 # MCP Tools - Manual context management controls
+#
+# The browsing surface is list / search / read — the three verbs every model
+# already uses for files, pointed at YOUR OWN conversation instead. `recall`
+# below is the older single tool that guessed from the query which of five
+# stores was meant; it still works but the three verbs are what to reach for.
 tools:
+  - type: function
+    function:
+      name: "{{ name }}_list"
+      description: |
+        Browse YOUR OWN older context that was moved out of the conversation.
+        NOT files on disk — this is your archived history, tool outputs and
+        stored blocks.
+
+        Returns one line per item: its ref, size and a summary. Never content —
+        pick a ref and use read on it.
+
+        Start here when you know something happened earlier but not what it was
+        called. Paginated: pass the returned next_offset to continue.
+
+        - list() → the archived conversation, oldest first
+        - list(section="tool_results") → tool outputs that were stored away
+        - list(section="history", role="tool", limit=50) → only tool messages
+      parameters:
+        type: object
+        properties:
+          section:
+            type: string
+            enum: ["history", "tool_results", "variables", "facts"]
+            default: "history"
+            description: "Which store to browse. 'history' = archived messages."
+          offset:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "Skip this many entries. Use next_offset from the previous page."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+            description: "Entries per page."
+          role:
+            type: string
+            description: "Only for section='history': filter by message role (user/assistant/tool)."
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_search"
+      description: |
+        Search YOUR OWN older context by keyword. NOT files on disk.
+
+        Returns matching items as refs plus the matching snippet — never the
+        full content. Read a ref afterwards to get the actual text.
+
+        Use this when you have words to go on; use list when you do not.
+
+        - search(query="chapter 3 assertions")
+        - search(query="blitter", section="tool_results")
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Words to look for in archived messages, tool outputs and facts."
+          section:
+            type: string
+            enum: ["all", "history", "tool_results", "facts"]
+            default: "all"
+            description: "Restrict the search to one store."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 8
+            description: "Max hits per store."
+        required:
+          - query
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_read"
+      description: |
+        Read ONE stored item by its ref. Always bounded — the answer says how
+        much is left (next_offset) so you can continue.
+
+        Refs come from list/search, or from the placeholder left where the
+        content used to be in this conversation:
+        - arch_… an archived message
+        - TR_…   a stored tool result
+        - $VAR_n a stored content block
+        - a media file path to restore an image/audio
+
+        For a large item, use find= to get only the parts that mention
+        something, instead of paging through all of it.
+
+        - read(ref="TR_abc123")                       → first 2000 chars
+        - read(ref="TR_abc123", offset=2000)          → the next piece
+        - read(ref="TR_abc123", find="Kapitel 3")     → just the matching parts
+      parameters:
+        type: object
+        properties:
+          ref:
+            type: string
+            description: "The reference to read: arch_…, TR_…, $VAR_n or a media path."
+          offset:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "Start position in characters. Use next_offset from the previous read."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 5000
+            default: 2000
+            description: "Max characters to return."
+          find:
+            type: string
+            description: "Return only the parts containing this text (with surrounding context), instead of a chunk."
+        required:
+          - ref
+        additionalProperties: false
+
   - type: function
     function:
       name: "{{ name }}_recall"
       description: |
+        DEPRECATED - prefer list / search / read, which say what they do and
+        always answer in the same shape. Kept so existing agents keep working.
+
         Universal recall tool - retrieve ANY compacted/stored content from context.
         
         This single tool handles ALL content retrieval:
