@@ -29,6 +29,8 @@ tools:
         The body can be read in slices via start_line/line_count — the reply
         always carries lines_total, and lines_remaining plus a hint whenever
         something is left, so a partial read is never mistaken for the whole.
+        A sliced body is for READING only: writing it back would shorten the
+        page to the slice. Read the whole body before an update.
       parameters:
         type: object
         properties:

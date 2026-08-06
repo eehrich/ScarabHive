@@ -406,11 +406,37 @@ class OkfServer(SchemaBasedMCPServer):
         # namen wie `writer_content_batch_scene`, damit ein Agent nicht
         # zwei Konventionen lernen muss.
         alle = body.split("\n")
+        # Ein abschliessender Umbruch ist KEINE Zeile. `split` liefert dafuer
+        # ein leeres Endstueck; wer es mitzaehlt, meldet dem Leser einer
+        # vollstaendig gelesenen Seite noch eine Phantom-Zeile — und schickt
+        # ihn per Hinweis danach los. `render_faelle_md` schreibt genau so,
+        # also traefe das die Datei, fuer die das Blaettern gebaut wurde.
+        schluss_umbruch = bool(alle) and alle[-1] == ""
+        if schluss_umbruch:
+            alle = alle[:-1]
+
         start = max(1, int(params.get("start_line") or 1))
         anzahl = params.get("line_count")
-        anzahl = int(anzahl) if anzahl else None
+        # Das Schema sagt minimum: 1, aber in diesem Pfad prueft es niemand
+        # nach. Ein negativer Wert wuerde vom Ende her schneiden und
+        # irgendeinen Ausschnitt als den angeforderten ausgeben.
+        anzahl = max(1, int(anzahl)) if anzahl else None
+
+        if alle and start > len(alle):
+            msg = (f"start_line={start} liegt hinter dem Ende der Seite — "
+                   f"sie hat {len(alle)} Zeile(n). Nichts gelesen.")
+            await status.error(msg)
+            return {"status": "error", "error": msg, "path": params.get("path"),
+                    "lines_total": len(alle), "line_start": start}
+
         ausschnitt = alle[start - 1:(start - 1 + anzahl) if anzahl else None]
         rest = len(alle) - (start - 1) - len(ausschnitt)
+        gelesen = "\n".join(ausschnitt)
+        # Der Schluss-Umbruch gehoert an den letzten Ausschnitt zurueck:
+        # `dump_frontmatter` schreibt den Body verbatim, ein Lese-Schreib-
+        # Umlauf wuerde ihn sonst abschneiden.
+        if schluss_umbruch and ausschnitt and rest == 0:
+            gelesen += "\n"
 
         await status.end(
             f"read {params.get('path')} — {len(text)} chars"
@@ -421,7 +447,7 @@ class OkfServer(SchemaBasedMCPServer):
         )
         out = {"status": "ok", "path": params.get("path"),
                "frontmatter": dict(fm) if fm else None,
-               "body": "\n".join(ausschnitt),
+               "body": gelesen,
                "parse_error": err,
                "lines_total": len(alle),
                "line_start": start,
@@ -432,7 +458,9 @@ class OkfServer(SchemaBasedMCPServer):
             out["lines_remaining"] = rest
             out["hint"] = (
                 f"{rest} Zeile(n) folgen noch — weiterlesen mit "
-                f"start_line={start + len(ausschnitt)}."
+                f"start_line={start + len(ausschnitt)}. Diesen Ausschnitt NICHT "
+                f"als 'body' zurueckschreiben: das kuerzt die Seite auf das "
+                f"gelesene Stueck."
             )
         return out
 

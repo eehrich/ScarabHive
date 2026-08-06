@@ -744,11 +744,15 @@ class TestReadConceptPaginierung:
 
     @pytest.fixture
     def gross(self, tmp_path):
+        """50 Zeilen MIT abschliessendem Umbruch — so schreibt
+        `render_faelle_md` (graph_ledger.py), die Datei, fuer die das
+        Blaettern gebaut wurde. Ein Body ohne Schluss-Umbruch ist der
+        Sonderfall, nicht der Regelfall."""
         root = tmp_path / "gross_bundle"
         root.mkdir()
         (root / "lang.md").write_text(
             "---\ntype: notiz\n---\n"
-            + "\n".join(f"Zeile {i}" for i in range(1, 51)),
+            + "".join(f"Zeile {i}\n" for i in range(1, 51)),
             encoding="utf-8")
         return root
 
@@ -787,3 +791,76 @@ class TestReadConceptPaginierung:
             "ein vollstaendig gelesener Rest darf keinen Weiterlese-Hinweis "
             "tragen — sonst laeuft ein Agent im Kreis"
         )
+
+    @pytest.mark.asyncio
+    async def test_schluss_umbruch_ist_keine_zeile(self, server, gross):
+        """Wer die letzte Zeile gelesen hat, ist fertig. Zaehlt das leere
+        Endstueck von `split` mit, meldet die Antwort noch einen Rest und
+        schickt den Leser auf eine Zeile los, die es nicht gibt."""
+        res = await server.read_concept({
+            "bundle": str(gross), "path": "lang.md",
+            "start_line": 46, "line_count": 5,
+        })
+        assert res["lines_total"] == 50
+        assert res["lines_returned"] == 5
+        assert "lines_remaining" not in res
+        assert "hint" not in res
+
+    @pytest.mark.asyncio
+    async def test_umlauf_verliert_den_schluss_umbruch_nicht(self, server, gross):
+        """`dump_frontmatter` schreibt den Body verbatim: was das Lesen
+        abschneidet, ist nach einem Rueckschreiben weg."""
+        r1 = await server.read_concept({"bundle": str(gross), "path": "lang.md"})
+        assert r1["body"].endswith("Zeile 50\n")
+        await server.write_concept({
+            "bundle": str(gross), "path": "/lang.md",
+            "frontmatter": r1["frontmatter"], "body": r1["body"]})
+        r2 = await server.read_concept({"bundle": str(gross), "path": "lang.md"})
+        assert r2["body"] == r1["body"]
+        assert r2["lines_total"] == 50, "die Seite darf beim Umlauf nicht wachsen"
+
+    @pytest.mark.asyncio
+    async def test_start_hinter_dem_ende_ist_ein_fehler(self, server, gross):
+        """Der stille Null-Fall: leerer Body, status ok, kein Rest, kein
+        Hinweis — nicht von 'die Seite ist zu Ende' zu unterscheiden. Eine
+        Seite kann zwischen zwei Aufrufen schrumpfen (der Fall-Ledger wird
+        an jedem Messpunkt neu geschrieben), eine gemerkte Zeilennummer
+        also veralten."""
+        res = await server.read_concept({
+            "bundle": str(gross), "path": "lang.md", "start_line": 51,
+        })
+        assert res["status"] == "error"
+        assert "51" in res["error"] and "50" in res["error"]
+        assert res["lines_total"] == 50
+
+    @pytest.mark.asyncio
+    async def test_leere_seite_ist_kein_fehler(self, server, tmp_path):
+        """Nichts zu lesen ist kein Ueberschiessen: die Abfrage darf die
+        leere Seite nicht mit einer verlaufenen Zeilennummer verwechseln."""
+        root = tmp_path / "leer_bundle"
+        root.mkdir()
+        (root / "leer.md").write_text("---\ntype: notiz\n---\n", encoding="utf-8")
+        res = await server.read_concept({"bundle": str(root), "path": "leer.md"})
+        assert res["status"] == "ok"
+        assert res["body"] == ""
+        assert "lines_remaining" not in res
+
+    @pytest.mark.asyncio
+    async def test_line_count_groesser_als_der_rest(self, server, gross):
+        res = await server.read_concept({
+            "bundle": str(gross), "path": "lang.md",
+            "start_line": 48, "line_count": 999,
+        })
+        assert res["lines_returned"] == 3
+        assert "lines_remaining" not in res
+
+    @pytest.mark.asyncio
+    async def test_negatives_line_count_schneidet_nicht_vom_ende(self, server, gross):
+        """`minimum: 1` steht im Schema, aber in diesem Pfad prueft es
+        niemand nach. Ohne Klammer wuerde `alle[0:-5]` greifen und 45
+        Zeilen als 'die ersten -5' ausgeben."""
+        res = await server.read_concept({
+            "bundle": str(gross), "path": "lang.md", "line_count": -5,
+        })
+        assert res["body"].splitlines() == ["Zeile 1"]
+        assert res["lines_remaining"] == 49
