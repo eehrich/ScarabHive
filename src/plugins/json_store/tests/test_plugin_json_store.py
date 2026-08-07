@@ -1590,3 +1590,44 @@ class TestStats:
                                   "path": "phasen[0].beats"})
         assert res["status"] == "ok"
         assert any(e["term"] == "stoffmaus" for e in res["recurring_terms"])
+
+
+class TestNotFoundRecovery:
+    """A doc/path miss carries its own correction material — the agent should
+    not need a list_docs turn to recover from a typo."""
+
+    @pytest.mark.asyncio
+    async def test_doc_typo_gets_suggestion_and_listing(self, server):
+        await server.write({**SID, "doc": "beat_outline", "data": {"a": 1}})
+        res = await server.read({**SID, "doc": "beat_outlien"})
+        assert res["status"] == "error"
+        assert res["did_you_mean"] == "beat_outline"
+        assert "beat_outline" in res["existing"]
+
+    @pytest.mark.asyncio
+    async def test_unrelated_doc_name_lists_but_does_not_guess(self, server):
+        await server.write({**SID, "doc": "beat_outline", "data": {"a": 1}})
+        res = await server.read({**SID, "doc": "voellig_anders"})
+        assert res["status"] == "error"
+        assert res["did_you_mean"] is None
+        assert res["existing"] == ["beat_outline"]
+
+    @pytest.mark.asyncio
+    async def test_path_segment_typo_names_the_neighbour(self, server):
+        await server.write({**SID, "doc": "d",
+                            "data": {"chapters": {"one": 1}, "meta": 2}})
+        res = await server.read({**SID, "doc": "d", "path": "chapers"})
+        assert res["status"] == "error"
+        assert "did you mean 'chapters'" in res["error"]
+        assert "available keys" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_stats_keeps_the_informative_path_error(self, server):
+        """stats used to catch _resolve's rich ValueError and replace it with a
+        generic line — silently discarding the keys the agent needed. (outline
+        takes no path at all; stats is the path-walking inspector.)"""
+        await server.write({**SID, "doc": "d", "data": {"beats": {"b1": {}}}})
+        res = await server.stats({**SID, "doc": "d", "path": "beat"})
+        assert res["status"] == "error"
+        assert "available keys" in res["error"]
+        assert "beats" in res["error"]

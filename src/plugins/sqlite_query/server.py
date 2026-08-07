@@ -8,16 +8,85 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.utils.suggest import suggest_path
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
+
+#: SQLite's own wording for the two misses an agent can act on.
+_NO_TABLE_RE = re.compile(r"no such table:\s*([\w.]+)")
+_NO_COLUMN_RE = re.compile(r"no such column:\s*([\w.]+)")
+
+#: Bounds for the recovery block: enough to re-orient, never a schema dump.
+_MAX_TABLES = 25
+_MAX_COLUMNS_PER_TABLE = 30
+
+
+def _schema_recovery(db_path: Path, error: str, sql: str) -> dict[str, Any] | None:
+    """What the agent needs to fix a bad table/column name, from the error alone.
+
+    Without this, ``no such table: X`` costs a second turn for the
+    ``sqlite_master`` query — and that follow-up is exactly what every agent
+    types next, so the tool can just answer it pre-emptively. Returns None for
+    errors that are not name misses (syntax errors etc.): those have no
+    mechanical recovery, and guessing would mislead.
+    """
+    kind, missing = None, None
+    m = _NO_TABLE_RE.search(error or "")
+    if m:
+        kind, missing = "table", m.group(1)
+    else:
+        m = _NO_COLUMN_RE.search(error or "")
+        if m:
+            # Qualified names (t.col) miss on the column part.
+            kind, missing = "column", m.group(1).rsplit(".", 1)[-1]
+    if kind is None:
+        return None
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','view') "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()]
+
+            if kind == "table":
+                return {
+                    "did_you_mean": suggest_path(missing, tables),
+                    "tables": tables[:_MAX_TABLES],
+                    "hint": f"'{missing}' does not exist — the listed tables do",
+                }
+
+            # Column miss: only the tables the query actually names are
+            # relevant. Their columns are the search space AND the answer.
+            sql_words = {w.lower() for w in re.findall(r"[\w]+", sql or "")}
+            referenced = [t for t in tables if t.lower() in sql_words] or tables
+            columns_by_table: dict[str, list[str]] = {}
+            all_columns: list[str] = []
+            for t in referenced[:_MAX_TABLES]:
+                cols = [r[1] for r in conn.execute(
+                    f"PRAGMA table_info({t})").fetchall()][:_MAX_COLUMNS_PER_TABLE]
+                columns_by_table[t] = cols
+                all_columns.extend(cols)
+            return {
+                "did_you_mean": suggest_path(missing, all_columns),
+                "columns": columns_by_table,
+                "hint": (f"column '{missing}' does not exist in the referenced "
+                         f"table(s) — their actual columns are listed"),
+            }
+        finally:
+            conn.close()
+    except sqlite3.Error as e:  # pragma: no cover - depends on host state
+        logger.debug("schema recovery skipped: %s", e)
+        return None
 
 
 class SqliteQueryServer(SchemaBasedMCPServer):
@@ -132,8 +201,16 @@ class SqliteQueryServer(SchemaBasedMCPServer):
         except sqlite3.Error as e:
             error_msg = f"SQL error: {str(e)}"
             logger.info(error_msg)
+            out: dict[str, Any] = {"status": "error", "error": str(e)}
+            # A name miss answers the follow-up the agent would ask anyway.
+            recovery = await asyncio.to_thread(
+                _schema_recovery, db_path, str(e), sql or "")
+            if recovery:
+                out.update(recovery)
+                if recovery.get("did_you_mean"):
+                    error_msg += f" — did you mean '{recovery['did_you_mean']}'?"
             await status.error(error_msg)
-            return {"status": "error", "error": str(e)}
+            return out
         except Exception as e:
             error_msg = f"Unexpected error: {str(e)}"
             logger.error(error_msg)

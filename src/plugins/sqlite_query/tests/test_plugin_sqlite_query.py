@@ -251,3 +251,38 @@ async def test_multiple_parameters(plugin, test_db, mock_status):
     
     assert result["status"] == "success"
     assert result["row_count"] == 3  # 2 drafts + book 2
+
+
+class TestNameMissRecovery:
+    """A name miss answers the follow-up the agent would type anyway.
+
+    From a real session: `no such table: archived_messages` cost a second turn
+    for the sqlite_master query. The error now carries that query's answer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_such_table_lists_tables_and_suggests(self, plugin, mock_status):
+        res = await plugin.execute_sql(
+            {"sql": "SELECT * FROM bookss", "_status": mock_status})
+        assert res["status"] == "error"
+        assert "books" in res["tables"]
+        assert res["did_you_mean"] == "books"
+
+    @pytest.mark.asyncio
+    async def test_no_such_column_scopes_to_referenced_table(self, plugin, mock_status):
+        res = await plugin.execute_sql(
+            {"sql": "SELECT titel FROM books", "_status": mock_status})
+        assert res["status"] == "error"
+        assert res["did_you_mean"] == "title"
+        # only the table the query names, not the whole schema
+        assert list(res["columns"].keys()) == ["books"]
+        assert "title" in res["columns"]["books"]
+
+    @pytest.mark.asyncio
+    async def test_syntax_error_gets_no_fake_recovery(self, plugin, mock_status):
+        """Errors without a mechanical fix must not sprout guesses."""
+        res = await plugin.execute_sql(
+            {"sql": "SELEC * FROM books", "_status": mock_status})
+        assert res["status"] == "error"
+        assert "did_you_mean" not in res
+        assert "tables" not in res

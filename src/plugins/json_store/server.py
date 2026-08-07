@@ -49,6 +49,8 @@ import shutil
 import time
 from collections import deque
 from difflib import get_close_matches
+
+from agent_system.utils.suggest import suggest_path
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
@@ -492,8 +494,11 @@ class JsonStoreServer(SchemaBasedMCPServer):
                 current = current[idx]
             elif isinstance(current, dict):
                 if seg not in current:
-                    raise ValueError(f"Path segment '{seg}' not found "
-                                     f"(available keys: {list(current.keys())[:15]})")
+                    hint = suggest_path(str(seg), [str(k) for k in current])
+                    raise ValueError(
+                        f"Path segment '{seg}' not found"
+                        + (f" — did you mean '{hint}'?" if hint else "")
+                        + f" (available keys: {list(current.keys())[:15]})")
                 current = current[seg]
             else:
                 raise ValueError(f"Cannot descend into {type(current).__name__} at '{seg}'")
@@ -680,9 +685,17 @@ class JsonStoreServer(SchemaBasedMCPServer):
         if not name:
             return None, None, {"status": "error", "error": "'doc' (document name) is required"}
         if name not in bucket:
+            existing = sorted(bucket.keys())
+            hint = suggest_path(name, existing)
+            shown = existing[:15]
+            more = f" (+{len(existing) - 15} more)" if len(existing) > 15 else ""
             return None, None, {
                 "status": "error",
-                "error": f"Document '{name}' not found. Existing: {list(bucket.keys())}"}
+                "error": f"Document '{name}' not found."
+                         + (f" Did you mean '{hint}'?" if hint else "")
+                         + f" Existing: {shown}{more}",
+                "did_you_mean": hint,
+                "existing": shown}
         return bucket, name, None
 
     def _key_model_error(self, violations: List[str]) -> Dict[str, Any]:
@@ -969,9 +982,14 @@ class JsonStoreServer(SchemaBasedMCPServer):
 
         bucket = self._bucket(params)
         if source not in bucket:
+            existing = sorted(bucket.keys())
+            hint = suggest_path(source, existing)
             return {"status": "error",
-                    "error": f"Source document '{source}' not found. "
-                             f"Existing: {list(bucket.keys())}"}
+                    "error": f"Source document '{source}' not found."
+                             + (f" Did you mean '{hint}'?" if hint else "")
+                             + f" Existing: {existing[:15]}",
+                    "did_you_mean": hint,
+                    "existing": existing[:15]}
         incoming = copy.deepcopy(bucket[source])  # decouple the two stored docs
         existed = name in bucket
         base = bucket.get(name)
@@ -1214,7 +1232,12 @@ class JsonStoreServer(SchemaBasedMCPServer):
             # Gleiche Pfad-Syntax wie read/set_value (inkl. [i]-Array-Index)
             try:
                 node = self._resolve(node, self._split_path(path))
-            except (KeyError, IndexError, TypeError, ValueError):
+            except ValueError as e:
+                # _resolve names the failing segment AND the available keys —
+                # replacing that with a generic line forced a second read turn.
+                return {"status": "error",
+                        "error": f"path '{path}' in doc '{name}': {e}"}
+            except (KeyError, IndexError, TypeError):
                 return {"status": "error",
                         "error": f"path '{path}' not found in doc '{name}'"}
         if isinstance(node, dict):

@@ -799,3 +799,68 @@ def test_exception_hierarchy():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=plugins.memory.server", "--cov-report=html"])
+
+
+class TestNotFoundCarriesRecovery:
+    """A memory-id miss answers the list question inline instead of advising
+    the agent to spend a turn on memory(operation='list')."""
+
+    @staticmethod
+    async def _store(server, title):
+        res = await server._operation_store(
+            session_id="s1", title=title, content=f"content of {title}",
+            keywords=["k"], importance=5)
+        return res["memory_id"]
+
+    @pytest.mark.asyncio
+    async def test_recall_miss_lists_and_may_suggest(self, server):
+        mem_id = await self._store(server, "Blitter Timing")
+        await self._store(server, "Copper Listen")
+
+        res = await server._operation_recall("s1", "mem_gibtsnicht")
+        assert "not found" in res["error"]
+        assert res["total"] == 2
+        titles = {m["title"] for m in res["available"]}
+        assert titles == {"Blitter Timing", "Copper Listen"}
+        # a punctuation slip on a real id gets a pointer back to it ...
+        near = await server._operation_recall("s1", mem_id.replace("_", "-"))
+        assert near.get("did_you_mean") == mem_id
+
+    @pytest.mark.asyncio
+    async def test_neighbouring_ids_are_never_cross_suggested(self, server):
+        """mem_001 and mem_002 differ only in digits: two memories, not two
+        spellings of one. The digit rule from utils/suggest.py must hold here,
+        or a miss on a deleted id silently reroutes to a DIFFERENT memory."""
+        await self._store(server, "Erste")
+        await self._store(server, "Zweite")
+        res = await server._operation_recall("s1", "mem_003")
+        assert "not found" in res["error"]
+        assert res.get("did_you_mean") is None
+        assert res["total"] == 2
+
+    @pytest.mark.asyncio
+    async def test_delete_miss_lists_but_never_suggests(self, server):
+        """Steering an agent toward a deletion target it did not name is how
+        the wrong memory dies — the listing informs, the suggestion steers."""
+        mem_id = await self._store(server, "Wichtig")
+        res = await server._operation_delete("s1", mem_id[:-2] + "xx")
+        assert "not found" in res["error"]
+        assert res["total"] == 1
+        assert "did_you_mean" not in res
+
+    @pytest.mark.asyncio
+    async def test_update_miss_lists_but_never_suggests(self, server):
+        mem_id = await self._store(server, "Wichtig")
+        res = await server._operation_update("s1", mem_id[:-2] + "xx",
+                                             title="Neu")
+        assert "not found" in res["error"]
+        assert res["total"] == 1
+        assert "did_you_mean" not in res
+
+    @pytest.mark.asyncio
+    async def test_listing_is_bounded(self, server):
+        for i in range(20):
+            await self._store(server, f"Notiz {i}")
+        res = await server._operation_recall("s1", "mem_fehlt")
+        assert res["total"] == 20
+        assert len(res["available"]) == 15

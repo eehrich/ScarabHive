@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_serializer
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 from agent_system.utils.vector_store import VectorStore
+from agent_system.utils.suggest import suggest_path
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -531,6 +532,25 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             "message": f"Memory stored successfully with ID: {memory_id}"
         }
 
+
+    @staticmethod
+    def _available_overview(collection, limit: int = 15) -> Dict:
+        """Bounded id+title listing for a not-found answer.
+
+        Replaces the old "use memory(operation='list')" advice: that advice IS
+        the extra turn — the tool can simply include what list would say.
+        """
+        memories = sorted(collection.memories.values(),
+                          key=lambda m: m.accessed_at, reverse=True)
+        return {
+            "available": [
+                {"memory_id": m.memory_id, "title": m.title,
+                 "keywords": m.keywords[:5]}
+                for m in memories[:limit]
+            ],
+            "total": len(collection.memories),
+        }
+
     async def _operation_recall(
         self,
         session_id: str,
@@ -541,9 +561,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         if memory_id not in collection.memories:
             logger.info(f"Memory {memory_id} not found in session {session_id}")
+            hint = suggest_path(memory_id, list(collection.memories))
             return {
-                "error": f"Memory {memory_id} not found",
-                "message": f"Memory ID '{memory_id}' does not exist. Use memory(operation='list') to see available memories."
+                "error": f"Memory {memory_id} not found"
+                         + (f" — did you mean '{hint}'?" if hint else ""),
+                "did_you_mean": hint,
+                **self._available_overview(collection),
             }
 
         memory = collection.memories[memory_id]
@@ -701,9 +724,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         if memory_id not in collection.memories:
             logger.info(f"Memory {memory_id} not found for deletion in session {session_id}")
+            # Deliberately NO did_you_mean here: steering an agent toward a
+            # deletion target it did not name is how the wrong memory dies.
             return {
                 "error": f"Memory {memory_id} not found",
-                "message": f"Cannot delete: Memory ID '{memory_id}' does not exist."
+                "message": f"Cannot delete: Memory ID '{memory_id}' does not exist.",
+                **self._available_overview(collection),
             }
 
         # Delete from JSON metadata
@@ -736,9 +762,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         if memory_id not in collection.memories:
             logger.info(f"Memory {memory_id} not found for update in session {session_id}")
+            # Like delete: a write miss gets the listing but NO suggestion —
+            # updating a guessed target corrupts silently.
             return {
                 "error": f"Memory {memory_id} not found",
-                "message": f"Cannot update: Memory ID '{memory_id}' does not exist."
+                "message": f"Cannot update: Memory ID '{memory_id}' does not exist.",
+                **self._available_overview(collection),
             }
 
         memory = collection.memories[memory_id]
