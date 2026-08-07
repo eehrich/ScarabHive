@@ -507,8 +507,17 @@ class Agent(MCPServer):
         copied at three points of the request lifecycle (after LLM response,
         after a completed tool turn, at request finalization). Never raises:
         persistence failures must not kill a running request."""
+        from .components.hook_integration import is_compaction_system_message
         try:
-            conversation_msgs = [msg for msg in messages if msg.role != "system"]
+            # System messages are rebuilt from config each turn and must not be
+            # persisted — EXCEPT the ones that are compacted conversation
+            # (archive pointers, the prune breadcrumb). Dropping those loses
+            # conversation state for good: the content is in a store, but
+            # nothing left in the session says it exists.
+            conversation_msgs = [
+                msg for msg in messages
+                if msg.role != "system" or is_compaction_system_message(msg)
+            ]
             self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
             logger.debug(f"Persisted session {session_id} ({note}) with {len(conversation_msgs)} messages")
             if to_disk:

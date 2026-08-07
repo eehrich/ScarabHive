@@ -19,7 +19,7 @@ import logging
 import sqlite3
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -236,6 +236,12 @@ class ArchivalMemory:
             content = " ".join(
                 part.get("text", "") for part in content if isinstance(part, dict)
             )
+        elif content is None:
+            # An assistant message that only makes tool calls carries
+            # content=None. The column is NOT NULL, so this used to raise
+            # IntegrityError and take Layer 2's whole archiving loop with it —
+            # the same shape trap as tool_calls=None two lines below.
+            content = ""
         
         # Generate summary if not provided
         if not summary:
@@ -248,12 +254,17 @@ class ArchivalMemory:
         tool_call_id = message.get("tool_call_id")
         tool_name = message.get("name")
         
-        # Store metadata
+        # Store metadata. ``tool_calls`` is routinely present WITH VALUE None:
+        # measured over the 40 largest sessions, 5838 messages carry None
+        # against 709 carrying a list. An ``in`` test says yes for those and the
+        # iteration below then raises TypeError, killing the whole Layer-2
+        # archival. Truthiness is the only safe test on this field.
         metadata = {}
-        if "tool_calls" in message:
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
             metadata["tool_calls"] = [
                 {"name": tc.get("function", {}).get("name")}
-                for tc in message.get("tool_calls", [])
+                for tc in tool_calls
             ]
         
         # Insert into SQLite
@@ -303,9 +314,141 @@ class ArchivalMemory:
             f"Archived message: id={entry_id}, role={role}, "
             f"tokens={token_count}, summary='{summary[:50]}...'"
         )
-        
+
         return entry_id
-    
+
+    def store_many(
+        self,
+        messages: list[dict[str, Any]],
+        session_id: str | None = None,
+        index_semantic: bool | None = None
+    ) -> list[str]:
+        """Store many messages in ONE transaction. Returns ids, input order.
+
+        ``store`` commits per message, which is the entire cost of archiving in
+        bulk: measured on 4682 messages, 16.1 s of commits versus 0.08 s for the
+        same rows written in a single transaction. Pre-Layer P archives whole
+        blocks at once and cannot pay per-message commits.
+
+        ``index_semantic=False`` skips the VectorStore. The rows and the FTS
+        index are written either way, so the content stays listable and
+        findable by keyword; only vector similarity would miss it. Callers use
+        this when a batch is large enough that embedding it would stall the
+        request (embedding dominates: 80 s of the same 4682-message batch).
+
+        NOT synchronized itself: the connection work is, the embedding must not
+        be (see ``_index_semantic``).
+        """
+        if not messages:
+            return []
+
+        ids, documents, metadatas = self._store_many_rows(messages, session_id)
+        if index_semantic is not False and self.enable_semantic_search and self._vector_store:
+            self._index_semantic(ids, documents, metadatas)
+        return ids
+
+    @_synchronized
+    def _store_many_rows(
+        self,
+        messages: list[dict[str, Any]],
+        session_id: str | None
+    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+        """The connection half of ``store_many``: rows + FTS in one transaction."""
+
+        import uuid
+
+        session_id = session_id or self.session_id or "default"
+
+        # One timestamp per ROW, not one per batch. get_session_messages orders
+        # by `timestamp ASC, id ASC` and the id is a random uuid — with a shared
+        # timestamp the whole batch comes back in random order, and the prune
+        # breadcrumb points the agent straight at that listing. The offsets keep
+        # the conversation order of the input.
+        base = datetime.now()
+        stamps = [(base + timedelta(microseconds=i)).isoformat()
+                  for i in range(len(messages))]
+
+        rows: list[tuple] = []
+        fts_rows: list[tuple] = []
+        ids: list[str] = []
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+
+        for position, message in enumerate(messages):
+            now = stamps[position]
+            entry_id = f"arch_{uuid.uuid4().hex[:12]}"
+            role = message.get("role", "unknown")
+            content = message.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
+            elif content is None:
+                content = ""
+            summary = self._generate_summary(message)
+
+            metadata: dict[str, Any] = {}
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls:
+                metadata["tool_calls"] = [
+                    {"name": tc.get("function", {}).get("name")}
+                    for tc in tool_calls
+                ]
+
+            rows.append((
+                entry_id, role, content, summary, now, session_id,
+                estimate_content_tokens(content),
+                json.dumps(metadata) if metadata else None,
+                message.get("tool_call_id"), message.get("name"),
+            ))
+            fts_rows.append((entry_id, summary, content, session_id))
+            ids.append(entry_id)
+            documents.append(f"{summary}\n{content[:1000]}")
+            metadatas.append({"session_id": session_id, "role": role,
+                              "timestamp": now})
+
+        self._db.executemany("""
+            INSERT INTO archived_messages
+            (id, role, content, summary, timestamp, session_id, token_count,
+             metadata, tool_call_id, tool_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+        self._db.executemany("""
+            INSERT INTO archived_fts (id, summary, content, session_id)
+            VALUES (?, ?, ?, ?)
+        """, fts_rows)
+        self._db.commit()
+
+        logger.debug(f"Archived {len(ids)} messages in one transaction")
+        return ids, documents, metadatas
+
+    def _index_semantic(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]]
+    ) -> None:
+        """Feed a stored batch to the VectorStore. NOT synchronized, on purpose.
+
+        Embedding a full batch costs ~17 ms per message — up to several seconds
+        — and this instance's lock is taken synchronously on the event loop by
+        recall, context_list, context_read and stats. Holding it across the
+        embedding freezes the loop for every concurrent request. The rows are
+        already committed, the VectorStore has its own lock, and it never calls
+        back into this object, so nothing here needs the connection.
+        """
+        try:
+            self._vector_store.add(
+                collection=self._vector_collection,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas
+            )
+        except Exception as e:
+            # The rows are already committed — a failed index costs similarity
+            # search on these entries, not the content.
+            logger.error(f"Failed to add batch to VectorStore: {e}")
+
     @_synchronized
     def search(
         self,
@@ -626,11 +769,15 @@ class ArchivalMemory:
                 part.get("text", "") for part in content if isinstance(part, dict)
             )
         
-        # Handle tool calls
-        if role == "assistant" and "tool_calls" in message:
+        # Handle tool calls. Same shape trap as in store(): the key is present
+        # with value None far more often than it holds a list, so an ``in`` test
+        # both raises here AND used to produce the empty "called tools: ".
+        # Falling through to the content summary is the better answer anyway.
+        tool_calls = message.get("tool_calls") or []
+        if role == "assistant" and tool_calls:
             tools = [
                 tc.get("function", {}).get("name", "unknown")
-                for tc in message.get("tool_calls", [])
+                for tc in tool_calls
             ]
             return f"Assistant called tools: {', '.join(tools)}"
         

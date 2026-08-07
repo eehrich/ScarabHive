@@ -542,6 +542,43 @@ class TestLayerTwoNeverReArchivesAPlaceholder:
         assert stored, "nothing was archived at all"
         assert all("archived_ref" not in (s.content or "")[:60] for s in stored)
 
+    @pytest.mark.asyncio
+    async def test_tool_result_placeholders_are_not_archived_either(self, strategy):
+        """The other entrance to the same pointer chain.
+
+        Layer 1 runs immediately before Layer 2 and turns old tool results into
+        `tool_result_ref`. Guarding only on `archived_ref` let those through, so
+        the archive stored `archived_ref -> tool_result_ref`. The chain resolver
+        follows archive refs only, so the walk ends on the pointer and the agent
+        is handed JSON where the text should be.
+        """
+        from plugins.context_engineer.compaction import CompactionResult
+
+        strat, archival = strategy
+        placeholder = json.dumps({"type": "tool_result_ref", "ref_id": "TR_7",
+                                  "summary": "ein ausgelagertes Ergebnis"})
+        result = CompactionResult(original_tokens=0, final_tokens=0, tokens_saved=0)
+        result.modified_messages = [
+            {"role": "user", "content": "erste Frage"},
+            {"role": "assistant", "content": "rufe Werkzeug auf",
+             "tool_calls": [{"id": "call_9", "type": "function",
+                             "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "content": placeholder,
+             "tool_call_id": "call_9", "name": "t"},
+            {"role": "user", "content": "zweite Frage"},
+        ]
+        strat._current_session_id = "t"
+
+        await strat._apply_layer2(result)
+
+        stored = archival.get_session_messages(session_id="t", limit=50)
+        chained = [s for s in stored if "tool_result_ref" in (s.content or "")]
+        assert not chained, (
+            f"a tool-result pointer was archived: {[c.id for c in chained]} — "
+            f"that stores an address, and the resolver stops there")
+        assert any("rufe Werkzeug auf" in (s.content or "") for s in stored), \
+            "the real half of the pair should still be archived"
+
 
 class TestLayerOneHonoursTheExemption:
     """Predicate and marker are only two thirds of it.

@@ -621,8 +621,19 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             if not messages:
                 messages = agent._session_tracker.get_session_messages(session_id)
 
-            # Filter out system messages - we compact conversation only
-            messages = [m for m in messages if getattr(m, 'role', m.get('role') if isinstance(m, dict) else None) != 'system']
+            # Filter out system messages - we compact conversation only. The
+            # ones that ARE compacted conversation stay: dropping the prune
+            # breadcrumb here reset its running total on every manual compact,
+            # so a session that had lost 40 messages reported the last 12.
+            from agent_system.servers.agent.components.hook_integration import (
+                is_compaction_system_message,
+            )
+
+            def _is_prompt_system(m: Any) -> bool:
+                role = getattr(m, 'role', m.get('role') if isinstance(m, dict) else None)
+                return role == 'system' and not is_compaction_system_message(m)
+
+            messages = [m for m in messages if not _is_prompt_system(m)]
             if not messages:
                 if status:
                     await status.end("No messages to compact")

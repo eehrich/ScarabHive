@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from plugins.context_engineer.archival_memory import ArchivalMemory
 from plugins.context_engineer.compaction import (
     CompactionConfig,
     LayeredCompactionStrategy,
+    _ref_type,
 )
 
 
@@ -492,17 +494,81 @@ class TestArchivalMemory:
     def test_store_message(self, temp_archive_path):
         """Test storing a message."""
         archive = ArchivalMemory(temp_archive_path, session_id="test-session")
-        
+
         message = {
             "role": "user",
             "content": "Hello, how are you?"
         }
-        
+
         entry_id = archive.store(message)
-        
+
         assert entry_id.startswith("arch_")
         stats = archive.get_stats()
         assert stats["total_messages"] == 1
+
+    @pytest.mark.parametrize("store_call", ["one", "many"])
+    def test_store_survives_tool_calls_being_present_but_none(
+        self, temp_archive_path, store_call
+    ):
+        """``tool_calls: None`` is the NORMAL shape, and it used to raise.
+
+        Counted over the 40 largest production sessions: 5838 messages carry
+        ``tool_calls`` with value None against 709 carrying a list. The old code
+        asked ``"tool_calls" in message`` — true for None — and then iterated it,
+        so archiving raised TypeError and took the whole compaction with it.
+        """
+        archive = ArchivalMemory(temp_archive_path, session_id="test-session")
+        message = {"role": "assistant", "content": "eine Antwort ohne Werkzeug",
+                   "tool_calls": None, "tool_call_id": None, "name": None}
+
+        if store_call == "one":
+            archive.store(message)
+        else:
+            archive.store_many([message])
+
+        assert archive.get_stats()["total_messages"] == 1
+        # The summary must describe the content, not claim an empty tool call.
+        summary = archive._generate_summary(message)
+        assert "called tools" not in summary, summary
+        assert "eine Antwort ohne Werkzeug" in summary
+
+    def test_store_many_writes_the_same_rows_as_store(self, temp_archive_path):
+        """The batch path is an optimisation, not a second format.
+
+        It exists because ``store`` commits per message: 16.1 s for 4682
+        messages against 0.08 s for the same rows in one transaction. It must
+        stay row-for-row identical or retrieval sees two kinds of entry.
+        """
+        archive = ArchivalMemory(temp_archive_path, session_id="test-session")
+        messages = [
+            {"role": "user", "content": "eine Frage"},
+            # content=None is the shape of an assistant that ONLY calls tools.
+            # The column is NOT NULL, so this is the one input where the two
+            # paths actually diverged: the batch normalised it, store() raised
+            # IntegrityError and took Layer 2's whole loop with it.
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "function": {"name": "such_tool"}}]},
+            {"role": "tool", "content": "ein Ergebnis",
+             "tool_call_id": "call_1", "name": "such_tool"},
+        ]
+
+        single = [archive.store(m) for m in messages]
+        batch = archive.store_many(messages)
+
+        assert len(batch) == 3 and all(b.startswith("arch_") for b in batch)
+        cols = "role, content, summary, token_count, metadata, tool_call_id, tool_name"
+        for one, many in zip(single, batch):
+            a = archive._db.execute(
+                f"SELECT {cols} FROM archived_messages WHERE id = ?", (one,)).fetchone()
+            b = archive._db.execute(
+                f"SELECT {cols} FROM archived_messages WHERE id = ?", (many,)).fetchone()
+            assert a == b, f"batch row differs from single-store row: {a} != {b}"
+
+        # And the FTS index must know both, or search goes half blind.
+        found = archive._db.execute(
+            "SELECT COUNT(*) FROM archived_fts WHERE archived_fts MATCH ?",
+            ('"Ergebnis"',)).fetchone()[0]
+        assert found == 2, f"expected both copies in the FTS index, got {found}"
     
     def test_store_with_custom_summary(self, temp_archive_path):
         """Test storing with custom summary."""
@@ -1928,11 +1994,15 @@ class TestPreLayerP:
             messages.append({"role": "assistant", "content": f"Response {i}"})
         
         result = await strategy.compact(messages, current_tokens=100)
-        
-        # System message should be preserved
+
+        # The agent's system prompt must survive pruning, unchanged and first.
         system_msgs = [m for m in result.modified_messages if m.get("role") == "system"]
-        assert len(system_msgs) == 1
         assert system_msgs[0]["content"] == "You are a helpful assistant."
+
+        # Pre-Layer P adds one system message of its own: the breadcrumb naming
+        # what left the view. Anything BEYOND those two would be a leak.
+        assert len(system_msgs) == 2, system_msgs
+        assert json.loads(system_msgs[1]["content"])["type"] == "pruned_notice"
     
     @pytest.mark.asyncio
     async def test_pruning_preserves_tool_pairs(self, strategy_with_max_messages):
@@ -2093,6 +2163,690 @@ class TestPreLayerP:
         # Must have at least one user message
         user_msgs = [m for m in result.modified_messages if m.get("role") == "user"]
         assert len(user_msgs) >= 1, "At least one user message must remain"
+
+
+class TestPreLayerPRecoverability:
+    """Pre-Layer P must not destroy what it removes.
+
+    Measured on the last 1000 production compactions, this is the layer that
+    does the work (476 firings against Layer 2's 115 and Layer 3's zero) — and
+    it used to be the only place in the system that deleted content outright,
+    with no archive entry and no trace. These tests hold that shut.
+    """
+
+    @pytest.fixture
+    def strategy(self, tmp_path):
+        archival = ArchivalMemory(tmp_path / "archive.db", session_id="test")
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            variable_manager=VariableManager(min_content_tokens=50,
+                                             storage_path=tmp_path / "vars.json"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=archival,
+            config=CompactionConfig(
+                layer1_threshold=10**9, layer2_threshold=10**9,
+                layer3_threshold=10**9, max_messages=6,
+                keep_system_messages=True,
+            ),
+        )
+        return strat, archival
+
+    @staticmethod
+    def _archived_contents(archival) -> list[str]:
+        rows = archival._db.execute("SELECT content FROM archived_messages").fetchall()
+        return [r[0] for r in rows]
+
+    @staticmethod
+    def _conversation(n: int) -> list[dict]:
+        msgs = [{"role": "user", "content": "die eigentliche Aufgabe"}]
+        for i in range(n):
+            msgs.append({"role": "assistant", "content": f"Antwort {i}"})
+            msgs.append({"role": "user", "content": f"Nachfrage {i}"})
+        return msgs
+
+    def test_ref_type_does_not_depend_on_key_order(self):
+        """The compaction-side twin of the persistence predicate.
+
+        `_ref_type` decides protection, cost ranking, archive exclusion and
+        deduplication. If a long `hint` before `"type"` could hide the marker,
+        a breadcrumb would stop being recognised: it would stack instead of
+        being replaced, and stop being protected. The hook-side predicate has
+        the same property pinned; this is the other side of the same seam.
+        """
+        payload = json.dumps(
+            {"hint": "x" * 400, "total_removed": 12, "type": "pruned_notice"},
+            sort_keys=True)
+        assert _ref_type({"role": "system", "content": payload}) == "pruned_notice"
+
+        long_ref = json.dumps(
+            {"summary": "y" * 400, "ref_id": "arch_1", "type": "archived_ref"},
+            sort_keys=True)
+        assert _ref_type({"role": "user", "content": long_ref}) == "archived_ref"
+
+    @pytest.mark.asyncio
+    async def test_pruned_content_reaches_the_archive(self, strategy):
+        """The whole point: what leaves the view must stay retrievable."""
+        strat, archival = strategy
+        messages = self._conversation(8)
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        assert result.messages_pruned > 0
+        survived = {str(m.get("content")) for m in result.modified_messages}
+        archived = set(self._archived_contents(archival))
+        for msg in messages:
+            content = str(msg.get("content"))
+            if content not in survived:
+                assert content in archived, (
+                    f"{content!r} was removed from the conversation without "
+                    f"being archived — this is unrecoverable data loss")
+
+    @pytest.mark.asyncio
+    async def test_placeholders_are_not_archived_again(self, strategy):
+        """A pointer must never be archived: that stores an address, not content.
+
+        Layer 2 learned this the hard way (chains 20 levels deep). Pre-Layer P
+        removes placeholders too and must not repeat it.
+        """
+        strat, archival = strategy
+        placeholder = json.dumps({"type": "archived_ref", "ref_id": "arch_old",
+                                  "summary": "etwas Aelteres"})
+        messages = [{"role": "user", "content": "die eigentliche Aufgabe"}]
+        for i in range(8):
+            messages.append({"role": "assistant", "content": placeholder})
+            messages.append({"role": "user", "content": f"Nachfrage {i}"})
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        stored = self._archived_contents(archival)
+        for content in stored:
+            assert "archived_ref" not in content, (
+                "a placeholder was archived — that is a pointer to a pointer")
+        # ...and archiving still happened at all. Without this the test also
+        # passes when _archive_pruned returns early for every input.
+        assert result.messages_pruned > 0
+        assert any("Nachfrage" in s for s in stored), (
+            "nothing real was archived — the negative assertion above is vacuous")
+
+    @pytest.mark.asyncio
+    async def test_first_user_message_survives(self, strategy):
+        """The task everything refers to is not a candidate for eviction."""
+        strat, _ = strategy
+        messages = self._conversation(8)
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        contents = [str(m.get("content")) for m in result.modified_messages]
+        assert "die eigentliche Aufgabe" in contents, (
+            "the first user message — the task — was pruned away")
+
+    @pytest.mark.asyncio
+    async def test_breadcrumb_is_single_and_accumulates(self, strategy):
+        """One notice, never a stack, and its count covers every round."""
+        strat, _ = strategy
+
+        first_input = self._conversation(8)
+        before = len(first_input)
+        result = await strat.compact(first_input, current_tokens=100)
+        notices = [m for m in result.modified_messages if _ref_type(m) == "pruned_notice"]
+        assert len(notices) == 1
+        first_total = json.loads(notices[0]["content"])["total_removed"]
+
+        # Against the LIST, not against the same counter the notice came from:
+        # comparing it to result.messages_pruned would be one local variable
+        # asserted against itself. The +1 is the notice the layer added.
+        assert first_total == before - len(result.modified_messages) + 1, (
+            f"the notice claims {first_total} but "
+            f"{before - len(result.modified_messages) + 1} messages left")
+
+        # Second round on the already-compacted list, as the next turn would.
+        # Fresh dicts on purpose: `[a, b] * 3` aliases one object into several
+        # slots, and the identity-based removal diff would then under-count.
+        followup = list(result.modified_messages) + [
+            {"role": "assistant", "content": f"weiter {k}"} for k in range(3)
+        ] + [{"role": "user", "content": f"und weiter {k}"} for k in range(3)]
+        before2 = len(followup)
+        result2 = await strat.compact(followup, current_tokens=100)
+
+        notices2 = [m for m in result2.modified_messages if _ref_type(m) == "pruned_notice"]
+        assert len(notices2) == 1, "the notice stacked instead of being replaced"
+        second_total = json.loads(notices2[0]["content"])["total_removed"]
+        assert second_total == first_total + (before2 - len(result2.modified_messages)), (
+            f"running total went {first_total} -> {second_total}, but "
+            f"{before2 - len(result2.modified_messages)} messages left this round")
+
+    @pytest.mark.asyncio
+    async def test_cheapest_to_lose_goes_first(self, strategy):
+        """Among the oldest candidates, a stored-away pointer beats real prose.
+
+        Both are recoverable now, but a placeholder costs nothing to drop while
+        real content costs an archive write and a retrieval turn to get back.
+        """
+        strat, _ = strategy
+        # Production shape: Layer 1 writes the ref onto the `role=tool` message
+        # (tool_result_store.py), never onto an assistant, and there is no
+        # `summary` key. Its assistant comes with it as one group — that IS the
+        # cost of picking it, and a fixture that hides the group would test a
+        # cheaper decision than the code actually makes.
+        ref = json.dumps({"type": "tool_result_ref", "ref_id": "TR_1",
+                          "tool_name": "t", "content_hash": "abc", "token_count": 900})
+        messages = [
+            {"role": "user", "content": "die eigentliche Aufgabe"},
+            {"role": "assistant", "content": "alte Prosa A"},
+            {"role": "assistant", "content": "alte Prosa B"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "content": ref, "tool_call_id": "c1", "name": "t"},
+            {"role": "user", "content": "Nachfrage"},
+            {"role": "assistant", "content": "Antwort"},
+            {"role": "user", "content": "letzte Frage"},
+        ]
+
+        result = await strat.compact(messages, current_tokens=100)
+        contents = [str(m.get("content")) for m in result.modified_messages]
+
+        # 3, not 2: picking the ref takes its assistant with it (one group),
+        # and the budget then needs one more. That is the real cost of the
+        # cheap pick and the fixture must not hide it.
+        assert result.messages_pruned == 3, result.messages_pruned
+        assert ref not in contents, "the free-to-drop placeholder was kept"
+        assert "alte Prosa B" in contents, (
+            "real content was evicted while a NEWER, cost-free placeholder "
+            "stayed — the ranking fell back to plain age")
+
+    @pytest.mark.asyncio
+    async def test_archive_failure_keeps_the_messages_instead_of_destroying_them(
+        self, strategy
+    ):
+        """A failed archive must not become a deletion.
+
+        The batch write is all-or-nothing, so one malformed message aborts it.
+        Deleting anyway would destroy the whole prune while the breadcrumb still
+        promises the content can be looked up. An over-long context is a cost;
+        this is not recoverable. And it must not raise either — the token layers
+        still have to run.
+        """
+        strat, archival = strategy
+
+        def boom(*a, **kw):
+            raise sqlite3.OperationalError("database is locked")
+
+        archival.store_many = boom
+        messages = self._conversation(8)
+        before = [str(m.get("content")) for m in messages]
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        assert result.messages_pruned == 0, "messages were dropped unarchived"
+        after = [str(m.get("content")) for m in result.modified_messages]
+        for content in before:
+            assert content in after, (
+                f"{content!r} was destroyed although the archive write failed")
+
+    @pytest.mark.asyncio
+    async def test_prune_stays_within_the_limit_across_rounds(self, strategy):
+        """The +1 for the breadcrumb is paid once, not every round.
+
+        Without the `already has a notice` condition the layer removes one extra
+        real message on every single call, forever — and the length never
+        settles. Asserting only the first round misses that entirely.
+        """
+        strat, _ = strategy
+        limit = strat.config.max_messages
+        messages = self._conversation(8)
+        added_per_round = 3
+
+        # Warm-up: this is the round that legitimately pays the +1 for the
+        # notice it creates.
+        messages = (await strat.compact(messages, current_tokens=100)).modified_messages
+
+        for round_no in range(3):
+            # Fresh dicts: `[a, b] * 3` would alias one object into several
+            # slots, and the identity-based removal diff would under-count.
+            messages = messages + [
+                {"role": "assistant", "content": f"Antwort {round_no}-{k}"}
+                for k in range(2)
+            ] + [{"role": "user", "content": f"Nachfrage {round_no}"}]
+
+            result = await strat.compact(messages, current_tokens=100)
+            messages = result.modified_messages
+
+            assert len(messages) <= limit, (
+                f"round {round_no}: {len(messages)} messages against a limit of {limit}")
+            # The length alone cannot catch an always-on +1: that lands at the
+            # limit too, it just eats one extra REAL message every round. The
+            # steady state is "remove exactly what arrived".
+            assert result.messages_pruned == added_per_round, (
+                f"round {round_no}: {added_per_round} messages arrived but "
+                f"{result.messages_pruned} were pruned — the conversation is "
+                f"eroding by {result.messages_pruned - added_per_round} per step")
+
+    @pytest.mark.asyncio
+    async def test_single_user_message_is_never_pruned(self, strategy):
+        """The shape this layer exists for: one task, hundreds of steps.
+
+        With one user message the first and last protected index coincide, so
+        exactly one message carries the whole conversation. Losing it leaves the
+        agent working on nothing.
+        """
+        strat, _ = strategy
+        messages = [{"role": "user", "content": "die einzige Aufgabe"}]
+        for i in range(12):
+            messages.append({"role": "assistant", "content": f"Schritt {i}"})
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        users = [m for m in result.modified_messages if m.get("role") == "user"]
+        assert len(users) == 1
+        assert users[0]["content"] == "die einzige Aufgabe"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("keep_system", [True, False])
+    async def test_parallel_tool_calls_are_never_split(self, tmp_path, keep_system):
+        """Half a tool pair is a 400 from every provider — and it self-sustains.
+
+        The cost ranking put `tool_result_ref` placeholders first, and in
+        production those sit on the `role=tool` message. Reaching one first
+        pulled in its assistant, and the assistant's OTHER results were then
+        never expanded, because the loop skips an index it already holds. The
+        broken list is written back to the session, so every following step
+        re-sends it.
+        """
+        archival = ArchivalMemory(tmp_path / "archive.db", session_id="test")
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            variable_manager=VariableManager(min_content_tokens=50,
+                                             storage_path=tmp_path / "vars.json"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=archival,
+            config=CompactionConfig(
+                layer1_threshold=10**9, layer2_threshold=10**9,
+                layer3_threshold=10**9, max_messages=8,
+                keep_system_messages=keep_system,
+            ),
+        )
+        ref = json.dumps({"type": "tool_result_ref", "ref_id": "TR_1",
+                          "summary": "ausgelagert"})
+
+        def group(prefix, cheap_at):
+            """One assistant with 5 parallel calls, production shape.
+
+            The externalised result sits on the `role=tool` message — that is
+            where Layer 1 writes it — so the ranking's rank-0 pick IS half a
+            pair. A placeholder on an assistant message would never enter the
+            branch this test exists for.
+            """
+            out = [{"role": "assistant", "content": None, "tool_calls": [
+                {"id": f"{prefix}{k}", "type": "function",
+                 "function": {"name": "t", "arguments": "{}"}} for k in range(1, 6)]}]
+            for k in range(1, 6):
+                out.append({"role": "tool", "name": "t", "tool_call_id": f"{prefix}{k}",
+                            "content": ref if k == cheap_at else f"Ergebnis {prefix}{k}"})
+            return out
+
+        messages = (
+            [{"role": "system", "content": "Du bist ein Assistent."},
+             {"role": "user", "content": "die Aufgabe"}]
+            + group("a", cheap_at=2)          # old group — this one gets pruned
+            + [{"role": "user", "content": "Nachfrage"}]
+            + group("b", cheap_at=4)          # recent group — must survive whole
+            + [{"role": "user", "content": "letzte Frage"}]
+        )
+
+        # Room for the recent group to survive, so the pair assertions below
+        # have something to be true ABOUT instead of comparing empty to empty.
+        strat.config.max_messages = 12
+        result = await strat.compact(messages, current_tokens=100)
+        out = result.modified_messages
+
+        calls = {tc["id"] for m in out for tc in (m.get("tool_calls") or [])}
+        responses = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+        assert calls, "no tool pair survived — the assertions below would be vacuous"
+        assert [r for r in responses if r not in calls] == [], (
+            f"orphaned tool responses {[r for r in responses if r not in calls]} — "
+            f"their assistant was pruned without them")
+        assert [c for c in calls if c not in responses] == [], (
+            f"tool calls {[c for c in calls if c not in responses]} lost their "
+            f"results — the other half of the same pair break")
+        assert result.messages_pruned > 0, "nothing was pruned; the test proved nothing"
+
+        # Only the True direction is an invariant. With False the prompt merely
+        # becomes eligible — whether it actually goes depends on how far the
+        # pressure reaches, so asserting it would pin an accident. What the
+        # parametrization buys is that pair integrity holds under BOTH
+        # protection regimes, which is the property under test.
+        if keep_system:
+            prompts = [m for m in out if m.get("content") == "Du bist ein Assistent."]
+            assert len(prompts) == 1, "keep_system_messages=True lost the prompt"
+
+    @pytest.mark.asyncio
+    async def test_shared_tool_call_ids_do_not_split_a_pair(self, strategy):
+        """Two assistants reusing one tool_call id must form ONE unit.
+
+        A dict of "assistant -> its members" is last-writer-wins: when the units
+        overlap without one containing the other, the first unit's exclusive
+        members keep a stale mapping and are stranded when the shared part goes.
+        Colliding ids are not hypothetical — the Gemini batch client mints
+        `call_{name}_{index}`, which repeats across assistant turns. Only a
+        connected-component view survives this.
+        """
+        strat, _ = strategy
+
+        def call(cid):
+            return {"id": cid, "type": "function",
+                    "function": {"name": "t", "arguments": "{}"}}
+
+        messages = [
+            {"role": "user", "content": "die Aufgabe"},
+            {"role": "assistant", "content": None, "tool_calls": [call("x"), call("y")]},
+            {"role": "tool", "content": "r1", "tool_call_id": "x", "name": "t"},
+            {"role": "tool", "content": "r2", "tool_call_id": "y", "name": "t"},
+            # reuses "x" — this is what makes the two units overlap
+            {"role": "assistant", "content": None, "tool_calls": [call("x")]},
+            {"role": "tool", "content": "r3", "tool_call_id": "x", "name": "t"},
+            {"role": "assistant", "content": "fertig"},
+            {"role": "user", "content": "letzte Frage"},
+        ]
+
+        result = await strat.compact(messages, current_tokens=100)
+        out = result.modified_messages
+
+        calls = {tc["id"] for m in out for tc in (m.get("tool_calls") or [])}
+        responses = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+        assert [r for r in responses if r not in calls] == [], (
+            f"orphaned {[r for r in responses if r not in calls]} — the overlapping "
+            f"unit was resolved last-writer-wins instead of as one component")
+        assert [c for c in calls if c not in responses] == []
+
+    @pytest.mark.asyncio
+    async def test_notice_survives_and_accumulates_without_system_protection(
+        self, tmp_path
+    ):
+        """`keep_system_messages=False` must not turn the breadcrumb into churn.
+
+        Unprotected, the notice is both the cheapest thing in the list (it is a
+        placeholder) and the oldest — so it gets evicted and re-added every
+        round: the running total resets forever and one real message dies per
+        step to pay for it. It is protected on its TYPE for that reason.
+        """
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            variable_manager=VariableManager(min_content_tokens=50,
+                                             storage_path=tmp_path / "vars.json"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="t"),
+            config=CompactionConfig(
+                layer1_threshold=10**9, layer2_threshold=10**9,
+                layer3_threshold=10**9, max_messages=6,
+                keep_system_messages=False,
+            ),
+        )
+
+        def notices(msgs):
+            return [m for m in msgs if _ref_type(m) == "pruned_notice"]
+
+        first = await strat.compact(self._conversation(8), current_tokens=100)
+        assert len(notices(first.modified_messages)) == 1
+        total1 = json.loads(notices(first.modified_messages)[0]["content"])["total_removed"]
+
+        followup = list(first.modified_messages) + [
+            {"role": "assistant", "content": "weiter"},
+            {"role": "user", "content": "und weiter"}] * 3
+        second = await strat.compact(followup, current_tokens=100)
+
+        assert len(notices(second.modified_messages)) == 1
+        total2 = json.loads(notices(second.modified_messages)[0]["content"])["total_removed"]
+        assert total2 > total1, (
+            f"running total went {total1} -> {total2}: the notice was evicted "
+            f"and re-created instead of carried forward")
+
+    @pytest.mark.asyncio
+    async def test_duplicate_notices_collapse_to_one(self, strategy):
+        """Two notices can arrive through a merged or restored history.
+
+        Removing only the first left a permanent pair with disagreeing totals.
+        """
+        strat, _ = strategy
+        old = [{"role": "system", "content": json.dumps(
+            {"type": "pruned_notice", "total_removed": n})} for n in (4, 7)]
+        messages = old + self._conversation(8)
+        before = len(messages)
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        found = [m for m in result.modified_messages
+                 if _ref_type(m) == "pruned_notice"]
+        assert len(found) == 1, f"{len(found)} notices survived"
+
+        # Exact, and NOT >=: this round alone prunes more than 4+7, so a
+        # threshold assertion holds even with the carry-over deleted. The
+        # carried value is the MAXIMUM of the duplicates — they come from one
+        # lineage, so summing would double-count their shared part. Both old
+        # notices vanish, hence -2 on the delta and +1 for the new one.
+        removed_now = before - len(result.modified_messages) + 1 - 2
+        total = json.loads(found[0]["content"])["total_removed"]
+        assert total == removed_now + 7, (
+            f"expected {removed_now} + max(4, 7) = {removed_now + 7}, got {total}")
+
+    @pytest.mark.asyncio
+    async def test_retrieval_answers_are_not_archived(self, strategy):
+        """Archiving a retrieval answer is a loop with no exit.
+
+        Caught live, not in review: the archive filled with the agent's own
+        list() answers, the next search ranked those above the original message,
+        and the agent followed refs to its own earlier replies until it gave up.
+        Layer 1 has exempted these for the same reason; Pre-Layer P did not.
+        """
+        from plugins.context_engineer.compaction import RETRIEVAL_MARKER
+
+        strat, archival = strategy
+        answer = json.dumps({RETRIEVAL_MARKER: True, "status": "success",
+                             "section": "all", "count": 1,
+                             "entries": [{"ref": "arch_x", "summary": "…"}]})
+        messages = [{"role": "user", "content": "die eigentliche Aufgabe"}]
+        for i in range(8):
+            messages.append({"role": "assistant", "content": f"Antwort {i}"})
+            messages.append({"role": "tool", "content": answer,
+                             "tool_call_id": f"c{i}", "name": "context_list"})
+            messages.append({"role": "user", "content": f"Nachfrage {i}"})
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        assert result.messages_pruned > 0
+        stored = [r[0] for r in archival._db.execute(
+            "SELECT content FROM archived_messages").fetchall()]
+        assert not [s for s in stored if RETRIEVAL_MARKER in s], (
+            "a retrieval answer was archived — the next search will rank it "
+            "above the content it was pointing at")
+        # The real prose must still be archived, or the guard is too wide.
+        assert any("Antwort" in s for s in stored), "nothing real was archived"
+
+    @pytest.mark.asyncio
+    async def test_an_echoed_placeholder_is_still_a_real_message(self, strategy):
+        """Role decides, not just the JSON shape.
+
+        The agent SEES these placeholders in its own context and can reproduce
+        one in an answer. On type alone such an echo would be protected from
+        pruning and then deleted outright by the breadcrumb pass — the single
+        path where a message disappears with no archive entry and no entry in
+        the removal count. A retrieval answer pasted back by the user is the
+        same trap on the other predicate.
+        """
+        from plugins.context_engineer.compaction import RETRIEVAL_MARKER
+
+        strat, archival = strategy
+        echoed_notice = json.dumps({"type": "pruned_notice", "total_removed": 99})
+        echoed_answer = json.dumps({RETRIEVAL_MARKER: True, "entries": []})
+        messages = [{"role": "user", "content": "die eigentliche Aufgabe"},
+                    {"role": "assistant", "content": echoed_notice},
+                    {"role": "user", "content": echoed_answer}]
+        for i in range(8):
+            messages.append({"role": "assistant", "content": f"Antwort {i}"})
+            messages.append({"role": "user", "content": f"Nachfrage {i}"})
+
+        result = await strat.compact(messages, current_tokens=100)
+
+        stored = self._archived_contents(archival)
+        alive = [str(m.get("content")) for m in result.modified_messages]
+        for echo in (echoed_notice, echoed_answer):
+            assert echo in stored or echo in alive, (
+                f"{echo[:40]}… vanished without being archived — it was treated "
+                f"as a placeholder because of its shape, not its role")
+        # And the real breadcrumb is still exactly one, on a system message.
+        notices = [m for m in result.modified_messages if _ref_type(m) == "pruned_notice"]
+        assert len([m for m in notices if m.get("role") == "system"]) == 1
+
+    def test_store_many_keeps_conversation_order(self, tmp_path):
+        """The breadcrumb points at list(section='history') — it must be ordered.
+
+        get_session_messages orders by `timestamp ASC, id ASC` and the id is a
+        random uuid. One shared timestamp for the whole batch therefore returns
+        it in RANDOM order, which is the listing the agent is told to browse.
+        """
+        archive = ArchivalMemory(tmp_path / "archive.db", session_id="t")
+        messages = [{"role": "user", "content": f"Nachricht {i:02d}"}
+                    for i in range(25)]
+
+        archive.store_many(messages)
+
+        got = [m.content for m in archive.get_session_messages(session_id="t", limit=50)]
+        assert got == [m["content"] for m in messages], (
+            "the batch came back out of order")
+
+    @pytest.mark.asyncio
+    async def test_archived_text_survives_the_variable_garbage_collector(
+        self, tmp_path
+    ):
+        """The archive must be self-contained, or Layer 2 empties it out.
+
+        Layer 1 replaces long assistant prose with a `$VAR_n` reference. If
+        Pre-Layer P archives that reference verbatim and then removes the last
+        live mention, `cleanup_unused_variables` — which scans only the LIVE
+        messages — deletes the body in the SAME compaction. The archived copy
+        would keep a dangling pointer and the content would be gone from every
+        store.
+        """
+        archival = ArchivalMemory(tmp_path / "archive.db", session_id="t")
+        variables = VariableManager(min_content_tokens=10,
+                                    storage_path=tmp_path / "vars.json")
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            variable_manager=variables,
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=archival,
+            config=CompactionConfig(
+                layer1_threshold=10**9, layer2_threshold=1, layer3_threshold=10**9,
+                target_tokens=0, archive_after_turns=1,
+                max_messages=6, keep_system_messages=True,
+            ),
+        )
+        secret = "Der unersetzliche Absatz. " * 20
+        var_name, _ = await variables.create_variable(secret)
+        assert var_name, "fixture broken: no variable was created"
+
+        messages = [{"role": "user", "content": "die Aufgabe"},
+                    {"role": "assistant", "content": f"siehe {var_name}"}]
+        for i in range(6):
+            messages.append({"role": "user", "content": f"Frage {i}"})
+
+        await strat.compact(messages, current_tokens=10_000, force=True)
+
+        stored = [r[0] for r in archival._db.execute(
+            "SELECT content FROM archived_messages").fetchall()]
+        dangling = [s for s in stored
+                    if var_name in s and secret[:30] not in s]
+        assert not dangling, (
+            f"the archived copy still points at {var_name}; "
+            f"variable still known: {variables.get_variable(var_name) is not None}")
+        assert any(secret[:30] in s for s in stored), (
+            "the variable body reached neither the archive nor the message")
+
+    @pytest.mark.asyncio
+    async def test_huge_batch_still_archives_but_skips_the_vector_index(
+        self, strategy, monkeypatch
+    ):
+        """A runaway prune must not stall the request on embeddings.
+
+        ~17 ms of embedding per message against 0.02 ms for the row: 4682
+        messages are 0.08 s as rows and 80 s with the index. The rows and FTS
+        go in regardless — recoverability is never the thing that gets dropped.
+        """
+        from plugins.context_engineer import compaction as compaction_mod
+
+        strat, archival = strategy
+        monkeypatch.setattr(compaction_mod, "_SEMANTIC_INDEX_MAX_BATCH", 5)
+        seen: list[bool] = []
+        original = archival.store_many
+
+        def spy(messages, session_id=None, index_semantic=None):
+            seen.append(index_semantic)
+            return original(messages, session_id, index_semantic)
+
+        archival.store_many = spy
+        result = await strat.compact(self._conversation(12), current_tokens=100)
+
+        assert seen and seen[0] is False, (
+            f"a batch past the cap still asked for semantic indexing: {seen}")
+        # ...and the content is in the archive all the same.
+        assert result.messages_pruned > 0
+        stored = archival._db.execute(
+            "SELECT COUNT(*) FROM archived_messages").fetchone()[0]
+        assert stored == result.messages_pruned, (
+            f"{result.messages_pruned} pruned but only {stored} archived")
+
+    @pytest.mark.asyncio
+    async def test_layer3_keeps_the_summary_on_archive_refs(self, tmp_path):
+        """An address without a label is the one thing the agent cannot use.
+
+        Layer 3 used to strip archived_ref placeholders down to a bare ref_id.
+        That was consistent while references could not be followed; now the
+        summary is the catalogue entry that decides whether a ref is worth
+        fetching, and dropping the whole placeholder beats keeping a blind one.
+        """
+        archival = ArchivalMemory(tmp_path / "archive.db", session_id="test")
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            variable_manager=VariableManager(min_content_tokens=50,
+                                             storage_path=tmp_path / "vars.json"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=archival,
+            config=CompactionConfig(
+                layer1_threshold=1, layer2_threshold=1, layer3_threshold=1,
+                target_tokens=0, archive_after_turns=1, drop_after_turns=3,
+                max_messages=0, keep_system_messages=True,
+            ),
+        )
+        placeholder = json.dumps({"type": "archived_ref", "ref_id": "arch_keep",
+                                  "summary": "die Zusammenfassung zaehlt"})
+        # Five user turns against drop_after_turns=3, so Layer 3 has real work:
+        # the oldest messages ARE dropped and a placeholder survives at the
+        # young end. With drop_after_turns above the turn count the layer runs
+        # but touches nothing, and `3 in layers_applied` — appended on the
+        # threshold check alone — would still be true.
+        messages = [
+            {"role": "user", "content": "Frage 1"},
+            {"role": "assistant", "content": "sehr alte Antwort"},
+            {"role": "user", "content": "Frage 2"},
+            {"role": "user", "content": "Frage 3"},
+            {"role": "user", "content": "Frage 4"},
+            {"role": "assistant", "content": placeholder},
+            {"role": "user", "content": "Frage 5"},
+        ]
+
+        result = await strat.compact(messages, current_tokens=10_000, force=True)
+
+        assert 3 in result.layers_applied, result.layers_applied
+        assert result.messages_dropped > 0, (
+            "Layer 3 dropped nothing — this fixture does not exercise it")
+        refs = [m for m in result.modified_messages
+                if "archived_ref" in str(m.get("content"))]
+        assert refs, "the placeholder vanished entirely — nothing to assert on"
+        for msg in refs:
+            parsed = json.loads(msg["content"])
+            assert parsed.get("summary"), (
+                f"Layer 3 stripped the label off {parsed.get('ref_id')}, "
+                f"leaving an address the agent cannot judge")
 
 
 class TestEnsureValidMessageSequence:

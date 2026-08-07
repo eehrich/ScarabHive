@@ -347,6 +347,21 @@ window.AgentSystem.SessionInfo = {
     // Average system prompt WITHOUT tools: ~500 tokens (tools are now tracked separately)
     const estimatedSystemTokens = 500;
     let hasExplicitSystemMessage = false;
+
+    // Mirrors is_compaction_system_message() in
+    // agent_system/servers/agent/components/hook_integration.py: role=system
+    // messages that carry compacted CONVERSATION rather than prompt.
+    const isCompactionSystemMessage = (content) => {
+      if (typeof content !== 'string') return false;
+      if (!content.includes('_ref') && !content.includes('_notice')) return false;
+      try {
+        const parsed = JSON.parse(content);
+        return !!parsed && typeof parsed === 'object' &&
+               (parsed.type === 'archived_ref' || parsed.type === 'pruned_notice');
+      } catch (e) {
+        return false;
+      }
+    };
     
     // Get tool definition tokens from context_usage_tracker if available
     if (trackerData?.latest?.tool_definition_tokens && trackerData.latest.tool_definition_tokens > 0) {
@@ -368,7 +383,14 @@ window.AgentSystem.SessionInfo = {
       }
       
       if (role === 'system') {
-        hasExplicitSystemMessage = true;
+        // A compaction placeholder (archive pointer / prune breadcrumb) is
+        // persisted conversation, NOT the agent's system prompt. Counting it as
+        // one suppresses the estimate below and under-reports by ~440 tokens —
+        // and only on long compacted sessions, which is exactly when someone
+        // opens this panel.
+        if (!isCompactionSystemMessage(content)) {
+          hasExplicitSystemMessage = true;
+        }
         stats.systemTokens += tokens;
       } else if (role === 'user') {
         stats.userMessages++;

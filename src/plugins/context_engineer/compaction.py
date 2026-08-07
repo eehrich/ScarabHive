@@ -150,11 +150,19 @@ RETRIEVAL_MARKER = "retrieval_result"
 
 
 def _is_retrieval_result(message: dict[str, Any]) -> bool:
-    """Whether a tool message is an answer from the context-retrieval tools.
+    """Whether a TOOL message is an answer from the context-retrieval tools.
 
     Their output is content the agent just pulled OUT of storage; putting it
     straight back is a loop with no exit (see the call site).
+
+    The role check is load-bearing, not decoration: this predicate now also
+    decides what is exempt from archiving, and a user who pastes a retrieval
+    answer back into the chat to ask about it writes a REAL message that merely
+    looks like one. Without the check that message would be deleted and never
+    stored.
     """
+    if message.get("role") != "tool":
+        return False
     content = message.get("content")
     if not isinstance(content, str) or RETRIEVAL_MARKER not in content:
         return False
@@ -165,20 +173,80 @@ def _is_retrieval_result(message: dict[str, Any]) -> bool:
     return isinstance(data, dict) and data.get(RETRIEVAL_MARKER) is True
 
 
-def _is_archive_pointer(message: dict[str, Any]) -> bool:
-    """Whether a message is ALREADY the placeholder left by a previous archival.
+#: Marker of the placeholder Layer 1 leaves where a tool result was externalised.
+TOOL_RESULT_REF_TYPE = "tool_result_ref"
+
+#: Marker of the single breadcrumb Pre-Layer P leaves after removing messages.
+#: Without it a bulk removal is invisible to the agent, which is the "kein
+#: stiller Drift" invariant applied to the context: a self-healing step nobody
+#: can see is indistinguishable from one that never happened.
+PRUNE_NOTICE_TYPE = "pruned_notice"
+
+#: Placeholder types whose body already lives in a store. Dropping one costs
+#: its address only — the content stays reachable through the retrieval tools.
+_PLACEHOLDER_TYPES = (ARCHIVED_REF_TYPE, TOOL_RESULT_REF_TYPE, PRUNE_NOTICE_TYPE)
+
+#: The role each placeholder is WRITTEN on. The agent can see these JSON blobs
+#: in its own context and reproduce one in an answer; on shape alone such an
+#: echo counts as a placeholder, gets ranked as free to drop AND excluded from
+#: archiving — deleted with no copy anywhere. The role is what separates the
+#: real thing from a quotation of it.
+#:
+#: ``archived_ref`` is absent on purpose: Layer 2 preserves the ORIGINAL role of
+#: whatever it archived, so every role is legitimate there and nothing can tell
+#: an echo apart. That residue is accepted — an echoed archive pointer is an
+#: address whose target is still in the archive, so the loss is the quotation.
+_PLACEHOLDER_ROLES = {
+    TOOL_RESULT_REF_TYPE: ("tool",),
+    PRUNE_NOTICE_TYPE: ("system",),
+}
+
+#: Above this many messages in one prune, the archive is written WITHOUT the
+#: vector index (see _archive_pruned). Measured: ~17 ms per message of embedding
+#: against 0.02 ms for the row itself, and the largest of 1000 production prunes
+#: was 11 messages — so this only ever trips on a runaway loop.
+_SEMANTIC_INDEX_MAX_BATCH = 200
+
+
+def _ref_type(message: dict[str, Any]) -> str | None:
+    """The placeholder type of a message, or None if it carries real content.
 
     Cheap substring test before the JSON parse: this runs over every message on
     every compaction, and the vast majority are ordinary text.
     """
     content = message.get("content")
-    if not isinstance(content, str) or ARCHIVED_REF_TYPE not in content[:120]:
-        return False
+    if not isinstance(content, str):
+        return None
+    # Deliberately NOT windowed to the first N characters, matching
+    # is_compaction_system_message in the agent core: a window couples this to
+    # JSON key order, and one `sort_keys=True` in a producer would push "type"
+    # past it. This predicate decides protection, ranking and archive exclusion
+    # — losing it silently would stack breadcrumbs and mis-rank candidates.
+    if not any(t in content for t in _PLACEHOLDER_TYPES):
+        return None
     try:
         data = json.loads(content)
     except (ValueError, TypeError):
-        return False
-    return isinstance(data, dict) and data.get("type") == ARCHIVED_REF_TYPE
+        return None
+    if not isinstance(data, dict):
+        return None
+    ref_type = data.get("type")
+    if ref_type not in _PLACEHOLDER_TYPES:
+        return None
+    allowed = _PLACEHOLDER_ROLES.get(ref_type)
+    if allowed is not None and message.get("role") not in allowed:
+        return None  # an echo of a placeholder, not a placeholder
+    return ref_type
+
+
+def _is_prune_notice(message: dict[str, Any]) -> bool:
+    """The breadcrumb. Role is already part of ``_ref_type``'s answer."""
+    return _ref_type(message) == PRUNE_NOTICE_TYPE
+
+
+def _is_archive_pointer(message: dict[str, Any]) -> bool:
+    """Whether a message is ALREADY the placeholder left by a previous archival."""
+    return _ref_type(message) == ARCHIVED_REF_TYPE
 
 
 class LayeredCompactionStrategy:
@@ -1552,14 +1620,21 @@ class LayeredCompactionStrategy:
             if role == "system" and self.config.keep_system_messages:
                 continue
 
-            # Already a pointer into the archive — archiving it again stores a
-            # pointer to a pointer and gains nothing, because the content is
-            # long gone from this message. Measured before this guard: chains 20
-            # levels deep, 637 of 1286 entries in one session being nothing but
-            # pointers, and the summaries degrading to `User: {"type":
-            # "archived_ref"...}`. An agent following such a ref never reaches
-            # the text, which is what made retrieval look broken.
-            if _is_archive_pointer(msg):
+            # Already a pointer — archiving it again stores a pointer to a
+            # pointer and gains nothing, because the content is long gone from
+            # this message. Measured before this guard: chains 20 levels deep,
+            # 637 of 1286 entries in one session being nothing but pointers, and
+            # the summaries degrading to `User: {"type": "archived_ref"...}`. An
+            # agent following such a ref never reaches the text, which is what
+            # made retrieval look broken.
+            #
+            # The guard covers EVERY placeholder type, not just archive refs.
+            # Layer 1 runs immediately before this and turns old tool results
+            # into `tool_result_ref` — those were then archived here, producing
+            # `archived_ref -> tool_result_ref`, and the chain resolver only
+            # follows archive refs, so the walk ended on the pointer and handed
+            # the agent JSON instead of the text. Same defect, other entrance.
+            if _ref_type(msg) is not None:
                 continue
 
             # Calculate message age in turns
@@ -1586,7 +1661,7 @@ class LayeredCompactionStrategy:
         # them. Measured after guarding only the loop, 13 of 57 entries in a live
         # session were still pointers — all of them halves of a tool pair.
         indices_to_archive = {i for i in indices_to_archive
-                              if not _is_archive_pointer(messages[i])}
+                              if _ref_type(messages[i]) is None}
 
         # Archive collected messages
         for i in indices_to_archive:
@@ -1692,22 +1767,15 @@ class LayeredCompactionStrategy:
         for i in sorted(indices_to_remove, reverse=True):
             del messages[i]
         
-        # Compress archive references
-        import json
-        for i, msg in enumerate(messages):
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                # Check for JSON archived_ref format
-                try:
-                    parsed = json.loads(content)
-                    if isinstance(parsed, dict) and parsed.get("type") == "archived_ref":
-                        # Shorten to minimal reference
-                        messages[i] = {**msg, "content": json.dumps({
-                            "type": "archived_ref",
-                            "ref_id": parsed.get("ref_id")
-                        })}
-                except (json.JSONDecodeError, TypeError):
-                    pass  # Not JSON, skip
+        # The summaries on the remaining archive references STAY. This pass used
+        # to strip them down to a bare ref_id, which was consistent while there
+        # was no way to follow a reference: a pointer you cannot dereference is
+        # just ballast, so the label was worth nothing. With the retrieval tools
+        # in place the trade inverts — the summary IS the catalogue entry the
+        # agent reads to decide whether a ref is worth fetching, and an
+        # unlabelled address is the one form it can never act on. If the space
+        # is genuinely needed, dropping the whole placeholder is the better
+        # move: the content stays findable through list(section='history').
         
         result.final_tokens = self._estimate_messages_tokens(messages)
         logger.debug(
@@ -1729,100 +1797,382 @@ class LayeredCompactionStrategy:
 
     async def _prune_by_message_count(self, result: CompactionResult) -> None:
         """Pre-Layer P: Prune oldest messages to enforce max_messages limit.
-        
-        This runs BEFORE token-based layers to prevent excessive message counts
-        that waste API overhead even when token count is low.
-        
-        Counts ALL messages (user, assistant, tool calls, tool results).
-        System messages are kept if keep_system_messages is True.
-        Tool call/result pairs are kept together to maintain conversation integrity.
+
+        Runs BEFORE the token-based layers to prevent excessive message counts
+        that waste API overhead even when the token count is low. Measured over
+        the last 1000 production compactions, this is the layer that actually
+        does the work: it fired 476 times against Layer 2's 115 and Layer 3's
+        zero — the turn-based layers barely apply because a "turn" is a USER
+        message, and an agent run is one user message with hundreds of steps.
+
+        It therefore also owns the recoverability of what it removes. Everything
+        that leaves the view is written to the archive FIRST, so the agent can
+        find it again through the retrieval tools; before that, this was the one
+        place in the system that destroyed content outright.
+
+        System messages are kept if keep_system_messages is True. The first AND
+        last user messages are protected. Tool call/result pairs move together.
         """
         messages = result.modified_messages
         max_msgs = self.config.max_messages
-        
+
         if len(messages) <= max_msgs:
             return
-        
+
         excess = len(messages) - max_msgs
+
+        # The breadcrumb below is itself a message. Removing exactly `excess`
+        # and then adding it would land one over the limit and re-trigger on
+        # every following call, so pay for it here — but only when there is not
+        # already one in the list to replace.
+        if not any(_is_prune_notice(m) for m in messages):
+            excess += 1
+
         logger.info(
             f"Pre-Layer P: {len(messages)} messages exceeds limit of {max_msgs}, "
             f"pruning ~{excess} oldest messages"
         )
-        
+
         # Build tool_call mapping to keep pairs together
         tool_map = self._build_tool_call_map(messages)
-        
-        # Find system message indices to protect
-        system_indices = set()
+
+        protected: set[int] = set()
         if self.config.keep_system_messages:
-            system_indices = {
+            protected = {
                 i for i, msg in enumerate(messages) if msg.get("role") == "system"
             }
-        
-        # Find user message indices - we must keep at least one!
+        # The breadcrumb is protected on its TYPE, not on its role. With
+        # keep_system_messages off it is otherwise both the cheapest thing in
+        # the list (rank 1) and the oldest, so it gets evicted and re-added
+        # every single round: the count resets to the current round forever and
+        # one real message dies per step to pay for it.
+        protected.update(i for i, msg in enumerate(messages)
+                         if _is_prune_notice(msg))
+
         user_indices = [
             i for i, msg in enumerate(messages) if msg.get("role") == "user"
         ]
-        last_user_idx = user_indices[-1] if user_indices else None
-        
-        # Collect indices to remove (oldest first, respecting tool call pairs)
-        indices_to_remove: set[int] = set()
-        
-        # Start from beginning (oldest) and collect messages until we have enough
-        i = 0
-        while len(indices_to_remove) < excess and i < len(messages):
-            # Skip system messages
-            if i in system_indices:
-                i += 1
-                continue
-            
-            # Skip if already marked for removal
-            if i in indices_to_remove:
-                i += 1
-                continue
-            
-            # CRITICAL: Never remove the LAST user message - this would break API calls
-            if i == last_user_idx:
-                logger.debug(f"Pre-Layer P: Protecting last user message at index {i}")
-                i += 1
-                continue
-            
-            msg = messages[i]
-            role = msg.get("role")
-            
-            # Add this message
-            indices_to_remove.add(i)
-            
-            # If tool call/result, add related messages
-            if role == "assistant" and msg.get("tool_calls"):
-                for tc in msg.get("tool_calls", []):
-                    tc_id = tc.get("id")
-                    if tc_id and tc_id in tool_map:
-                        indices_to_remove.update(tool_map[tc_id])
-            elif role == "tool":
-                tc_id = msg.get("tool_call_id")
-                if tc_id and tc_id in tool_map:
-                    indices_to_remove.update(tool_map[tc_id])
-            
-            i += 1
-        
-        # Remove in reverse order to preserve indices
-        pruned_count = len(indices_to_remove)
+        if user_indices:
+            # The LAST user message must survive or the API call is invalid.
+            # The FIRST one is the task everything else refers to: in a single
+            # agent run they are the same message, but in a continued session
+            # the task sits at the front and was the very first thing to go.
+            protected.add(user_indices[-1])
+            protected.add(user_indices[0])
+
+        indices_to_remove = self._select_prune_candidates(
+            messages, tool_map, protected, excess
+        )
+
+        snapshot = list(messages)
+        selected = [messages[i] for i in sorted(indices_to_remove)]
+
+        # Archive BEFORE deleting. Placeholders are skipped inside: their body
+        # is already in a store, and archiving a pointer would only produce a
+        # pointer to a pointer (the chain Layer 2 guards against).
+        if not await self._archive_pruned(selected):
+            # Nothing was stored, so nothing may be dropped. An over-long
+            # context is a cost; destroyed content is not recoverable, and the
+            # breadcrumb would be promising a lookup that cannot succeed. The
+            # token-based layers still run after this.
+            logger.warning(
+                f"Pre-Layer P: skipping the prune of {len(selected)} messages — "
+                f"the archive write failed and dropping them would destroy them"
+            )
+            return
+
         for idx in sorted(indices_to_remove, reverse=True):
             del messages[idx]
-        
+
         # Ensure valid message sequence after pruning
         # Note: _ensure_valid_message_sequence rebuilds tool_map internally at each iteration
         extra_pruned = self._ensure_valid_message_sequence(messages, "Pre-Layer P")
-        pruned_count += extra_pruned
-        
+
+        # That pass deletes on its own account, so ask the list what actually
+        # went rather than trusting the selection. Identity, not equality:
+        # duplicate contents are common and nothing here rewrites a message.
+        survivors = {id(m) for m in messages}
+        removed = [m for m in snapshot if id(m) not in survivors]
+        if extra_pruned:
+            # These are already gone — the sequence fix deletes to make the
+            # request valid at all, and that cannot be undone. Archive what we
+            # can and say so if it fails.
+            already = {id(m) for m in selected}
+            if not await self._archive_pruned(
+                [m for m in removed if id(m) not in already]
+            ):
+                logger.error(
+                    f"Pre-Layer P: {extra_pruned} messages removed by the "
+                    f"sequence fix could not be archived and are lost"
+                )
+        pruned_count = len(removed)
+
+        self._leave_prune_notice(messages, pruned_count)
+
         result.messages_pruned = pruned_count
         result.final_tokens = self._estimate_messages_tokens(messages)
-        
+
+        if len(messages) > max_msgs:
+            # Everything left is protected (a long leading system block, or the
+            # only user message). Saying so once per call beats an INFO line
+            # that reads like work was done while the list never shrinks.
+            logger.warning(
+                f"Pre-Layer P: still {len(messages)} messages over the limit of "
+                f"{max_msgs} after pruning {pruned_count} — the remainder is "
+                f"protected (system messages, first/last user message)"
+            )
+
         logger.info(
             f"Pre-Layer P: pruned {pruned_count} messages, "
             f"now {len(messages)} messages, {result.final_tokens:,} tokens"
         )
+
+    def _select_prune_candidates(
+        self,
+        messages: list[dict[str, Any]],
+        tool_map: dict[str, list[int]],
+        protected: set[int],
+        excess: int
+    ) -> set[int]:
+        """Pick which indices to remove: oldest first, cheapest-to-lose first.
+
+        Age stays the primary criterion — the tail is the agent's working set
+        and must not be touched. But among the oldest candidates, a placeholder
+        is strictly cheaper to drop than real content: its body already sits in
+        a store, so losing it costs an address, while real content costs an
+        archive write and a retrieval turn to get back.
+
+        The candidate window is deliberately narrow (twice what we need). A
+        global sort by cheapness would reach into the recent tail and strip the
+        pointers the agent is actively working with.
+        """
+        candidates = [i for i in range(len(messages)) if i not in protected]
+        window = candidates[:max(2 * excess, 20)]
+
+        def cost(i: int) -> tuple[int, int]:
+            # 0/1: placeholder (body is stored elsewhere), 2: real content.
+            ref = _ref_type(messages[i])
+            rank = 0 if ref == TOOL_RESULT_REF_TYPE else 1 if ref else 2
+            return (rank, i)
+
+        groups = self._tool_call_groups(messages, tool_map)
+
+        indices_to_remove: set[int] = set()
+        for i in sorted(window, key=cost):
+            if len(indices_to_remove) >= excess:
+                break
+            if i in indices_to_remove:
+                continue
+            # Whole group at once. Selecting one member and cascading from it is
+            # NOT enough: reaching a tool result first pulls in its assistant,
+            # and the assistant's OTHER results are then never expanded, because
+            # the loop skips an index it already holds. The old code got away
+            # with a per-index cascade only because it walked strictly ascending
+            # and so always met the assistant before its results — the cost sort
+            # inverts exactly that order, and preferentially so.
+            group = groups.get(i, (i,))
+            # Today `protected` holds only system/user indices and a group only
+            # assistant/tool indices, so this never fires. It is here because
+            # the guarantee currently rests on that coincidence: one new rule in
+            # `protected` and the closure would silently evict a protected
+            # message. Skipping the whole group keeps BOTH invariants — nothing
+            # protected leaves, and no pair is split.
+            if any(j in protected for j in group):
+                continue
+            indices_to_remove.update(group)
+
+        return indices_to_remove
+
+    @staticmethod
+    def _tool_call_groups(
+        messages: list[dict[str, Any]],
+        tool_map: dict[str, list[int]]
+    ) -> dict[int, frozenset[int]]:
+        """Map each index to the tool-call unit it belongs to.
+
+        An assistant with parallel tool_calls plus ALL of its results is one
+        indivisible unit: half a pair is a 400 from every provider, and the
+        broken list is then persisted and re-sent on every following step.
+
+        Indices with no tool involvement are absent — callers treat that as a
+        group of one. tool_map holds only assistant/tool indices, so a group can
+        never contain a protected system or user message.
+        """
+        # Union-find, NOT one set per assistant. A per-assistant dict is
+        # last-writer-wins, and two assistants that share a tool_call id produce
+        # overlapping units: the second write leaves the first unit's exclusive
+        # members pointing at a stale set, and removing the shared part strands
+        # them. Reproduced with a two-call assistant and a later one-call
+        # assistant reusing an id — the result was a tool message with no
+        # tool_call. Colliding ids are not hypothetical: the Gemini batch client
+        # mints `call_{name}_{index}`, which repeats across assistant turns.
+        parent: dict[int, int] = {}
+
+        def find(x: int) -> int:
+            parent.setdefault(x, x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            root_a, root_b = find(a), find(b)
+            if root_a != root_b:
+                parent[root_a] = root_b
+
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+            find(i)  # an assistant with tool_calls is always its own component
+            linked = False
+            for tc in msg.get("tool_calls", []):
+                tc_id = tc.get("id")
+                for j in tool_map.get(tc_id, ()) if tc_id else ():
+                    union(i, j)
+                    linked = True
+            if not linked:
+                # tool_calls without usable ids: nothing links the results to
+                # this message, so both halves would be free to move apart.
+                # Absorb the contiguous run of tool messages that follows —
+                # the shape every provider emits — instead of splitting a pair.
+                for j in range(i + 1, len(messages)):
+                    if messages[j].get("role") != "tool":
+                        break
+                    union(i, j)
+
+        components: dict[int, set[int]] = {}
+        for index in list(parent):
+            components.setdefault(find(index), set()).add(index)
+
+        groups: dict[int, frozenset[int]] = {}
+        for members in components.values():
+            unit = frozenset(members)
+            for member in members:
+                groups[member] = unit
+        return groups
+
+    async def _archive_pruned(self, removed: list[dict[str, Any]]) -> bool:
+        """Write pruned messages to the archive. True when they are safe to drop.
+
+        Placeholders are skipped — their body is already stored and archiving
+        one would store a pointer, not content.
+
+        Never raises: bookkeeping must not sink the compaction it belongs to.
+        But it does REPORT, and the caller must not delete on False: the write
+        is all-or-nothing (one malformed message aborts the batch), so a
+        swallowed failure would delete every message of that prune while the
+        breadcrumb still promises they can be looked up. Keeping an over-long
+        context is recoverable; destroying the content is not — and the
+        token-based layers remain as the backstop.
+        """
+        # Retrieval answers are exempt for the same reason Layer 1 exempts them
+        # (see RETRIEVAL_MARKER): their body is content the agent just pulled OUT
+        # of storage, so putting it back is a loop with no exit. Measured live
+        # before this guard: the archive filled with the agent's own list()
+        # answers, the next search ranked those above the original message, and
+        # the agent followed refs to its own earlier replies until it gave up.
+        # Removing them from the conversation is still fine — they are
+        # re-derivable by asking again.
+        payload = [m for m in removed
+                   if _ref_type(m) is None and not _is_retrieval_result(m)]
+        if not payload:
+            return True
+
+        # Variables are expanded into the archived copy. Layer 1 replaces long
+        # assistant prose with a `$VAR_n` reference, and Layer 2/3 later call
+        # cleanup_unused_variables(), which scans only the LIVE messages — so
+        # the body of a variable whose last reference Pre-Layer P just removed
+        # is deleted in the same compaction. The archived text would keep a
+        # dangling `$VAR_n` and the content would be gone from every store.
+        expand = self.variable_manager.expand_variables
+        payload = [
+            {**m, "content": expand(m["content"])}
+            if isinstance(m.get("content"), str) and "$VAR_" in m["content"] else m
+            for m in payload
+        ]
+
+        # Embedding is the whole cost of a large batch: 4682 messages take 0.08 s
+        # as rows and 80 s with the vector index. In steady state that never
+        # matters (the largest of 1000 production prunes was 11 messages), but a
+        # model that emits a runaway tool_call batch produces exactly the huge
+        # first prune where a stall would hurt most. Beyond the cap the rows and
+        # the FTS index still go in — the content stays listable and findable by
+        # keyword, only vector similarity misses it — and the log says so.
+        index_semantic = len(payload) <= _SEMANTIC_INDEX_MAX_BATCH
+        if not index_semantic:
+            logger.warning(
+                f"Pre-Layer P: {len(payload)} messages exceed the semantic-index "
+                f"batch cap of {_SEMANTIC_INDEX_MAX_BATCH}; archiving them "
+                f"without vector indexing (list and keyword search still find them)"
+            )
+
+        try:
+            await asyncio.to_thread(
+                self.archival_memory.store_many, payload, None, index_semantic
+            )
+            return True
+        except Exception as e:  # noqa: BLE001 - see docstring
+            logger.error(
+                f"Pre-Layer P: archiving {len(payload)} pruned messages failed, "
+                f"keeping them in the conversation instead of destroying them: {e}"
+            )
+            return False
+
+    def _leave_prune_notice(
+        self, messages: list[dict[str, Any]], removed: int
+    ) -> None:
+        """Leave exactly ONE breadcrumb saying that older turns left the view.
+
+        Constant cost regardless of how much went, and it is the only thing
+        telling the agent there is something to look up at all — without it a
+        bulk removal is indistinguishable from a conversation that never had
+        those turns.
+        """
+        if removed <= 0:
+            return
+
+        # Replace, never stack. ALL existing notices go, not just the first:
+        # a second one can arrive through a merged or restored history, and
+        # removing only one leaves a permanent pair with disagreeing totals.
+        # The carried total is the MAXIMUM of the notices found, not their sum.
+        # Duplicates only ever arise from one lineage — a merged or restored
+        # history where the same running count appears twice at different ages —
+        # so summing would double-count the shared part of a counter whose only
+        # job is not to drift.
+        carried = 0
+        for i in range(len(messages) - 1, -1, -1):
+            if not _is_prune_notice(messages[i]):
+                continue
+            try:
+                previous = json.loads(messages[i].get("content") or "{}")
+                carried = max(carried, int(previous.get("total_removed") or 0))
+            except (ValueError, TypeError):
+                pass
+            del messages[i]
+        total = removed + carried
+
+        insert_at = len(messages)
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "system":
+                insert_at = i
+                break
+
+        messages.insert(insert_at, {
+            "role": "system",
+            "content": json.dumps({
+                "type": PRUNE_NOTICE_TYPE,
+                "total_removed": total,
+                # No promise that all N sit in the history archive: the count
+                # includes placeholders whose bodies live in the tool-result and
+                # variable stores instead. "Retrievable" is true for all of them.
+                "hint": (
+                    f"{total} earlier messages of this conversation were moved "
+                    f"out of view to keep it within limits. They are stored, "
+                    f"not gone: find them with your context list tool "
+                    f"(section='history' or 'all') and fetch one with read(ref=...)."
+                )
+            })
+        })
 
     def _ensure_valid_message_sequence(
         self, 

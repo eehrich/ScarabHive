@@ -585,3 +585,72 @@ class TestMultipleArchivedRefs:
         
         archived = [m for m in synced if m.role == 'system']
         assert len(archived) == 2
+
+
+class TestCompactionSystemMessages:
+    """The rule for "which system messages ARE conversation" lives once.
+
+    It used to be written out by hand at four places, and they disagreed: the
+    prune breadcrumb was kept by one and dropped by the others, so its running
+    total reset depending on which path ran last.
+    """
+
+    @staticmethod
+    def _notice(total=7):
+        return ChatMessage(role="system", content=json.dumps(
+            {"type": "pruned_notice", "total_removed": total, "hint": "…"}))
+
+    @pytest.mark.parametrize("content, expected", [
+        (json.dumps({"type": "archived_ref", "ref_id": "arch_1"}), True),
+        (json.dumps({"type": "pruned_notice", "total_removed": 3}), True),
+        ("Du bist ein hilfreicher Assistent.", False),
+        # A prompt that merely TALKS about the markers is not one of them.
+        ("Erwähne niemals archived_ref oder pruned_notice.", False),
+        (json.dumps({"type": "archived_ref_explainer"}), False),
+        # Nested, not top-level.
+        (json.dumps({"beispiel": {"type": "archived_ref"}}), False),
+        (json.dumps([{"type": "archived_ref"}]), False),
+        ('{"type": "archived_ref"', False),
+    ])
+    def test_predicate(self, content, expected):
+        from agent_system.servers.agent.components.hook_integration import (
+            is_compaction_system_message,
+        )
+        assert is_compaction_system_message(
+            ChatMessage(role="system", content=content)) is expected
+        # Both shapes must work: the compaction plugin passes plain dicts.
+        assert is_compaction_system_message(
+            {"role": "system", "content": content}) is expected
+
+    def test_key_order_does_not_decide(self):
+        """No head window: a long hint before "type" must not hide it.
+
+        A `sort_keys=True` anywhere in the producers would otherwise push the
+        type past the window and silently drop every breadcrumb from
+        persistence — the exact failure this rule exists to prevent.
+        """
+        from agent_system.servers.agent.components.hook_integration import (
+            is_compaction_system_message,
+        )
+        payload = json.dumps(
+            {"hint": "x" * 400, "total_removed": 12, "type": "pruned_notice"},
+            sort_keys=True)
+        assert is_compaction_system_message(
+            ChatMessage(role="system", content=payload)) is True
+
+    def test_auto_sync_keeps_the_breadcrumb(self, mock_agent):
+        manager = HookIntegrationManager(mock_agent)
+        messages = [
+            ChatMessage(role="system", content="You are helpful."),
+            self._notice(),
+            ChatMessage(role="user", content="Hallo"),
+        ]
+
+        manager._auto_sync_session_messages("session-123", messages)
+
+        _, synced = mock_agent._session_tracker.set_compacted_messages.call_args[0]
+        kept = [m for m in synced if m.role == "system"]
+        assert len(kept) == 1, "the breadcrumb was dropped with the prompt"
+        assert json.loads(kept[0].content)["type"] == "pruned_notice"
+        assert not any("You are helpful." == m.content for m in synced), \
+            "the agent's system prompt must NOT be persisted"

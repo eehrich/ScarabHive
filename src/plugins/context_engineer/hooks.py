@@ -694,28 +694,25 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # The explicit set_compacted_messages() call below is kept for backwards compatibility
             # and as a safety net, but is no longer strictly required.
             if context.agent and hasattr(context.agent, '_session_tracker'):
-                # Filter out the ORIGINAL system message (agent's system prompt) for persistence.
-                # The system prompt is rebuilt each turn from config.
-                # BUT keep archived_ref system messages - those are compacted conversation!
-                import json
-                conversation_msgs = []
-                for msg in new_messages:
-                    if msg.role == 'system':
-                        # Check if this is an archived_ref (keep) or original system prompt (skip)
-                        content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                        if isinstance(content, str):
-                            try:
-                                parsed = json.loads(content)
-                                if isinstance(parsed, dict) and parsed.get("type") == "archived_ref":
-                                    # Keep archived references
-                                    conversation_msgs.append(msg)
-                                    continue
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        # Skip original system prompt
-                        continue
-                    conversation_msgs.append(msg)
-                
+                # Filter out the ORIGINAL system message (agent's system prompt)
+                # for persistence — it is rebuilt each turn from config. The
+                # system messages that ARE compacted conversation must stay.
+                #
+                # This used to be a hand-written copy of that rule which knew
+                # only about archived_ref, so it dropped the prune breadcrumb.
+                # It survived by accident: the agent's auto-sync runs afterwards
+                # and overwrote the same slot with the correct list. Ordering is
+                # not a guarantee — a hook that mutates context.messages in
+                # place skips that overwrite and this copy wins.
+                from agent_system.servers.agent.components.hook_integration import (
+                    is_compaction_system_message,
+                )
+                conversation_msgs = [
+                    msg for msg in new_messages
+                    if msg.role != 'system' or is_compaction_system_message(msg)
+                ]
+
+
                 context.agent._session_tracker.set_compacted_messages(
                     session_id, conversation_msgs
                 )
