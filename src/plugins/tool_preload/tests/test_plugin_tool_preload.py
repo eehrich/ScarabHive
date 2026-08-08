@@ -96,6 +96,155 @@ class TestFillParams:
 
 
 # ---------------------------------------------------------------------------
+# Context variables — the second placeholder source
+# ---------------------------------------------------------------------------
+class TestContextVars:
+    """State the user never types. v6 keeps its store namespace in
+    ``json_namespace``, set once at bootstrap and inherited by every
+    sub-agent, whose whole task text is "Aufgabe: World". Without this source
+    a rule cannot name the store, and a read would silently hit the DEFAULT
+    namespace — someone else's document."""
+
+    CTX = {"json_namespace": 4711, "aufgabe": "World"}
+
+    def test_lone_numeric_var_becomes_int(self):
+        out = _fill_params({"namespace": "{{ json_namespace }}"}, {}, self.CTX)
+        assert out == {"namespace": 4711}
+
+    def test_without_spaces_too(self):
+        """'{{name}}' without spaces: the group pattern matches its inner half,
+        so this shape is the one the pass order has to survive."""
+        out = _fill_params({"namespace": "{{json_namespace}}"}, {}, self.CTX)
+        assert out == {"namespace": 4711}
+
+    def test_context_wins_over_a_same_named_group(self):
+        """``{{name}}`` must not be read as a group ``{name}`` in braces."""
+        out = _fill_params({"namespace": "{{json_namespace}}"},
+                           {"json_namespace": "999"}, self.CTX)
+        assert out == {"namespace": 4711}
+
+    def test_a_resolved_value_is_not_scanned_again(self):
+        """The v6 coordinator puts the ENTIRE user task into ``brief``. With
+        two sequential passes, a brief containing ``{sid}`` was read as a group
+        reference: the rule died with a warning naming a group that appears in
+        no YAML, and the operator hunted a config error that did not exist."""
+        ctx = {"brief": "Schreibe eine Story ueber {sid} Szenen"}
+        out = _fill_params({"doc": "b_{{ brief }}"}, {"sid": "42"}, ctx)
+        assert out == {"doc": "b_Schreibe eine Story ueber {sid} Szenen"}
+
+    def test_a_resolved_value_is_not_rewritten_by_a_group(self):
+        """Same defect, silent variant: the context value itself contained a
+        placeholder whose name a group happened to share."""
+        out = _fill_params({"p": "x_{{ns}}"}, {"sid": "999"}, {"ns": "{sid}"})
+        assert out == {"p": "x_{sid}"}
+
+    def test_nested_params_are_templated(self):
+        """Top-level-only templating let a nested namespace through verbatim —
+        json_store then reads the DEFAULT namespace and hands over a foreign
+        document, silently. That is the failure this feature exists to stop."""
+        out = _fill_params({"filter": {"namespace": "{{ json_namespace }}"},
+                            "docs": ["{{ json_namespace }}", "{sid}"]},
+                           {"sid": "42"}, self.CTX)
+        assert out == {"filter": {"namespace": 4711}, "docs": [4711, 42]}
+
+
+    def test_mixed_stays_str(self):
+        out = _fill_params({"doc": "kapitel_{{ aufgabe }}"}, {}, self.CTX)
+        assert out == {"doc": "kapitel_World"}
+
+    def test_both_sources_in_one_value(self):
+        out = _fill_params({"p": "{{ json_namespace }}/{sid}"},
+                           {"sid": "42"}, self.CTX)
+        assert out == {"p": "4711/42"}
+
+    def test_groups_keep_working_without_ctx(self):
+        """The original source must be untouched — no ctx_vars argument at all
+        is the pre-existing call shape."""
+        assert _fill_params({"scene_id": "{sid}"}, {"sid": "42"}) == {"scene_id": 42}
+
+    def test_missing_var_raises(self):
+        """Same class as a missing group: skip the rule loudly. Falling back to
+        the default namespace would hand the agent the wrong document without
+        anyone noticing."""
+        with pytest.raises(KeyError):
+            _fill_params({"namespace": "{{ fehlt }}"}, {}, self.CTX)
+
+    def test_none_valued_var_raises(self):
+        """A var present but None is not a namespace — treat it as missing."""
+        with pytest.raises(KeyError):
+            _fill_params({"namespace": "{{ ns }}"}, {}, {"ns": None})
+
+    def test_resolver_is_defensive(self):
+        """Runs inside a hook: an agent without a tracker must degrade to 'no
+        vars', never sink the request."""
+        from plugins.tool_preload.hooks import _session_context_vars
+
+        class Bare:
+            pass
+
+        class Ctx:
+            agent = Bare()
+            session_id = "s"
+
+        assert _session_context_vars(Ctx()) == {}
+        assert _session_context_vars(type("C", (), {"agent": None})()) == {}
+
+    def test_session_vars_win_over_agent_defaults(self):
+        """Same precedence the prompt rendering uses: set_context overrides the
+        agent's static template_vars."""
+        from plugins.tool_preload.hooks import _session_context_vars
+
+        class Tracker:
+            @staticmethod
+            def get_session_template_vars(_sid):
+                return {"json_namespace": 999}
+
+        class Cfg:
+            template_vars = {"json_namespace": 1, "genre": "krimi"}
+
+        class Agent:
+            agent_config = Cfg()
+            _session_tracker = Tracker()
+
+        class Ctx:
+            agent = Agent()
+            session_id = "s"
+
+        assert _session_context_vars(Ctx()) == {"json_namespace": 999,
+                                                "genre": "krimi"}
+
+
+class TestIntConversionIsLossless:
+    """``"42"`` → 42 earns its keep (handlers validate ids as integers), but
+    only where the conversion changes nothing else."""
+
+    def test_leading_zeros_stay_a_string(self):
+        """'007' → 7 → json_store stringifies '7', while the prompt's own
+        ``{{ json_namespace }}`` still renders '007'. Preload and the agent's
+        own call would then read two different namespaces."""
+        assert _fill_params({"p": "{{ ns }}"}, {}, {"ns": "007"}) == {"p": "007"}
+
+    def test_plain_id_still_becomes_int(self):
+        assert _fill_params({"p": "{{ ns }}"}, {}, {"ns": "42"}) == {"p": 42}
+
+    def test_negative_is_consistent_with_positive(self):
+        """Both round-trip through str, so both convert — the old isdigit()
+        test made '-42' a string while '42' became an int, and the two then
+        serialised differently into the dedup key."""
+        assert _fill_params({"p": "{{ ns }}"}, {}, {"ns": "-42"}) == {"p": -42}
+
+    def test_isdigit_but_not_int_does_not_raise(self):
+        """'²'.isdigit() is True and int('²') raises ValueError — which is not
+        a KeyError, so it escaped the per-rule handler and discarded the whole
+        turn's preload, including every healthy rule."""
+        assert _fill_params({"p": "{{ ns }}"}, {}, {"ns": "²"}) == {"p": "²"}
+
+    def test_absurdly_long_digit_run_does_not_raise(self):
+        """int() refuses beyond int_max_str_digits — same escape route."""
+        lang = "1" * 5000
+        assert _fill_params({"p": "{{ ns }}"}, {}, {"ns": lang}) == {"p": lang}
+
+# ---------------------------------------------------------------------------
 # Firing conditions
 # ---------------------------------------------------------------------------
 class TestFiring:

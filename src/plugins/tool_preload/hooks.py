@@ -103,35 +103,151 @@ def _json_native(value: Any) -> Any:
         return str(value)
 
 
-def _fill_params(params: Dict[str, Any], groups: Dict[str, str]) -> Dict[str, Any]:
-    """Substitute ``{group}`` placeholders from the regex's named groups.
+#: Both placeholder syntaxes in ONE pattern, so a single ``re.sub`` handles
+#: them. The context alternative comes first: ``{{name}}`` must not be read as
+#: a group ``{name}`` wrapped in literal braces.
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*(?P<ctx>\w+)\s*\}\}|\{(?P<grp>\w+)\}")
 
-    Only string values are templated; everything else passes through (made
-    JSON-native first — see :func:`_json_native`). A value that IS exactly one
-    placeholder and captured pure digits becomes an int — ids are the
-    overwhelmingly common case (scene_id=42), and tool handlers validate them
-    as integers. A mixed string ("kapitel_{n}") stays a string.
 
-    Raises KeyError for a placeholder with no matching group — the rule is
-    misconfigured and must be skipped loudly, not called with a literal
-    ``{doc}`` as the document name.
+def _as_int_if_lossless(text: str) -> Any:
+    """``"42"`` → 42, but ``"007"`` stays a string.
+
+    Tool handlers validate ids as integers, so the conversion earns its keep —
+    but only where it changes nothing else. Two measured traps:
+
+    * ``"007"`` would become 7, and ``json_store`` stringifies that back to
+      ``"7"``. The prompt's own ``{{ json_namespace }}`` still renders
+      ``"007"``, so preload and the agent's own call would read two DIFFERENT
+      namespaces and nothing would look wrong. Round-tripping through ``str``
+      is the exact test for that.
+    * ``str.isdigit()`` is wider than ``int()`` accepts: ``"²"`` and ``"⑦"``
+      pass it and then raise ValueError — which is not a KeyError, so it
+      escaped the per-rule handler and killed the whole turn's preload. Same
+      for a 5000-digit run (int_max_str_digits).
     """
-    filled: Dict[str, Any] = {}
-    for key, value in params.items():
+    try:
+        number = int(text)
+    except (ValueError, TypeError):
+        return text
+    return number if str(number) == text else text
+
+
+def _fill_params(
+    params: Dict[str, Any],
+    groups: Dict[str, str],
+    ctx_vars: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Substitute placeholders from two sources.
+
+    * ``{group}`` — a **named group of the rule's regex**, i.e. something the
+      user typed. This is the original source.
+    * ``{{ var }}`` — a **context variable** of the session, the same value the
+      prompt template renders. Needed for state that never appears in the user
+      text: v6 keeps its store namespace in ``json_namespace``, set once at
+      bootstrap and inherited by every sub-agent, whose task text is only
+      "Aufgabe: World". Without this the rule could not name the store.
+
+    Both syntaxes are resolved in ONE pass over a combined pattern, and that
+    is load-bearing in two ways:
+
+    * ``{{name}}`` must not be read as a group ``{name}`` in literal braces,
+      so the context alternative comes first in the pattern.
+    * A resolved value must never be scanned again. Two sequential passes did
+      exactly that, and the v6 coordinator puts the entire user task into
+      ``brief`` — a brief containing ``{sid}`` was then read as a group
+      reference and killed the rule with a warning naming a group that appears
+      in no YAML. Worse, where a group happened to share the name, the context
+      value was silently rewritten with user text.
+
+    Strings, dicts and lists are all templated, recursively. Templating only
+    the top level meant a nested ``{filter: {namespace: "{{ ns }}"}}`` reached
+    the tool verbatim; ``json_store`` then falls back to the DEFAULT namespace
+    and returns a foreign document — silent, and the exact failure this
+    feature exists to prevent. Everything else passes through, made JSON-native
+    first (see :func:`_json_native`).
+
+    A value that IS exactly one placeholder may become an int — see
+    :func:`_as_int_if_lossless` for why "may". A mixed string ("kapitel_{n}")
+    stays a string.
+
+    Raises KeyError for a placeholder with no matching group or variable — the
+    rule is misconfigured and must be skipped loudly, not called with a literal
+    ``{doc}`` as the document name. A context var that is missing is the same
+    class of error: preloading a read against the DEFAULT namespace instead of
+    the run's own would silently hand the agent someone else's document.
+    """
+    ctx = ctx_vars or {}
+
+    def _resolve(m: "re.Match[str]") -> str:
+        """One placeholder → its value. KeyError for both sources alike."""
+        if m.group("ctx") is not None:                   # {{ var }}
+            name = m.group("ctx")
+            if name not in ctx or ctx[name] is None:
+                raise KeyError(name)
+            return str(ctx[name])
+        return groups[m.group("grp")]                    # {group}, KeyError ok
+
+    def _fill(value: Any) -> Any:
+        # Containers are templated too. Leaving them out meant a nested
+        # ``{filter: {namespace: "{{ json_namespace }}"}}`` reached the tool
+        # verbatim: json_store then falls back to the DEFAULT namespace and
+        # hands over a foreign document — silently, which is precisely the
+        # failure this whole feature exists to prevent.
+        if isinstance(value, dict):
+            return {k: _fill(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_fill(v) for v in value]
         if not isinstance(value, str):
-            filled[key] = _json_native(value)
-            continue
-        lone = re.fullmatch(r"\{(\w+)\}", value)
+            return _json_native(value)
+
+        # ONE pass over both syntaxes. Two passes would re-scan the value a
+        # context var resolved to — and the v6 coordinator puts the whole user
+        # task into ``brief``, so a brief containing braces would be read as a
+        # group reference and kill the rule with a warning naming a group that
+        # appears in no YAML.
+        lone = _PLACEHOLDER_RE.fullmatch(value)
         if lone:
-            group_value = groups[lone.group(1)]  # KeyError intended
-            filled[key] = int(group_value) if group_value.isdigit() else group_value
-            continue
+            resolved = _resolve(lone)
+            return _as_int_if_lossless(resolved)
+        return _PLACEHOLDER_RE.sub(_resolve, value)
 
-        def _sub(m: "re.Match[str]") -> str:
-            return groups[m.group(1)]  # KeyError intended
+    return {key: _fill(value) for key, value in params.items()}
 
-        filled[key] = re.sub(r"\{(\w+)\}", _sub, value)
-    return filled
+
+def _session_context_vars(context: Any) -> Dict[str, Any]:
+    """The variables a ``{{ var }}`` placeholder may reference.
+
+    Same precedence the prompt rendering uses: the agent's static
+    ``template_vars`` as the base, the session-scoped ones (written by
+    ``set_context``) on top. Reading them here means a preload names the same
+    namespace the agent's own call would have named.
+
+    Defensive throughout: this runs inside a hook, and a missing tracker must
+    degrade to "no context vars" (the rule is then skipped for a missing
+    placeholder), never sink the request.
+    """
+    out: Dict[str, Any] = {}
+    agent = getattr(context, "agent", None)
+    if agent is None:
+        return out
+    try:
+        cfg = getattr(agent, "agent_config", None)
+        if cfg is not None and getattr(cfg, "template_vars", None):
+            out.update(dict(cfg.template_vars))
+    except Exception:                                    # noqa: BLE001
+        logger.debug("tool_preload: agent_config.template_vars unreadable",
+                     exc_info=True)
+    try:
+        tracker = getattr(agent, "_session_tracker", None)
+        session_id = getattr(context, "session_id", None)
+        if tracker is not None and session_id:
+            session_vars = tracker.get_session_template_vars(session_id)
+            if session_vars:
+                out.update(session_vars)
+    except Exception:                                    # noqa: BLE001
+        logger.debug("tool_preload: session template vars unreadable",
+                     exc_info=True)
+    return out
 
 
 def _rule_calls(rule: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -174,7 +290,11 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             if not text:
                 return unchanged
 
-            plan = self._plan_calls(rules, text, config, messages)
+            # Im Hook aufgeloest, wo `context` im Scope ist — _plan_calls
+            # bekommt Daten, kein Kontext-Objekt.
+            plan = self._plan_calls(
+                rules, text, config, messages,
+                ctx_vars=_session_context_vars(context))
             if not plan:
                 return unchanged
 
@@ -196,12 +316,14 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
     # Planning
     # ------------------------------------------------------------------
     def _plan_calls(self, rules: List[Any], text: str, config: Dict[str, Any],
-                    messages: List[Any]) -> List[Tuple[str, Dict[str, Any]]]:
+                    messages: List[Any],
+                    ctx_vars: Dict[str, Any] | None = None) -> List[Tuple[str, Dict[str, Any]]]:
         """Which (tool, params) to run, in order, after matching and dedup."""
         max_calls = int(config.get("max_calls_per_turn",
                                    DEFAULT_MAX_CALLS_PER_TURN))
         dedup = config.get("dedup", True)
         already = self._calls_in_history(messages) if dedup else set()
+        ctx_vars = ctx_vars or {}
 
         plan: List[Tuple[str, Dict[str, Any]]] = []
         for rule in rules:
@@ -238,11 +360,13 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                 if not tool:
                     continue
                 try:
-                    params = _fill_params(call.get("params") or {}, groups)
+                    params = _fill_params(
+                        call.get("params") or {}, groups, ctx_vars)
                 except KeyError as e:
                     logger.warning(
-                        f"tool_preload: rule {pattern!r} references group {e} "
-                        f"that the match did not capture — rule skipped")
+                        f"tool_preload: rule {pattern!r} references {e} — "
+                        f"neither a captured group nor a context var. "
+                        f"Rule skipped.")
                     broken = True
                     break  # the rest of THIS rule's chain depends on it too
                 resolved.append((tool, params))

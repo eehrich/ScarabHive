@@ -56,12 +56,51 @@ hooks:
           params: {operation: read, doc: "{doc}"}
 ```
 
-**Parameters** are templated from the regex's *named* groups. A value that is
-exactly one placeholder and captured pure digits becomes an `int` (`scene_id:
-42`, not `"42"`) — tool handlers validate ids as integers. A mixed string
-(`"kapitel_{n}"`) stays a string. A placeholder with no matching group skips the
-whole rule with a warning rather than calling a tool with a literal `{doc}` as
-the document name.
+**Parameters** are templated from two sources:
+
+| Placeholder | Source |
+|---|---|
+| `{group}` | a **named group of the rule's regex** — something the user typed |
+| `{{ var }}` | a **session context variable** — the same value the prompt template renders |
+
+A value that is exactly one placeholder may become an `int` (`scene_id: 42`,
+not `"42"`) — tool handlers validate ids as integers; see the lossless rule
+below for when it does not. A mixed string (`"kapitel_{n}"`) stays a string. A
+placeholder with no matching group *or variable* skips the whole rule with a
+warning rather than calling a tool with a literal `{doc}` as the document name.
+
+Context variables exist for state the user never types. v6 keeps its store
+namespace in `json_namespace`, set once at bootstrap and inherited by every
+sub-agent whose whole task text is *"Aufgabe: World"* — without this source a
+rule could not name the store, and the read would hit the default namespace:
+someone else's document, silently. Precedence matches the prompt rendering:
+the agent's static `template_vars` as the base, `set_context` on top.
+
+```yaml
+- match: "Aufgabe:\\s*(?P<aufgabe>\\w+)"
+  calls:
+    - tool: v6_story_json_manage_json
+      params: {operation: read, doc: synopsis, namespace: "{{ json_namespace }}"}
+```
+
+Both syntaxes resolve in **one** pass, and that matters twice over. The
+context alternative comes first in the pattern, so `{{name}}` is not read as a
+group `{name}` in literal braces. And a resolved value is never scanned again:
+the v6 coordinator puts the whole user task into `brief`, so with two
+sequential passes a brief containing `{sid}` was read as a group reference and
+killed the rule with a warning naming a group that appears in no YAML.
+
+Templating recurses into **dicts and lists**. Top-level-only meant a nested
+`{filter: {namespace: "{{ ns }}"}}` reached the tool verbatim — `json_store`
+then falls back to the DEFAULT namespace and returns a foreign document,
+silently.
+
+The int conversion only fires when it is **lossless** (`str(int(v)) == v`):
+`"42"` becomes `42`, `"007"` stays a string. Otherwise preload and the agent's
+own call would name two different namespaces — the prompt still renders `007`.
+`str.isdigit()` is not the test for this: `"²"` passes it and `int("²")` raises
+a ValueError, which is not a KeyError and therefore used to discard the whole
+turn's preload instead of the one rule.
 
 Values are normalised to JSON-native types first. YAML resolves an unquoted
 `2026-01-01` to a `datetime.date`, and that used to reach the serializer *after*
