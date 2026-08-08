@@ -1,0 +1,54 @@
+# Hook definitions for tool_preload plugin
+# Convention: hook name must match method name exactly
+
+hooks:
+  - name: preload
+    type: pre_llm_call
+    # Disabled by default: rules are per-agent, so the hook only does anything
+    # where an agent's YAML enables it and provides rules (hooks.overrides).
+    enabled: false
+    timeout: 60.0
+    description: >
+      After a user turn, matches the user message against configured rules and
+      executes the predictable opening tool calls (load the document, set the
+      context var) BEFORE the first LLM call. The results are appended to the
+      conversation in the exact shape the LLM's own tool calls produce, so the
+      first LLM turn already sees them — saving one full LLM round trip per
+      preloaded call.
+    category: "optimization"
+    order:
+      # Referenced by CATEGORY (hook names do not resolve here). Several
+      # anchors on purpose, not one: an unresolved reference is dropped with a
+      # DEBUG log, so anchoring only to context_engineering meant that
+      # disabling that ONE plugin silently moved this hook to last — behind
+      # validation and the debugger capture, which is the opposite of what the
+      # comment claimed. Missing categories are simply ignored.
+      #
+      # - context_engineering: an oversized preloaded result should be
+      #   externalised by layer 1 in the SAME pre-LLM pass, not one step later.
+      # - prompt_injection / message_validation / message_debugging: they read
+      #   or check the tail of the message list, and this hook changes what the
+      #   tail IS (the last message stops being the user's).
+      before:
+        - "context_engineering"
+        - "prompt_injection"
+        - "message_validation"
+        - "message_debugging"
+
+# -----------------------------------------------------------------
+# Configuration (per agent, via hooks.overrides."tool_preload.preload")
+# -----------------------------------------------------------------
+# rules:                       ordered list; each rule fires at most once per user turn
+#   - match: "Szene\\s+(?P<sid>\\d+)"     # regex over the user message text
+#     calls:                              # sequential, in THIS order
+#       - tool: writer_session_set_var
+#         params: {name: current_scene, value: "{sid}"}
+#       - tool: writer_content_get_scene
+#         params: {scene_id: "{sid}"}
+#   - match: "(?P<doc>[\\w-]+)-Dokument"
+#     tool: json_store_read               # shorthand: one rule, one call
+#     params: {doc: "{doc}"}
+#
+# max_calls_per_turn: 5        # hard cap across all rules (regex runaway guard)
+# dedup: true                  # skip a call whose (tool, params) already ran
+#                              # earlier in this conversation

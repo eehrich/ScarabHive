@@ -1011,6 +1011,15 @@ plugins:
         injection_position: "before_last_user"  # or "end"
         role: "system"
 
+    # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
+    # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
+    # LLM-Call — spart pro Call einen vollen LLM-Roundtrip. Die Regeln stehen
+    # per Agent in dessen hooks.overrides."tool_preload.preload"; ohne Regeln
+    # tut der Hook nichts.
+    tool_preload:
+      type: tool_preload
+      enabled: true
+
     agent_continuation:
       type: agent_continuation
       enabled: true
