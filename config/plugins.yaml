@@ -738,7 +738,7 @@ plugins:
     tavily_search:
       type: tavily_search
       enabled: true
-      api_key: "***REMOVED***"  # Set via TAVILY_API_KEY env var (recommended) or here
+      api_key: "${TAVILY_API_KEY}"  # Set via TAVILY_API_KEY env var (recommended) or here
       cache_ttl: 1800  # 30 minutes
       cache_enabled: true
       default_max_results: 5

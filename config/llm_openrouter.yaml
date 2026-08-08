@@ -31,7 +31,7 @@ llm_system:
       # safety_settings pass through. Migrated 2026-07-24.
       provider: openai_responses
       model: google/gemini-3-flash-preview
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 600
@@ -58,7 +58,7 @@ llm_system:
       # safety_settings pass through. Migrated 2026-07-24.
       provider: openai_responses
       model: google/gemini-3-flash-preview
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 600
@@ -92,7 +92,7 @@ llm_system:
       # safety_settings pass through. Migrated 2026-07-24.
       provider: openai_responses
       model: google/gemini-3-flash-preview
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
@@ -121,7 +121,7 @@ llm_system:
       # safety_settings pass through. Migrated 2026-07-24.
       provider: openai_responses
       model: google/gemini-3.5-flash-lite
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000      # 1M token native; capped here for context-budget perf
       request_timeout: 600
@@ -158,7 +158,7 @@ llm_system:
       # safety_settings pass through. Migrated 2026-07-24.
       provider: openai_responses
       model: google/gemini-3.6-flash
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000      # 1M token native; capped here for context-budget perf
       request_timeout: 600
@@ -195,7 +195,7 @@ llm_system:
       # safety_settings pass through. Migrated 2026-07-24.
       provider: openai_responses
       model: google/gemini-3.1-pro-preview
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 600
@@ -229,7 +229,7 @@ llm_system:
       # safety_settings pass through. Migrated 2026-07-24.
       provider: openai_responses
       model: google/gemini-3.1-pro-preview
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
@@ -262,7 +262,7 @@ llm_system:
     openrouter-grok-4.1-fast:
       provider: openai_httpx
       model: x-ai/grok-4.1-fast
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
@@ -283,7 +283,7 @@ llm_system:
     openrouter-grok-4.1-fast-unlimited:
       provider: openai_httpx
       model: x-ai/grok-4.1-fast
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
@@ -302,7 +302,7 @@ llm_system:
     openrouter-qwen3.7-flash:
       provider: openai_httpx
       model: qwen/qwen3.7-flash
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600
@@ -323,7 +323,7 @@ llm_system:
     openrouter-minimax-m3:
       provider: openai_httpx
       model: minimax/minimax-m3
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600
@@ -347,7 +347,7 @@ llm_system:
     openrouter-minimax-m3-unlimited:
       provider: openai_httpx
       model: minimax/minimax-m3
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600
@@ -369,7 +369,7 @@ llm_system:
     openrouter-llama-4-maverick:
       provider: openai_httpx
       model: meta-llama/llama-4-maverick
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
@@ -401,7 +401,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000  # 1.05M total, but >272K doubles pricing
       request_timeout: 600
@@ -423,7 +423,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -445,7 +445,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
       request_timeout: 600
@@ -467,7 +467,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 400000
       request_timeout: 600
@@ -490,7 +490,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -513,7 +513,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -537,7 +537,7 @@ llm_system:
       provider_routing:
         order: ["openai"]        # terra has no azure endpoints anyway (404); single-org pin.
         allow_fallbacks: false
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -560,7 +560,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -584,7 +584,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -607,7 +607,7 @@ llm_system:
       provider_routing:
         order: ["openai"]
         allow_fallbacks: false
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -630,7 +630,7 @@ llm_system:
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 272000
       request_timeout: 600
@@ -651,7 +651,7 @@ llm_system:
       provider: openai_httpx
       model: openai/gpt-oss-120b
       reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 131072
       request_timeout: 600
@@ -674,7 +674,7 @@ llm_system:
       provider: openai_httpx
       model: openai/gpt-oss-120b
       reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 131072
       request_timeout: 600
@@ -694,7 +694,7 @@ llm_system:
     openrouter-claude-sonnet:
       provider: openai_httpx
       model: anthropic/claude-sonnet-5
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
@@ -714,7 +714,7 @@ llm_system:
     openrouter-claude-sonnet-unlimited:
       provider: openai_httpx
       model: anthropic/claude-sonnet-5
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 200000
       request_timeout: 600
@@ -741,7 +741,7 @@ llm_system:
     openrouter-deepseek-chat:
       provider: openai_httpx
       model: deepseek/deepseek-v4-flash
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
@@ -763,7 +763,7 @@ llm_system:
     openrouter-deepseek-chat-unlimited:
       provider: openai_httpx
       model: deepseek/deepseek-v4-flash
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
@@ -780,7 +780,7 @@ llm_system:
     openrouter-deepseek-reasoner:
       provider: openai_httpx
       model: deepseek/deepseek-v4-flash
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
@@ -803,7 +803,7 @@ llm_system:
     openrouter-deepseek-reasoner-unlimited:
       provider: openai_httpx
       model: deepseek/deepseek-v4-flash
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
@@ -821,7 +821,7 @@ llm_system:
     openrouter-deepseek-pro:
       provider: openai_httpx
       model: deepseek/deepseek-v4-pro
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
@@ -844,7 +844,7 @@ llm_system:
     openrouter-deepseek-pro-unlimited:
       provider: openai_httpx
       model: deepseek/deepseek-v4-pro
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 100000
       request_timeout: 600
@@ -866,7 +866,7 @@ llm_system:
     openrouter-glm-5.2:
       provider: openai_httpx
       model: z-ai/glm-5.2
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600
@@ -889,7 +889,7 @@ llm_system:
     openrouter-glm-5.2-unlimited:
       provider: openai_httpx
       model: z-ai/glm-5.2
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600
@@ -910,7 +910,7 @@ llm_system:
     openrouter-kimi-k3:
       provider: openai_httpx
       model: moonshotai/kimi-k3
-      api_key: "***REMOVED***"
+      api_key: "${OPENROUTER_API_KEY}"
       base_url: https://openrouter.ai/api/v1
       context_window: 1000000
       request_timeout: 600

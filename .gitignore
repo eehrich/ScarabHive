@@ -4,6 +4,11 @@
 # ins Repo. `envrc.example` (ohne Punkt) bleibt getrackt.
 .envrc
 .envrc.*
+# config/secrets.env ist BEWUSST NICHT ignoriert. Die Keys liegen ohnehin in
+# der Historie, und gebuendelt in EINER Datei sind sie ein Ziel statt 73
+# Fundstellen in drei YAMLs — beim Rotieren wie beim spaeteren Consolidate.
+# Vor einer Veroeffentlichung: Keys rotieren, History bereinigen, DANN hier
+# `secrets.env` eintragen (die .example bleibt in jedem Fall getrackt).
 *.db
 *.7z
 *.zip

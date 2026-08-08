@@ -55,7 +55,7 @@ llm_system:
     gemini-3-flash:
       provider: gemini_sdk
       model: gemini-3-flash-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
@@ -80,7 +80,7 @@ llm_system:
     gemini-3-flash-nostream:
       provider: gemini_sdk
       model: gemini-3-flash-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
@@ -105,7 +105,7 @@ llm_system:
     gemini-3-flash-nostream-unlimited:
       provider: gemini_sdk
       model: gemini-3-flash-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
@@ -129,7 +129,7 @@ llm_system:
     gemini-3-flash-nostream-minimal:
       provider: gemini_sdk
       model: gemini-3-flash-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000
       request_timeout: 240
@@ -154,7 +154,7 @@ llm_system:
     gemini-3-pro:
       provider: gemini_sdk
       model: gemini-3.1-pro-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
@@ -179,7 +179,7 @@ llm_system:
     gemini-3-pro-nostream:
       provider: gemini_sdk
       model: gemini-3.1-pro-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
@@ -204,7 +204,7 @@ llm_system:
     gemini-3-pro-nostream-unlimited:
       provider: gemini_sdk
       model: gemini-3.1-pro-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000  # 1M token context, but limited here for performance
       request_timeout: 240
@@ -232,7 +232,7 @@ llm_system:
       provider: batch                   
       batch_provider: gemini            # Which batch API to use
       model: gemini-3-flash-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       context_window: 200000  # 1M token context, but limited here for performance
       include_thoughts: false
       thinking_level: high
@@ -249,7 +249,7 @@ llm_system:
       provider: batch
       batch_provider: gemini
       model: gemini-3.1-pro-preview
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       context_window: 200000  # 1M token context, but limited here for performance
       include_thoughts: false      
       thinking_level: high
@@ -273,7 +273,7 @@ llm_system:
     claude-sonnet-5:
       provider: anthropic
       model: claude-sonnet-5
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 1000000
       request_timeout: 180
       max_tokens: 32768
@@ -297,7 +297,7 @@ llm_system:
     claude-sonnet-5-thinking:
       provider: anthropic
       model: claude-sonnet-5
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 1000000
       request_timeout: 300
       max_tokens: 32768
@@ -320,7 +320,7 @@ llm_system:
     claude-opus-5:
       provider: anthropic
       model: claude-opus-5
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 1000000
       request_timeout: 300
       max_tokens: 16384
@@ -343,7 +343,7 @@ llm_system:
     claude-opus-5-thinking:
       provider: anthropic
       model: claude-opus-5
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 1000000
       request_timeout: 600
       max_tokens: 32768
@@ -369,7 +369,7 @@ llm_system:
     claude-fable-5:
       provider: anthropic
       model: claude-fable-5
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 1000000
       request_timeout: 600
       max_tokens: 32768
@@ -388,7 +388,7 @@ llm_system:
     claude-haiku-4-5:
       provider: anthropic
       model: claude-haiku-4-5-20251001
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 200000
       request_timeout: 120
       max_tokens: 8192
@@ -412,7 +412,7 @@ llm_system:
       provider: batch
       batch_provider: anthropic
       model: claude-sonnet-5
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 1000000
       max_tokens: 8192
       capabilities:
@@ -426,7 +426,7 @@ llm_system:
       provider: batch
       batch_provider: anthropic
       model: claude-opus-5
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 1000000
       max_tokens: 16384
       capabilities:
@@ -440,7 +440,7 @@ llm_system:
       provider: batch
       batch_provider: anthropic
       model: claude-haiku-4-5-20251001
-      api_key: "***REMOVED***"
+      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 200000
       max_tokens: 8192
       capabilities:
@@ -457,7 +457,7 @@ llm_system:
     gpt-5-nano:
       provider: openai_httpx
       model: gpt-5.4-nano
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000
       request_timeout: 240
       capabilities:
@@ -472,7 +472,7 @@ llm_system:
     gpt-5-mini:
       provider: openai_httpx
       model: gpt-5.4-mini
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000
       request_timeout: 240
       httpx_timeouts:
@@ -495,7 +495,7 @@ llm_system:
     gpt-5:
       provider: openai_httpx
       model: gpt-5.4
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000 # >272K it is getting expensive
       request_timeout: 240
       capabilities:
@@ -515,7 +515,7 @@ llm_system:
     gpt-5-codex:
       provider: openai_httpx
       model: gpt-5.4-codex
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000
       request_timeout: 240
       capabilities:
@@ -535,7 +535,7 @@ llm_system:
     gpt-5-codex-mini:
       provider: openai_httpx
       model: gpt-5.4-codex-mini
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000
       request_timeout: 240
       httpx_timeouts:
@@ -562,7 +562,7 @@ llm_system:
       provider: batch
       batch_provider: openai            
       model: gpt-5.4-nano
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000
       request_timeout: 240
       capabilities:
@@ -576,7 +576,7 @@ llm_system:
       provider: batch
       batch_provider: openai            
       model: gpt-5.4-mini
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000
       request_timeout: 240
       capabilities:
@@ -593,7 +593,7 @@ llm_system:
       provider: batch
       batch_provider: openai            
       model: gpt-5.4
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 272000
       request_timeout: 240
       capabilities:
@@ -613,7 +613,7 @@ llm_system:
     gpt-realtime:
       provider: openai
       model: gpt-realtime
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 27900
       request_timeout: 240
       capabilities:
@@ -628,7 +628,7 @@ llm_system:
     gpt-realtime-mini:
       provider: openai
       model: gpt-realtime-mini
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 27900
       request_timeout: 240
       capabilities:
@@ -643,7 +643,7 @@ llm_system:
     gpt-audio:
       provider: openai
       model: gpt-audio
-      api_key: ***REMOVED***
+      api_key: "${OPENAI_API_KEY}"
       context_window: 128000
       request_timeout: 240
       # Audio models require modalities - must include "audio" if input has no audio
@@ -689,7 +689,7 @@ llm_system:
     deepseek-chat:
       provider: openai_httpx
       model: deepseek-v4-flash
-      api_key: "***REMOVED***"
+      api_key: "${DEEPSEEK_API_KEY}"
       base_url: https://api.deepseek.com/v1
       context_window: 1000000
       request_timeout: 240
@@ -702,7 +702,7 @@ llm_system:
     deepseek-chat-nostream:
       provider: openai_httpx
       model: deepseek-v4-flash
-      api_key: "***REMOVED***"
+      api_key: "${DEEPSEEK_API_KEY}"
       base_url: https://api.deepseek.com/v1
       context_window: 1000000
       request_timeout: 240
@@ -715,7 +715,7 @@ llm_system:
     deepseek-pro:
       provider: openai_httpx
       model: deepseek-v4-pro
-      api_key: "***REMOVED***"
+      api_key: "${DEEPSEEK_API_KEY}"
       base_url: https://api.deepseek.com/v1
       context_window: 1000000
       request_timeout: 480
@@ -728,7 +728,7 @@ llm_system:
     deepseek-pro-nostream:
       provider: openai_httpx
       model: deepseek-v4-pro
-      api_key: "***REMOVED***"
+      api_key: "${DEEPSEEK_API_KEY}"
       base_url: https://api.deepseek.com/v1
       context_window: 1000000
       request_timeout: 480
@@ -957,14 +957,14 @@ llm_system:
       provider: gemini_tts
       model: gemini-3.1-flash-tts-preview
       #model: gemini-2.5-flash-preview-tts
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       request_timeout: 300
       max_retries: 3
 
     gemini-tts-pro:
       provider: gemini_tts
       model: gemini-2.5-pro-preview-tts
-      api_key: "***REMOVED***"
+      api_key: "${GOOGLE_API_KEY}"
       request_timeout: 300
       max_retries: 3
 

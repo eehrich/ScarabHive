@@ -18,6 +18,51 @@ from .models import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
+#: Loaded at most once per process — the file is read on every load_settings()
+#: call otherwise (config reload, tests, every CLI subcommand).
+_secrets_loaded: set[str] = set()
+
+
+def _load_secrets_file(path: Path) -> None:
+    """Read ``KEY=value`` lines into the environment, without overriding it.
+
+    The real environment WINS on purpose: the server sets its credentials
+    through systemd/CI, and a stale developer file on the same machine must
+    not quietly replace them. That also makes the file optional — a deployment
+    that has no secrets.env is fully configured through the environment.
+
+    Never raises: an unreadable or malformed credentials file must degrade to
+    "no credentials from here" (and say so), not stop the process from
+    starting.
+    """
+    key = str(path.resolve()) if path.is_absolute() else str(path)
+    if key in _secrets_loaded:
+        return
+    _secrets_loaded.add(key)
+    if not path.is_file():
+        return
+    try:
+        loaded = 0
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            name, sep, value = line.partition("=")
+            if not sep:
+                continue
+            name = name.strip()
+            if not name or name in os.environ:
+                continue
+            # Quotes are stripped so `KEY="v"` and `KEY=v` behave the same;
+            # values are used verbatim otherwise (no escape processing —
+            # an API key is an opaque string).
+            os.environ[name] = value.strip().strip('"').strip("'")
+            loaded += 1
+        # Count only — never the names' values.
+        logger.info("Loaded %d credential(s) from %s", loaded, path)
+    except OSError as e:
+        logger.warning("Could not read %s: %s", path, e)
+
 
 def deep_merge(base: dict, overlay: dict) -> dict:
     """Deep merge two dictionaries. Overlay values override base values.
@@ -90,6 +135,12 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     # Allow overriding default config file via env var
     env_cfg = os.environ.get("AGENT_CONFIG_PATH")
     cfg_path = Path(config_path or env_cfg or "config/config.yaml")
+
+    # Credentials come from a file the repository never sees, so that the
+    # YAML can be shared and versioned. Loaded BEFORE the ${VAR} expansion
+    # below, which is what actually consumes them.
+    _load_secrets_file(cfg_path.parent / "secrets.env")
+
     data: dict = {}
 
     # If the master config exists, load it and then load any included files
@@ -201,12 +252,21 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     logger.warning(f"Skipping problematic config file: {inc_path}")
 
     # Apply simple env-variable expansion for ${VAR} patterns (keep existing loader behavior)
+    _missing_vars: set[str] = set()
+
     def _expand_env(value):
         if isinstance(value, str):
             import re
             pattern = re.compile(r"\$\{([A-Z0-9_]+)\}")
             def repl(m):
-                return os.environ.get(m.group(1), "")
+                name = m.group(1)
+                if name not in os.environ:
+                    # Collected, not silently blanked. An unset key used to
+                    # become "" and surfaced hours later as an opaque 401 from
+                    # a provider; the operator needs the VARIABLE NAME.
+                    _missing_vars.add(name)
+                    return ""
+                return os.environ[name]
             return pattern.sub(repl, value)
         if isinstance(value, dict):
             return {k: _expand_env(v) for k, v in value.items()}
@@ -215,6 +275,15 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         return value
 
     data = _expand_env(data)
+
+    if _missing_vars:
+        logger.warning(
+            "Config references %d unset variable(s): %s — the values are empty. "
+            "Set them in %s (template: secrets.env.example) or in the "
+            "environment.",
+            len(_missing_vars), ", ".join(sorted(_missing_vars)),
+            cfg_path.parent / "secrets.env",
+        )
 
     # Resolve plugin_dirs to absolute paths
     # Paths are resolved relative to the configuration file directory first,
