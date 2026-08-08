@@ -56,6 +56,7 @@ data/memories/
 data/workspace/
 data/writer/
 data/context_engineer/
+data/context_usage_tracker/
 data/message_debugger/
 data/batch_jobs/
 data/json_store/
