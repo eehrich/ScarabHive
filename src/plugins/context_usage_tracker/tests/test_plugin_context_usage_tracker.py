@@ -1,5 +1,7 @@
 """Tests for context_usage_tracker plugin."""
 
+import json
+
 import pytest
 from unittest.mock import Mock
 
@@ -13,15 +15,18 @@ def plugin(tmp_path):
     """Create a context usage tracker plugin instance with temporary storage."""
     storage_path = tmp_path / "test_context_usage.json"
     tracker = UsageTracker(storage_path=storage_path)
-    
+
+    # The path goes into the CONSTRUCTOR, not onto the finished object:
+    # building the plugin opens a database and migrates any legacy file at that
+    # path, so a default here would reach into the real data/ directory.
     plugin = ContextUsageTrackerPlugin(
         name="context_usage_tracker",
         system_config={},
-        mcp_config={}
+        mcp_config={"storage_path": str(tmp_path / "plugin_usage.json")}
     )
     plugin.tracker = tracker
     plugin.hooks_plugin.tracker = tracker
-    
+
     return plugin
 
 
@@ -913,17 +918,339 @@ class TestCacheRateStaysBelowOneHundred:
         assert s["cache_rate_cached_tokens"] == 4000
         assert s["cache_rate_cached_tokens"] / s["cache_rate_prompt_tokens"] == 0.8
 
-    def test_seeding_does_not_double_count_on_reload(self, plugin, tmp_path):
-        """A file written by this version already counted those snapshots at
-        record time — seeding them again would inflate the window."""
+    def test_seeding_does_not_double_count_on_migration(self, tmp_path):
+        """A legacy file whose pair is ALREADY filled must not be seeded again.
+
+        Those snapshots were counted at record time by the version that wrote
+        the file; adding them once more would double the window it is divided
+        by. Only an empty pair may be seeded.
+        """
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        history = [{
+            "timestamp": 1000.0 + i, "agent_id": "a", "agent_name": "A",
+            "session_id": "s", "total_tokens": 1010, "prompt_tokens": 1000,
+            "completion_tokens": 10, "message_count": 1, "context_window": 8000,
+            "usage_percentage": 12.6, "cached_tokens": 800,
+        } for i in range(4)]
+        path = tmp_path / "usage.json"
+        path.write_text(json.dumps({"agents": {"a": {
+            "agent_id": "a", "agent_name": "A",
+            # Deliberately LARGER than the four retained snapshots would seed:
+            # the pair covers every call since it was introduced, the history
+            # only the tail. A fixture where both numbers coincide cannot tell
+            # a correct guard from a missing one — seeding SETS the value.
+            "cache_rate_prompt_tokens": 25_000,
+            "cache_rate_cached_tokens": 20_000,
+        }}, "history": history}), encoding="utf-8")
+
+        stats = UsageTracker(storage_path=path).get_agent_stats()["a"]
+        assert stats["cache_rate_prompt_tokens"] == 25_000, (
+            "the pair was overwritten by a re-seed from the retained tail")
+        assert stats["cache_rate_cached_tokens"] == 20_000
+
+    def test_legacy_file_is_migrated_exactly_once(self, tmp_path):
+        """Repeated starts on the same file must not double the all-time totals.
+
+        A marker row in the database is what makes this idempotent — the file
+        is deliberately left untouched, because moving it would be a
+        destructive side effect of merely reading usage data, and during a
+        rollout an old-code process is still writing that very file.
+        """
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        history = [{
+            "timestamp": 1000.0 + i, "agent_id": "a", "agent_name": "A",
+            "session_id": "s", "total_tokens": 100, "prompt_tokens": 90,
+            "completion_tokens": 10, "message_count": 1, "context_window": 1000,
+            "usage_percentage": 10.0,
+        } for i in range(5)]
+        path = tmp_path / "usage.json"
+        path.write_text(json.dumps({"agents": {"a": {
+            "agent_id": "a", "agent_name": "A",
+            "total_calls": 7, "total_tokens": 700,
+        }}, "history": history}), encoding="utf-8")
+
+        tracker = UsageTracker(storage_path=path)
+        assert tracker.get_agent_stats()["a"]["total_calls"] == 7
+        assert tracker.db.count() == 5
+        assert path.exists(), "the legacy file was moved or deleted"
+
+        for round_no in range(3):
+            again = UsageTracker(storage_path=path)
+            assert again.get_agent_stats()["a"]["total_calls"] == 7, (
+                f"the totals were re-imported on start {round_no}")
+            # The snapshots are what a re-import actually duplicates: the agent
+            # totals go in with INSERT OR REPLACE and would look unchanged.
+            assert again.db.count() == 5, (
+                f"the history was imported again on start {round_no} "
+                f"({again.db.count()} rows instead of 5)")
+
+    def test_construction_touches_nothing_on_disk(self, tmp_path):
+        """Building the plugin must not create a store or read the legacy file.
+
+        Several tests boot the real config purely to obtain an Agent, which
+        constructs every plugin. With eager initialisation that created a
+        database in the production data directory — from a test that never
+        recorded anything.
+        """
         from plugins.context_usage_tracker.tracker import UsageTracker
 
         path = tmp_path / "usage.json"
-        plugin.tracker.storage_path = path
-        self._record(plugin.tracker, prompt=1000, cached=800, n=4)
-        plugin.tracker.force_save()
-        before = plugin.tracker.get_agent_stats()["a"]
+        tracker = UsageTracker(storage_path=path)
 
-        after = UsageTracker(storage_path=path).get_agent_stats()["a"]
-        assert after["cache_rate_prompt_tokens"] == before["cache_rate_prompt_tokens"] == 4000
-        assert after["cache_rate_cached_tokens"] == before["cache_rate_cached_tokens"] == 3200
+        assert list(tmp_path.iterdir()) == [], (
+            f"construction wrote to disk: {[p.name for p in tmp_path.iterdir()]}")
+
+        # ...and the store still opens correctly on first real use.
+        tracker.record_usage(agent_id="a", agent_name="A", session_id="s",
+                             total_tokens=10, context_window=100)
+        assert tracker.db_path.exists()
+
+
+class TestCrossProcessStorage:
+    """Two processes share one store — the reason this moved off JSON.
+
+    The file version was read ONCE at construction and rewritten in full on
+    every change, so `agent-cli` and `agent-api` each kept a private copy and
+    whichever wrote last destroyed the other's runs. Reproduced before the
+    change: the CLI's agent was simply absent from the file afterwards.
+    """
+
+    @staticmethod
+    def _two_trackers(tmp_path):
+        from plugins.context_usage_tracker.tracker import UsageTracker
+        path = tmp_path / "usage.json"
+        return UsageTracker(storage_path=path), UsageTracker(storage_path=path)
+
+    @staticmethod
+    def _record(tracker, agent_id, **kw):
+        tracker.record_usage(
+            agent_id=agent_id, agent_name=kw.pop("agent_name", agent_id),
+            session_id=kw.pop("session_id", "s"),
+            total_tokens=kw.pop("total_tokens", 100),
+            prompt_tokens=kw.pop("prompt_tokens", 90),
+            completion_tokens=kw.pop("completion_tokens", 10),
+            context_window=kw.pop("context_window", 100000),
+            request_id=kw.pop("request_id", "r"), **kw)
+
+    def test_a_second_process_sees_the_first_immediately(self, tmp_path):
+        """No restart, no reload: the panel process reads what the CLI wrote."""
+        api, cli = self._two_trackers(tmp_path)
+
+        self._record(cli, "cli_agent")
+
+        assert "cli_agent" in api.get_agent_stats(), (
+            "the API process cannot see a run recorded by the CLI process")
+        assert api.get_latest() is not None
+
+    def test_neither_process_overwrites_the_other(self, tmp_path):
+        """The exact failure that was measured: last writer wins, data gone."""
+        api, cli = self._two_trackers(tmp_path)
+
+        self._record(cli, "cli_agent")
+        self._record(api, "api_agent")
+
+        assert sorted(api.get_agent_stats()) == ["api_agent", "cli_agent"], (
+            "one process's runs were destroyed by the other's write")
+
+    def test_totals_of_one_agent_add_up_across_processes(self, tmp_path):
+        """Accumulation happens in SQL, not in either process's memory."""
+        api, cli = self._two_trackers(tmp_path)
+
+        for i in range(6):
+            self._record(cli if i % 2 else api, "shared",
+                         total_tokens=100, prompt_tokens=90, cached_tokens=45)
+
+        stats = api.get_agent_stats()["shared"]
+        assert stats["total_calls"] == 6
+        assert stats["total_tokens"] == 600
+        # The lockstep pair must stay divisible — it is why it exists.
+        assert stats["cache_rate_prompt_tokens"] == 540
+        assert stats["cache_rate_cached_tokens"] == 270
+
+    def test_stale_flag_crosses_the_process_boundary(self, tmp_path):
+        """The compaction runs in the worker, the panel renders in the API.
+
+        A flag only the writer can see marks nothing.
+        """
+        api, worker = self._two_trackers(tmp_path)
+        self._record(worker, "a", session_id="s1")
+
+        worker.invalidate_session("s1")
+
+        assert api.get_latest(session_id="s1").get("is_stale") is True
+        # ...and a fresh call clears it, in both processes.
+        self._record(worker, "a", session_id="s1")
+        assert "is_stale" not in api.get_latest(session_id="s1")
+
+    def test_history_is_a_window_not_a_cap(self, tmp_path):
+        """max_history bounds the QUERY, no longer the storage.
+
+        The deque silently dropped the oldest entry forever; the database keeps
+        it for retention and later analysis.
+        """
+        from plugins.context_usage_tracker.tracker import UsageTracker
+        tracker = UsageTracker(max_history=5, storage_path=tmp_path / "u.json")
+
+        for i in range(12):
+            self._record(tracker, "a", request_id=f"r{i}")
+
+        assert len(tracker.get_history()) == 5, "the query window is not applied"
+        assert tracker.db.count() == 12, (
+            "the database dropped rows — max_history is capping storage again")
+
+    def test_retention_prunes_by_age_and_keeps_the_totals(self, tmp_path):
+        """Pruning snapshots must not touch the all-time accumulators.
+
+        They live in their own table exactly so that a retention pass does not
+        rewrite an agent's history.
+        """
+        import time as _time
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        db = UsageDatabase(tmp_path / "u.db", retention_days=1)
+        old = _time.time() - 5 * 86400
+        for i in range(3):
+            db.record({"timestamp": old + i, "agent_id": "a", "agent_name": "A",
+                       "session_id": "s", "request_id": f"r{i}",
+                       "total_tokens": 100, "prompt_tokens": 90,
+                       "completion_tokens": 10, "context_window": 1000})
+        db.record({"timestamp": _time.time(), "agent_id": "a", "agent_name": "A",
+                   "session_id": "s", "request_id": "new", "total_tokens": 100,
+                   "prompt_tokens": 90, "completion_tokens": 10,
+                   "context_window": 1000})
+
+        db._apply_retention()
+
+        assert db.count() == 1, "old snapshots were not pruned"
+        assert db.agent_stats()["a"]["total_calls"] == 4, (
+            "retention reset the all-time totals along with the snapshots")
+
+
+class TestSharedStoreRegressions:
+    """Properties that only became reachable once the store was shared.
+
+    Each of these was found by review or measurement after the SQLite move, and
+    each one is a way the old per-process model quietly protected the code.
+    """
+
+    @staticmethod
+    def _record(tracker, **kw):
+        tracker.record_usage(
+            agent_id=kw.pop("agent_id", "a"), agent_name=kw.pop("agent_name", "A"),
+            session_id=kw.pop("session_id", "s"),
+            total_tokens=kw.pop("total_tokens", 100),
+            prompt_tokens=kw.pop("prompt_tokens", 90),
+            completion_tokens=kw.pop("completion_tokens", 10),
+            context_window=kw.pop("context_window", 1000),
+            request_id=kw.pop("request_id", "r"), **kw)
+
+    def test_a_quiet_session_is_not_pushed_out_by_a_busy_one(self, tmp_path):
+        """The window must narrow BEFORE the limit, not after.
+
+        The deque was per-process, so "last N" meant "last N of mine". Against a
+        shared store, taking the newest N globally and filtering afterwards
+        makes a quiet session vanish as soon as another process — or a
+        coordinator fanning out to sub-agents — fills the window. The rows are
+        still there; they just fall outside it.
+        """
+        from plugins.context_usage_tracker.tracker import UsageTracker
+        tracker = UsageTracker(max_history=10, storage_path=tmp_path / "u.json")
+
+        self._record(tracker, session_id="quiet", request_id="q1")
+        for i in range(40):                       # the busy neighbour
+            self._record(tracker, session_id="busy", request_id=f"b{i}")
+
+        history = tracker.get_history(session_id="quiet")
+        assert len(history) == 1, (
+            "the quiet session fell out of a globally-taken window")
+        assert history[0]["request_id"] == "q1"
+        stats = tracker.get_statistics(session_id="quiet")
+        assert stats.get("timespan", {}).get("sample_count") == 1
+
+    def test_sub_agent_calls_still_count_towards_the_session(self, tmp_path):
+        """The tree rule survived the move into SQL.
+
+        Sub-agents run in their own sessions; their request ids carry the
+        parent's as a prefix. Underscores are LIKE wildcards, and these
+        prefixes are full of them — the query uses substr for that reason.
+        """
+        from plugins.context_usage_tracker.tracker import UsageTracker
+        tracker = UsageTracker(max_history=100, storage_path=tmp_path / "u.json")
+
+        self._record(tracker, session_id="parent", request_id="req_1")
+        self._record(tracker, session_id="sub_a", request_id="req_1_sub_x")
+        self._record(tracker, session_id="sub_b", request_id="req_1_sub_x_sub_y")
+        self._record(tracker, session_id="stranger", request_id="other_1")
+
+        got = {s["request_id"] for s in tracker.get_history(session_id="parent")}
+        assert got == {"req_1", "req_1_sub_x", "req_1_sub_x_sub_y"}, got
+
+    def test_legacy_import_survives_simultaneous_starts(self, tmp_path):
+        """agent-api and agent-writer-worker are restarted together.
+
+        A check-then-act over separate transactions let both import: measured
+        with three simultaneous starts, the history landed twice. The marker is
+        claimed atomically, so exactly one caller may proceed.
+        """
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        db = UsageDatabase(tmp_path / "u.db")
+        winners = [db.claim_once("k") for _ in range(5)]
+
+        assert winners.count(True) == 1, f"{winners.count(True)} callers claimed it"
+        # ...and a failed import gives the claim back so a later start retries.
+        db.release_claim("k")
+        assert db.claim_once("k") is True
+
+    def test_import_defaults_do_not_invent_a_price(self, tmp_path):
+        """A snapshot without a `cost` key is unpriced, not a $0.00 call.
+
+        get_statistics counts a call as priced when `cost is not None`, so a 0
+        default would inflate cost_known_calls with calls that never had one.
+        The same for latency_ms, and a timestamp of 0 would be deleted by the
+        first retention pass.
+        """
+        import time as _time
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        db = UsageDatabase(tmp_path / "u.db")
+        db.import_legacy([{"agent_id": "a", "session_id": "s"}], {})
+
+        row = db.recent_snapshots(10)[0]
+        assert row["cost"] is None, "an absent cost became a known 0.00 call"
+        assert row["latency_ms"] is None
+        assert row["timestamp"] > _time.time() - 60, (
+            "an absent timestamp defaulted to 0 and retention would delete it")
+
+    def test_import_keys_agents_by_their_dict_key(self, tmp_path):
+        """A legacy entry without an inner agent_id must not collapse.
+
+        Every such row would land on the primary key "" and overwrite the
+        previous one — 179 agents become 1.
+        """
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        db = UsageDatabase(tmp_path / "u.db")
+        db.import_legacy([], {"first": {"agent_name": "A", "total_calls": 3},
+                              "second": {"agent_name": "B", "total_calls": 4}})
+
+        stats = db.agent_stats()
+        assert sorted(stats) == ["first", "second"], stats
+        assert stats["first"]["total_calls"] == 3
+        assert stats["second"]["total_calls"] == 4
+
+    def test_retention_delete_uses_the_timestamp_index(self, tmp_path):
+        """Retention runs inline in a write transaction — it must not scan.
+
+        The index shipped on `id`, which IS the rowid, so SQLite never used it
+        while the age DELETE had nothing to walk.
+        """
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        db = UsageDatabase(tmp_path / "u.db")
+        plan = " ".join(str(r[-1]) for r in db._get_conn().execute(
+            "EXPLAIN QUERY PLAN DELETE FROM usage_snapshots WHERE timestamp < 1"
+        ).fetchall())
+        assert "idx_usage_timestamp" in plan, f"retention still scans: {plan}"

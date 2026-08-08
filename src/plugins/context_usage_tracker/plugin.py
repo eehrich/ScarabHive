@@ -4,6 +4,7 @@ Context Usage Tracker Plugin
 Tracks LLM context usage and token consumption by implementing a post_llm_call hook.
 Provides web UI for viewing usage statistics and history.
 """
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict
@@ -135,8 +136,14 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                     f"({len(tools_schema)} tools)"
                 )
 
-            # Record usage in tracker
-            self.tracker.record_usage(
+            # Off the event loop. The write is a SQLite transaction with an
+            # fsync, and on a cross-process conflict it waits on busy_timeout —
+            # blocking C that `asyncio.wait_for` cannot cancel, so the hook's
+            # declared timeout would be inert exactly when it mattered. The old
+            # file-based tracker was off-loop too (run_in_executor); this keeps
+            # that property.
+            await asyncio.to_thread(
+                self.tracker.record_usage,
                 agent_id=agent_id,
                 agent_name=agent_name,
                 session_id=session_id,
@@ -180,8 +187,25 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
 
         plugin_dir = Path(__file__).parent
 
-        # Initialize shared tracker with plugin name for dynamic routing
-        self.tracker = UsageTracker(max_history=1000, name=name)
+        # Initialize shared tracker with plugin name for dynamic routing.
+        # The path is configurable so a test (or a second deployment on the
+        # same machine) does not open the production store: constructing this
+        # plugin now creates a database and migrates a legacy file, which is
+        # not something an unrelated test should do to data/.
+        # getattr, not dict access: mcp_config is an MCPConfig pydantic model in
+        # production (extra="allow", so config keys arrive as attributes) and a
+        # plain dict only in tests. A dict-only read left both knobs inert.
+        def _cfg(key: str, default: Any) -> Any:
+            if isinstance(mcp_config, dict):
+                return mcp_config.get(key, default)
+            return getattr(mcp_config, key, default)
+
+        storage_path = _cfg("storage_path", None)
+        self.tracker = UsageTracker(
+            max_history=int(_cfg("max_history", 1000) or 1000),
+            storage_path=Path(storage_path) if storage_path else None,
+            name=name,
+        )
 
         # Initialize hooks (schema-based)
         self.hooks_plugin = ContextUsageTrackerHooks(plugin_dir, self.tracker)

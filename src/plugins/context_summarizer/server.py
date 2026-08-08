@@ -365,9 +365,15 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                     registry = agent.system_config.mcp_registry
                     usage_tracker = registry.get_server('context_usage_tracker')
                     if usage_tracker and hasattr(usage_tracker, 'tracker'):
-                        tracker = usage_tracker.tracker
-                        if tracker._latest_snapshot and tracker._latest_snapshot.session_id == session_id:
-                            actual_tokens = tracker._latest_snapshot.prompt_tokens
+                        # get_latest(session_id=...) instead of the tracker's
+                        # private _latest_snapshot: that attribute was the
+                        # process's own last call and is gone since the tracker
+                        # moved to a shared store. Reaching into it kept
+                        # "working" — the AttributeError landed in the except
+                        # below and this silently fell back to the estimate.
+                        latest = usage_tracker.tracker.get_latest(session_id=session_id)
+                        if latest:
+                            actual_tokens = latest.get('prompt_tokens', 0) or 0
                             logger.debug(
                                 f"[check_stats] Got actual tokens from usage_tracker: {actual_tokens} "
                                 f"(estimated: {estimated_tokens})"
