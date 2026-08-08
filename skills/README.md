@@ -19,7 +19,7 @@ skills/
 └── coding/                       # a group — see "Where skills are found"
     └── amiga-coding/
         ├── SKILL.md              # YAML frontmatter + instructions
-        └── reference/            # optional: depth, read on demand
+        └── references/           # optional: depth, read on demand
 ```
 
 The standard also names `scripts/` (executable code) and `assets/` (templates,
@@ -46,7 +46,7 @@ metadata:                         # optional free-form string map
 # The instructions
 
 Markdown, no format restrictions. Keep it under ~500 lines and move detail
-into `reference/`.
+into `references/`.
 ```
 
 Only `name` and `description` are required. The body is used **verbatim** —
@@ -80,7 +80,7 @@ agent *has* the knowledge; it cannot forget to fetch it. Use this for anything
 needed most of the time.
 
 **`on_demand`** — only the skill's `description` is listed in the prompt, so the
-agent knows it exists; it pulls the body (and any `reference/` files) with the
+agent knows it exists; it pulls the body (and any `references/` files) with the
 `skills` plugin's tools when a task needs them. Use this for large material
 needed occasionally.
 
@@ -104,7 +104,7 @@ It provides:
 
 - `skills_list()` — available skills, their descriptions and bundled files
 - `skills_read(name)` — the skill's `SKILL.md`
-- `skills_read(name, path="reference/catalog.md")` — a bundled file
+- `skills_read(name, path="references/catalog.md")` — a bundled file
 
 Reads are confined to the skill directory (no `..`, no absolute paths, symlinks
 resolved) and truncated at 100k characters so one file cannot flood the context.
@@ -112,8 +112,12 @@ resolved) and truncated at 100k characters so one file cannot flood the context.
 A miss returns `files` (what the bundle actually holds) and, when the request was
 close enough to be a typo, `did_you_mean`. Agents slip on `reference/` vs
 `references/` in particular — **pick one spelling per repo**. Ours is the
-singular `reference/`, in every bundle; keep it that way when you add one, and
-the slip mostly stops happening. No suggestion is offered when the only
+plural `references/`, in every bundle, matching the folder layout in Anthropic's
+skill guide; keep it that way when you add one, and the slip mostly stops
+happening. (It used to be the singular here — the rename was purely about
+following the published convention, not because one spelling reads better. The
+`did_you_mean` hint stays either way: a shared spelling makes the slip rare, it
+does not make it impossible.) No suggestion is offered when the only
 difference is a number: `kapitel_15.md` and `kapitel_16.md` are two chapters, not
 two spellings, and pointing an agent at the neighbour is worse than the miss.
 

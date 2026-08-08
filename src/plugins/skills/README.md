@@ -5,7 +5,7 @@ Read access to **skill bundles** — packaged agent knowledge. See
 a skill.
 
 A skill is a bundle: `SKILL.md` is the index/instructions, and files next to it
-(`reference/…`) carry depth that is loaded only when a task needs it. This
+(`references/…`) carry depth that is loaded only when a task needs it. This
 plugin is what lets an agent browse and read that bundle.
 
 ## Tools
@@ -15,7 +15,7 @@ plugin is what lets an agent browse and read that bundle.
 | `skills_list()` | All available skills: name, version, description, bundled files |
 | `skills_list(name)` | One skill in detail |
 | `skills_read(name)` | The skill's `SKILL.md` |
-| `skills_read(name, path)` | A bundled file, e.g. `reference/catalog.md` |
+| `skills_read(name, path)` | A bundled file, e.g. `references/catalog.md` |
 
 ## Enabling it
 

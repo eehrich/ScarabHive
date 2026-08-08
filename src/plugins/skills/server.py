@@ -1,7 +1,7 @@
 """Read access to skill bundles.
 
 A skill is a BUNDLE: ``SKILL.md`` is the index/instructions, and files next to
-it (``reference/…``) carry depth the agent loads only when a task needs it.
+it (``references/…``) carry depth the agent loads only when a task needs it.
 ``always`` skills already sit in the system prompt (core renders them); these
 tools are what turn a skill into a browsable knowledge base.
 
