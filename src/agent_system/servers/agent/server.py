@@ -3017,12 +3017,17 @@ class Agent(MCPServer):
         """Shutdown the agent and clean up resources"""
         logger.info("Agent shutdown initiated")
 
-        # Shutdown MCP integration to close external server connections
+        # Shut down the MCP integration -- but only one WE created.
+        #
+        # This used to call mcp_integration.shutdown() directly, skipping the
+        # mcp_initialized_locally check the manager makes. The integration is
+        # usually the process-wide one, so one agent finishing tore down the
+        # external connections of every other agent. It stops plugins now, so
+        # the same call would stop them for the whole process.
         if hasattr(self, '_mcp_integration_manager') and self._mcp_integration_manager:
             try:
-                if self._mcp_integration_manager.mcp_integration:
-                    await self._mcp_integration_manager.mcp_integration.shutdown()
-                    logger.debug("MCP integration shutdown completed")
+                await self._mcp_integration_manager.shutdown()
+                logger.debug("MCP integration shutdown completed")
             except Exception as e:
                 logger.warning(f"Error during MCP integration shutdown: {e}")
 

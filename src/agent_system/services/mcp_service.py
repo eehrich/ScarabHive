@@ -207,8 +207,6 @@ class MCPService:
                 "error": f"Server '{server_name}' not found in configuration"
             }
 
-        server_config = self._mcp.configured_external_servers[server_name]
-
         # Check if already connected
         try:
             client = await self._get_client_safe(server_name)
@@ -220,16 +218,15 @@ class MCPService:
         except Exception as e:
             logger.debug(f"Connection check for {server_name} failed (expected if not connected): {e}")
 
-        # Attempt connection
+        # Attempt connection.
+        #
+        # This used to probe for a method named connect_external_server that
+        # has never existed on MCPIntegration, so it always fell through to a
+        # "fallback" that only fetched a client and then raised -- connecting a
+        # server from the CLI or the API could not succeed at all.
         try:
-            # Use MCPIntegration's connect method if available
-            if hasattr(self._mcp, 'connect_external_server'):
-                await self._mcp.connect_external_server(server_name, server_config)
-            else:
-                # Fallback: try to get client (may trigger auto-connect)
-                client = await self._get_client_safe(server_name)
-                if not client:
-                    raise RuntimeError("Failed to establish connection")
+            if not await self._mcp.retry_connect_server(server_name):
+                raise RuntimeError("Failed to establish connection")
 
             return {
                 "success": True,
@@ -263,13 +260,9 @@ class MCPService:
                     "message": f"Server '{server_name}' is not connected"
                 }
 
-            # Disconnect
-            if hasattr(self._mcp, 'disconnect_external_server'):
-                await self._mcp.disconnect_external_server(server_name)
-            elif hasattr(self._mcp.client_manager, 'remove_client'):
-                await self._mcp.client_manager.remove_client(server_name)
-            else:
-                raise RuntimeError("Disconnect method not available")
+            # Disconnect. Same story as connect: the method this probed for
+            # never existed. The client plugin owns the connections now.
+            await self._mcp.remove_external_server(server_name)
 
             return {
                 "success": True,
@@ -366,7 +359,7 @@ class MCPService:
             # Filter by server if specified
             if server_name:
                 external_tools = all_tools.get("external_servers", {})
-                plugin_tools = all_tools.get("plugin_servers", {})
+                plugin_tools = all_tools.get("plugins", {})
 
                 result = {}
                 if server_name in external_tools:
@@ -387,7 +380,7 @@ class MCPService:
             # Return all tools
             result = {}
             external = all_tools.get("external_servers", {})
-            plugins = all_tools.get("plugin_servers", {})
+            plugins = all_tools.get("plugins", {})
 
             # Combine and filter blocked tools if requested
             all_servers = {}
@@ -407,16 +400,20 @@ class MCPService:
             return {}
 
     async def _get_client_safe(self, server_name: str):
-        """Safely get client, handling both sync and async patterns."""
+        """The live connection to *server_name*, or None.
+
+        Tolerates a coroutine and a missing provider: this is called on status
+        paths that must degrade to "not connected" rather than raise.
+        """
         try:
-            # Try to get client from client manager
-            if hasattr(self._mcp, 'client_manager'):
-                client = self._mcp.client_manager.get_client(server_name)
-                # Handle potential coroutine
-                if hasattr(client, '__await__'):
-                    client = await client
-                return client
-            return None
+            provider = getattr(self._mcp, "external_provider", None)
+            pool = getattr(provider, "pool", None) if provider else None
+            if pool is None:
+                return None
+            client = pool.get(server_name)
+            if hasattr(client, '__await__'):
+                client = await client
+            return client
         except Exception as e:
             logger.debug(f"Exception getting client for {server_name}: {e}")
             return None
@@ -579,7 +576,7 @@ class MCPService:
         if self._mcp and self._mcp.initialized:
             try:
                 # Get connected servers from client manager
-                connected_servers = self._mcp.client_manager.list_clients()
+                connected_servers = self._mcp.list_external_clients()
 
                 # Get configured external servers (filter out disabled ones)
                 configured_servers = getattr(self._mcp, 'configured_external_servers', {})
@@ -625,7 +622,7 @@ class MCPService:
                                 if success:
                                     logger.info(f"Successfully connected to {server_name}")
                                     # Refresh connected servers and tools after successful connection
-                                    connected_servers = self._mcp.client_manager.list_clients()
+                                    connected_servers = self._mcp.list_external_clients()
                                     all_tools = await self._mcp.list_all_tools()
                                     servers_with_tools = all_tools.get("external_servers", {})
                             except Exception as e:

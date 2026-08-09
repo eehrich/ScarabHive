@@ -222,8 +222,12 @@ class MCPIntegration:
     async def initialize(self, config: AgentSystemConfig):
         """Initialize MCP integration"""
     
-    async def connect_external_servers(self):
-        """Connect to configured external MCP servers"""
+    @property
+    def external_provider(self):
+        """The plugin currently federating external tools, if any"""
+
+    async def retry_connect_server(self, name: str) -> bool:
+        """Ask that plugin to connect one configured server"""
     
     async def get_all_tools(self) -> List[ToolInfo]:
         """Get aggregated tool list from all sources"""
@@ -236,46 +240,44 @@ class MCPIntegration:
         """Execute tool (routes to correct server)"""
 ```
 
-#### 4.2.2 MCPClientManager
+#### 4.2.2 ExternalServerPool (mcp_client plugin)
 
-**File:** `src/agent_system/mcp/client.py`
+**File:** `src/plugins/mcp_client/manager.py`
+
+Connections to foreign servers are no longer part of the core: the `mcp_client`
+plugin owns them and speaks the protocol through the official MCP SDK. The core
+finds it through the `external_tools` capability
+(`agent_system/plugins/capabilities.py`), so it never needs to know the plugin
+by name.
 
 **Responsibilities:**
 - Manage connections to external MCP servers
-- Connection lifecycle (connect, disconnect, health check)
-- Tool list caching
-- Parallel connection support
+- Connection lifecycle (connect, disconnect, reconnect)
+- Tool list caching, with blocked tools MARKED rather than removed
+- Contain failures: one unreachable server must not stop the others
 
 **Key Methods:**
 ```python
-class MCPClientManager:
-    async def connect_server(
-        self,
-        name: str,
-        config: RemoteMCPConfig
-    ):
-        """Connect to external MCP server"""
-    
-    async def disconnect_server(self, name: str):
-        """Disconnect from server"""
-    
-    async def list_tools(
-        self,
-        server_name: str
-    ) -> List[ToolInfo]:
-        """Get tool list (cached)"""
-    
-    async def call_tool(
-        self,
-        server_name: str,
-        tool_name: str,
-        arguments: dict
-    ) -> dict:
-        """Execute tool on server"""
-    
-    def get_connection_status(self, name: str) -> str:
-        """Get connection status (connected/disconnected/error)"""
+class ExternalServerPool:
+    def configure(self, servers: Dict[str, RemoteMCPConfig]) -> None:
+        """Take the ENABLED servers from the config"""
+
+    async def connect_all(self) -> Dict[str, Optional[str]]:
+        """Connect everything; returns name -> error (None if fine)"""
+
+    async def connect(self, name: str) -> ServerConnection: ...
+    async def disconnect(self, name: str) -> bool: ...
+    async def close_all(self) -> None: ...
+
+    async def list_tools_by_server(self, *, force_refresh: bool = False) -> dict:
+        """{server: [{name, description, input_schema, blocked}]}"""
+
+    async def call_tool(self, server: str, tool: str, arguments: dict) -> Any: ...
 ```
+
+One `ServerConnection` (`connection.py`) owns each session inside a single
+task, because the SDK's transports are anyio cancel scopes that must be exited
+by the task that entered them. See the plugin's README for that reasoning.
 
 #### 4.2.3 ToolCache
 
@@ -315,16 +317,18 @@ class ToolCache:
 Configuration Load
     │
     ▼
-MCPIntegration.connect_external_servers()
+mcp_client plugin: start_plugin()
     │
-    ├─► For each enabled remote server:
+    ├─► ExternalServerPool.connect_all()
     │   │
-    │   ├─► MCPClientManager.connect_server()
+    │   ├─► For each ENABLED remote server:
     │   │   │
-    │   │   ├─► Create HTTP client
-    │   │   ├─► Send initialize request
-    │   │   ├─► Validate response
-    │   │   ├─► Store connection
+    │   │   ├─► ServerConnection.start()
+    │   │   │   │
+    │   │   │   ├─► Open the SDK transport in its own task
+    │   │   │   ├─► ClientSession.initialize()  (handshake + notification)
+    │   │   │   ├─► Record server info / protocol version
+    │   │   │   ├─► Serve commands from the queue
     │   │   │
     │   │   ▼
     │   │   Connected / Error
@@ -366,26 +370,27 @@ external_servers:
     parallel_connect: true  # Connect to all servers concurrently
 ```
 
-**Implementation:**
+**Implementation** (`src/plugins/mcp_client/manager.py`):
 ```python
-async def connect_external_servers(self):
-    """Connect to all configured servers in parallel"""
-    tasks = []
-    for name, config in self.configured_external_servers.items():
-        if config.enabled:
-            task = self.client_manager.connect_server(name, config)
-            tasks.append(task)
-    
-    # Wait for all connections (with timeout)
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Log results
-    for name, result in zip(server_names, results):
-        if isinstance(result, Exception):
-            logger.error(f"Failed to connect to {name}: {result}")
-        else:
-            logger.info(f"Connected to {name}")
+async def connect_all(self) -> Dict[str, Optional[str]]:
+    """Connect every enabled server; returns name -> error (None if fine).
+
+    One unreachable server must not stop the others, and it must not stop
+    startup either -- the result is reported, not raised.
+    """
+    results = {}
+    for name in list(self.configured_servers):
+        try:
+            await self.connect(name)
+            results[name] = None
+        except Exception as e:
+            results[name] = str(e)
+            logger.warning("Could not connect external MCP server '%s': %s", name, e)
+    return results
 ```
+
+Note: `parallel_connect` is configured and modelled but has never been read --
+connecting is sequential, here as it was before.
 
 ---
 

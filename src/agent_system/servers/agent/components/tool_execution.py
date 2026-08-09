@@ -624,12 +624,20 @@ class ToolExecutionManager:
 
         try:
             logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name, params)
-            # Get MCP integration with agent config if available
-            if self._agent and hasattr(self._agent, 'agent_config'):
-                mcp_integration = get_mcp_integration(config=self._agent.agent_config)
-            else:
-                # Fallback - this should not happen in normal operation
-                raise RuntimeError("Cannot access MCP integration without agent config")
+            # Use the integration the agent already set up.
+            #
+            # This used to call get_mcp_integration(config=agent_config) --
+            # an AgentConfig where an AgentSystemConfig is expected. It only
+            # ever worked because the lookup returns the existing global
+            # instance before it looks at config at all; the moment it had to
+            # build one, it died with AttributeError on external_servers.
+            manager = getattr(self._agent, "_mcp_integration_manager", None) if self._agent else None
+            mcp_integration = getattr(manager, "mcp_integration", None) if manager else None
+            if mcp_integration is None:
+                system_config = getattr(self._agent, "system_config", None) if self._agent else None
+                if system_config is None:
+                    raise RuntimeError("Cannot access MCP integration without system config")
+                mcp_integration = get_mcp_integration(config=system_config)
             # Use serializable_params to avoid passing non-JSON-serializable objects (like CancellationToken) to external servers
             tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, serializable_params, "external")
             logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])

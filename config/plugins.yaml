@@ -752,6 +752,15 @@ plugins:
       type: datetime
       enabled: true
 
+    # Connects to the external MCP servers from config/mcp_servers.yaml via the
+    # official MCP SDK and hands their tools to the agents as "server.tool".
+    # Enabled even when no external server is: it must be findable, otherwise
+    # an outage is indistinguishable from "nothing configured". Its own tools
+    # (list_servers/connect/disconnect/tools) manage the connections.
+    mcp_client:
+      type: mcp_client
+      enabled: true
+
     # Read access to skill bundles (docs/skills_design.md). Agents that only use
     # `skills.always` do not need this — it is for reading a skill's bundled
     # reference files on demand.

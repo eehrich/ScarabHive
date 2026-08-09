@@ -119,7 +119,11 @@ async def _maybe_await_get_client(mcp_integration: MCPIntegration, name: str):
     abstracts that difference so callers can `await _maybe_await_get_client(..)`.
     """
     try:
-        res = mcp_integration.client_manager.get_client(name)
+        provider = getattr(mcp_integration, "external_provider", None)
+        pool = getattr(provider, "pool", None) if provider else None
+        if pool is None:
+            return None
+        res = pool.get(name)
     except Exception as e:
         logger.debug(f"Failed to get client {name}: {e}")
         return None
@@ -940,18 +944,14 @@ def main() -> None:
                         capabilities = None
                         if client:
                             try:
-                                # initialize may already have been called; server info stored in client
-                                cap = getattr(client, 'server_capabilities', None)
-                                if cap:
-                                    capabilities = cap
-                                else:
-                                    # attempt to re-init
-                                    try:
-                                        await client.initialize()
-                                        capabilities = getattr(client, 'server_capabilities', None)
-                                    except Exception as e:
-                                        logger.debug(f"Failed to reinitialize client for {server_name}: {e}")
-                                        capabilities = None
+                                # A live connection has already completed the
+                                # handshake -- its capabilities come from that
+                                # initialize response, so there is nothing to
+                                # re-initialize here.
+                                capabilities = (
+                                    getattr(client, 'capabilities', None)
+                                    or getattr(client, 'server_capabilities', None)
+                                )
                             except Exception as e:
                                 logger.debug(f"Failed to get capabilities for {server_name}: {e}")
                                 capabilities = None

@@ -60,7 +60,7 @@ Beispiele:
 #### Externe MCP-Tools
 ```python
 # Aus externen MCP-Servern
-external_tools = await mcp_integration.client_manager.list_all_tools()
+external_tools = await the mcp_client plugin's connection pool.list_all_tools()
 ```
 
 Beispiele:

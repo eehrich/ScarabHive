@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
 from ..mcp.core import MCPServer, MCPTool, MCPCapability
+from . import capabilities
 from .web_adapter import PluginWebInterface, plugin_web_registry
 from .schema_loader import load_schema_from_dir
 
@@ -119,6 +120,8 @@ class PluginMCPRegistry:
     def __init__(self):
         self.plugin_servers: Dict[str, PluginMCPAdapter] = {}
         self.plugin_factories: Dict[str, Any] = {}
+        #: Plugins whose start_plugin() hook has run, so it runs exactly once.
+        self._started: set[str] = set()
 
     def discover_plugins(self, plugin_dirs: List[str]) -> None:
         """Discover plugins from directories"""
@@ -307,15 +310,66 @@ class PluginMCPRegistry:
             plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
             logger.debug(f"Registered hybrid web capabilities for plugin {name}")
 
+        await self.start_plugin(name)
+
         logger.info(f"Registered plugin {name} as MCP server")
+
+    async def start_plugin(self, name: str) -> None:
+        """Run a plugin's optional ``start_plugin()`` hook, at most once.
+
+        Seam: until this existed the registry created the plugin object and
+        then did nothing, so anything with a real lifecycle -- the external MCP
+        client, with its connections -- could not be a plugin at all.
+
+        Idempotent on purpose. Plugins arrive through three different paths
+        (register_plugin, register_plugin_simple, and the synchronous
+        register_existing_plugin_instance used by bootstrap), and start_all()
+        sweeps up afterwards; hooking each path separately would either miss
+        one or start a plugin twice.
+        """
+        if name in self._started:
+            return
+        adapter = self.plugin_servers.get(name)
+        if adapter is None:
+            return
+        self._started.add(name)
+        await capabilities.start_plugin(getattr(adapter, "plugin_server", adapter))
+
+    async def start_all(self) -> None:
+        """Start every registered plugin that has not been started yet.
+
+        Called once after discovery, which is what covers the synchronous
+        bootstrap path -- it cannot await a hook itself.
+        """
+        for name in list(self.plugin_servers):
+            await self.start_plugin(name)
 
     async def unregister_plugin(self, name: str) -> None:
         """Unregister a plugin MCP server"""
         if name in self.plugin_servers:
+            adapter = self.plugin_servers[name]
+            # Counterpart to start_plugin: give the plugin the chance to close
+            # sockets and tasks before its last reference goes away.
+            await capabilities.stop_plugin(getattr(adapter, "plugin_server", adapter))
+            self._started.discard(name)
             # Also unregister web capabilities
             plugin_web_registry.unregister_web_plugin(name)
             del self.plugin_servers[name]
             logger.info(f"Unregistered plugin {name}")
+
+    async def shutdown_all(self) -> None:
+        """Stop every started plugin, keeping them registered.
+
+        Used at application shutdown, where the goal is to release resources,
+        not to tear down the registry. Plugins stay startable afterwards.
+        """
+        for name in list(self._started):
+            adapter = self.plugin_servers.get(name)
+            if adapter is None:
+                continue
+            await capabilities.stop_plugin(getattr(adapter, "plugin_server", adapter))
+            self._started.discard(name)
+            logger.debug("Stopped plugin %s", name)
 
     def get_server(self, name: str) -> Optional[PluginMCPAdapter]:
         """Get a plugin MCP server by name"""
@@ -490,6 +544,8 @@ class PluginMCPRegistry:
         elif hasattr(plugin_server, 'get_web_router'):
             plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
             logger.debug(f"Registered hybrid web capabilities for plugin {name}")
+
+        await self.start_plugin(name)
 
         logger.info(f"Registered plugin {name} as MCP server")
 

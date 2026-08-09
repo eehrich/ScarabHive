@@ -321,17 +321,45 @@ def test_build_auth_headers_variants():
     assert basic["Authorization"].startswith("Basic ")
 
 
-def test_transports_apply_auth_headers():
-    """Auth headers reach the transports' actual request headers (regression:
-    they were built but never applied -> unauthenticated MCP connections)."""
-    from agent_system.mcp.http_transport import HTTPTransport
-    from agent_system.mcp.streaming_transport import HTTPStreamingTransport
+@pytest.mark.asyncio
+async def test_configured_auth_reaches_the_transport():
+    """Credentials must arrive at the actual request headers.
 
-    auth = {"Authorization": "Bearer secret-token"}
+    Regression this guards: the headers used to be built and then never
+    applied, so every outbound MCP connection went out unauthenticated while
+    the config looked perfectly fine. The transport is the SDK's now, so the
+    check is that the headers are handed to it -- asserting on our own helper
+    alone would pass again even if the hand-over were dropped.
+    """
+    import types
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
 
-    streaming = HTTPStreamingTransport(base_url="http://example.com", auth_headers=auth)
-    headers = streaming._build_headers()
-    assert headers["Authorization"] == "Bearer secret-token"
+    from agent_system.config.models import MCPAuthConfig
+    from plugins.mcp_client.connection import ServerConnection
 
-    http = HTTPTransport(base_url="http://example.com", auth_headers=auth)
-    assert http.auth_headers["Authorization"] == "Bearer secret-token"
+    config = types.SimpleNamespace(
+        url="http://example.com/mcp", transport="streaming",
+        initialization_options=None,
+        auth=MCPAuthConfig(type="bearer", bearer_token="secret-token"),
+    )
+    connection = ServerConnection("secured", config, timeout=5.0)
+
+    assert connection._auth_headers()["Authorization"] == "Bearer secret-token"
+
+    seen = {}
+
+    @asynccontextmanager
+    async def fake_streamable(url, headers=None, **kwargs):
+        seen["url"] = url
+        seen["headers"] = headers
+        raise RuntimeError("stop here -- the handover is all we need to see")
+        yield  # pragma: no cover
+
+    with patch("mcp.client.streamable_http.streamablehttp_client", fake_streamable):
+        with pytest.raises(RuntimeError, match="stop here"):
+            async with connection._open_streams():
+                pass
+
+    assert seen["headers"]["Authorization"] == "Bearer secret-token"
+    assert seen["url"] == "http://example.com/mcp"

@@ -609,7 +609,7 @@ class ExternalServerConnectionConfig(BaseModel):
 class ExternalServerCacheConfig(BaseModel):
     """Configuration for external server caching"""
     enabled: bool = True  # Enable tool list caching
-    tool_list_ttl: float = 30.0  # TTL for MCPClientManager internal cache
+    tool_list_ttl: float = 30.0  # TTL for the mcp_client plugin's tool-list cache
     max_size: Optional[int] = None  # Maximum cache entries (None = unlimited)
 
 
@@ -629,13 +629,21 @@ class MCPAuthConfig(BaseModel):
 
 class RemoteMCPConfig(BaseModel):
     """Configuration for a remote MCP server"""
-    url: str
+    url: str = ""
     enabled: bool = False
     description: Optional[str] = None
     transport: str = "streaming"
     initialization_options: Optional[Dict[str, Any]] = None
     features: Optional[Dict[str, bool]] = None
     tools: Optional[ToolConfig] = None
+
+    # Local servers (transport: stdio) are launched instead of dialled, so they
+    # need a command rather than a url. Without these fields pydantic dropped
+    # them silently (extra="ignore") and the stdio transport was unreachable
+    # from a real config, however correctly it was written.
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
 
     # Authentication and security
     auth: Optional[MCPAuthConfig] = None

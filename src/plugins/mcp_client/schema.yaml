@@ -1,0 +1,43 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_list_servers"
+      description: List the configured external MCP servers with their connection state, protocol version and transport.
+      parameters:
+        type: object
+        properties: {}
+  - type: function
+    function:
+      name: "{{ name }}_connect"
+      description: Connect or reconnect one configured external MCP server. Performs the full MCP handshake and reports the server info.
+      parameters:
+        type: object
+        properties:
+          server:
+            type: string
+            description: Name of the server as configured under external_servers.remote_servers
+        required: [server]
+  - type: function
+    function:
+      name: "{{ name }}_disconnect"
+      description: Close the connection to one external MCP server.
+      parameters:
+        type: object
+        properties:
+          server:
+            type: string
+            description: Name of the connected server
+        required: [server]
+  - type: function
+    function:
+      name: "{{ name }}_tools"
+      description: List the tools offered by the connected external MCP servers. Blocked tools are included and marked, not hidden.
+      parameters:
+        type: object
+        properties:
+          server:
+            type: string
+            description: Restrict the listing to this server
+          force_refresh:
+            type: boolean
+            description: Bypass the cached tool list and ask the servers again

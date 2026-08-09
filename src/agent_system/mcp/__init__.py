@@ -5,16 +5,16 @@ This package holds two layers that only look like one:
 
 * the **plugin base** (``core``, ``status``, ``base``, ``schema_mixin``,
   ``schema_based``) -- the internal API every plugin is written against, and
-* the **protocol client** (``security``, ``tool_cache``, ``http_transport``,
-  ``streaming_transport``, ``client``, ``integration``) -- what talks to
-  external MCP servers.
+* the **integration layer** (``security``, ``tool_cache``, ``integration``) --
+  which bootstraps plugins and looks up whoever federates external tools.
 
-The client knows the base; the base does not know the client. Keep it that
-way: it is what allows the client to move out into a plugin of its own.
+Talking to foreign MCP servers is no longer here: that is the ``mcp_client``
+plugin, which speaks the current protocol through the official SDK. The base
+must stay independent of the layer above it -- that independence is what let
+the client move out in the first place.
 
 Key Components:
 - MCPIntegration: Main integration class
-- StandardMCPClient: MCP client implementation
 - PluginMCPAdapter: Available from agent_system.plugins package
 - MCPSecurityManager: Authentication and security handling
 """
@@ -39,7 +39,6 @@ from typing import TYPE_CHECKING
 # cannot follow that indirection back to these imports.
 if TYPE_CHECKING:  # for type checkers and IDEs only -- never executed
     from .integration import MCPIntegration  # noqa: F401
-    from .client import StandardMCPClient, MCPClientManager  # noqa: F401
     from .core import MCPTool, MCPResource, MCPPrompt, MCPMessage, MCPError  # noqa: F401
     from .security import MCPSecurityManager, configure_security  # noqa: F401
     from .schema_based import SchemaBasedMCPServer  # noqa: F401
@@ -47,8 +46,6 @@ if TYPE_CHECKING:  # for type checkers and IDEs only -- never executed
 #: Exported name -> submodule that defines it.
 _LAZY_EXPORTS = {
     "MCPIntegration": "integration",
-    "StandardMCPClient": "client",
-    "MCPClientManager": "client",
     "MCPTool": "core",
     "MCPResource": "core",
     "MCPPrompt": "core",

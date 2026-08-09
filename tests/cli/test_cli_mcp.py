@@ -38,6 +38,11 @@ def mock_mcp_integration():
         'servers': {'test_server': test_server}
     })()
 
+    # No client plugin is loaded in this CLI test, so nothing is connected.
+    # Without this the spec'd AsyncMock would hand back a truthy provider whose
+    # pool answers every lookup, and every server would look connected.
+    integration.external_provider = None
+
     # Configure runtime and management server mappings using RemoteMCPConfig
     integration.configured_external_servers = {'test_server': test_server}
     integration.all_configured_external_servers = {'test_server': test_server}

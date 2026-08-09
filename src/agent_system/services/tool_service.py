@@ -95,18 +95,16 @@ class ToolService:
             client_created = False
             
             if not client and server_config.enabled:
-                # Create temporary client to list tools
-                client_config = {
-                    "transport": server_config.transport,
-                    "url": server_config.url
-                }
-                
-                if server_config.initialization_options:
-                    client_config["initialization_options"] = server_config.initialization_options
-                
-                await self._mcp.client_manager.add_client(server_name, client_config)
+                # Connect just long enough to read the tool list.
+                #
+                # This used to hand add_client a plain dict where a
+                # RemoteMCPConfig was expected -- the connection factory reads
+                # config.transport/config.url as attributes, so the temporary
+                # client could never come up. Connecting the configured server
+                # through the pool uses the config object that is already there.
+                await self._mcp.retry_connect_server(server_name)
                 client = await self._get_client_safe(server_name)
-                client_created = True
+                client_created = client is not None
             
             available_tools = []
             if client:
@@ -142,7 +140,7 @@ class ToolService:
             # Clean up temporary client
             if client_created:
                 try:
-                    await self._mcp.client_manager.remove_client(server_name)
+                    await self._mcp.remove_external_server(server_name)
                 except Exception as cleanup_error:
                     logger.debug(f"Error cleaning up tool list client {server_name}: {cleanup_error}")
             
@@ -410,15 +408,20 @@ class ToolService:
         }
 
     async def _get_client_safe(self, server_name: str):
-        """Safely get client, handling both sync and async patterns."""
+        """The live connection to *server_name*, or None.
+
+        Tolerates a coroutine and a missing provider: callers here must degrade
+        to "not connected", never raise.
+        """
         try:
-            if hasattr(self._mcp, 'client_manager'):
-                client = self._mcp.client_manager.get_client(server_name)
-                # Handle potential coroutine
-                if hasattr(client, '__await__'):
-                    client = await client
-                return client
-            return None
+            provider = getattr(self._mcp, "external_provider", None)
+            pool = getattr(provider, "pool", None) if provider else None
+            if pool is None:
+                return None
+            client = pool.get(server_name)
+            if hasattr(client, '__await__'):
+                client = await client
+            return client
         except Exception as e:
             logger.debug(f"Exception getting client for {server_name}: {e}")
             return None

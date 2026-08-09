@@ -273,7 +273,7 @@ The system uses two levels of caching:
    - Invalidates automatically when MCP configuration changes
    - No TTL needed (always fresh)
 
-2. **MCPClientManager.list_all_tools()** - Time-based cache (existing)
+2. **ExternalServerPool.list_tools_by_server()** - Time-based cache in the mcp_client plugin
    - Internal cache for external server HTTP calls
    - Uses TTL (default 30s)
    - Reduces HTTP requests to external servers
@@ -298,7 +298,7 @@ cache:
   - Default: `true`
   - When disabled, tools are fetched fresh on every request
 
-- **tool_list_ttl**: Time-to-live for MCPClientManager internal cache
+- **tool_list_ttl**: Time-to-live for the mcp_client plugin's tool-list cache
   - Type: `float`
   - Default: `30.0` seconds
   - Controls how often external servers are queried via HTTP

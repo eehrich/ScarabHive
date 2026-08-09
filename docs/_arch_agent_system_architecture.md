@@ -262,7 +262,7 @@ class Agent(MCPServer):
 - Connection health monitoring
 
 **Key Components:**
-- `MCPClientManager` - Client lifecycle
+- External MCP connections live in the `mcp_client` plugin
 - `ToolCache` - Tool list caching
 
 #### 4.2.7 Hook System (`hooks/`)

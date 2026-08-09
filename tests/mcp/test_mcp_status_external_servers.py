@@ -1,16 +1,22 @@
-"""
-Test cases for MCP status functionality with external servers.
+"""External MCP servers as seen from the core.
 
-Tests the fixes for:
-- External servers appearing in /mcp/status response
-- Real-time connection checking
-- Proper handling of configured but disconnected servers
+Connecting to foreign servers moved into the ``mcp_client`` plugin; connection
+behaviour itself is tested there, against a real server. What is left to prove
+HERE is the seam: that the core still finds the external servers, that it does
+so through the capability registry rather than by owning connections, and that
+none of it is required for the core to come up.
+
+The old version of this file asserted that ``MCPIntegration`` stored the server
+configs itself and called ``client_manager.add_client`` per server. Both are
+gone by design -- keeping those assertions would have pinned the very coupling
+this change removes.
 """
 
 import pytest
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from agent_system.mcp.integration import MCPIntegration
+from agent_system.plugins import capabilities
 from agent_system.config.models import (
     AgentSystemConfig,
     MCPServersConfig,
@@ -20,8 +26,7 @@ from agent_system.config.models import (
 
 @pytest.fixture
 def mock_mcp_config():
-    """Create AgentSystemConfig with external servers configured"""
-    # Create remote server configs
+    """AgentSystemConfig with two enabled external servers."""
     remote_servers = {
         'localhost': RemoteMCPConfig(
             url='http://127.0.0.1:8081',
@@ -36,129 +41,112 @@ def mock_mcp_config():
             enabled=True
         )
     }
-    
-    # Build external servers config (new structure)
-    external_servers = MCPServersConfig(
-        remote_servers=remote_servers
-    )
-    
-    # Build full agent system config (new structure)
-    return AgentSystemConfig(
-        external_servers=external_servers
-    )
-
-
-@pytest.fixture
-def mock_client_manager():
-    """Mock MCP client manager"""
-    manager = Mock()
-    manager.list_clients = Mock(return_value=[])  # Start with no connected clients
-    manager.add_client = AsyncMock()
-    manager.close_all = AsyncMock()
-    return manager
+    return AgentSystemConfig(external_servers=MCPServersConfig(remote_servers=remote_servers))
 
 
 @pytest.fixture
 def mock_plugin_registry():
-    """Mock plugin registry"""
     registry = Mock()
-    registry.plugin_factories = {}  # Empty dict to satisfy len() check
-    registry.plugin_servers = {}  # Empty dict for registered servers
+    registry.plugin_factories = {}
+    registry.plugin_servers = {}
     registry.discover_plugins = Mock()
     registry.register_from_config = AsyncMock()
     registry.list_servers = Mock(return_value=[])
+    registry.get_all_tools = AsyncMock(return_value={})
+    registry.start_all = AsyncMock()
+    registry.shutdown_all = AsyncMock()
     return registry
 
 
 @pytest.fixture
-def mock_http_server():
-    """Mock HTTP server"""
-    server = Mock()
-    server.register_server = Mock()
-    return server
-
-
-@pytest.fixture
-async def mcp_integration(mock_client_manager, mock_plugin_registry, mock_http_server, mock_mcp_config):
-    """Create MCPIntegration instance with mocked dependencies"""
+def mcp_integration(mock_plugin_registry, mock_mcp_config):
     integration = MCPIntegration(config=mock_mcp_config)
-    integration.client_manager = mock_client_manager
     integration.plugin_registry = mock_plugin_registry
-    integration.http_server = mock_http_server
-    
     return integration
 
 
-class TestMCPIntegrationExternalServers:
-    """Test MCPIntegration external server handling"""
-    
-    async def test_stores_configured_external_servers(self, mcp_integration, mock_mcp_config):
-        """Test that MCPIntegration stores configured external servers"""
-        # Initialize with external servers
+@pytest.fixture
+def fake_provider(mock_mcp_config):
+    """Stand-in for the mcp_client plugin, registered as the tool provider."""
+    from plugins.mcp_client.manager import ExternalServerPool
+
+    provider = Mock()
+    provider.pool = ExternalServerPool()
+    provider.pool.configure(mock_mcp_config.external_servers.remote_servers)
+    provider.list_external_tools = AsyncMock(return_value={
+        'localhost': [{'name': 'ping', 'description': 'p', 'input_schema': {}, 'blocked': False}],
+    })
+    provider.call_external_tool = AsyncMock(return_value='ok')
+
+    capabilities.reset()
+    capabilities.register_provider(capabilities.EXTERNAL_TOOLS, provider)
+    yield provider
+    capabilities.reset()
+
+
+class TestExternalServersThroughTheProvider:
+    async def test_configured_servers_come_from_the_client_plugin(self, mcp_integration, fake_provider):
+        """The core reads the server list; it no longer keeps one."""
+        servers = mcp_integration.configured_external_servers
+        assert set(servers) == {'localhost', 'remote_server'}
+        assert servers['localhost'].url == 'http://127.0.0.1:8081'
+        assert servers['localhost'].description == 'Local streaming MCP server running on localhost.'
+        assert servers['remote_server'].transport == 'streaming'
+
+    async def test_disabled_servers_are_not_offered(self, mcp_integration):
+        """A disabled server must not show up as configured."""
+        from plugins.mcp_client.manager import ExternalServerPool
+
+        provider = Mock()
+        provider.pool = ExternalServerPool()
+        provider.pool.configure({
+            'off': RemoteMCPConfig(url='http://example.com', enabled=False),
+            'on': RemoteMCPConfig(url='http://example.com', enabled=True),
+        })
+        capabilities.reset()
+        capabilities.register_provider(capabilities.EXTERNAL_TOOLS, provider)
+        try:
+            assert set(mcp_integration.configured_external_servers) == {'on'}
+        finally:
+            capabilities.reset()
+
+    async def test_external_tools_reach_list_all_tools(self, mcp_integration, fake_provider):
+        tools = await mcp_integration.list_all_tools()
+        assert 'localhost' in tools['external_servers']
+        assert tools['external_servers']['localhost'][0]['name'] == 'ping'
+
+    async def test_a_failing_provider_does_not_break_the_tool_listing(self, mcp_integration, fake_provider):
+        """An external outage must not take the plugin tools down with it."""
+        fake_provider.list_external_tools.side_effect = RuntimeError("server exploded")
+        tools = await mcp_integration.list_all_tools()
+        assert tools['external_servers'] == {}
+        assert 'plugins' in tools
+
+
+class TestCoreWithoutAnyClientPlugin:
+    """Everything must still work when no client plugin is loaded at all."""
+
+    def setup_method(self):
+        capabilities.reset()
+
+    def teardown_method(self):
+        capabilities.reset()
+
+    async def test_initialize_succeeds_without_a_provider(self, mcp_integration, mock_mcp_config):
         await mcp_integration.initialize(mock_mcp_config)
-        
-        # Check that configured_external_servers is stored
-        assert hasattr(mcp_integration, 'configured_external_servers')
-        assert isinstance(mcp_integration.configured_external_servers, dict)
-        assert 'localhost' in mcp_integration.configured_external_servers
-        assert 'remote_server' in mcp_integration.configured_external_servers
-        
-        # Check stored configuration details (RemoteMCPConfig attributes, not Dict keys)
-        localhost_config = mcp_integration.configured_external_servers['localhost']
-        assert localhost_config.url == 'http://127.0.0.1:8081'
-        assert localhost_config.description == 'Local streaming MCP server running on localhost.'
-    
-    async def test_handles_connection_failures_gracefully(self, mcp_integration, mock_mcp_config):
-        """Test that failed connections don't prevent initialization"""
-        # Mock add_client to fail for all servers
-        mcp_integration.client_manager.add_client.side_effect = Exception("Connection failed")
-        
-        # Should not raise exception
-        await mcp_integration.initialize(mock_mcp_config)
-        
-        # Should still be initialized and store configuration
         assert mcp_integration.initialized
-        assert len(mcp_integration.configured_external_servers) == 2
-        
-        # Verify connection attempts were made
-        assert mcp_integration.client_manager.add_client.call_count == 2
-    
-    async def test_handles_empty_external_servers(self, mcp_integration):
-        """Test handling when no external servers are configured"""
-        from agent_system.config.models import (
-            AgentSystemConfig,
-            MCPServersConfig
-        )
-        
-        # Build empty config
-        mcp_config = MCPServersConfig(
-            external_servers=MCPServersConfig(
-                remote_servers={}
-            )
-        )
-        
-        config = AgentSystemConfig(
-            mcp_system=mcp_config
-        )
-        
-        await mcp_integration.initialize(config)
-        
+
+    async def test_configured_servers_is_empty_not_an_error(self, mcp_integration):
         assert mcp_integration.configured_external_servers == {}
-        assert mcp_integration.initialized
-    
-    async def test_stores_external_servers_from_mcp_config(self, mcp_integration, mock_mcp_config):
-        """Test that external servers are stored from the mcp config section"""
-        await mcp_integration.initialize(mock_mcp_config)
-        
-        # Verify the right data is stored
-        stored_config = mcp_integration.configured_external_servers
-        assert len(stored_config) == 2
-        
-        # Check specific server configurations (RemoteMCPConfig attributes, not Dict keys)
-        assert stored_config['localhost'].transport == 'streaming'
-        assert stored_config['remote_server'].url == 'http://example.com:8080'
+        assert mcp_integration.list_external_clients() == []
+
+    async def test_connecting_reports_failure_rather_than_raising(self, mcp_integration):
+        assert await mcp_integration.retry_connect_server('localhost') is False
+
+    async def test_calling_an_external_tool_says_why_it_cannot(self, mcp_integration):
+        with pytest.raises(Exception, match="no external MCP client plugin"):
+            await mcp_integration.call_tool('localhost', 'ping', {}, server_type='external')
 
 
 if __name__ == "__main__":
-    # Run specific tests
     pytest.main([__file__, "-v"])

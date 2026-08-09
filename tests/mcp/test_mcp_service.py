@@ -40,7 +40,15 @@ def mock_mcp_integration():
             description="Disabled Server"
         )
     }
-    mcp.client_manager = MagicMock()
+    # The external half is a plugin now: the integration looks the provider up
+    # through the capability registry and reads its pool. A MagicMock would
+    # answer every attribute, so the double has to be shaped like the real one.
+    mcp.external_provider = MagicMock()
+    mcp.external_provider.pool = MagicMock()
+    mcp.external_provider.pool.get = MagicMock(return_value=None)
+    mcp.list_external_clients = MagicMock(return_value=[])
+    mcp.retry_connect_server = AsyncMock(return_value=True)
+    mcp.remove_external_server = AsyncMock()
     return mcp
 
 
@@ -241,7 +249,9 @@ class TestDisconnectServer:
     async def test_disconnect_error(self, mcp_service):
         """Test disconnection with error."""
         mock_client = AsyncMock()
-        mcp_service._mcp.disconnect_external_server = AsyncMock(side_effect=RuntimeError("Disconnect failed"))
+        # Was mocked as disconnect_external_server, a method MCPIntegration has
+        # never had -- so this test could not reach the error path it claims.
+        mcp_service._mcp.remove_external_server = AsyncMock(side_effect=RuntimeError("Disconnect failed"))
         
         with patch.object(mcp_service, '_get_client_safe', new=AsyncMock(return_value=mock_client)):
             result = await mcp_service.disconnect_server("test_server")
@@ -305,7 +315,7 @@ class TestListAllTools:
             "external_servers": {
                 "test_server": [{"name": "tool1"}, {"name": "tool2"}]
             },
-            "plugin_servers": {
+            "plugins": {
                 "plugin1": [{"name": "tool3"}]
             }
         })
@@ -323,7 +333,7 @@ class TestListAllTools:
             "external_servers": {
                 "test_server": [{"name": "tool1"}]
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         tools = await mcp_service.list_all_tools(server_name="test_server")
@@ -342,7 +352,7 @@ class TestListAllTools:
                     {"name": "tool3", "blocked": False}
                 ]
             },
-            "plugin_servers": {
+            "plugins": {
                 "plugin1": [
                     {"name": "tool4", "blocked": True},
                     {"name": "tool5", "blocked": False}
@@ -374,7 +384,7 @@ class TestListAllTools:
                     {"name": "tool2", "blocked": True}
                 ]
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         # With include_blocked=True (default), should include all tools
@@ -393,7 +403,7 @@ class TestListAllTools:
                     {"name": "tool2", "blocked": True}
                 ]
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         # Filter blocked for specific server
@@ -419,7 +429,7 @@ class TestGetClientSafe:
     async def test_get_client_safe_success(self, mcp_service):
         """Test successful client retrieval."""
         mock_client = AsyncMock()
-        mcp_service._mcp.client_manager.get_client = MagicMock(return_value=mock_client)
+        mcp_service._mcp.external_provider.pool.get = MagicMock(return_value=mock_client)
         
         client = await mcp_service._get_client_safe("test_server")
         
@@ -428,7 +438,7 @@ class TestGetClientSafe:
     @pytest.mark.asyncio
     async def test_get_client_safe_none(self, mcp_service):
         """Test client retrieval returning None."""
-        mcp_service._mcp.client_manager.get_client = MagicMock(return_value=None)
+        mcp_service._mcp.external_provider.pool.get = MagicMock(return_value=None)
         
         client = await mcp_service._get_client_safe("test_server")
         
@@ -437,7 +447,7 @@ class TestGetClientSafe:
     @pytest.mark.asyncio
     async def test_get_client_safe_exception(self, mcp_service):
         """Test client retrieval with exception."""
-        mcp_service._mcp.client_manager.get_client = MagicMock(side_effect=RuntimeError("Failed"))
+        mcp_service._mcp.external_provider.pool.get = MagicMock(side_effect=RuntimeError("Failed"))
         
         client = await mcp_service._get_client_safe("test_server")
         
@@ -451,7 +461,7 @@ class TestGetComprehensiveStatus:
     async def test_comprehensive_status_with_external_servers(self, mcp_service):
         """Test comprehensive status with external servers."""
         # Mock external servers
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=["test_server"])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {
                 "test_server": [
@@ -463,7 +473,7 @@ class TestGetComprehensiveStatus:
                     }
                 ]
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         status = await mcp_service.get_comprehensive_status(registry=None)
@@ -491,10 +501,10 @@ class TestGetComprehensiveStatus:
         
         mock_registry._servers = {"plugin_server": mock_server}
         
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=[])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {},
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         status = await mcp_service.get_comprehensive_status(registry=mock_registry)
@@ -539,10 +549,10 @@ class TestGetComprehensiveStatus:
         plugin_registry.get_server = MagicMock(return_value=PluginMCPAdapter("hybrid", raw))
         mcp_service._mcp.plugin_registry = plugin_registry
 
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=[])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {},
-            "plugin_servers": {}
+            "plugins": {}
         })
 
         status = await mcp_service.get_comprehensive_status(registry=mock_registry)
@@ -577,10 +587,10 @@ class TestGetComprehensiveStatus:
             return_value=PluginMCPAdapter("private_agent", raw))
         mcp_service._mcp.plugin_registry = plugin_registry
 
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=[])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {},
-            "plugin_servers": {}
+            "plugins": {}
         })
 
         status = await mcp_service.get_comprehensive_status(registry=mock_registry)
@@ -591,10 +601,10 @@ class TestGetComprehensiveStatus:
     async def test_comprehensive_status_empty(self, mcp_service):
         """Test comprehensive status with no servers."""
         mcp_service._mcp.configured_external_servers = {}
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=[])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {},
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         status = await mcp_service.get_comprehensive_status(registry=None)
@@ -607,10 +617,10 @@ class TestGetComprehensiveStatus:
     @pytest.mark.asyncio
     async def test_comprehensive_status_filters_disabled_servers(self, mcp_service):
         """Test that disabled servers are filtered out."""
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=[])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {},
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         status = await mcp_service.get_comprehensive_status(registry=None)
@@ -629,12 +639,12 @@ class TestGetComprehensiveStatus:
         # Mock external servers with proper config object
         config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
         mcp_service._mcp.configured_external_servers = {"test_server": config}
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=["test_server"])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {
                 "test_server": [{"name": "tool1"}]
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         # Patch the connectivity helper method to return True
@@ -657,12 +667,12 @@ class TestGetComprehensiveStatus:
         # Mock external servers with proper config object
         config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
         mcp_service._mcp.configured_external_servers = {"test_server": config}
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=["test_server"])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {
                 "test_server": [{"name": "tool1"}]
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         # Patch the connectivity helper method
@@ -692,10 +702,10 @@ class TestGetComprehensiveStatus:
         mock_server.list_tools = AsyncMock(return_value=[mock_tool])
         mock_registry._servers = {"plugin_server": mock_server}
         
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=[])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {},
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         # Patch plugin connectivity helper (synchronous method)
@@ -718,12 +728,12 @@ class TestGetComprehensiveStatus:
         # Mock external server that appears disconnected
         config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
         mcp_service._mcp.configured_external_servers = {"test_server": config}
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=["test_server"])
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {
                 "test_server": [{"name": "tool1"}]
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         # Patch connectivity check to return False (disconnected)
@@ -745,12 +755,12 @@ class TestGetComprehensiveStatus:
         # Mock external server that is truly disconnected
         config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
         mcp_service._mcp.configured_external_servers = {"test_server": config}
-        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])  # No active client
+        mcp_service._mcp.list_external_clients = MagicMock(return_value=[])  # No active client
         mcp_service._mcp.list_all_tools = AsyncMock(return_value={
             "external_servers": {
                 "test_server": []  # No tools
             },
-            "plugin_servers": {}
+            "plugins": {}
         })
         
         # Patch connectivity check to return False (disconnected)

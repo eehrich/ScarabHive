@@ -159,15 +159,17 @@ class TestListTools:
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
             return mock_client
         
-        tool_service._mcp.client_manager.add_client = AsyncMock()
-        tool_service._mcp.client_manager.remove_client = AsyncMock()
-        
+        # The temporary connection goes through the integration now, which
+        # hands it to the client plugin's pool. The old version passed a plain
+        # dict where a RemoteMCPConfig was expected, so it could never connect.
+        tool_service._mcp.retry_connect_server = AsyncMock(return_value=True)
+        tool_service._mcp.remove_external_server = AsyncMock()
+
         with patch.object(tool_service, '_get_client_safe', new=mock_get_client):
             result = await tool_service.list_tools("test_server")
-        
-        # Verify client was added and removed
-        assert tool_service._mcp.client_manager.add_client.called
-        assert tool_service._mcp.client_manager.remove_client.called
+
+        assert tool_service._mcp.retry_connect_server.called
+        assert tool_service._mcp.remove_external_server.called
         assert "available_tools" in result
 
 
@@ -406,7 +408,7 @@ class TestGetClientSafe:
     async def test_get_client_safe_success(self, tool_service):
         """Test successful client retrieval."""
         mock_client = AsyncMock()
-        tool_service._mcp.client_manager.get_client = MagicMock(return_value=mock_client)
+        tool_service._mcp.external_provider.pool.get = MagicMock(return_value=mock_client)
         
         client = await tool_service._get_client_safe("test_server")
         
@@ -415,7 +417,7 @@ class TestGetClientSafe:
     @pytest.mark.asyncio
     async def test_get_client_safe_none(self, tool_service):
         """Test client retrieval returning None."""
-        tool_service._mcp.client_manager.get_client = MagicMock(return_value=None)
+        tool_service._mcp.external_provider.pool.get = MagicMock(return_value=None)
         
         client = await tool_service._get_client_safe("test_server")
         
@@ -424,7 +426,7 @@ class TestGetClientSafe:
     @pytest.mark.asyncio
     async def test_get_client_safe_exception(self, tool_service):
         """Test client retrieval with exception."""
-        tool_service._mcp.client_manager.get_client = MagicMock(side_effect=RuntimeError("Failed"))
+        tool_service._mcp.external_provider.pool.get = MagicMock(side_effect=RuntimeError("Failed"))
         
         client = await tool_service._get_client_safe("test_server")
         

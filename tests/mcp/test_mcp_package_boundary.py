@@ -4,12 +4,12 @@ The package holds two layers that only look like one:
 
 * the **plugin base** -- ``core``, ``status``, ``base``, ``schema_mixin``,
   ``schema_based`` -- which every plugin is written against, and
-* the **protocol client** -- ``security``, ``tool_cache``, ``http_transport``,
-  ``streaming_transport``, ``client``, ``integration`` -- which talks to
-  external MCP servers.
+* the **integration layer** -- ``security``, ``tool_cache``, ``integration``
+  -- which bootstraps plugins and finds whoever federates external tools.
 
-The client may know the base. The base must never know the client, otherwise
-the client cannot be lifted out into a plugin of its own.
+The upper layer may know the base. The base must never know the upper layer.
+That independence is what allowed the external MCP client to move out into the
+``mcp_client`` plugin, and what keeps it out.
 
 Nothing about that invariant is visible in a normal test run: an import added
 at the top of ``base.py`` keeps every existing test green while quietly
@@ -40,10 +40,7 @@ PLUGIN_BASE_MODULES = [
 #: today: it drags in pydantic through ..config.models, which the plugin base
 #: is currently free of.
 PROTOCOL_CLIENT_MODULES = {
-    "agent_system.mcp.client",
     "agent_system.mcp.integration",
-    "agent_system.mcp.http_transport",
-    "agent_system.mcp.streaming_transport",
     "agent_system.mcp.tool_cache",
     "agent_system.mcp.security",
 }

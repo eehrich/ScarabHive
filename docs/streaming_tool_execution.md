@@ -287,4 +287,4 @@ The `execute_tools()` wrapper ensures existing tests and code continue working w
 
 - [Status Design](./status_design.md)
 - [Tool Execution](./tool_execution.md)
-- [SSE Streaming](./mcp_streamable_http_transport.md)
+- [MCP Client Plugin](../src/plugins/mcp_client/README.md)

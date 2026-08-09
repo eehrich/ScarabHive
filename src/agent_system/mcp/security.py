@@ -19,7 +19,7 @@ def build_auth_headers(auth_config: Optional[MCPAuthConfig]) -> Dict[str, str]:
     """Build HTTP auth headers from an MCPAuthConfig (bearer/api_key/basic).
 
     Returns an empty dict when there is no auth config or type 'none'. Shared by
-    MCPSecurityManager.get_auth_headers and MCPClientFactory.create_client_from_config
+    MCPSecurityManager.get_auth_headers and the mcp_client plugin's connection setup
     so outbound MCP connections actually carry the configured credentials.
     """
     if not auth_config:

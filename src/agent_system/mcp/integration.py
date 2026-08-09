@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 
-from .client import MCPClientManager
+from ..plugins import capabilities
 from ..plugins.mcp_adapter import plugin_mcp_registry
 from .security import configure_security
 from .tool_cache import ToolCache
@@ -35,11 +35,9 @@ class MCPIntegration:
         # Configure security with provided config
         configure_security(config)
 
-        self.client_manager = MCPClientManager()
         self.plugin_registry = plugin_mcp_registry
         self.initialized = False
         self.servers_bootstrapped = False  # Track if bootstrap_servers() was called
-        self.configured_external_servers: Dict[str, RemoteMCPConfig] = {}  # Type-safe config storage
 
         # Tool caching with config-aware invalidation
         cache_enabled = config.external_servers.cache.enabled if (
@@ -52,27 +50,45 @@ class MCPIntegration:
         ) else None
         self._tool_cache = ToolCache(enabled=cache_enabled, max_size=cache_max_size)
 
+        # A plugin that connects a new external server tells us through this
+        # callback; without it a freshly connected server would stay invisible
+        # for a whole cache TTL (an hour, with the shipped config).
+        capabilities.on_tool_catalog_changed(self._tool_cache.invalidate)
+
+    # ------------------------------------------------------------------ external
+    #
+    # Foreign MCP servers are no longer this class's business -- the mcp_client
+    # plugin owns the connections and the protocol. What is left here is the
+    # lookup, so the callers that ask an "MCP integration" about external
+    # servers keep working while the ownership sits where it belongs.
+
+    @property
+    def external_provider(self) -> Optional[Any]:
+        """The plugin currently federating external tools, if any."""
+        return capabilities.get_provider(capabilities.EXTERNAL_TOOLS)
+
+    @property
+    def configured_external_servers(self) -> Dict[str, RemoteMCPConfig]:
+        """Enabled external servers, as known by the client plugin."""
+        provider = self.external_provider
+        if provider is None:
+            return {}
+        return getattr(getattr(provider, "pool", None), "configured_servers", {}) or {}
 
     async def initialize(self, config: AgentSystemConfig) -> None:
         """Initialize MCP integration from configuration."""
         if self.initialized:
             return
 
-        await self._initialize_cache_settings(config)
         await self._bootstrap_servers(config)  # Bootstrap agents BEFORE plugin discovery
         await self._discover_and_register_plugins(config)
         await self._register_plugin_hooks(config)
-        await self._connect_external_servers(config)
+        # Sweep: the synchronous bootstrap path cannot await a lifecycle hook,
+        # so anything it registered gets started here. Idempotent.
+        await self.plugin_registry.start_all()
 
         self.initialized = True
         logger.info("MCP integration initialized successfully")
-
-    async def _initialize_cache_settings(self, config: AgentSystemConfig) -> None:
-        """Set cache TTL on client manager."""
-        if config.external_servers and config.external_servers.cache:
-            ttl = config.external_servers.cache.tool_list_ttl
-            self.client_manager.set_cache_ttl(ttl)
-            logger.debug(f"MCP client manager cache TTL set to {ttl}s")
 
     async def _bootstrap_servers(self, config: AgentSystemConfig) -> None:
         """Bootstrap MCP servers and agents using bootstrap_servers().
@@ -192,96 +208,45 @@ class MCPIntegration:
                     exc_info=True
                 )
 
-    async def _connect_external_servers(self, config: AgentSystemConfig) -> None:
-        """Connect to external MCP servers."""
-        if not config.external_servers or not config.external_servers.remote_servers:
-            return
-
-        remote_servers = config.external_servers.remote_servers
-        
-        # Store enabled servers
-        self.configured_external_servers = {
-            name: server_config
-            for name, server_config in remote_servers.items()
-            if server_config.enabled
-        }
-        
-        # Connect to enabled servers
-        ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
-        timeout = (
-            config.external_servers.connection.timeout 
-            if config.external_servers and config.external_servers.connection
-            else 30.0
-        )
-        connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
-        connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
-        
-        for server_name, server_config in remote_servers.items():
-            if not server_config.enabled:
-                logger.debug(f"Skipping disabled external MCP server: {server_name}")
-                continue
-                
-            try:
-                await self.client_manager.add_client(
-                    server_name, 
-                    server_config, 
-                    ssl_verify=ssl_verify, 
-                    timeout=timeout,
-                    connection_limit=connection_limit,
-                    connection_limit_per_host=connection_limit_per_host
-                )
-                logger.info(f"Connected to external MCP server: {server_name}")
-            except Exception as e:
-                logger.debug(f"Failed to connect to external MCP server {server_name}: {e}")
-
     async def shutdown(self) -> None:
-        """Shutdown MCP integration"""
+        """Shutdown MCP integration.
+
+        Stops every registered plugin, which is what closes the external
+        connections now that the client plugin owns them.
+        """
         logging.getLogger(__name__).debug("MCPIntegration.shutdown() called")
-        await self.client_manager.close_all()
+        await self.plugin_registry.shutdown_all()
         logging.getLogger(__name__).debug("MCPIntegration.shutdown() completed")
         logger.info("MCP integration shut down")
 
+    def list_external_clients(self) -> List[str]:
+        """Names of the currently connected external servers."""
+        provider = self.external_provider
+        pool = getattr(provider, "pool", None) if provider else None
+        return pool.list_connected() if pool else []
+
     async def retry_connect_server(self, server_name: str) -> bool:
+        """Connect an external server that was unavailable earlier.
+
+        Returns True if it is connected afterwards, False otherwise.
         """
-        Retry connecting to an external MCP server.
-        Used when a server was unavailable at startup but becomes available later.
-        
-        Returns True if connection successful, False otherwise.
-        """
-        # Check if server is already connected
-        if server_name in self.client_manager.list_clients():
+        provider = self.external_provider
+        pool = getattr(provider, "pool", None) if provider else None
+        if pool is None:
+            logger.warning("No external MCP client plugin is active; cannot connect '%s'", server_name)
+            return False
+
+        if server_name in pool.list_connected():
             logger.debug(f"Server {server_name} already has an active client")
             return True
-        
-        # Check if server is configured
-        server_config = self.configured_external_servers.get(server_name)
-        if not server_config:
+        if server_name not in pool.configured_servers:
             logger.warning(f"Server {server_name} not found in configured external servers")
             return False
-        
-        # Try to connect
+
         try:
-            ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
-            timeout = self.config.external_servers.connection.timeout if (
-                self.config.external_servers and 
-                self.config.external_servers.connection
-            ) else 30.0
-            connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
-            connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
-            
-            await self.client_manager.add_client(
-                server_name, 
-                server_config, 
-                ssl_verify=ssl_verify, 
-                timeout=timeout,
-                connection_limit=connection_limit,
-                connection_limit_per_host=connection_limit_per_host
-            )
+            await pool.connect(server_name)
             logger.info(f"Successfully reconnected to external MCP server: {server_name}")
-            
-            # Invalidate tools cache to pick up new tools
             await self.invalidate_tools_cache()
-            
             return True
         except Exception as e:
             logger.debug(f"Failed to reconnect to external MCP server {server_name}: {e}")
@@ -328,28 +293,15 @@ class MCPIntegration:
                 for tool in tools
             ]
 
-        # Get tools from external servers
-        external_tools = await self.client_manager.list_all_tools()
-        for server_name, tools in external_tools.items():
-            # Get server configuration to check blocked tools
-            server_config = self.configured_external_servers.get(server_name)
-            blocked_tools = []
-            if server_config and server_config.tools:
-                blocked_tools = server_config.tools.blocked or []
-                logger.debug(f"Found server config for {server_name}: blocked_tools={blocked_tools}")
-
-            filtered_tools = []
-            for tool in tools:
-                is_blocked = tool.name in blocked_tools
-                logger.debug(f"Tool {tool.name}: blocked={is_blocked} (blocked_tools={blocked_tools})")
-                filtered_tools.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "input_schema": tool.input_schema,
-                    "blocked": is_blocked
-                })
-
-            result["external_servers"][server_name] = filtered_tools
+        # Get tools from external servers. The client plugin already marks
+        # blocked tools (marked, not removed -- the permission layer above
+        # decides), so this half is a straight hand-through now.
+        provider = self.external_provider
+        if provider is not None:
+            try:
+                result["external_servers"] = await provider.list_external_tools()
+            except Exception as e:
+                logger.warning(f"Could not list external MCP tools: {e}")
 
         # Store in cache
         await self._tool_cache.set("all_tools", result, config_hash)
@@ -360,9 +312,11 @@ class MCPIntegration:
     async def invalidate_tools_cache(self) -> None:
         """Invalidate the tools cache when connections change"""
         await self._tool_cache.invalidate()
-        # Also invalidate the client manager's cache
-        self.client_manager.invalidate_tools_cache()
-        logger.debug("Tools cache invalidated (both integration and client manager)")
+        provider = self.external_provider
+        pool = getattr(provider, "pool", None) if provider else None
+        if pool is not None:
+            pool.invalidate_cache()
+        logger.debug("Tools cache invalidated (integration and external client)")
 
     async def get_cache_statistics(self) -> Dict[str, Any]:
         """Get tool cache statistics for monitoring"""
@@ -374,29 +328,22 @@ class MCPIntegration:
             # Try plugin first, then external
             if server_name in self.plugin_registry.list_servers():
                 server_type = "plugin"
-            elif server_name in self.client_manager.list_clients():
+            elif server_name in self.list_external_clients():
                 server_type = "external"
             else:
                 raise Exception(f"Unknown server: {server_name}")
 
-        # Check if tool is blocked before calling
-        if server_type == "external":
-            # Get server configuration to check blocked tools
-            server_config = self.configured_external_servers.get(server_name)
-            blocked_tools = []
-            if server_config and server_config.tools:
-                blocked_tools = server_config.tools.blocked or []
-                logger.debug(f"Found server config for {server_name}: blocked_tools={blocked_tools}")
-
-            if tool_name in blocked_tools:
-                error_msg = f"Tool '{tool_name}' is blocked on server '{server_name}'"
-                logger.warning(error_msg)
-                raise Exception(error_msg)
-
         if server_type == "plugin":
             return await self.plugin_registry.call_plugin_tool(server_name, tool_name, arguments)
         elif server_type == "external":
-            return await self.client_manager.call_tool(server_name, tool_name, arguments)
+            provider = self.external_provider
+            if provider is None:
+                raise Exception(
+                    f"Cannot call '{tool_name}' on '{server_name}': no external MCP client plugin is active"
+                )
+            # The blocked-tool check lives with the connection pool now, so it
+            # applies to every path into an external server, not just this one.
+            return await provider.call_external_tool(server_name, tool_name, arguments)
         else:
             raise Exception(f"Invalid server type: {server_type}")
 
@@ -409,35 +356,27 @@ class MCPIntegration:
         """Unregister a plugin MCP server"""
         await self.plugin_registry.unregister_plugin(name)
 
+    def _require_pool(self) -> Any:
+        provider = self.external_provider
+        pool = getattr(provider, "pool", None) if provider else None
+        if pool is None:
+            raise RuntimeError("No external MCP client plugin is active")
+        return pool
+
     async def add_external_server(self, name: str, config: RemoteMCPConfig) -> None:
-        """Add an external MCP server"""
-        ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
-        timeout = self.config.external_servers.connection.timeout if (
-            self.config.external_servers and 
-            self.config.external_servers.connection
-        ) else 30.0
-        connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
-        connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
-        
-        await self.client_manager.add_client(
-            name, 
-            config, 
-            ssl_verify=ssl_verify, 
-            timeout=timeout,
-            connection_limit=connection_limit,
-            connection_limit_per_host=connection_limit_per_host
-        )
-        # Update local config storage
-        self.configured_external_servers[name] = config
-        # Invalidate tools cache
-        await self.invalidate_tools_cache()
+        """Add an external MCP server at runtime and connect it."""
+        pool = self._require_pool()
+        pool.configured_servers[name] = config
+        try:
+            await pool.connect(name)
+        finally:
+            await self.invalidate_tools_cache()
 
     async def remove_external_server(self, name: str) -> None:
-        """Remove an external MCP server"""
-        await self.client_manager.remove_client(name)
-        # Remove from local config storage
-        self.configured_external_servers.pop(name, None)
-        # Invalidate tools cache
+        """Disconnect and forget an external MCP server."""
+        pool = self._require_pool()
+        await pool.disconnect(name)
+        pool.configured_servers.pop(name, None)
         await self.invalidate_tools_cache()
 
 
