@@ -263,7 +263,6 @@ class Agent(MCPServer):
 
 **Key Components:**
 - `MCPClientManager` - Client lifecycle
-- `MCPHTTPServer` - Server mode
 - `ToolCache` - Tool list caching
 
 #### 4.2.7 Hook System (`hooks/`)
@@ -296,7 +295,6 @@ class Agent(MCPServer):
 - **`plugins:`** - Plugin discovery, default configs, and server configurations
 - **`external_servers:`** - External MCP server connections
 - **`agents:`** - Config-based agent definitions
-- **`server_mode:`** - MCP server mode settings
 
 All configuration sections can be defined in the main config or in separate files that are included via the `includes:` list. The system uses deep-merge to combine configurations from multiple files.
 

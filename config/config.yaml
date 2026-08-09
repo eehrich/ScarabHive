@@ -12,7 +12,6 @@ includes:
   - llm_openrouter.yaml
   - plugins.yaml
   - mcp_servers.yaml
-  - mcp_server_mode.yaml
   - agents/*.yaml
   - ../src/plugins_writer/*/agents/*.yaml
   - agents_trading/*.yaml

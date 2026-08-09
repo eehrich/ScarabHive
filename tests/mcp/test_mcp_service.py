@@ -505,6 +505,89 @@ class TestGetComprehensiveStatus:
         assert status["plugins"]["plugin_server"]["connected"] is True
 
     @pytest.mark.asyncio
+    async def test_comprehensive_status_hybrid_plugin_tools_via_adapter(self, mcp_service):
+        """A hybrid plugin (get_tools(), no list_tools()) must still report its tools.
+
+        Deliberately built from a REAL class, not MagicMock: a MagicMock answers
+        hasattr() for every name, so it cannot tell a plugin that carries
+        list_tools() from one that does not -- which is precisely the shape
+        difference under test. The registry holds the raw plugin server, so the
+        service has to reach for the PluginMCPAdapter to read the tools.
+        """
+        from agent_system.plugins.mcp_adapter import PluginMCPAdapter
+
+        class HybridPlugin:
+            """Web+MCP plugin: no MCPServer base, therefore no list_tools()."""
+
+            def get_tools(self):
+                return [
+                    {"type": "function", "function": {
+                        "name": "hybrid_do", "description": "Do it",
+                        "parameters": {"type": "object", "properties": {}}}},
+                    {"type": "function", "function": {
+                        "name": "hybrid_undo", "description": "Undo it",
+                        "parameters": {"type": "object", "properties": {}}}},
+                ]
+
+        raw = HybridPlugin()
+        assert not hasattr(raw, "list_tools")  # guards the premise of this test
+
+        mock_registry = MagicMock()
+        mock_registry._servers = {"hybrid": raw}
+
+        plugin_registry = MagicMock()
+        plugin_registry.get_server = MagicMock(return_value=PluginMCPAdapter("hybrid", raw))
+        mcp_service._mcp.plugin_registry = plugin_registry
+
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {},
+            "plugin_servers": {}
+        })
+
+        status = await mcp_service.get_comprehensive_status(registry=mock_registry)
+
+        assert status["plugins"]["hybrid"]["tool_count"] == 2
+        assert status["plugins"]["hybrid"]["tools"] == ["hybrid_do", "hybrid_undo"]
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_skips_private_servers(self, mcp_service):
+        """_mcp_public=False stays hidden -- including via the adapter fallback.
+
+        Agent servers default to private ("secure by default", see
+        servers/bootstrap.py). The flag lives on the raw registry object; the
+        adapter does not carry it, so reading tools through the adapter must
+        not become a way around the filter.
+        """
+        from agent_system.plugins.mcp_adapter import PluginMCPAdapter
+
+        class PrivateHybrid:
+            _mcp_public = False
+
+            def get_tools(self):
+                return [{"type": "function", "function": {
+                    "name": "secret", "description": "", "parameters": {}}}]
+
+        raw = PrivateHybrid()
+        mock_registry = MagicMock()
+        mock_registry._servers = {"private_agent": raw}
+
+        plugin_registry = MagicMock()
+        plugin_registry.get_server = MagicMock(
+            return_value=PluginMCPAdapter("private_agent", raw))
+        mcp_service._mcp.plugin_registry = plugin_registry
+
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {},
+            "plugin_servers": {}
+        })
+
+        status = await mcp_service.get_comprehensive_status(registry=mock_registry)
+
+        assert "private_agent" not in status["plugins"]
+
+    @pytest.mark.asyncio
     async def test_comprehensive_status_empty(self, mcp_service):
         """Test comprehensive status with no servers."""
         mcp_service._mcp.configured_external_servers = {}

@@ -235,10 +235,6 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                         # mcp_servers.yaml uses "external_servers" key
                         data["external_servers"] = part["external_servers"]
                     
-                    if "server_mode" in part:
-                        # mcp_server_mode.yaml uses "server_mode" key
-                        data["server_mode"] = part["server_mode"]
-                    
                     if "agents" in part:
                         data["agents"] = part["agents"]
                         

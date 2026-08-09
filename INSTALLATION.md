@@ -91,7 +91,6 @@ config/
 ├── llm.yaml                 # LLM provider settings
 ├── plugins.yaml             # Plugin configuration
 ├── mcp_servers.yaml         # External MCP servers
-├── mcp_server_mode.yaml     # MCP server mode settings
 └── agents/                  # Config-based agents (YAML files)
     ├── meta_agent.yaml
     ├── coding_agent.yaml
@@ -462,34 +461,6 @@ plugins:
 ```
 
 See agent examples in `config/agents/` for reference.
-
-### MCP Server Mode
-
-Expose ScarabHive as an MCP server for external clients.
-
-Edit `config/mcp_server_mode.yaml`:
-
-```yaml
-server_mode:
-  enabled: true
-  endpoint: "/mcp"
-  
-  # Expose specific plugins or all
-  expose_plugins:
-    - "*"  # All plugins
-    # OR specific: ["datetime", "web_scraper"]
-  
-  authentication:
-    required: true
-    methods:
-      - jwt
-      - api_key
-  
-  rate_limit:
-    enabled: true
-    requests_per_minute: 60
-    requests_per_hour: 1000
-```
 
 ### External MCP Servers
 

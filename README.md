@@ -13,7 +13,7 @@ ScarabHive is designed for developers who need:
 - **Real-time streaming** of agent actions and LLM responses via Server-Sent Events
 - **Configuration-driven agents** defined in YAML without writing code
 - **Multi-user support** with JWT/API key authentication and role-based access control
-- **Dual-mode operation** as both MCP client (consuming tools) and MCP server (exposing tools)
+- **MCP client** consuming tools from external MCP servers
 
 ## Key Features
 - **Plugin System**: 30+ built-in plugins (web research, terminal, SSH, database, script execution, media generation, etc.)
@@ -26,7 +26,6 @@ ScarabHive is designed for developers who need:
 - **Streaming Architecture**: Zero-overhead SSE streams for real-time updates
 - **Mid-Run Steering**: Inject user messages into a running agent — it picks them up at the next step and reacts (see `docs/mid_run_message_injection.md`)
 - **Security**: Tool access control with allow/deny patterns, authentication, rate limiting
-- **MCP Server Mode**: Expose agents and tools as an MCP server for external clients
 - **CLI App**: use agent-cli or agent-run to run Agents from CLI instead of WebUI
 - **Powerful WebUI**: analyse your llm requests, context optimizations in the WebUI. Profile Speed and memory consumtion.
 

@@ -44,11 +44,6 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     mcp_servers_copy = tmp_config_dir / "mcp_servers.yaml"
     mcp_servers_copy.write_text(mcp_servers_orig.read_text(encoding="utf-8"), encoding="utf-8")
 
-    # Copy MCP server mode config
-    mcp_server_mode_orig = repo_root / "config" / "mcp_server_mode.yaml"
-    mcp_server_mode_copy = tmp_config_dir / "mcp_server_mode.yaml"
-    mcp_server_mode_copy.write_text(mcp_server_mode_orig.read_text(encoding="utf-8"), encoding="utf-8")
-
     # Change CWD to the temp workspace so CLI reads config files from there
     # Save original directory to restore later
     import os

@@ -307,25 +307,6 @@ class ToolCache:
         """Clear entire cache"""
 ```
 
-#### 4.2.4 MCPHTTPServer
-
-**File:** `src/agent_system/mcp/http_server.py`
-
-**Responsibilities:**
-- Expose internal plugins as MCP server (server mode)
-- HTTP endpoints for MCP protocol
-- SSE streaming support
-
-**Endpoints:**
-```python
-POST /mcp/initialize
-POST /mcp/tools/list
-POST /mcp/tools/call
-GET /mcp/sse  # SSE streaming endpoint
-```
-
----
-
 ## 5. Connection Management
 
 ### 5.1 Connection Lifecycle
@@ -611,13 +592,15 @@ external_servers:
 ### ADR-005: Client-Only Mode
 
 **Context:** MCP can be server or client  
-**Decision:** AgentSystem is MCP client (with optional server mode)  
+**Decision:** AgentSystem is an MCP client only.  
 **Rationale:**
 - Primary use case: consume external tools
-- Server mode optional (for exposing internal plugins)
 - Simpler architecture
 
-**Status:** Accepted
+**Status:** Accepted. Server mode existed as an option (Epic 0037) and was
+removed in 2026-08 — it never had a consumer, and an unused HTTP surface that
+exposes every activated plugin is a liability, not a feature. Everything that
+remains under `/mcp/*` serves the internal plugin registry, not the protocol.
 
 ---
 

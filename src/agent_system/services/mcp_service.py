@@ -505,58 +505,6 @@ class MCPService:
         # Track processed servers to avoid duplicates
         processed_server_ids = set()
 
-        # Add plugin servers from MCP integration's HTTP server
-        if hasattr(self._mcp, 'http_server') and self._mcp.http_server:
-            try:
-                mcp_servers = self._mcp.http_server.servers
-                for server_id, server_obj in mcp_servers.items():
-                    try:
-                        # Skip private servers
-                        if getattr(server_obj, '_mcp_public', True) is False:
-                            continue
-
-                        # Get tools
-                        tools = []
-                        detailed_tools = []
-                        if hasattr(server_obj, 'list_tools'):
-                            try:
-                                mcp_tools = await server_obj.list_tools()
-                                if mcp_tools:
-                                    for mcp_tool in mcp_tools:
-                                        tools.append(mcp_tool.name)
-                                        detailed_tools.append({
-                                            'name': mcp_tool.name,
-                                            'description': mcp_tool.description,
-                                            'parameters': mcp_tool.input_schema
-                                        })
-                            except Exception as e:
-                                logger.debug(f"list_tools() failed for {server_id}: {e}")
-
-                        # Check connection status
-                        if check_connectivity:
-                            # For plugins: check if in registry
-                            connected = self._check_plugin_connectivity(server_id, registry)
-                        else:
-                            # Fast path: assume connected if in registry
-                            connected = registry and hasattr(registry, "_servers") and server_id in registry._servers
-
-                        servers.append({
-                            "id": server_id,
-                            "name": server_id.replace('_', ' ').title(),
-                            "type": "plugin",
-                            "connected": connected,
-                            "tools": tools,
-                            "detailed_tools": detailed_tools,
-                            "tool_count": len(tools)
-                        })
-
-                        processed_server_ids.add(server_id)
-
-                    except Exception as e:
-                        logger.debug(f"Failed to get info for plugin server {server_id}: {e}")
-            except Exception as e:
-                logger.debug(f"Failed to get MCP plugin servers: {e}")
-
         # Add plugin servers from registry
         if registry and hasattr(registry, "_servers"):
             for server_id, server_obj in registry._servers.items():
@@ -567,12 +515,32 @@ class MCPService:
                     if getattr(server_obj, '_mcp_public', True) is False:
                         continue
 
-                    # Get tools
+                    # Get tools.
+                    #
+                    # The registry holds the RAW plugin server. Only MCPServer
+                    # subclasses carry list_tools(); a hybrid plugin (Web+MCP)
+                    # is a plain class and exposes get_tools() -- or nothing at
+                    # all, with its tools declared in a schema file next to it.
+                    # PluginMCPAdapter is the piece that knows all three shapes,
+                    # so ask it whenever the raw object cannot answer. Without
+                    # this fallback 18 public plugins report tool_count 0
+                    # (ssh_control, writer_player, log_viewer, ... = 22 tools).
+                    #
+                    # The _mcp_public check above deliberately stays on the RAW
+                    # object: the adapter does not carry that flag, and reading
+                    # it there would leak the 138 private agent servers into the
+                    # admin UI again.
                     tools = []
                     detailed_tools = []
-                    if hasattr(server_obj, 'list_tools'):
+                    tool_source = server_obj
+                    if not hasattr(tool_source, 'list_tools'):
+                        plugin_reg = getattr(self._mcp, 'plugin_registry', None) if self._mcp else None
+                        adapter = plugin_reg.get_server(server_id) if plugin_reg else None
+                        if adapter is not None:
+                            tool_source = adapter
+                    if hasattr(tool_source, 'list_tools'):
                         try:
-                            mcp_tools = await server_obj.list_tools()
+                            mcp_tools = await tool_source.list_tools()
                             if mcp_tools:
                                 for mcp_tool in mcp_tools:
                                     tools.append(mcp_tool.name)

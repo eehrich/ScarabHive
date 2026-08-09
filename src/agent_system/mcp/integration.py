@@ -15,7 +15,6 @@ from fastapi import FastAPI
 
 from .client import MCPClientManager
 from ..plugins.mcp_adapter import plugin_mcp_registry
-from .http_server import MCPHTTPServer
 from .security import configure_security
 from .tool_cache import ToolCache
 from ..config.models import AgentSystemConfig, RemoteMCPConfig
@@ -38,7 +37,6 @@ class MCPIntegration:
 
         self.client_manager = MCPClientManager()
         self.plugin_registry = plugin_mcp_registry
-        self.http_server = MCPHTTPServer(app)
         self.initialized = False
         self.servers_bootstrapped = False  # Track if bootstrap_servers() was called
         self.configured_external_servers: Dict[str, RemoteMCPConfig] = {}  # Type-safe config storage
@@ -63,7 +61,6 @@ class MCPIntegration:
         await self._initialize_cache_settings(config)
         await self._bootstrap_servers(config)  # Bootstrap agents BEFORE plugin discovery
         await self._discover_and_register_plugins(config)
-        await self._register_plugin_http_endpoints()
         await self._register_plugin_hooks(config)
         await self._connect_external_servers(config)
 
@@ -152,13 +149,6 @@ class MCPIntegration:
             )
         else:
             logger.debug("All enabled servers already registered, skipping re-registration")
-
-    async def _register_plugin_http_endpoints(self) -> None:
-        """Register plugin servers with HTTP server."""
-        for server_name in self.plugin_registry.list_servers():
-            server = self.plugin_registry.get_server(server_name)
-            if server:
-                self.http_server.register_server(server_name, server)
 
     async def _register_plugin_hooks(self, config: AgentSystemConfig) -> None:
         """Register hooks from plugins."""
@@ -297,10 +287,6 @@ class MCPIntegration:
             logger.debug(f"Failed to reconnect to external MCP server {server_name}: {e}")
             return False
 
-    def get_app(self) -> FastAPI:
-        """Get the FastAPI app with MCP endpoints"""
-        return self.http_server.app
-
     async def list_all_tools(self) -> Dict[str, Dict[str, List[Any]]]:
         """List all available tools from plugins and external servers"""
         # Compute config hash for cache invalidation
@@ -414,32 +400,14 @@ class MCPIntegration:
         else:
             raise Exception(f"Invalid server type: {server_type}")
 
-    def get_server_info(self) -> Dict[str, Any]:
-        """Get information about available servers"""
-        return {
-            "plugins": {
-                "available": self.plugin_registry.list_available_plugins(),
-                "registered": self.plugin_registry.list_servers()
-            },
-            "external_servers": self.client_manager.list_clients(),
-            "http_server": {
-                "endpoints": ["/mcp", "/mcp/servers", "/mcp/servers/{server_name}/tools"]
-            }
-        }
-
     async def register_plugin(self, name: str, config: Optional[AgentSystemConfig] = None) -> None:
         """Register a plugin as an MCP server"""
         await self.plugin_registry.register_plugin(name, config)
 
-        # Add to HTTP server
-        server = self.plugin_registry.get_server(name)
-        if server:
-            self.http_server.register_server(name, server)
 
     async def unregister_plugin(self, name: str) -> None:
         """Unregister a plugin MCP server"""
         await self.plugin_registry.unregister_plugin(name)
-        self.http_server.unregister_server(name)
 
     async def add_external_server(self, name: str, config: RemoteMCPConfig) -> None:
         """Add an external MCP server"""
