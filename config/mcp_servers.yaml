@@ -56,7 +56,7 @@ external_servers:
         tools: false
     
     open_web_search:
-      url: https://server.smithery.ai/@Aas-ee/open-websearch/mcp?api_key=***REMOVED***&profile=***REMOVED***
+      url: https://server.smithery.ai/@Aas-ee/open-websearch/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
       enabled: false
       description: Remote Open Web Search
       transport: streaming
@@ -64,22 +64,22 @@ external_servers:
         tools: true
     
     x_tools:
-      url: https://server.smithery.ai/@acakom/x-mcp-server/mcp?api_key=***REMOVED***&profile=***REMOVED***
+      url: https://server.smithery.ai/@acakom/x-mcp-server/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
       enabled: false
       description: Remote X-Tools (Twitter)
       transport: streaming
       features:
         tools: true
       initialization_options:
-        key: ***REMOVED***
-        bearer_token: ***REMOVED***
+        key: ${SMITHERY_API_KEY}
+        bearer_token: ${X_BEARER_TOKEN}
         consumer_key: ''
         consumer_secret: ''
-        access_token: ***REMOVED***
+        access_token: ${X_ACCESS_TOKEN}
         access_token_secret: ''
     
     context7:
-      url: https://server.smithery.ai/@upstash/context7-mcp/mcp?api_key=***REMOVED***&profile=***REMOVED***
+      url: https://server.smithery.ai/@upstash/context7-mcp/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
       enabled: false
       description: Remote Context7 MCP
       transport: streaming
@@ -87,7 +87,7 @@ external_servers:
         tools: true
     
     weather_mcp:
-      url: https://server.smithery.ai/@smithery-ai/national-weather-service/mcp?api_key=***REMOVED***&profile=***REMOVED***
+      url: https://server.smithery.ai/@smithery-ai/national-weather-service/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
       enabled: false
       description: Remote Weather Forecast MCP
       transport: streaming
@@ -98,7 +98,7 @@ external_servers:
           - get_local_time
     
     exa_search:
-      url: https://server.smithery.ai/exa/mcp?api_key=***REMOVED***&profile=***REMOVED***
+      url: https://server.smithery.ai/exa/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
       enabled: false
       description: Remote Exa Search
       transport: streaming
@@ -110,7 +110,7 @@ external_servers:
           - deep_researcher_check
     
     ai_research_assistant:
-      url: https://server.smithery.ai/@hamid-vakilzadeh/mcpsemanticscholar/mcp?api_key=***REMOVED***&profile=***REMOVED***
+      url: https://server.smithery.ai/@hamid-vakilzadeh/mcpsemanticscholar/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
       enabled: false
       description: AI Research Assistant
       transport: streaming
