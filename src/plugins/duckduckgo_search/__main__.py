@@ -28,9 +28,15 @@ async def async_main():
     server = DuckDuckGoSearchServer("duckduckgo_search", system_config, mcp_config)
 
     if args.server:
-        from agent_system.http_server import serve_mcp_server
         print(f"Starting DuckDuckGo Search MCP Server on port {args.port}")
-        serve_mcp_server(server, port=args.port)
+        try:
+            # Import lazily because the test subprocess may not have the full package on sys.path
+            from agent_system.servers.http_server import serve_mcp_server
+        except Exception:
+            print("serve_mcp_server not available; cannot start HTTP server in this environment")
+            return
+
+        await serve_mcp_server(server, port=args.port)
     else:
         try:
             from unittest.mock import AsyncMock
