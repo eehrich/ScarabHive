@@ -15,16 +15,14 @@ Two pieces live here:
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import logging
 import os
-import re
 import shutil
 import sys
 import time
 import unicodedata
-from typing import Any, Optional, TextIO
+from typing import Any, Optional, Sequence, TextIO
 
 from ..llm.pricing import normalize_usage, resolve_call_cost
 from .common import (
@@ -572,84 +570,42 @@ async def run_chat_turn(
 # --------------------------------------------------------------------- REPL
 
 
-_COMMAND_ALIASES = {
-    "/exit": "exit", "/quit": "exit", "/q": "exit", "/bye": "exit",
-    "/new": "new",
-    "/session": "session",
-    "/sessions": "sessions",
-    "/resume": "resume",
-    "/history": "history", "/hist": "history",
-    "/last": "last",
-    "/tools": "tools",
-    "/skills": "skills",
-    "/costs": "costs", "/cost": "costs",
-    "/help": "help", "/?": "help", "/h": "help",
-}
+# The catalogue, the parser and the typo hints live in
+# agent_system.chat_commands so the web UI resolves a line exactly the way the
+# terminal does. Imported into this namespace because the REPL below (and its
+# tests) call them by these names.
+from agent_system.chat_commands import (  # noqa: E402
+    CLI as _CLI_SURFACE,
+    commands_for,
+    looks_like_command as _looks_like_command,
+    parse_chat_command,
+    resolve as resolve_chat_input,
+    suggest_command,
+)
 
 
-# A command word: a single "/name" token, no further slash, no dot. That is
-# what separates a mistyped command from a path -- "/h" is a typo the user
-# wants flagged, "/etc/nginx/nginx.conf" is ordinary input for a sysadmin
-# agent and firing an LLM turn on either extreme is wrong.
-_COMMAND_WORD = re.compile(r"^/[A-Za-z?][A-Za-z0-9_-]*$")
+def _help_text(skills: Sequence[str] = ()) -> str:
+    """Help built from the shared catalogue, plus the terminal-only input hints.
 
-
-def parse_chat_command(line: str) -> tuple[Optional[str], str]:
-    """Split a prompt line into (command, payload).
-
-    Returns ("unknown", line) for something that LOOKS like a command but
-    isn't one, so the REPL can say so instead of silently spending a turn on
-    it. Anything else starting with "/" is a normal message. "//" is the
-    literal escape for a message that really has to start with a command word.
+    Generated rather than written out: a second hand-kept list is a list that
+    drifts, and the web UI renders the same commands from the same source.
     """
-    stripped = line.strip()
-    if stripped.startswith("//"):
-        return None, stripped[1:]
-    if not stripped.startswith("/"):
-        return None, stripped
-    word, _, rest = stripped.partition(" ")
-    command = _COMMAND_ALIASES.get(word.lower())
-    if command is not None:
-        return command, rest.strip()
-    if _COMMAND_WORD.match(word):
-        return "unknown", word
-    return None, stripped
-
-
-def suggest_command(word: str) -> Optional[str]:
-    """Closest known command for a typo, or None.
-
-    Prefixes first: "/h" is the common abbreviation-style slip, and difflib
-    scores it far below any cutoff against "/help" (2 chars against 5).
-    """
-    lowered = word.lower()
-    prefixed = sorted((c for c in _COMMAND_ALIASES if c.startswith(lowered)), key=len)
-    if prefixed:
-        return prefixed[0]
-    matches = difflib.get_close_matches(lowered, _COMMAND_ALIASES, n=1, cutoff=0.6)
-    return matches[0] if matches else None
-
-
-_HELP_TEXT = '''\
-Commands:
-  /exit, /quit, /q   end the chat (Ctrl-D / Ctrl-Z+Enter work too)
-  /new               start a fresh session (current one stays saved)
-  /session           show the current session and how to resume it
-  /sessions          list recent sessions
-  /resume <id>       continue an earlier session
-  /tools [filter]    tools this agent really has (not what it claims)
-  /skills            skill bundles it loads
-  /costs             session cost so far, including sub-agents
-  /history [n]       show the last n exchanges (default 6)
-  /last              tool calls and results of the last turn, in full
-  /help, /h          this help
-
-Input:
-  """               start/end a multi-line message (paste code between them)
-  \\ at line end      continue on the next line
-  //text             send a message that starts with a command word
-
-  Ctrl-C             cancel the running turn; twice at the prompt exits'''
+    width = max((len(c.display) for c in commands_for(_CLI_SURFACE)), default=0)
+    lines = ["Commands:"]
+    lines += [f"  {c.display:<{width}}   {c.summary}" for c in commands_for(_CLI_SURFACE)]
+    if skills:
+        lines += ["", "Skills (run one directly, arguments are passed to it):"]
+        lines += [f"  /{name}" for name in skills]
+    lines += [
+        "",
+        "Input:",
+        '  """               start/end a multi-line message (paste code between them)',
+        "  \\ at line end     continue on the next line",
+        "  //text             send a message that starts with a command word",
+        "",
+        "  Ctrl-C             cancel the running turn; twice at the prompt exits",
+    ]
+    return "\n".join(lines)
 
 
 _FENCE = '"""'
@@ -1053,17 +1009,6 @@ def _format_usage(totals: dict, elapsed: float, sym: dict) -> str:
     return sym["sep"].join(parts)
 
 
-def _looks_like_command(text: str) -> bool:
-    """Whether a stored user message is really a slash command.
-
-    Commands never reach the agent -- but before "/h" became an alias, unknown
-    ones were passed through as messages and are now sitting in old sessions.
-    They are not part of the conversation and would only add noise.
-    """
-    stripped = text.strip()
-    return bool(stripped) and bool(_COMMAND_WORD.match(stripped.split(" ")[0]))
-
-
 def _decode(text: Any) -> Any:
     """Parse a JSON payload, or None when it is not JSON."""
     if not isinstance(text, str):
@@ -1410,12 +1355,66 @@ def _server_names(ctx: "_ChatContext") -> list:
         return []
 
 
+def _skill_registry(ctx: "_ChatContext"):
+    """The registry, scanned with the roots the CONFIG resolves to.
+
+    Never a hardcoded path: ``skills.skill_dirs`` may use wildcards
+    (``skills/*/``) and the operator decides how deep that goes. Falling back
+    to the defaults only when nothing is configured mirrors the skills plugin.
+    """
+    from agent_system.skills import get_skill_registry
+    from agent_system.skills.registry import default_skill_dirs
+
+    system_config = getattr(ctx.agent, "system_config", None)
+    configured = list(getattr(getattr(system_config, "skills", None), "skill_dirs", []) or [])
+    registry = get_skill_registry()
+    registry.ensure_discovered(configured or list(default_skill_dirs()))
+    return registry
+
+
+def _available_skills(ctx: "_ChatContext") -> list[str]:
+    """Names that can be invoked as /name. Never raises -- it runs per prompt."""
+    try:
+        return [skill.name for skill in _skill_registry(ctx).list_skills()]
+    except Exception as e:  # noqa: BLE001 - a broken skill dir must not kill the REPL
+        logger.debug("Could not list skills: %s", e)
+        return []
+
+
+def _expand_skill(ctx: "_ChatContext", name: str, arguments: str) -> Optional[str]:
+    """The message a /skill invocation turns into, or None if it cannot be read."""
+    from agent_system.skills import invoke
+
+    try:
+        skill = _skill_registry(ctx).get(name)
+        if skill is None:
+            print(f"Skill '{name}' is no longer available.")
+            return None
+        return invoke(skill, arguments)
+    except OSError as e:
+        print(f"Could not read skill '{name}': {e}")
+        return None
+
+
 def _show_skills(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
-    """Which skill bundles this agent loads, and how."""
+    """What can be run, and which bundles this agent loads.
+
+    Both halves, because they are different questions and the runnable list is
+    the one the web UI can answer too. Showing only the agent's config here
+    while the browser showed the runnable list made one command mean two
+    things depending on where it was typed.
+    """
+    runnable = _available_skills(ctx)
+    if runnable:
+        renderer.println("you can run (arguments are passed to the skill):", color="34")
+        for name in runnable:
+            renderer.println(f"  /{name}", color="90")
+
     agent_config = getattr(ctx.agent, "agent_config", None)
     skills = getattr(agent_config, "skills", None) if agent_config else None
     if not skills:
-        print(f"{ctx.entry_name} uses no skills.")
+        print(f"{ctx.entry_name} loads no skills into its prompt.")
+        renderer.commit()
         return
     always = list(getattr(skills, "always", None) or (
         skills.get("always") if isinstance(skills, dict) else []) or [])
@@ -1430,7 +1429,7 @@ def _show_skills(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
         for name in on_demand:
             renderer.println(f"  {name}", color="90")
     if not always and not on_demand:
-        print(f"{ctx.entry_name} uses no skills.")
+        print(f"{ctx.entry_name} loads no skills into its prompt.")
     renderer.commit()
 
 
@@ -1769,7 +1768,25 @@ def run_chat_loop(
             if not task:
                 continue
 
-            command, payload = parse_chat_command(task)
+            # Skills share the command namespace: anything that is not a
+            # built-in is looked up as a skill, so "/writer analysiere X" runs
+            # the writer skill with "analysiere X" as its arguments.
+            skill_names = _available_skills(ctx)
+            resolution = resolve_chat_input(task, skill_names)
+            command = resolution.name if resolution.kind == "command" else (
+                "unknown" if resolution.kind == "unknown" else None)
+            payload = resolution.payload
+
+            if resolution.kind == "skill":
+                expanded = _expand_skill(ctx, resolution.name, payload)
+                if expanded is None:
+                    continue
+                # The skill BECOMES the turn: same text an `always` skill would
+                # put in the prompt, just triggered by a person.
+                print(f"[skill: {resolution.name}]")
+                task = expanded
+                command = None
+
             if command == "exit":
                 break
             if command == "new":
@@ -1806,10 +1823,10 @@ def run_chat_loop(
                 _show_last(ctx, renderer)
                 continue
             if command == "help":
-                print(_HELP_TEXT)
+                print(_help_text(skill_names))
                 continue
             if command == "unknown":
-                hint = suggest_command(payload)
+                hint = suggest_command(payload, skill_names)
                 did_you_mean = f"  Did you mean {hint}?" if hint else ""
                 print(f"Unknown command: {payload}{did_you_mean}")
                 print(f"/help lists the commands; //{payload[1:]} sends it as a message.")

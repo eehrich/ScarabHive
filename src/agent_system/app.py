@@ -62,6 +62,12 @@ from .core.request_context import (  # noqa: E402
 )
 
 
+#: Longest line /chat/resolve will look at. A chat line is a chat line; the
+#: cap keeps a multi-megabyte paste from turning into CPU work on the event
+#: loop before anyone has decided it is even a command.
+MAX_CHAT_LINE = 100_000
+
+
 async def _parse_json_body(request: Request) -> Any:
     """Parse the request's JSON body — THE single place mapping malformed
     input to HTTP 400 (client error) instead of an unhandled 500. Used by
@@ -2669,6 +2675,105 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.error(f"MCP cache invalidation error: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {"error": f"Failed to invalidate cache: {str(e)}"}
+
+    # ===========================
+    # Chat Command Endpoints
+    # ===========================
+    #
+    # The web UI resolves a typed line through the SAME catalogue and parser as
+    # the terminal chat (agent_system.chat_commands). The browser cannot read
+    # the skill folders, so expansion happens here -- one implementation, and
+    # `/writer x` means the same thing on both surfaces.
+
+    def _skill_registry_for_app():
+        """Registry scanned with the roots the CONFIG resolves to."""
+        from agent_system.skills import get_skill_registry
+        from agent_system.skills.registry import default_skill_dirs
+
+        configured = list(
+            getattr(getattr(_app_config, "skills", None), "skill_dirs", []) or []
+        )
+        registry = get_skill_registry()
+        registry.ensure_discovered(configured or list(default_skill_dirs()))
+        return registry
+
+    @app.get("/chat/commands")
+    async def chat_commands(surface: str = "web"):
+        """Commands and skills this surface offers, for help and autocomplete."""
+        from agent_system.chat_commands import commands_for
+
+        try:
+            skills = [
+                {"name": s.name, "summary": s.description, "version": s.version,
+                 "kind": "skill", "display": f"/{s.name}"}
+                for s in _skill_registry_for_app().list_skills()
+            ]
+        except Exception as e:
+            logging.getLogger(__name__).warning("Could not list skills: %s", e)
+            skills = []
+
+        return {
+            "commands": [
+                {"name": c.name, "aliases": list(c.aliases), "summary": c.summary,
+                 "display": c.display, "kind": "command"}
+                for c in commands_for(surface)
+            ],
+            "skills": skills,
+        }
+
+    @app.post("/chat/resolve")
+    async def chat_resolve(request: Request):
+        """Classify a typed line, expanding a skill invocation into its text.
+
+        Returns ``kind`` (command | skill | message | unknown) plus what the
+        caller needs: the command name, or the message to send to the agent.
+        """
+        from agent_system.chat_commands import resolve as resolve_line, suggest_command
+        from agent_system.skills import invoke
+
+        body = await _parse_json_body(request)
+        if body is not None and not isinstance(body, dict):
+            # A JSON array or bare string parses fine but has no .get -- answer
+            # "bad request" rather than letting an AttributeError become a 500.
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        line = (body or {}).get("line") or ""
+        if not isinstance(line, str):
+            raise HTTPException(status_code=400, detail="'line' must be a string")
+        if len(line) > MAX_CHAT_LINE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Line too long ({len(line)} chars, limit {MAX_CHAT_LINE})",
+            )
+
+        try:
+            registry = _skill_registry_for_app()
+            skill_names = [s.name for s in registry.list_skills()]
+        except Exception as e:
+            logging.getLogger(__name__).warning("Could not list skills: %s", e)
+            registry, skill_names = None, []
+
+        result = resolve_line(line, skill_names)
+        payload = {"kind": result.kind, "name": result.name, "payload": result.payload}
+
+        if result.kind == "skill" and registry is not None:
+            skill = registry.get(result.name)
+            if skill is None:
+                # Vanished between listing and reading -- say so instead of
+                # sending the raw "/name" to the agent as if it were a message.
+                return {"kind": "unknown", "name": None, "payload": f"/{result.name}",
+                        "error": f"Skill '{result.name}' is no longer available"}
+            try:
+                payload["text"] = invoke(skill, result.payload)
+            except OSError as e:
+                raise HTTPException(
+                    status_code=500, detail=f"Could not read skill '{result.name}': {e}"
+                ) from e
+        elif result.kind == "message":
+            payload["text"] = result.payload
+        elif result.kind == "unknown":
+            payload["suggestion"] = suggest_command(result.payload, skill_names)
+
+        return payload
 
     # ===========================
     # Hook Introspection Endpoints

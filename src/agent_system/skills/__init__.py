@@ -9,6 +9,10 @@ many agents, or with any other tool that speaks the standard.
 
 See ``docs/skills_design.md`` for the concept and the trade-offs.
 """
+from .invocation import expand, invoke, split_arguments
 from .registry import Skill, SkillRegistry, get_skill_registry
 
-__all__ = ["Skill", "SkillRegistry", "get_skill_registry"]
+__all__ = [
+    "Skill", "SkillRegistry", "get_skill_registry",
+    "expand", "invoke", "split_arguments",
+]

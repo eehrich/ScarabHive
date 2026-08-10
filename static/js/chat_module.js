@@ -46,6 +46,87 @@
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
 
+  /**
+   * A local note: help output, an unknown command, a hint. Never sent to the
+   * agent and never stored -- it belongs to the surface, not the conversation.
+   */
+  function addNote(chatContainer, text) {
+    if (!chatContainer) return;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg note';
+    const pre = document.createElement('pre');
+    pre.className = 'note-text';
+    pre.textContent = text;
+    msgDiv.appendChild(pre);
+    row.appendChild(msgDiv);
+    chatContainer.appendChild(row);
+    // force: a note answers something the user just typed. Honouring
+    // "only scroll when already at the bottom" would hide the reply to their
+    // own keystroke whenever they had scrolled up.
+    scrollBottom(true);
+  }
+
+  /**
+   * Run a built-in command in the browser.
+   *
+   * Only the surface-specific part lives here; which commands exist comes from
+   * the shared catalogue. A command the web UI cannot do yet says so out loud
+   * rather than doing nothing -- silence would read as a broken command.
+   */
+  function runChatCommand(name, payload) {
+    const container = chatContainer;
+    if (name === 'help') {
+      addNote(container, window.slashCommands.helpLines().join('\n'));
+      return;
+    }
+    if (name === 'skills') {
+      const skills = (window.slashCommands.catalogue || {}).skills || [];
+      addNote(container, skills.length
+        ? 'Skills you can run:\n' + skills.map(function (s) {
+            return '  /' + s.name + (s.summary ? '   ' + s.summary : '');
+          }).join('\n')
+        : 'No skills found.');
+      return;
+    }
+    if (name === 'new') {
+      currentSessionId = null;
+      try { global.currentSessionId = null; } catch (e) { /* ignore */ }
+      sessionStorage.removeItem('lastSessionId');
+      updateHeaderSessionId();
+      addNote(container, 'New session: the next message starts a fresh one.');
+      return;
+    }
+    if (name === 'session') {
+      addNote(container, currentSessionId
+        ? 'Session: ' + currentSessionId
+        : 'No session yet -- it is created with the first message.');
+      return;
+    }
+    addNote(container, '/' + name + ' is only available in the terminal chat (agent-cli) for now.');
+  }
+
+  /**
+   * Empty the input the way the send path does.
+   *
+   * The input event matters: the textarea shrinks back and the slash
+   * suggestion list closes on it. Clearing `.value` alone left the dropdown
+   * open, so the next Enter completed a stale entry instead of typing.
+   * updateActionButton() then restores Stop, which an empty input during a
+   * running turn is supposed to show.
+   */
+  function clearInput(taskInput) {
+    if (!taskInput) return;
+    taskInput.value = '';
+    try {
+      taskInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: false }));
+    } catch (e) {
+      taskInput.dispatchEvent(document.createEvent('Event'));
+    }
+    updateActionButton();
+  }
+
   function addUser(chatContainer, text, images = [], audioFiles = [], textFiles = []) {
     // Ensure text is always a string
     const displayText = typeof text === 'string' ? text : String(text);
@@ -1172,6 +1253,12 @@
       return;
     }
 
+    // Slash commands + skills: catalogue and parsing come from the server, so
+    // the browser offers exactly what the terminal offers.
+    if (window.slashCommands) {
+      window.slashCommands.attach(taskInput);
+    }
+
     // Initialize UI displays
     updateHeaderSessionId();
     updateRequestId();
@@ -1284,10 +1371,58 @@
       }
     });
 
+    // Guards the window between reading the input and clearing it. The slash
+    // resolve is an await, so two quick Ctrl+Enters (or a double-clicked Run)
+    // both saw the same text and started the turn twice.
+    let submitting = false;
+
     chatForm.addEventListener('submit', async function(e) {
       e.preventDefault();
-      const task = taskInput.value.trim();
-      
+      if (submitting) return;
+      submitting = true;
+      try {
+        await handleSubmit();
+      } finally {
+        submitting = false;
+      }
+    });
+
+    async function handleSubmit() {
+      let task = taskInput.value.trim();
+
+      // Slash commands and skills. The server resolves them with the same
+      // parser the terminal chat uses, so "/writer x" means the same thing on
+      // both surfaces. `typed` keeps what the user wrote: the chat shows
+      // "/writer x", not the skill's whole body.
+      let typed = null;
+      if (task.startsWith('/') && !task.startsWith('//') && window.slashCommands) {
+        const resolved = await window.slashCommands.resolve(task);
+        if (!resolved) {
+          addNote(chatContainer, 'Could not reach the server to resolve "' + task + '".');
+          return;
+        }
+        if (resolved.kind === 'command') {
+          runChatCommand(resolved.name, resolved.payload);
+          clearInput(taskInput);
+          return;
+        }
+        if (resolved.kind === 'unknown') {
+          const hint = resolved.suggestion ? '  Did you mean ' + resolved.suggestion + '?' : '';
+          addNote(chatContainer, 'Unknown command: ' + resolved.payload + hint +
+            '\n/help lists the commands; //' + resolved.payload.slice(1) + ' sends it as a message.');
+          // The text stays so the typo can be corrected, but the dropdown must
+          // not keep hold of the next Enter.
+          if (window.slashCommands) window.slashCommands.close();
+          return;
+        }
+        if (resolved.kind === 'skill') {
+          typed = task;
+          task = resolved.text || task;
+        } else if (resolved.text) {
+          task = resolved.text;
+        }
+      }
+
       // Check if we have files to upload
       const hasFiles = window.fileUploadModule && window.fileUploadModule.hasValidFiles();
       const files = hasFiles ? window.fileUploadModule.getFiles() : [];
@@ -1295,8 +1430,9 @@
       // Require either task text or files
       if (!task && !hasFiles) return;
       
-      // Add user message to chat
-      let displayText = task || '';
+      // Add user message to chat. For a skill it is what the user TYPED --
+      // pasting the expanded body back at them would bury the conversation.
+      let displayText = typed || task || '';
       // Get file breakdown by type from file upload module
       const filesByType = window.fileUploadModule ? window.fileUploadModule.getFilesByType() : { images: [], audio: [], text: [] };
       
@@ -1741,7 +1877,7 @@
         }
         sseReconnectAttempts = 0;
       }
-    });
+    }
     
     // Check for active request to reconnect after page refresh
     (async function reconnectToActiveJob() {

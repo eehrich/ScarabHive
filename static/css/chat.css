@@ -1539,3 +1539,65 @@ div .container-section .container-header .toggle-arrow {
     max-width: 98%;
   }
 }
+/* ------------------------------------------------------------------ */
+/* Slash commands: suggestion list and local notes                     */
+/* ------------------------------------------------------------------ */
+
+/* A local note (help, unknown command). Full width and visually distinct
+   from a real message, because it is NOT part of the conversation. */
+.msg.note {
+  max-width: 100%;
+  background: var(--bg-medium);
+  border: 1px dashed var(--border-strong);
+  opacity: 0.92;
+}
+
+.note-text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Anchored above the textarea so it never covers what is being typed. */
+.slash-suggestions {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  z-index: 40;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.slash-suggestion {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.slash-suggestion:hover,
+.slash-suggestion.is-active {
+  background: var(--bg-light);
+}
+
+.slash-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.slash-hint {
+  font-size: 12px;
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
