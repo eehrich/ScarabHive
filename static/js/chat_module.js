@@ -1371,9 +1371,15 @@
       }
     });
 
-    // Guards the window between reading the input and clearing it. The slash
-    // resolve is an await, so two quick Ctrl+Enters (or a double-clicked Run)
-    // both saw the same text and started the turn twice.
+    // Guards ONLY the window between reading the input and clearing it. The
+    // slash resolve is an await, so two quick Ctrl+Enters (or a double-clicked
+    // Run) both saw the same text and started the turn twice.
+    //
+    // It must be released the moment the input is consumed, NOT when the
+    // handler returns: handleSubmit reads the SSE stream to its end
+    // (`await reader.read()` in a loop), so holding the guard that long
+    // swallowed every mid-run injection for the whole run -- the one thing you
+    // reach for when a turn is taking too long.
     let submitting = false;
 
     chatForm.addEventListener('submit', async function(e) {
@@ -1383,7 +1389,7 @@
       try {
         await handleSubmit();
       } finally {
-        submitting = false;
+        submitting = false;  // safety net; the handler releases it far earlier
       }
     });
 
@@ -1399,11 +1405,13 @@
         const resolved = await window.slashCommands.resolve(task);
         if (!resolved) {
           addNote(chatContainer, 'Could not reach the server to resolve "' + task + '".');
+          submitting = false;
           return;
         }
         if (resolved.kind === 'command') {
           runChatCommand(resolved.name, resolved.payload);
           clearInput(taskInput);
+          submitting = false;
           return;
         }
         if (resolved.kind === 'unknown') {
@@ -1413,6 +1421,7 @@
           // The text stays so the typo can be corrected, but the dropdown must
           // not keep hold of the next Enter.
           if (window.slashCommands) window.slashCommands.close();
+          submitting = false;
           return;
         }
         if (resolved.kind === 'skill') {
@@ -1439,6 +1448,9 @@
       // Pass images, audio and text files separately to addUser
       addUser(chatContainer, displayText, filesByType.images, filesByType.audio, filesByType.text);
       taskInput.value = '';
+      // The input is consumed -- everything below is the run itself, during
+      // which the user must be able to type the next message.
+      submitting = false;
       // Trigger input event so auto-resize logic recalculates height immediately
       try {
         const ev = new Event('input', { bubbles: true, cancelable: false });
