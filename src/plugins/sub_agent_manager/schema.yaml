@@ -14,7 +14,11 @@ tools:
         - wait/wait_all: Wait for completion (BLOCKING)
         - cancel: Stop running agent
         - list: Active sub-agents
-        - info: Detailed status
+        - info: Read a sub-agent's transcript (see 'messages' + 'window' in the
+          response). Default (no 'offset') returns the TAIL -- the most recent
+          messages, which is what you want right after a run. To read the full
+          transcript from the start, page with offset=0, then offset=<limit>,
+          etc. until window.has_more_after is false.
         - delete: Archive instance
 
         Async: create(blocking=false) + wait_all for parallel execution.
@@ -75,6 +79,26 @@ tools:
             description: |
               Include archived sub-agents in list (list only, default: false).
             default: false
+
+          limit:
+            type: integer
+            description: |
+              Max messages to return (info only). Default 20, hard cap ~200 per
+              call -- page with 'offset' rather than raising this for more.
+
+          offset:
+            type: integer
+            description: |
+              0-based message index to start from (info only). Omit for the
+              TAIL (most recent 'limit' messages, the common case). Set to
+              page through the full transcript from the start: 0, then
+              'limit', then 2*'limit', ... until window.has_more_after is false.
+
+          max_chars:
+            type: integer
+            description: |
+              Max characters per message/tool-call-argument before truncation
+              (info only). Default 4000. 0 or negative = no truncation.
 
         required: [operation]
 

@@ -983,31 +983,55 @@
             }
         }
         
-        async function viewDetails(instanceId) {
+        async function viewDetails(instanceId, opts) {
             const modal = document.getElementById('detailsModal');
             const content = document.getElementById('detailsContent');
-            
+            const query = opts && opts.fullHistory
+                ? `&offset=0&limit=1000&max_chars=1000`  // whole transcript, capped per-message so one huge tool dump can't wreck the panel
+                : '';
+
             modal.style.display = 'flex';
             content.innerHTML = '<div class="loading">Loading...</div>';
-            
+
             try {
-                const response = await fetch(`${API_BASE}/sub-agents/${instanceId}?session_id=${currentSessionId}`);
+                const response = await fetch(`${API_BASE}/sub-agents/${instanceId}?session_id=${currentSessionId}${query}`);
                 const data = await response.json();
-                
+
                 if (data.error) {
                     throw new Error(data.error);
                 }
-                
-                const recentActivity = data.recent_activity || [];
-                const activityHtml = recentActivity.length > 0
-                    ? recentActivity.map(msg => `
+
+                const messages = data.messages || [];
+                const win = data.window || {};
+                const activityHtml = messages.length > 0
+                    ? messages.map(msg => {
+                        const toolCallsHtml = (msg.tool_calls || []).map(tc => `
+                            <div style="color: #d29922; font-family: monospace; font-size: 0.9em; margin-top: 4px;">
+                                🔧 ${escapeHtml(tc.name || '?')}(${escapeHtml(tc.arguments || '')})
+                            </div>
+                        `).join('');
+                        return `
                         <div style="margin-bottom: 15px; padding: 10px; background: #2a2a2a; border-radius: 6px;">
-                            <div style="color: #58a6ff; font-weight: 500; margin-bottom: 5px;">${escapeHtml(msg.role)}</div>
+                            <div style="color: #58a6ff; font-weight: 500; margin-bottom: 5px;">
+                                ${escapeHtml(msg.role)}${msg.tool_name ? ' · ' + escapeHtml(msg.tool_name) : ''}
+                            </div>
                             <div style="color: #e6edf3; white-space: pre-wrap;">${escapeHtml(msg.content)}</div>
+                            ${toolCallsHtml}
                         </div>
-                    `).join('')
-                    : '<div style="color: #858585;">No recent activity</div>';
-                
+                    `;
+                    }).join('')
+                    : '<div style="color: #858585;">No messages</div>';
+
+                const windowNote = win.total > win.returned
+                    ? `<div style="color: #858585; margin-bottom: 10px; font-size: 0.9em;">
+                         Showing ${win.returned} of ${win.total} messages
+                         ${win.mode === 'tail' ? '(most recent)' : `(from #${win.start_index})`}
+                         ${win.has_more_before
+                            ? ` — <a href="#" onclick="viewDetails('${instanceId}', {fullHistory: true}); return false;" style="color: #58a6ff;">load full history</a>`
+                            : ''}
+                       </div>`
+                    : '';
+
                 content.innerHTML = `
                     <div style="display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; margin-bottom: 20px; color: #e6edf3;">
                         <div style="color: #858585;">Instance ID:</div>
@@ -1020,7 +1044,8 @@
                         <div>${data.message_count}</div>
                     </div>
                     <div style="border-top: 1px solid #30363d; padding-top: 15px;">
-                        <div style="color: #858585; margin-bottom: 10px; font-weight: 500;">Recent Activity:</div>
+                        <div style="color: #858585; margin-bottom: 10px; font-weight: 500;">Transcript:</div>
+                        ${windowNote}
                         <div style="max-height: 300px; overflow-y: auto;">${activityHtml}</div>
                     </div>
                 `;

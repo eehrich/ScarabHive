@@ -97,16 +97,27 @@ class SubAgentManagerWebFactory:
         self,
         request: Request,
         agent_id: str,
-        session_id: str = Query(..., description="Parent session ID")
+        session_id: str = Query(..., description="Parent session ID"),
+        limit: int = Query(None, description="Max messages to return (default: tail size)"),
+        offset: int = Query(None, description="0-based message index to start from (omit for tail)"),
+        max_chars: int = Query(None, description="Max chars per message before truncation"),
     ) -> JSONResponse:
-        """Get detailed info about specific sub-agent (handler for GET /sub-agents/{agent_id})."""
+        """Get a sub-agent's transcript, paged (handler for GET /sub-agents/{agent_id}).
+
+        Same pagination as the tool's 'info' operation -- see
+        SubAgentManagerServer._handle_info -- so the panel and the agent read
+        the transcript through the identical window/limit/offset contract.
+        """
         try:
             session_service = get_session_service()
 
             params = {
                 "_session_id": session_id,
                 "_session_service": session_service,
-                "instance_id": agent_id
+                "instance_id": agent_id,
+                "limit": limit,
+                "offset": offset,
+                "max_chars": max_chars,
             }
 
             result = await self.server._handle_info(params)

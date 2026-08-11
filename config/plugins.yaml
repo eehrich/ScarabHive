@@ -861,6 +861,15 @@ plugins:
         - sysadmin_agent
         - comfyui_agent
         - chat_agent
+
+      # 'info' operation pagination (default tail size / hard per-call cap /
+      # per-message truncation). info_max_limit guards against one call
+      # dumping the whole transcript back into the coordinator's own context
+      # -- raise it deliberately, or have the coordinator page with 'offset'.
+      # info_default_limit: 20
+      # info_max_limit: 200
+      # info_default_max_chars: 4000
+
       hook_config:
         enabled: true
         inject_sub_agent_context:

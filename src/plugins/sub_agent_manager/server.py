@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 from agent_system.utils.id import short_id
+from agent_system.llm.token_utils import extract_text_from_content
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -69,6 +70,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         # Timeout configuration
         self.default_wait_timeout = int(getattr(mcp_config, 'default_wait_timeout', 3600))  # Default 1 hour
+
+        # 'info' pagination (see _handle_info): the coordinator most often
+        # wants the tail, but has to be able to page through the FULL
+        # transcript too, the same way a file-reading tool offers offset+limit.
+        # info_max_limit is a hard per-call cap, not a policy choice — it stops
+        # one call from dumping the entire history back into the coordinator's
+        # own context; page with 'offset' instead.
+        self.info_default_limit = int(getattr(mcp_config, 'info_default_limit', 20))
+        self.info_max_limit = int(getattr(mcp_config, 'info_max_limit', 200))
+        self.info_default_max_chars = int(getattr(mcp_config, 'info_default_max_chars', 4000))
 
         # Agent filtering (multi-instance support - by instance name, not type)
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
@@ -139,6 +150,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         _upd("max_history", int(getattr(mcp_config, 'max_message_history', 100)))
         _upd("auto_archive_on_limit", bool(getattr(mcp_config, 'auto_archive_on_limit', False)))
         _upd("default_wait_timeout", int(getattr(mcp_config, 'default_wait_timeout', 3600)))
+        _upd("info_default_limit", int(getattr(mcp_config, 'info_default_limit', 20)))
+        _upd("info_max_limit", int(getattr(mcp_config, 'info_max_limit', 200)))
+        _upd("info_default_max_chars", int(getattr(mcp_config, 'info_default_max_chars', 4000)))
 
         phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
         _upd("phase_filtering_enabled", phase_config.get('enabled', False))
@@ -1316,15 +1330,23 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             }
 
     async def _handle_info(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle 'info' operation - get detailed sub-agent info."""
+        """Handle 'info' operation - read a sub-agent's transcript, paged.
+
+        Mirrors a file-reading tool's offset/limit model rather than a fixed
+        snapshot: most calls just want the tail (the default -- omit
+        'offset'), but a coordinator that needs to audit or resume precise
+        context has to be able to page through the FULL transcript, not be
+        stuck with a six-message, 200-character peephole. See 'window' in the
+        response to know whether there is more to page through.
+        """
         status = params.get("_status") if params else None
-        
+
         # Validate params
         if not params:
             if status:
                 await status.error("Info: params is None")
             return {"status": "error", "error": "Invalid parameters (None)"}
-        
+
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
@@ -1361,22 +1383,20 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
             # Extract info
             messages = sub_session_data.get("messages", [])
+            total = len(messages)
             agent_type = sub_session_data.get("agent_name")
 
             # Get metadata from parent
             parent_data = await session_manager.load_session(user_id, parent_session_id)
             metadata = parent_data.get("metadata", {}).get("sub_agents", {}).get(instance_id, {})
 
-            # Get recent activity (last 3 exchanges = 6 messages)
-            recent_messages = []
-            for msg in messages[-6:]:
-                recent_messages.append({
-                    "role": msg.get("role"),
-                    "content": msg.get("content", "")[:200]  # Truncate long messages
-                })
+            window_messages, window_meta = self._paginate_messages(messages, params)
 
             if status:
-                await status.end(f"Retrieved info for {instance_id} (type: {agent_type}, {len(messages)} messages)")
+                await status.end(
+                    f"Retrieved info for {instance_id} (type: {agent_type}, "
+                    f"showing {window_meta['returned']} of {total} messages)"
+                )
 
             return {
                 "instance_id": instance_id,
@@ -1384,9 +1404,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 "status": metadata.get("status", "unknown"),
                 "created_at": metadata.get("created_at"),
                 "last_used": metadata.get("last_used"),
-                "message_count": len(messages),
+                "message_count": total,
                 "task_summary": metadata.get("task_summary"),
-                "recent_activity": recent_messages
+                "messages": window_messages,
+                "window": window_meta,
             }
 
         except Exception as e:
@@ -1397,6 +1418,97 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 "status": "error",
                 "error": str(e)
             }
+
+    def _paginate_messages(
+        self, messages: list[dict[str, Any]], params: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Slice *messages* per the caller's limit/offset/max_chars, formatted for an LLM.
+
+        Two modes, chosen by whether 'offset' was given:
+        - tail (default, no 'offset'): the most recent `limit` messages --
+          what a coordinator almost always wants right after a run.
+        - paging ('offset' >= 0): an absolute window from the start, so a
+          caller can walk the ENTIRE transcript in order, `limit` at a time.
+        """
+        total = len(messages)
+
+        limit = params.get("limit")
+        if not isinstance(limit, int) or limit <= 0:
+            limit = self.info_default_limit
+        limit = min(limit, self.info_max_limit)
+
+        offset = params.get("offset")
+        if isinstance(offset, int) and offset >= 0:
+            mode = "offset"
+            start = min(offset, total)
+        else:
+            mode = "tail"
+            start = max(0, total - limit)
+
+        max_chars = params.get("max_chars")
+        if not isinstance(max_chars, int):
+            max_chars = self.info_default_max_chars
+
+        window = messages[start:start + limit]
+        formatted = [
+            self._format_message(start + i, msg, max_chars)
+            for i, msg in enumerate(window)
+        ]
+
+        return formatted, {
+            "mode": mode,
+            "start_index": start,
+            "returned": len(formatted),
+            "total": total,
+            "has_more_before": start > 0,
+            "has_more_after": (start + len(formatted)) < total,
+        }
+
+    @staticmethod
+    def _clip_text(text: str, max_chars: int) -> str:
+        """Truncate *text* to *max_chars*, saying so. `max_chars <= 0` means unlimited."""
+        if max_chars > 0 and len(text) > max_chars:
+            omitted = len(text) - max_chars
+            return (
+                f"{text[:max_chars]}\n"
+                f"... [{omitted} more chars omitted -- raise 'max_chars' to see the rest]"
+            )
+        return text
+
+    @classmethod
+    def _format_message(cls, index: int, msg: dict[str, Any], max_chars: int) -> dict[str, Any]:
+        """One transcript entry, readable on its own: text, and what a tool did.
+
+        Assistant messages that only call a tool have empty `content` -- the
+        tool name and arguments are the actually useful part, so they are
+        surfaced explicitly rather than left for the caller to notice is
+        missing. Multimodal content (text_file attachments, etc.) is
+        flattened with the same helper token-counting uses elsewhere, so an
+        image block does not come back as a raw Python repr.
+        """
+        entry: dict[str, Any] = {
+            "index": index,
+            "role": msg.get("role"),
+            "content": cls._clip_text(extract_text_from_content(msg.get("content")), max_chars),
+        }
+
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            entry["tool_calls"] = [
+                {
+                    "name": (tc.get("function") or {}).get("name"),
+                    "arguments": cls._clip_text(
+                        str((tc.get("function") or {}).get("arguments", "")), max_chars
+                    ),
+                }
+                for tc in tool_calls
+                if isinstance(tc, dict)
+            ]
+
+        if msg.get("role") == "tool" and msg.get("name"):
+            entry["tool_name"] = msg["name"]
+
+        return entry
 
     # ========== Async Job Management Handlers ==========
 
