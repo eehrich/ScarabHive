@@ -956,8 +956,9 @@ plugins:
         variable_min_size: 500         # Min tokens to create $VAR_N variable
         
         # Archival memory settings
-        archive_after_turns: 20        # Archive messages older than N turns
+        archive_after_turns: 9999      # Archive messages older than N turns, deactivated, breaks cache
         keep_system_messages: true     # Never archive/drop system messages
+
         semantic_search: true          # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
         
         # Irreversible compaction settings
@@ -967,7 +968,7 @@ plugins:
         # Pre-Layer P: Hard message limit - prunes oldest messages if exceeded
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
-        max_messages: 200              # 0 = disabled, e.g., 200 = keep max 200 messages
+        max_messages: 0                # 0 = disabled, e.g., 200 = keep max 200 messages  deactivated, breaks cache
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 
