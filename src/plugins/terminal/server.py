@@ -87,10 +87,12 @@ class TerminalServer(SchemaBasedMCPServer):
             whitelist = security_config.get('whitelist')
             blacklist = security_config.get('blacklist')
             allow_command_chains = security_config.get('allow_command_chains', True)
+            extra_dangerous_patterns = security_config.get('dangerous_patterns')
         else:
             whitelist = None
             blacklist = None
             allow_command_chains = True
+            extra_dangerous_patterns = None
 
         # Extract limits configuration
         limits_config = getattr(mcp_config, 'limits', {})
@@ -130,7 +132,8 @@ class TerminalServer(SchemaBasedMCPServer):
         self.security = CommandSecurityValidator(
             whitelist=whitelist,
             blacklist=blacklist,
-            allow_command_chains=allow_command_chains
+            allow_command_chains=allow_command_chains,
+            extra_dangerous_patterns=extra_dangerous_patterns
         )
 
         # Initialize command executor

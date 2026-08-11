@@ -1078,6 +1078,15 @@ plugins:
         # Allow chained commands (&&, ||, ;)
         allow_command_chains: true
 
+        # Extra regex patterns added to the built-in hand-brake list
+        # (rm -rf /, mkfs., fork bomb, dd of=/dev/, chmod -R 777,
+        # chown -R root, wget|sh, curl|bash). Tightening this is a deployment
+        # decision, not a code change — see src/plugins/terminal/security.py
+        # for why pure syntax patterns (backticks, $(...), quote counting)
+        # were removed rather than kept here.
+        # dangerous_patterns:
+        #   - "shutdown\\s"
+
       # Resource limits
       limits:
         max_output_size_kb: 60  # Like GitHub Copilot

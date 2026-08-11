@@ -110,21 +110,58 @@ class TestCommandSecurityValidator:
             # These should be caught either by chain blocking or injection detection
             assert not is_valid, f"Suspicious chain '{cmd}' should be blocked"
 
-    def test_injection_detection_unescaped_quotes(self):
-        """Test detection of unescaped quotes (potential injection)."""
+    def test_odd_quote_count_no_longer_blocked(self):
+        """Unescaped-quote counting was removed -- the shell rejects this better.
+
+        It also broke on any non-ASCII quote: a German „word" pairs one ASCII
+        '"' with a non-counting „, so a single quoted phrase looked
+        "unbalanced" and was blocked -- while two of them (even ASCII count)
+        went through. That was never actually checking for injection.
+        """
         validator = CommandSecurityValidator()
-        
-        # Odd number of quotes = potential injection
-        invalid_commands = [
+
+        formerly_blocked = [
             'echo "test',
             "echo 'test",
-            'echo "test" "another'
+            'echo "test" "another',
+            '„Wort"',            # a single German-quoted word: 1 ASCII quote
+            '„mysteriösen"',
         ]
-        
-        for cmd in invalid_commands:
+
+        for cmd in formerly_blocked:
             is_valid, msg = validator.validate_command(cmd)
-            assert not is_valid, f"Command with unescaped quotes '{cmd}' should be blocked"
-            assert "injection" in msg.lower()
+            assert is_valid, f"'{cmd}' should no longer be blocked, got: {msg}"
+
+    def test_backtick_and_command_substitution_no_longer_blocked(self):
+        """These matched ANY two backticks or `$(...)` in the whole command.
+
+        A heredoc writing Markdown ("use `git status`") or a legitimate
+        `echo "$(git branch --show-current)"` were rejected even though the
+        shell never evaluates a quoted heredoc, and the pattern's own comment
+        already called it "too broad".
+        """
+        validator = CommandSecurityValidator()
+
+        formerly_blocked = [
+            "cat > SKILL.md <<'EOF'\nUse `git status`.\nEOF",
+            'echo "Branch: $(git branch --show-current)"',
+        ]
+
+        for cmd in formerly_blocked:
+            is_valid, msg = validator.validate_command(cmd)
+            assert is_valid, f"'{cmd}' should no longer be blocked, got: {msg}"
+
+    def test_extra_dangerous_patterns_from_config(self):
+        """Operators can tighten the hand-brake list without a code change."""
+        validator = CommandSecurityValidator(extra_dangerous_patterns=[r'shutdown\s'])
+
+        is_valid, msg = validator.validate_command("shutdown -h now")
+        assert not is_valid
+        assert "dangerous pattern" in msg
+
+        # The built-ins are still active alongside the extra pattern.
+        is_valid, _ = validator.validate_command("rm -rf /")
+        assert not is_valid
 
     def test_injection_detection_balanced_quotes(self):
         """Test that balanced quotes are allowed."""
