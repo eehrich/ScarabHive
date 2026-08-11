@@ -1,231 +1,87 @@
 ---
 name: code-review
-description: |
-  Provides comprehensive code review guidance for React 19, Vue 3, Angular 17+, Svelte 5,
-  Rust, TypeScript, Java, Java 8, PHP, Ruby, Rails, Python, Django, FastAPI, Go, C#/.NET, Kotlin, Swift,
-  NestJS, C/C++, Zig, CSS/Less/Sass, Qt, and more.
-  Covers architecture review, performance review, security audit, code quality anti-patterns,
-  and common bugs across all ecosystems.
-  Use when: reviewing pull requests, conducting PR reviews, code review, reviewing code changes,
-  establishing review standards, mentoring developers, architecture reviews, security audits,
-  performance reviews, checking code quality, finding bugs, giving feedback on code.
-allowed-tools:
-  - Read
-  - Grep
-  - Glob
-  - Bash      # 运行 lint/test/build 命令验证代码质量
-  - WebFetch  # 查阅最新文档和最佳实践
+description: Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes — Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X".
 ---
 
-# Code Review Skill
+Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
-Transform code reviews from gatekeeping to knowledge sharing through constructive feedback, systematic analysis, and collaborative improvement.
+- **Standards** — does the code conform to this repo's documented coding standards?
+- **Spec** — does the code faithfully implement the originating issue / spec?
 
-## When to Use This Skill
+Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
-- Reviewing pull requests and code changes
-- Establishing code review standards for teams
-- Mentoring junior developers through reviews
-- Conducting architecture reviews
-- Creating review checklists and guidelines
-- Improving team collaboration
-- Reducing code review cycle time
-- Maintaining code quality standards
+The issue tracker should have been provided to you — run `/setup-matt-pocock-skills` if `docs/agents/issue-tracker.md` is missing.
 
-## Core Principles
+## Process
 
-### 1. The Review Mindset
+### 1. Pin the fixed point
 
-**Goals of Code Review:**
-- Catch bugs and edge cases
-- Ensure code maintainability
-- Share knowledge across team
-- Enforce coding standards
-- Improve design and architecture
-- Build team culture
+Whatever the user said is the fixed point — a commit SHA, branch name, tag, `main`, `HEAD~5`, etc. If they didn't specify one, ask for it.
 
-**Not the Goals:**
-- Show off knowledge
-- Nitpick formatting (use linters)
-- Block progress unnecessarily
-- Rewrite to your preference
+Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base). Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
 
-### 2. Effective Feedback
+Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here — not inside two parallel sub-agents.
 
-**Good Feedback is:**
-- Specific and actionable
-- Educational, not judgmental
-- Focused on the code, not the person
-- Balanced (praise good work too)
-- Prioritized (critical vs nice-to-have)
+### 2. Identify the spec source
 
-```markdown
-❌ Bad: "This is wrong."
-✅ Good: "This could cause a race condition when multiple users
-         access simultaneously. Consider using a mutex here."
+Look for the originating spec, in this order:
 
-❌ Bad: "Why didn't you use X pattern?"
-✅ Good: "Have you considered the Repository pattern? It would
-         make this easier to test. Here's an example: [link]"
+1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.) — fetch via the workflow in `docs/agents/issue-tracker.md`.
+2. A path the user passed as an argument.
+3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
+4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
 
-❌ Bad: "Rename this variable."
-✅ Good: "[nit] Consider `userCount` instead of `uc` for
-         clarity. Not blocking if you prefer to keep it."
-```
+### 3. Identify the standards sources
 
-### 3. Review Scope
+Anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
 
-**What to Review:**
-- Logic correctness and edge cases
-- Security vulnerabilities
-- Performance implications
-- Test coverage and quality
-- Error handling
-- Documentation and comments
-- API design and naming
-- Architectural fit
+On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below — a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Two rules bind it:
 
-**What Not to Review Manually:**
-- Code formatting (use Prettier, Black, etc.)
-- Import organization
-- Linting violations
-- Simple typos
+- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
+- **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation — and, like any standard here, skip anything tooling already enforces.
 
-## Review Process
+Each smell reads *what it is* → *how to fix*; match it against the diff:
 
-### Phase 1: Context Gathering (2-3 minutes)
+- **Mysterious Name** — a function, variable, or type whose name doesn't reveal what it does or holds. → rename it; if no honest name comes, the design's murky.
+- **Duplicated Code** — the same logic shape appears in more than one hunk or file in the change. → extract the shared shape, call it from both.
+- **Feature Envy** — a method that reaches into another object's data more than its own. → move the method onto the data it envies.
+- **Data Clumps** — the same few fields or params keep travelling together (a type wanting to be born). → bundle them into one type, pass that.
+- **Primitive Obsession** — a primitive or string standing in for a domain concept that deserves its own type. → give the concept its own small type.
+- **Repeated Switches** — the same `switch`/`if`-cascade on the same type recurs across the change. → replace with polymorphism, or one map both sites share.
+- **Shotgun Surgery** — one logical change forces scattered edits across many files in the diff. → gather what changes together into one module.
+- **Divergent Change** — one file or module is edited for several unrelated reasons. → split so each module changes for one reason.
+- **Speculative Generality** — abstraction, parameters, or hooks added for needs the spec doesn't have. → delete it; inline back until a real need shows.
+- **Message Chains** — long `a.b().c().d()` navigation the caller shouldn't depend on. → hide the walk behind one method on the first object.
+- **Middle Man** — a class or function that mostly just delegates onward. → cut it, call the real target direct.
+- **Refused Bequest** — a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
 
-Before diving into code, understand:
-1. Read PR description and linked issue
-2. Check PR size (>400 lines? Ask to split)
-3. Review CI/CD status (tests passing?)
-4. Understand the business requirement
-5. Note any relevant architectural decisions
+### 4. Spawn both sub-agents in parallel
 
-> For large diffs, pipe the diff through [`scripts/pr-analyzer.py`](scripts/pr-analyzer.py) (`git diff main...HEAD | python scripts/pr-analyzer.py`) to triage complexity and get a suggested review approach before reading.
+**Standards sub-agent prompt** — include:
 
-### Phase 2: High-Level Review (5-10 minutes)
+- The full diff command and commit list.
+- The list of standards-source files you found in step 3, **plus the smell baseline from step 3** pasted in full — the sub-agent has no other access to it.
+- The brief: "Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
 
-1. **Architecture & Design** - Does the solution fit the problem?
-   - For significant changes, consult [Architecture Review Guide](reference/architecture-review-guide.md)
-   - Check: SOLID principles, coupling/cohesion, anti-patterns
-2. **Performance Assessment** - Are there performance concerns?
-   - For performance-critical code, consult [Performance Review Guide](reference/performance-review-guide.md)
-   - Check: Algorithm complexity, N+1 queries, memory usage
-3. **File Organization** - Are new files in the right places?
-4. **Testing Strategy** - Are there tests covering edge cases?
+**Spec sub-agent prompt** — include:
 
-### Phase 3: Line-by-Line Review (10-20 minutes)
+- The diff command and commit list.
+- The path or fetched contents of the spec.
+- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
 
-For each file, check:
-- **Logic & Correctness** - Edge cases, off-by-one, null checks, race conditions
-- **Security** - Input validation, injection risks, XSS, sensitive data
-- **Performance** - N+1 queries, unnecessary loops, memory leaks
-- **Maintainability** - Clear names, single responsibility, comments
-- **Reuse** - Before accepting new code, search for existing utilities/helpers that could replace it. Check adjacent files and shared modules for similar patterns. See [Universal Quality Guide](reference/code-quality-universal.md) for anti-patterns like parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, and no-op updates.
+If the spec is missing, skip the Spec sub-agent and note this in the final report.
 
-### Phase 4: Summary & Decision (2-3 minutes)
+### 5. Aggregate
 
-1. Summarize key concerns
-2. Highlight what you liked
-3. Make clear decision:
-   - ✅ Approve
-   - 💬 Comment (minor suggestions)
-   - 🔄 Request Changes (must address)
-4. Offer to pair if complex
+Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings — the two axes are deliberately separate (see _Why two axes_).
 
-## Review Techniques
+End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes — that's the reranking the separation exists to prevent.
 
-### Technique 1: The Checklist Method
+## Why two axes
 
-Use checklists for consistent reviews. See [Security Review Guide](reference/security-review-guide.md) for comprehensive security checklist.
+A change can pass one axis and fail the other:
 
-### Technique 2: The Question Approach
+- Code that follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
+- Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
 
-Instead of stating problems, ask questions:
-
-```markdown
-❌ "This will fail if the list is empty."
-✅ "What happens if `items` is an empty array?"
-
-❌ "You need error handling here."
-✅ "How should this behave if the API call fails?"
-```
-
-### Technique 3: Suggest, Don't Command
-
-Use collaborative language:
-
-```markdown
-❌ "You must change this to use async/await"
-✅ "Suggestion: async/await might make this more readable. What do you think?"
-
-❌ "Extract this into a function"
-✅ "This logic appears in 3 places. Would it make sense to extract it?"
-```
-
-### Technique 4: Differentiate Severity
-
-Use labels to indicate priority:
-
-- 🔴 `[blocking]` - Must fix before merge
-- 🟡 `[important]` - Should fix, discuss if disagree
-- 🟢 `[nit]` - Nice to have, not blocking
-- 💡 `[suggestion]` - Alternative approach to consider
-- 📚 `[learning]` - Educational comment, no action needed
-- 🎉 `[praise]` - Good work, keep it up!
-
-**Severity levels:** 🔴 / 🟡 / 🟢 are the three severity tiers used as the standard across all guides in this skill — 🔴 blocks the merge, 🟡 should be addressed, 🟢 is optional. The remaining markers (💡 / 📚 / 🎉) are non-blocking annotations.
-
-## Language-Specific Guides
-
-根据审查的代码语言，查阅对应的详细指南：
-
-| Language/Framework | Reference File | Key Topics |
-|-------------------|----------------|------------|
-| **React** | [React Guide](reference/react.md) | Hooks, useEffect, React 19 Actions, RSC, Suspense, TanStack Query v5 |
-| **Vue 3** | [Vue Guide](reference/vue.md) | Composition API, 响应性系统, Props/Emits, Watchers, Composables |
-| **Angular 17+** | [Angular Guide](reference/angular.md) | Signals, Standalone, RxJS, Zoneless, 模板优化, 测试, 路由守卫, HttpInterceptor |
-| **Rust** | [Rust Guide](reference/rust.md) | 所有权/借用, Unsafe 审查, 异步代码, 取消安全性, 错误处理 |
-| **TypeScript** | [TypeScript Guide](reference/typescript.md) | 类型安全, async/await, 不可变性, 测试, 模块解析, TS 5.x |
-| **Python** | [Python Guide](reference/python.md) | 可变默认参数, 异常处理, 类属性 |
-| **Django / DRF** | [Django Guide](reference/django.md) | 安全审查, N+1 查询, Serializer 反模式, ViewSet, 异步视图 |
-| **FastAPI** | [FastAPI Guide](reference/fastapi.md) | Depends, Pydantic v2 validation, async correctness, sessions/N+1, auth vs authorization, test-driven verification |
-| **Java** | [Java Guide](reference/java.md) | Java 17/21 新特性, Spring Boot 3, 虚拟线程, Stream/Optional |
-| **Java 8 / Legacy** | [Java 8 Guide](reference/java8.md) | Java 8, Spring Boot 2, javax.*, Stream/Optional, java.time, CompletableFuture |
-| **PHP** | [PHP Guide](reference/php.md) | PHP 8.x type system, PDO, security review, Composer, PHPUnit/PHPStan |
-| **Ruby / Rails** | [Ruby Guide](reference/ruby.md) | Ruby semantics, Rails 8, Active Record, Active Job, security, testing |
-| **C# / .NET** | [C# Guide](reference/csharp.md) | C# 12 特性, 异步编程, EF Core 性能, ASP.NET Core, LINQ |
-| **Go** | [Go Guide](reference/go.md) | 错误处理, goroutine/channel, context, 接口设计 |
-| **Kotlin / Android** | [Kotlin Guide](reference/kotlin.md) | 协程, Flow, Jetpack Compose, 空安全, 内存泄漏, 架构模式 |
-| **Swift / SwiftUI** | [Swift Guide](reference/swift.md) | Optionals, Swift Concurrency, Sendable/actors, SwiftUI property wrappers, value vs reference types, API design |
-| **NestJS** | [NestJS Guide](reference/nestjs.md) | 依赖注入, 分层架构, DTO 验证, Guard/Interceptor, 循环依赖 |
-| **Svelte / SvelteKit** | [Svelte Guide](reference/svelte.md) | Runes, Load 函数, Form Actions, Store 迁移, SSR/CSR 边界 |
-| **C** | [C Guide](reference/c.md) | 指针/缓冲区, 内存安全, UB, 安全编码, 可移植性, 测试 |
-| **C++** | [C++ Guide](reference/cpp.md) | RAII, 智能指针, C++20/23, constexpr, 测试 |
-| **Zig** | [Zig Guide](reference/zig.md) | Allocators, error unions, defer/errdefer, comptime, C interop |
-| **CSS/Less/Sass** | [CSS Guide](reference/css-less-sass.md) | 变量规范, !important, 性能优化, 响应式, 兼容性 |
-| **Qt** | [Qt Guide](reference/qt.md) | 对象模型, 信号/槽, Model/View, QML, Qt6 迁移, 测试 |
-
-## Cross-Cutting Guides
-
-Language-agnostic patterns applicable to all code reviews:
-
-| Topic | Reference File | Key Topics |
-|-------|----------------|------------|
-| **Architecture Review** | [Architecture Review Guide](reference/architecture-review-guide.md) | SOLID, anti-patterns, coupling/cohesion, dependency direction |
-| **Performance Review** | [Performance Review Guide](reference/performance-review-guide.md) | Web Vitals, N+1, algorithm complexity, memory leaks, caching |
-| **Security Review** | [Security Review Guide](reference/security-review-guide.md) | SQLi, XSS, CSRF, SSRF, IDOR, 命令注入, 跨语言示例 |
-| **Universal Quality** | [Universal Quality Guide](reference/code-quality-universal.md) | Reuse audit, parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, no-op updates, redundant state |
-| **Common Bugs** | [Common Bugs Checklist](reference/common-bugs-checklist.md) | Language-specific bug patterns, common pitfalls |
-| **SQL Injection Prevention** | [SQL Injection Guide](reference/cross-cutting/sql-injection-prevention.md) | Parameterized queries, ORM safety, 6 languages, dynamic identifiers, detection |
-| **XSS Prevention** | [XSS Prevention Guide](reference/cross-cutting/xss-prevention.md) | Output encoding, CSP, 5 frameworks, input validation vs encoding, detection |
-| **N+1 Queries** | [N+1 Queries Guide](reference/cross-cutting/n-plus-one-queries.md) | Eager loading, batch fetching, DataLoader, 5 languages, detection |
-| **Error Handling** | [Error Handling Guide](reference/cross-cutting/error-handling-principles.md) | Fail fast, error hierarchy, 7 languages, anti-patterns, logging |
-| **Async & Concurrency** | [Concurrency Guide](reference/cross-cutting/async-concurrency-patterns.md) | Goroutines, async/await, actors, structured concurrency, 7 languages |
-| **Review Best Practices** | [Code Review Best Practices](reference/code-review-best-practices.md) | Communication, reviewer mindset, giving feedback, severity labels |
-
-## Additional Resources
-
-- [PR Review Template](assets/pr-review-template.md) - PR 审查评论模板
-- [Review Checklist](assets/review-checklist.md) - 快速参考清单
+Reporting them separately stops one axis from masking the other.
