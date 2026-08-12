@@ -147,9 +147,13 @@ Notes:
   inside.
 - `for` loops are limited (max 5000 ms / ~10M operations) — heavy loops on
   every bar are a performance problem.
-- In v6 a `for` loop re-evaluates its `to_num` bound before **each** iteration.
-  If the bound expression mutates state (e.g. `array.pop(arr) - 1`), the loop
-  can run away — snapshot the bound into a variable outside the loop first.
+- In v6 a `for` loop re-evaluates its `to_num` bound dynamically **and runs
+  the body at least once**, even when `to_num < from_num` (do-while style).
+  `for i = 0 to array.size(arr) - 1` on an EMPTY array executes the body with
+  `i = 0` and crashes with "array size is 0, index 0 out of bounds". Always
+  guard: snapshot `n = array.size(arr)` and `if n > 0` before the loop, then
+  iterate `0 to n - 1`. If the bound expression mutates state, the loop can
+  also run away — snapshot it into a variable first.
 
 ## 7. Functions
 

@@ -32,6 +32,7 @@ debugging toolkit, and what changed between v5 and v6.
 | `Cannot call 'time'/'request.security' with argument 'timeframe' ... 'series string' is expected 'simple string'` | TF/symbol arguments must be a **simple string** (known at first execution). Build a dynamic TF with a nested ternary of const strings, *not* with `if/else :=` (reassignment makes it a `series string`). |
 | `Cannot call 'line.new' with argument 'x2' ... 'series float' is expected 'series int'` | `line.new`/`line.set_x1/x2` x-coordinates are **bar indices (int)**, y-coordinates are prices (float). Cast float offsets: `int(math.round(...))`. |
 | `Ternary operations cannot return tuples.(CE10163)` | `cond ? [a, b] : [c, d]` is illegal — a ternary **cannot return a tuple**. Use an `if/else` whose branches return the tuple. Classic v4->v6 trap when replacing the removed `iff()` function. |
+| `array size is 0, index N out of bounds` | Reading an empty array. Typical v6 trap: `for i = 0 to array.size(arr) - 1` **executes the body at least once** even for empty arrays (v6 `to_num` is dynamic). Guard with `if array.size(arr) > 0` and snapshot the bound into a variable first. |
 
 ### 1b. Pattern: per-slot statistics without nested arrays (CE10022)
 
@@ -201,7 +202,7 @@ Highlights of what changed when migrating from v5:
 | Enums | no | yes (v6) |
 | `timeframe.period` | `"D"`, `"W"`, `"M"` (no multiplier) | **always includes the multiplier**: `"1D"`, `"1W"`, `"1M"` — `== "D"` never matches |
 | `bool` `na` state | bools can be `na` | **no `na` bools** — a comparison involving `na` evaluates to `false`; `[]` history of a bool on early bars = `false` |
-| `for` loop bounds | evaluated once before the loop | **re-evaluated before every iteration** — mutating the bound in the body can loop forever; snapshot it first |
+| `for` loop bounds | evaluated once before the loop | **re-evaluated dynamically; the body runs at least once even when `to < from`** — indexing an empty array from a loop bound crashes (`array size is 0, index 0`); mutating the bound can loop forever; guard + snapshot it first |
 | `[]` on literals | allowed | **compile error** — history-referencing needs a variable |
 | `and` / `or` | strict evaluation | **lazy** — a call in the right operand may be skipped when the result is already known |
 
