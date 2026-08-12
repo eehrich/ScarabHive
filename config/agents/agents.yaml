@@ -79,6 +79,10 @@ plugins:
           - You can also use the todo tool to manage your tasks. 
           - You can also use the tavily_search tool to search for information.
 
+          Do not:
+          - find / .. this take forever
+          - rm -rf or chmod 777 .. this is destructive
+
           You cannot excute /commands directly. You can load the skill with the name-of-the-skill and then use the skill to perform the operation.
           
       metadata:
