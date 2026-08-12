@@ -38,6 +38,10 @@ Rules:
   library function with `export` and call it from the request.)
 - Symbol defaults to `syminfo.tickerid` (current chart symbol).
 - Timeframe accepts a string ("D", "W", "240", "30") or `timeframe.period`.
+- The `timeframe` and `symbol` arguments must be **simple strings** (values
+  known at first execution). Passing a `series string` (a variable reassigned
+  in an `if`) is a compile error. To pick a TF dynamically, build it with a
+  nested ternary of const strings — every branch must be const/simple.
 - Results are **merged onto the chart timeframe**: the value of the last
   *closed* HTF bar repeats until the next HTF bar closes.
 
@@ -107,7 +111,8 @@ If you don't understand lookahead, leave it at the default `off`.
 ## 5. Timeframe helpers
 
 ```pine
-timeframe.period            // current chart TF as string ("D", "240", ...)
+timeframe.period            // current chart TF — v6 ALWAYS includes the multiplier
+                            // ("1D", "1W", "1M", "240"); v5 had "D"/"W"/"M"
 timeframe.multiplier        // numeric part (240 → 240, D → 1)
 timeframe.isintraday        // true for intraday TFs
 timeframe.in_seconds(tf)    // seconds in a TF ("D" → 86400)
@@ -121,6 +126,10 @@ htfBarClose = timeframe.change(tfIn)
 `timeframe.change(tf)` is the workhorse: it is `true` on the chart bar
 where a new HTF period begins — exactly the bar where a closed HTF value is
 fresh.
+
+`time(tf)` follows the same `simple string` rule and returns the start time of
+the current `tf` bar — combine with `ta.change()` to detect new `tf` periods
+without `request.security`.
 
 ## 6. Common HTF patterns
 

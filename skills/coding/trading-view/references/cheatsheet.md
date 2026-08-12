@@ -109,7 +109,8 @@ Plot styles: `plot.style_line`, `style_linebr`, `style_circles`,
 ```pine
 barstate.isconfirmed  barstate.isnew  barstate.islast  barstate.isfirst
 barstate.isrealtime   bar_index   time   timenow
-timeframe.period  timeframe.multiplier  timeframe.isintraday
+timeframe.period  // v6: multiplier always included - "1D"/"1W"/"1M"/"240" (not "D"/"W"/"M")
+timeframe.multiplier  timeframe.isintraday  timeframe.isdaily  timeframe.isweekly
 timeframe.in_seconds(tf)  timeframe.change(tf)  timeframe.fromtimeframe(tf)
 year() month() dayofmonth() hour() minute() second()
 ```
@@ -137,6 +138,7 @@ syminfo.tickerid syminfo.ticker syminfo.currency syminfo.mintick
 math.abs math.max math.min math.sqrt math.log math.sum math.round
 str.tostring(x, "#.##")  str.format("{}", x)  str.contains  str.substring
 nz(x, fallback)  na(x)  runtime.error("msg")
+int(x)  // float->int cast - for line.new x-coords and int-division results
 array.new_float()  array.push  array.get  array.size  array.sort
 var  varip  const  input  simple
 ```

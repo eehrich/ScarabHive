@@ -50,7 +50,7 @@ Key consequences:
 |---|---|
 | OHLCV | `open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `ohlc4`, `typical` (alias `hlc3`), `vwap` |
 | Bar | `bar_index`, `barstate.isconfirmed`, `barstate.isnew`, `barstate.islast`, `barstate.isfirst`, `barstate.isrealtime` |
-| Timeframe | `timeframe.period` (string, e.g. "D", "240"), `timeframe.multiplier`, `timeframe.isintraday`, `timeframe.in_seconds()` |
+| Timeframe | `timeframe.period` (string — **v6 always includes the multiplier**: `"1D"`, `"1W"`, `"1M"`, `"240"`), `timeframe.multiplier`, `timeframe.isintraday`/`isdaily`/`isweekly`/`ismonthly`, `timeframe.in_seconds()` |
 | Symbol | `syminfo.tickerid`, `syminfo.ticker`, `syminfo.prefix`, `syminfo.currency`, `syminfo.mintick`, `syminfo.pointvalue` |
 | Time | `time`, `timenow`, `timestamp()`, `year()`, `month()`, `dayofmonth()`, `hour()`, `minute()`, `second()` |
 | Strategy | `strategy.position_size`, `strategy.position_avg_price`, `strategy.openprofit`, `strategy.equity` |
@@ -104,6 +104,12 @@ Gotchas:
 - Booleans are strict: you cannot use `na` where a bool is expected. Check
   `na(x)` explicitly, and a condition like `close > open` is fine, but
   `close == na` is a type error.
+- `timeframe.period` always includes the multiplier in v6 (`"D"` -> `"1D"`).
+  Never compare it to `"D"`/`"W"`/`"M"` — use `timeframe.isdaily`/`isweekly`/
+  `ismonthly` or the `"1D"` strings.
+- Bools are never `na` in v6: a comparison that involves `na` evaluates to
+  `false`, and the `[]` history of a bool on early bars is `false`. Test for
+  missing data with `na(x)`, never `x == na`.
 - Arrays/matrices/maps support negative indexing in v6 (`arr[-1]` = last
   element).
 
@@ -141,6 +147,9 @@ Notes:
   inside.
 - `for` loops are limited (max 5000 ms / ~10M operations) — heavy loops on
   every bar are a performance problem.
+- In v6 a `for` loop re-evaluates its `to_num` bound before **each** iteration.
+  If the bound expression mutates state (e.g. `array.pop(arr) - 1`), the loop
+  can run away — snapshot the bound into a variable outside the loop first.
 
 ## 7. Functions
 

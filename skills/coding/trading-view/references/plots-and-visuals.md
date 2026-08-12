@@ -191,6 +191,9 @@ polyline.new(points, color = color.orange)
 ```
 
 - `line.style_solid/dotted/dashed`, `extend.none/right/left/both`.
+- `line.new`/`line.set_x1/x2` x-coordinates are **bar indices** (`series int`),
+  y-coordinates are prices (`series float`). `bar_index + <float>` is a type
+  error — cast with `int(math.round(...))`.
 - Use `line.delete`, `box.delete`, `polyline.delete` (or `*[1]` history
   management) to avoid exceeding object limits.
 - These are great for pivots, SR levels, session ranges, ATR channels.

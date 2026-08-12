@@ -2,7 +2,7 @@
 name: trading-view
 description: 'TradingView Pine Script (v6) development: build, debug, convert and improve indicators and strategies. Use whenever the user wants to create a TradingView indicator or strategy, write or fix Pine Script code, turn a trading idea into a chart script, port an indicator from another platform (TradingView-style), convert Pine v5 code to v6, or add inputs/plots/alerts to an existing TradingView script — even if they never say "Pine Script" or "TradingView" explicitly (e.g. "build me an RSI oscillator", "I need a backtestable MA-cross strategy"). Also reach for it when the user asks about TradingView indicator logic, repainting, multi-timeframe requests, or strategy backtesting results.'
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   tags: tradingview, pine-script, indicators, strategies, trading, ta
 ---
 
@@ -57,6 +57,9 @@ main parameters, overlay where natural, no alerts** — and say so.
 4. **Self-review** against the Core rules and the checklist in
    `references/common-errors.md`. Watch for repainting, division by zero,
    unused variables, missing `na` handling, and invalid plot arguments.
+   When available, run the bundled offline validator as a pre-flight:
+   `scripts/validate_pine.sh <file> --no-hints --no-information` (see
+   "Local validation" below).
 5. **Deliver** the code in a block the user can paste straight into the Pine
    Editor, plus a short "How to use" note (add to chart, what the inputs do,
    anything they must configure).
@@ -74,3 +77,32 @@ Read the one(s) you need — don't read them all:
 - `references/alerts.md` — `alertcondition`, `alert()`, message templates, alert frequencies.
 - `references/common-errors.md` — frequent compiler errors, debugging techniques, v5→v6 migration.
 - `references/cheatsheet.md` — quick lookup table of the most used functions.
+
+## Local validation (offline)
+
+The skill bundles a pure-Python static validator for Pine Script v6
+(`scripts/pine-validator/`, upstream `Poryaei/pine-script-validator`, MIT).
+It parses `.pine` files and reports syntax/semantic issues with line/column
+positions — no TradingView account needed.
+
+Run it through the wrapper (auto-selects a Python >= 3.11):
+
+```bash
+scripts/validate_pine.sh path/to/script.pine --no-hints --no-information  # human text
+scripts/validate_pine.sh path/to/script.pine --agent-json                 # agent-ready JSON
+scripts/validate_pine.sh path/to/scripts/ --json                          # batch / directory
+scripts/validate_pine.sh path/to/script.pine --sarif                      # CI / review tooling
+```
+
+- Exit code `0` = no error-level diagnostics, `1` = at least one error.
+- Severity toggles: `--errors/--no-errors`, `--warnings/--no-warnings`,
+  `--information/--no-information`, `--hints/--no-hints`.
+- The validator targets **Pine v6** — old v4/v5 code (`study()`, bare
+  `input()`, `change()`, `max()`, ...) is flagged as errors; use those
+  diagnostics to drive a v5→v6 port.
+- It is a static checker, **not** the TradingView compiler: it can miss
+  semantic rules (e.g. CE10163 — ternaries cannot return tuples) and will
+  never catch repainting, lookahead, or runtime object-limit issues — the
+  human checklist in `references/common-errors.md` still applies.
+- Audit mode (large corpora):
+  `PYTHONPATH=scripts/pine-validator/src python -m pinescript_validator.audit <paths>`
