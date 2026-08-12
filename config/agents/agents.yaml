@@ -45,7 +45,7 @@ plugins:
       auto_archive_on_limit: true
       allowed_agents:
         - "skills_agent"    # fork self
-        - "skills_agent_mutimodal"    # fork self
+        - "skills_agent_multimodal"
 
     skills_agent:
       type: multi_turn_agent
@@ -97,7 +97,8 @@ plugins:
 
       agent_config:
         llm_profile: [or-gemini-3.6-flash, or-gemini-flash-lite, or-gemini-flash, or-claude-sonnet]
-
+      metadata:
+        visibility: "tool"
 
     # simple chat agent
     chat_agent:
