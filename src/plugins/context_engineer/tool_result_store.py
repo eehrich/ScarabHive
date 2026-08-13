@@ -338,12 +338,18 @@ class ToolResultStore:
     @_synchronized
     def list_entries(self, session_id: str | None = None, offset: int = 0,
                      limit: int = 20) -> list[dict[str, Any]]:
-        """Stored results as METADATA rows, newest first — never the content.
+        """Stored results as METADATA rows, oldest first — never the content.
 
         This is the browse half of the contract: an agent asks what is there,
         picks one, and only then reads it with an explicit budget. Returning
         bodies here would rebuild the very context the store emptied (measured
         in production at 134k characters from a single retrieval).
+
+        Chronological, matching the archive's own order. It used to be newest
+        first, so "offset 0" meant the opposite end depending on which section
+        was being browsed — and any arithmetic the caller did on the offset
+        (a tail, a next page) was right in one section and wrong in the other.
+        The caller reaches the newest rows with a negative offset instead.
         """
         session_id = session_id or self.session_id or "default"
         cursor = self._db.execute(
@@ -352,7 +358,7 @@ class ToolResultStore:
                    summary, LENGTH(content)
             FROM tool_results
             WHERE session_id = ?
-            ORDER BY timestamp DESC, id DESC
+            ORDER BY timestamp ASC, id ASC
             LIMIT ? OFFSET ?
             """,
             (session_id, limit, offset),

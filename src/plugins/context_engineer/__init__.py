@@ -2,7 +2,6 @@
 
 This plugin provides:
 - Tool Result Clearing: Replace old tool outputs with compact references
-- Variable Substitution: Replace large content blocks with $VAR_N references
 - Core Memory: Compact facts store always in context
 - Archival Memory: Full conversation history with semantic search
 - Layered Compaction Strategy: Progressive compression based on reversibility

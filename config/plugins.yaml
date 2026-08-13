@@ -952,9 +952,6 @@ plugins:
         tool_result_keep_last: 5       # Keep last N tool results inline (unless too large)
         tool_result_max_inline_size: 10000  # ALWAYS archive results > this size (even if last N) *2 will also affect last tool call
         
-        # Variable substitution settings
-        variable_min_size: 500         # Min tokens to create $VAR_N variable
-        
         # Archival memory settings
         archive_after_turns: 9999      # Archive messages older than N turns, deactivated, breaks cache
         keep_system_messages: true     # Never archive/drop system messages
@@ -968,7 +965,12 @@ plugins:
         # Pre-Layer P: Hard message limit - prunes oldest messages if exceeded
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
-        max_messages: 0                # 0 = disabled, e.g., 200 = keep max 200 messages  deactivated, breaks cache
+        max_messages: 0                # 0 = disabled, e.g., 200 = keep max 200 messages
+        # War abgeschaltet, weil ein Prune exakt auf max_messages trimmte: der
+        # naechste Schritt lag wieder darueber, also Prune + Cache-Bruch bei
+        # JEDEM Schritt. Mit headroom kuerzt ein Prune tiefer und der naechste
+        # kommt erst ~50 Schritte spaeter — ein Bruch statt fuenfzig.
+        max_messages_headroom: 50
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 

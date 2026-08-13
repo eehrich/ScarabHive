@@ -23,7 +23,7 @@ class ContextEngineerWebFactory:
     Provides panel for viewing context engineering statistics including:
     - Compaction history (tokens saved, layers applied)
     - Core memory facts
-    - Stored variables
+    - Stored tool results and attached files
     - Archived messages
     """
     
@@ -99,7 +99,6 @@ class ContextEngineerWebFactory:
                     "total_events": 0,
                     "total_tokens_saved": 0,
                     "total_tool_results_stored": 0,
-                    "total_variables_created": 0,
                     "total_messages_archived": 0,
                     "total_media_deduplicated": 0,
                     "total_media_compacted": 0,
@@ -111,9 +110,6 @@ class ContextEngineerWebFactory:
             )
             total_tool_results = sum(
                 event.get("tool_results_stored", 0) for event in self.stats_history
-            )
-            total_variables = sum(
-                event.get("variables_created", 0) for event in self.stats_history
             )
             total_archived = sum(
                 event.get("messages_archived", 0) for event in self.stats_history
@@ -133,7 +129,6 @@ class ContextEngineerWebFactory:
                 "total_events": len(self.stats_history),
                 "total_tokens_saved": total_tokens_saved,
                 "total_tool_results_stored": total_tool_results,
-                "total_variables_created": total_variables,
                 "total_messages_archived": total_archived,
                 "total_media_deduplicated": total_media_deduplicated,
                 "total_media_compacted": total_media_compacted,

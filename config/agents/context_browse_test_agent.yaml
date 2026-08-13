@@ -47,8 +47,6 @@ plugins:
               archive_after_turns: 1     # alles ausser dem aktuellen Turn
               tool_result_min_size: 20
               tool_result_keep_last: 0
-              assistant_keep_last: 1
-              variable_min_size: 100
 
         system_prompt: |
           Du bist ein Testagent. Dein Kontext wird sehr aggressiv verdichtet:

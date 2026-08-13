@@ -14,10 +14,9 @@ hooks:
 
 # MCP Tools - Manual context management controls
 #
-# The browsing surface is list / search / read — the three verbs every model
-# already uses for files, pointed at YOUR OWN conversation instead. `recall`
-# below is the older single tool that guessed from the query which of five
-# stores was meant; it still works but the three verbs are what to reach for.
+# The browsing surface is list / read — the verbs every model already uses for
+# files, pointed at YOUR OWN conversation instead. They replaced `recall`, a
+# single tool that guessed from the query which store was meant.
 tools:
   - type: function
     function:
@@ -31,9 +30,14 @@ tools:
         excerpt — which is often already the whole answer. Bodies are never
         returned; use read on a ref when you need more of one item.
 
-        - list()                        → the archived conversation, oldest first
-        - list(offset=20)               → next page (use the returned next_offset)
-        - list(section="tool_results")  → tool outputs that were stored away
+        Offsets work like reading a file: no offset gives you the END (what
+        just left your context), a negative one counts back from there, 0 is
+        the very beginning.
+
+        - list()                        → the 20 most recent archived messages
+        - list(offset=-50)              → 50 back from the end
+        - list(offset=0)                → the oldest, from the start
+        - list(section="tool_results")  → tool outputs and files stored away
         - list(filter="QS-4711")        → search everything, with excerpts
         - list(filter="blitter", section="tool_results")
 
@@ -47,13 +51,11 @@ tools:
             description: "Words to look for. Omit to browse instead of search."
           section:
             type: string
-            enum: ["all", "history", "tool_results", "variables", "facts"]
+            enum: ["all", "history", "tool_results", "facts"]
             description: "Which store. Defaults to 'history' when browsing, 'all' when filtering. 'all' requires a filter."
           offset:
             type: integer
-            minimum: 0
-            default: 0
-            description: "Browsing only: skip this many entries. Use next_offset from the previous page."
+            description: "Browsing only. Omit for the newest entries; negative counts back from the end; 0 or more is an absolute position. Use next_offset to walk forward."
           limit:
             type: integer
             minimum: 1
@@ -75,27 +77,29 @@ tools:
         Refs come from list/search, or from the placeholder left where the
         content used to be in this conversation:
         - arch_… an archived message
-        - TR_…   a stored tool result
-        - $VAR_n a stored content block
-        - a media file path to restore an image/audio
+        - TR_…   a stored tool result (also attached files)
+        - a media file path to restore an image/audio back into context
 
         For a large item, use find= to get only the parts that mention
         something, instead of paging through all of it.
 
         - read(ref="TR_abc123")                       → first 2000 chars
         - read(ref="TR_abc123", offset=2000)          → the next piece
+        - read(ref="TR_abc123", offset=-2000)         → the LAST 2000 chars
         - read(ref="TR_abc123", find="Kapitel 3")     → just the matching parts
+
+        Reading a whole large item front to back puts it right back into the
+        context it was removed from. Reach for find= or a negative offset.
       parameters:
         type: object
         properties:
           ref:
             type: string
-            description: "The reference to read: arch_…, TR_…, $VAR_n or a media path."
+            description: "The reference to read: arch_…, TR_… or a media path."
           offset:
             type: integer
-            minimum: 0
             default: 0
-            description: "Start position in characters. Use next_offset from the previous read."
+            description: "Start position in characters. Negative counts back from the end (-2000 = the last 2000). Use next_offset to continue forward."
           limit:
             type: integer
             minimum: 1
@@ -107,55 +111,6 @@ tools:
             description: "Return only the parts containing this text (with surrounding context), instead of a chunk."
         required:
           - ref
-        additionalProperties: false
-
-  - type: function
-    function:
-      name: "{{ name }}_recall"
-      description: |
-        DEPRECATED - prefer list / search / read, which say what they do and
-        always answer in the same shape. Kept so existing agents keep working.
-
-        Universal recall tool - retrieve ANY compacted/stored content from context.
-        
-        This single tool handles ALL content retrieval:
-        1. Archived messages - search conversation history + core memory facts
-        2. Variables ($VAR_N) - retrieve stored content blocks  
-        3. Tool results (TR_xxx) - retrieve stored tool outputs
-        4. Media files - restore compacted audio/image/video
-        5. Core memory - search facts stored via store_fact
-        
-        The tool auto-detects what you need based on the query:
-        - Plain text query → searches archived messages AND core memory facts
-        - "$VAR_1" or "VAR_1" → retrieves that variable
-        - "TR_abc123" or hash → retrieves that tool result
-        - File path ending in media extension → restores media
-        
-        Examples:
-        - recall(query="book_id phase blocker") → searches archive + core memory facts
-        - recall(query="$VAR_1") → get variable content
-        - recall(query="TR_abc123") → get tool result
-        - recall(query="/path/to/audio.wav") → restore media file
-        - recall(query="something I need to remember", mode="core_memory") → search only stored facts
-      parameters:
-        type: object
-        properties:
-          query:
-            type: string
-            description: "What to recall: search text, $VAR_N, TR_xxx reference, or file path for media"
-          mode:
-            type: string
-            enum: ["auto", "archive", "variable", "tool_result", "media", "core_memory"]
-            default: "auto"
-            description: "Force specific recall type (default: auto-detect from query). Use 'core_memory' to search only facts stored via store_fact."
-          limit:
-            type: integer
-            minimum: 1
-            maximum: 20
-            default: 5
-            description: "Max results for archive search"
-        required:
-          - query
         additionalProperties: false
 
   - type: function
@@ -195,9 +150,6 @@ tools:
           - fact
         additionalProperties: false
 
-  # NOTE: get_variable, get_tool_result, and restore_multimodal are now unified 
-  # into the recall tool above. The recall tool auto-detects query type.
-
   - type: function
     function:
       name: "{{ name }}_compact"
@@ -207,14 +159,12 @@ tools:
         
         Applies reversible optimizations:
         - Store large tool results externally with references
-        - Create variables ($VAR_N) for large content blocks
+        - Move attached files into the same store
+        - Evict inline media (saved to disk first, restorable with read)
       parameters:
         type: object
         properties: {}
         additionalProperties: false
-
-  # NOTE: restore_multimodal is now part of the unified recall tool.
-  # Use recall(query="/path/to/file.wav") to restore media.
 
 # Web UI configuration
 web_ui:
@@ -329,18 +279,6 @@ config:
     minimum: 10
     description: "Minimum character count to trigger tool result clearing"
 
-  # Variable Substitution
-  variable_substitution_enabled:
-    type: boolean
-    default: true
-    description: "Enable automatic variable substitution for large content"
-
-  min_content_for_variable:
-    type: integer
-    default: 500
-    minimum: 100
-    description: "Minimum token count to trigger variable creation"
-
   # Core Memory
   core_memory_enabled:
     type: boolean
@@ -399,6 +337,12 @@ config:
     minimum: 0
     description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers. Preserves tool call/result pairs."
 
+  max_messages_headroom:
+    type: integer
+    default: 50
+    minimum: 0
+    description: "How far below max_messages a prune goes. 0 trims to exactly the limit, which puts the next step over it again — a prompt-cache break on EVERY step. 50 buys ~50 quiet steps per break."
+
   # Cache-Hysterese: Mindestabstand zwischen prefix-brechenden Kompaktionen
   # (jede History-Mutation bricht das Provider-Prompt-Caching komplett —
   # selten und tief kuerzen, docs/prompt_cache_design.md par. 3.5)
@@ -422,13 +366,6 @@ config:
     minimum: 0.1
     maximum: 0.9
     description: "Trigger tool result clearing at this context usage"
-
-  layer_variable_sub:
-    type: number
-    default: 0.50
-    minimum: 0.1
-    maximum: 0.9
-    description: "Trigger variable substitution at this context usage"
 
   layer_archival_paging:
     type: number

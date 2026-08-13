@@ -9,7 +9,6 @@ import pytest
 
 from plugins.context_engineer.core_memory import CoreMemory
 from plugins.context_engineer.tool_result_store import ToolResultStore
-from plugins.context_engineer.variable_manager import VariableManager
 from plugins.context_engineer.archival_memory import ArchivalMemory
 from plugins.context_engineer.compaction import (
     CompactionConfig,
@@ -304,173 +303,6 @@ class TestToolResultStore:
 
 
 # =============================================================================
-# VariableManager Tests
-# =============================================================================
-
-
-class TestVariableManager:
-    """Tests for VariableManager class."""
-    
-    @pytest.fixture
-    def temp_var_file(self, tmp_path):
-        """Create temporary file for variables."""
-        return tmp_path / "variables.json"
-    
-    def test_initialization(self, temp_var_file):
-        """Test VariableManager initializes correctly."""
-        manager = VariableManager(storage_path=temp_var_file)
-        
-        assert manager.min_content_tokens == 500  # Default
-        stats = manager.get_stats()
-        assert stats["total_variables"] == 0
-    
-    async def test_create_variable(self, temp_var_file):
-        """Test creating a variable."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        # Use realistic content that generates multiple tokens
-        large_content = "word " * 100  # ~100 words = ~130 tokens (exceeds threshold of 10)
-        var_name, summary = await manager.create_variable(large_content)
-        
-        assert var_name is not None
-        assert "$VAR_" in var_name
-        assert summary is not None  # Should include summary
-    
-    async def test_get_variable(self, temp_var_file):
-        """Test retrieving a variable."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        content = "Test content " * 50
-        var_name, _ = await manager.create_variable(content)
-        
-        entry = manager.get_variable(var_name)
-        
-        assert entry is not None
-        assert entry.content == content
-    
-    async def test_below_threshold_returns_none(self, temp_var_file):
-        """Test that small content returns empty var_name."""
-        manager = VariableManager(min_content_tokens=1000, storage_path=temp_var_file)
-        
-        small_content = "Small"
-        result = await manager.create_variable(small_content)
-        
-        # Returns tuple (var_name, summary) where var_name is empty if below threshold
-        assert result[0] == ""  # Empty var_name
-    
-    async def test_detect_content_type(self, temp_var_file):
-        """Test content type detection."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        # Test code detection
-        code_content = "def hello():\n    print('Hello')\n" * 20
-        await manager.create_variable(code_content, content_type="code")
-        
-        # Test JSON detection
-        json_content = '{"key": "value", "nested": {"a": 1}}' * 20
-        await manager.create_variable(json_content, content_type="json")
-        
-        stats = manager.get_stats()
-        assert stats["total_variables"] >= 2
-    
-    async def test_persistence(self, temp_var_file):
-        """Test that variables persist."""
-        manager1 = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        await manager1.create_variable("Content " * 100)
-        
-        manager2 = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        stats = manager2.get_stats()
-        
-        assert stats["total_variables"] == 1
-    
-    async def test_expand_variables(self, temp_var_file):
-        """Test expanding variables in text."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        content = "Original content " * 50
-        var_name, _ = await manager.create_variable(content)
-        
-        text_with_var = f"The result is in {var_name}."
-        expanded = manager.expand_variables(text_with_var)
-        
-        assert content in expanded
-        assert var_name not in expanded
-    
-    async def test_cleanup_unused_variables(self, temp_var_file):
-        """Test cleanup of unreferenced variables."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        # Create multiple variables
-        content1 = "Content 1 " * 50
-        content2 = "Content 2 " * 50
-        content3 = "Content 3 " * 50
-        
-        var1, _ = await manager.create_variable(content1)
-        var2, _ = await manager.create_variable(content2)
-        var3, _ = await manager.create_variable(content3)
-        
-        # Verify all created
-        assert manager.get_stats()["total_variables"] == 3
-        
-        # Create message history that only references var1 and var3
-        messages = [
-            {"role": "user", "content": f"Check {var1}"},
-            {"role": "assistant", "content": f"Result in {var3}"},
-            {"role": "user", "content": "Something else"}
-        ]
-        
-        # Cleanup - should remove var2
-        removed = await manager.cleanup_unused_variables(messages)
-        
-        assert removed == 1
-        assert manager.get_stats()["total_variables"] == 2
-        assert manager.get_variable(var1) is not None
-        assert manager.get_variable(var2) is None  # Removed
-        assert manager.get_variable(var3) is not None
-    
-    async def test_cleanup_all_variables_referenced(self, temp_var_file):
-        """Test cleanup when all variables are referenced."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        var1, _ = await manager.create_variable("Content 1 " * 50)
-        var2, _ = await manager.create_variable("Content 2 " * 50)
-        
-        messages = [
-            {"role": "user", "content": f"See {var1} and {var2}"}
-        ]
-        
-        removed = await manager.cleanup_unused_variables(messages)
-        
-        assert removed == 0
-        assert manager.get_stats()["total_variables"] == 2
-    
-    async def test_cleanup_no_variables(self, temp_var_file):
-        """Test cleanup with no variables stored."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        messages = [{"role": "user", "content": "No variables here"}]
-        
-        removed = await manager.cleanup_unused_variables(messages)
-        
-        assert removed == 0
-    
-    async def test_cleanup_empty_messages(self, temp_var_file):
-        """Test cleanup with empty message list removes all variables."""
-        manager = VariableManager(min_content_tokens=10, storage_path=temp_var_file)
-        
-        var1, _ = await manager.create_variable("Content 1 " * 50)
-        var2, _ = await manager.create_variable("Content 2 " * 50)
-        
-        assert manager.get_stats()["total_variables"] == 2
-        
-        # Empty messages means no references
-        removed = await manager.cleanup_unused_variables([])
-        
-        assert removed == 2
-        assert manager.get_stats()["total_variables"] == 0
-
-
-# =============================================================================
 # ArchivalMemory Tests
 # =============================================================================
 
@@ -654,7 +486,6 @@ class TestLayeredCompactionStrategy:
     def strategy_components(self, tmp_path):
         """Create all components for strategy."""
         tool_store = ToolResultStore(tmp_path / "tools.db")
-        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
         core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
         archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         
@@ -669,7 +500,6 @@ class TestLayeredCompactionStrategy:
         
         strategy = LayeredCompactionStrategy(
             tool_store=tool_store,
-            variable_manager=variable_manager,
             core_memory=core_memory,
             archival_memory=archival_memory,
             config=config
@@ -678,7 +508,6 @@ class TestLayeredCompactionStrategy:
         return {
             "strategy": strategy,
             "tool_store": tool_store,
-            "variable_manager": variable_manager,
             "core_memory": core_memory,
             "archival_memory": archival_memory,
             "config": config
@@ -871,7 +700,7 @@ class TestLayeredCompactionStrategy:
     async def test_compact_multimodal_text_file(self, strategy_components):
         """Test that text_file items in multimodal content are compacted."""
         strategy = strategy_components["strategy"]
-        strategy.config.variable_min_size = 20  # Lower threshold for test
+        strategy.config.tool_result_min_size = 20  # Lower threshold for test
         
         # Create large text file content (100 words = ~130 tokens)
         large_file_content = "line of code " * 100
@@ -886,26 +715,27 @@ class TestLayeredCompactionStrategy:
         
         result = await strategy.compact(messages, current_tokens=600)
         
-        # Variable should be created for the text_file
-        assert result.variables_created >= 1
+        # The file content moved into the tool-result store
+        assert result.tool_results_stored >= 1
         assert result.tokens_saved > 0
         
         # Check that content was replaced
         compacted_user = result.modified_messages[0]
         assert isinstance(compacted_user["content"], list)
         
-        # The text_file should be replaced with text containing $VAR reference
+        # The text_file is replaced by a text item naming a readable ref
         content_items = compacted_user["content"]
         text_items = [i for i in content_items if i.get("type") == "text"]
         
-        var_ref_found = any("$VAR" in str(i.get("text", "")) for i in text_items)
-        assert var_ref_found, f"No $VAR reference found in: {content_items}"
+        ref_found = any("TR_" in str(i.get("text", "")) for i in text_items)
+        assert ref_found, f"No TR_ reference found in: {content_items}"
+        assert not [i for i in content_items if i.get("type") == "text_file"]
 
     @pytest.mark.asyncio
     async def test_compact_multimodal_preserves_images(self, strategy_components):
         """Test that image content is preserved during multimodal compaction."""
         strategy = strategy_components["strategy"]
-        strategy.config.variable_min_size = 20  # Lower threshold for test
+        strategy.config.tool_result_min_size = 20  # Lower threshold for test
         
         # Create multimodal message with image
         large_file_content = "some code " * 100  # ~130 tokens
@@ -930,7 +760,7 @@ class TestLayeredCompactionStrategy:
     async def test_compact_multimodal_small_text_file_preserved(self, strategy_components):
         """Test that small text_file items are not compacted."""
         strategy = strategy_components["strategy"]
-        strategy.config.variable_min_size = 500  # High threshold
+        strategy.config.tool_result_min_size = 500  # High threshold
         
         # Small text file content
         small_file_content = "hello world"
@@ -944,8 +774,8 @@ class TestLayeredCompactionStrategy:
         
         result = await strategy.compact(messages, current_tokens=600)
         
-        # No variables should be created (content too small)
-        assert result.variables_created == 0
+        # Nothing should be stored away (content too small)
+        assert result.tool_results_stored == 0
         
         # Content should be unchanged
         compacted_content = result.modified_messages[0]["content"]
@@ -957,7 +787,7 @@ class TestLayeredCompactionStrategy:
     async def test_compact_multimodal_tool_response(self, strategy_components):
         """Test that multimodal tool responses are compacted."""
         strategy = strategy_components["strategy"]
-        strategy.config.variable_min_size = 20  # Lower threshold for test
+        strategy.config.tool_result_min_size = 20  # Lower threshold for test
         
         large_file_content = "data line " * 100
         
@@ -971,8 +801,8 @@ class TestLayeredCompactionStrategy:
         
         result = await strategy.compact(messages, current_tokens=600)
         
-        # Variable should be created for the text_file in tool response
-        assert result.variables_created >= 1
+        # The text_file in the tool response moved into the store
+        assert result.tool_results_stored >= 1
 
     @pytest.mark.asyncio
     async def test_compact_multimodal_removes_large_audio(self, strategy_components):
@@ -1140,7 +970,9 @@ class TestLayeredCompactionStrategy:
         # Hint should be added to the content
         content = tool_msg.get("content", "")
         assert "compacted" in content.lower() or "removed" in content.lower()
-        assert "recall" in content.lower()
+        # The hint must name the tool that actually exists — a dead tool name
+        # here is why the model paged blindly instead of restoring the file.
+        assert "read(ref=" in content
         
         # Should have saved significant tokens (~33K)
         assert result.tokens_saved > 30_000
@@ -1660,10 +1492,16 @@ class TestPluginIntegration:
         # MCPTool objects have .name attribute
         tool_names = [t.name for t in tools]
         
-        # Core tools: recall (unified), store_fact, compact
-        assert any("recall" in name for name in tool_names)
+        # Core tools: list, read, store_fact, compact
+        assert any(name.endswith("_list") for name in tool_names)
+        assert any(name.endswith("_read") for name in tool_names)
         assert any("store_fact" in name for name in tool_names)
         assert any("compact" in name for name in tool_names)
+        # recall/get_variable/get_tool_result/stats/restore_multimodal are gone:
+        # list+read cover all of them, and a tool nobody can call is dead weight
+        assert not [n for n in tool_names
+                    if any(d in n for d in ("recall", "get_variable",
+                                            "get_tool_result", "restore_multimodal"))]
     
     @pytest.mark.asyncio
     async def test_tool_handler_store_fact(self, plugin_instance):
@@ -1686,7 +1524,6 @@ class TestPluginIntegration:
         )
         
         assert "tool_results" in result
-        assert "variables" in result
         assert "core_memory" in result
         assert "archival_memory" in result
 
@@ -1696,295 +1533,91 @@ class TestPluginIntegration:
 # =============================================================================
 
 
-class TestVariablePagination:
-    """Tests for get_variable pagination and search modes."""
-    
+class TestBoundedReadOfStoredResults:
+    """read() over the tool-result store: bounded, continuable, tail-reachable.
+
+    This used to be `_handle_get_tool_result` with four modes, two of which
+    (preview, full) nothing ever called once list/read replaced `recall`.
+    What survived is what an agent actually does — a window, a find, and the
+    end of the thing — so it now runs through the same two paging helpers as
+    the archive instead of a second private implementation.
+    """
+
     @pytest.fixture
     def hooks_impl(self, tmp_path):
-        """Create hooks implementation with test storage."""
         from plugins.context_engineer.hooks import ContextEngineerPlugin
-        
+
         plugin_dir = Path(__file__).parent.parent.parent.parent.parent / "src" / "plugins" / "context_engineer"
         hooks = ContextEngineerPlugin(plugin_dir)
         hooks._storage_base = tmp_path
         return hooks
-    
-    @pytest.fixture
-    async def large_variable(self, hooks_impl):
-        """Create a large variable for testing pagination."""
-        session_id = "test-pagination"
-        components = hooks_impl._get_session_components(session_id)
-        var_manager = components["variable_manager"]
-        
-        # Create large content (~2000 chars)
-        large_content = "Line {}: This is a test line with some content.\n" * 50
-        large_content = large_content.format(*range(50))
-        
-        # create_variable returns (var_name, summary) tuple - now async
-        var_name, _ = await var_manager.create_variable(large_content, content_type="text", force=True)
-        return session_id, var_name, large_content
-    
-    @pytest.mark.asyncio
-    async def test_get_variable_preview_mode(self, hooks_impl, large_variable):
-        """Test preview mode returns truncated content."""
-        session_id, var_name, original_content = large_variable
-        
-        result = await hooks_impl._handle_get_variable(
-            variable_name=var_name,
-            session_id=session_id,
-            mode="preview"
-        )
-        
-        assert result["found"] is True
-        assert result["mode"] == "preview"
-        assert result["truncated"] is True
-        assert result["returned_chars"] == 500
-        assert len(result["content"]) == 500
-        assert result["total_chars"] == len(original_content)
-        assert "hint" in result
-    
-    @pytest.mark.asyncio
-    async def test_get_variable_chunk_mode(self, hooks_impl, large_variable):
-        """Test chunk mode with pagination."""
-        session_id, var_name, original_content = large_variable
-        
-        # First chunk
-        result1 = await hooks_impl._handle_get_variable(
-            variable_name=var_name,
-            session_id=session_id,
-            mode="chunk",
-            offset=0,
-            limit=500
-        )
-        
-        assert result1["found"] is True
-        assert result1["mode"] == "chunk"
-        assert result1["offset"] == 0
-        assert result1["limit"] == 500
-        assert result1["returned_chars"] == 500
-        assert result1["has_more"] is True
-        assert result1["next_offset"] == 500
-        assert result1["content"] == original_content[0:500]
-        
-        # Second chunk
-        result2 = await hooks_impl._handle_get_variable(
-            variable_name=var_name,
-            session_id=session_id,
-            mode="chunk",
-            offset=500,
-            limit=500
-        )
-        
-        assert result2["offset"] == 500
-        assert result2["content"] == original_content[500:1000]
-        
-        # Combined chunks should match original up to offset
-        combined = result1["content"] + result2["content"]
-        assert combined == original_content[0:1000]
-    
-    @pytest.mark.asyncio
-    async def test_get_variable_search_mode(self, hooks_impl, large_variable):
-        """Test search mode finds matches."""
-        session_id, var_name, original_content = large_variable
-        
-        result = await hooks_impl._handle_get_variable(
-            variable_name=var_name,
-            session_id=session_id,
-            mode="search",
-            search="Line 5:",
-            context_chars=50
-        )
-        
-        assert result["found"] is True
-        assert result["mode"] == "search"
-        assert result["query"] == "Line 5:"
-        assert result["match_count"] > 0
-        assert len(result["matches"]) > 0
-        
-        # Check first match structure
-        first_match = result["matches"][0]
-        assert "position" in first_match
-        assert "snippet" in first_match
-        assert "Line 5:" in first_match["snippet"]
-    
-    @pytest.mark.asyncio
-    async def test_get_variable_search_no_matches(self, hooks_impl, large_variable):
-        """Test search mode with no matches."""
-        session_id, var_name, original_content = large_variable
-        
-        result = await hooks_impl._handle_get_variable(
-            variable_name=var_name,
-            session_id=session_id,
-            mode="search",
-            search="NONEXISTENT_PATTERN"
-        )
-        
-        assert result["found"] is True
-        assert result["match_count"] == 0
-        assert len(result["matches"]) == 0
-    
-    @pytest.mark.asyncio
-    async def test_get_variable_search_missing_query(self, hooks_impl, large_variable):
-        """Test search mode without search parameter."""
-        session_id, var_name, original_content = large_variable
-        
-        result = await hooks_impl._handle_get_variable(
-            variable_name=var_name,
-            session_id=session_id,
-            mode="search",
-            search=None
-        )
-        
-        assert result["found"] is True
-        assert "error" in result
-        assert "search parameter required" in result["error"]
-    
-    @pytest.mark.asyncio
-    async def test_get_variable_full_mode(self, hooks_impl, large_variable):
-        """Test full mode returns complete content."""
-        session_id, var_name, original_content = large_variable
-        
-        result = await hooks_impl._handle_get_variable(
-            variable_name=var_name,
-            session_id=session_id,
-            mode="full"
-        )
-        
-        assert result["found"] is True
-        assert result["mode"] == "full"
-        assert result["content"] == original_content
-        assert result["total_chars"] == len(original_content)
-        assert "warning" in result
-    
-    @pytest.mark.asyncio
-    async def test_get_variable_not_found(self, hooks_impl):
-        """Test getting non-existent variable."""
-        result = await hooks_impl._handle_get_variable(
-            variable_name="$VAR_999",
-            session_id="test-session",
-            mode="preview"
-        )
-        
-        assert result["found"] is False
-        assert "error" in result
 
-
-class TestToolResultPagination:
-    """Tests for get_tool_result pagination and search modes."""
-    
     @pytest.fixture
-    def hooks_impl(self, tmp_path):
-        """Create hooks implementation with test storage."""
-        from plugins.context_engineer.hooks import ContextEngineerPlugin
-        
-        plugin_dir = Path(__file__).parent.parent.parent.parent.parent / "src" / "plugins" / "context_engineer"
-        hooks = ContextEngineerPlugin(plugin_dir)
-        hooks._storage_base = tmp_path
-        return hooks
-    
-    @pytest.fixture
-    async def large_tool_result(self, hooks_impl):
-        """Create a large tool result for testing pagination."""
+    def large_tool_result(self, hooks_impl):
         session_id = "test-tool-pagination"
         components = hooks_impl._get_session_components(session_id)
         tool_store = components["tool_store"]
-        
-        # Create large result (~3000 chars)
+
         large_result = "Result line {}: Some detailed output here.\n" * 80
         large_result = large_result.format(*range(80))
-        
-        # Store tool result using store_and_reference
-        tool_call_id = "test_call_12345678"
-        tool_store.store_and_reference(
-            tool_call_id=tool_call_id,
+
+        reference = tool_store.store_and_reference(
+            tool_call_id="test_call_12345678",
             tool_name="test_tool",
             content=large_result,
-            session_id=session_id
-        )
-        
-        return session_id, tool_call_id, large_result
-    
-    @pytest.mark.asyncio
-    async def test_get_tool_result_preview_mode(self, hooks_impl, large_tool_result):
-        """Test preview mode for tool results."""
-        session_id, reference, original_result = large_tool_result
-        
-        result = await hooks_impl._handle_get_tool_result(
-            reference=reference,
             session_id=session_id,
-            mode="preview"
         )
-        
-        assert result["found"] is True
-        assert result["mode"] == "preview"
-        assert result["truncated"] is True
-        assert len(result["content"]) == 500
-        assert result["total_chars"] == len(original_result)
-    
-    @pytest.mark.asyncio
-    async def test_get_tool_result_chunk_mode(self, hooks_impl, large_tool_result):
-        """Test chunk mode for tool results."""
-        session_id, reference, original_result = large_tool_result
-        
-        result = await hooks_impl._handle_get_tool_result(
-            reference=reference,
-            session_id=session_id,
-            mode="chunk",
-            offset=0,
-            limit=1000
-        )
-        
-        assert result["found"] is True
-        assert result["mode"] == "chunk"
-        assert result["returned_chars"] == 1000
-        assert result["content"] == original_result[0:1000]
-        assert result["has_more"] is True
-    
-    @pytest.mark.asyncio
-    async def test_get_tool_result_search_mode(self, hooks_impl, large_tool_result):
-        """Test search mode for tool results."""
-        session_id, reference, original_result = large_tool_result
-        
-        result = await hooks_impl._handle_get_tool_result(
-            reference=reference,
-            session_id=session_id,
-            mode="search",
-            search="line 10:"
-        )
-        
-        assert result["found"] is True
-        assert result["mode"] == "search"
-        assert result["match_count"] >= 1
-        assert len(result["matches"]) >= 1
-    
-    @pytest.mark.asyncio
-    async def test_get_tool_result_full_mode(self, hooks_impl, large_tool_result):
-        """Test full mode for tool results."""
-        session_id, reference, original_result = large_tool_result
-        
-        result = await hooks_impl._handle_get_tool_result(
-            reference=reference,
-            session_id=session_id,
-            mode="full"
-        )
-        
-        assert result["found"] is True
-        assert result["mode"] == "full"
-        assert result["content"] == original_result
-        assert "warning" in result
-    
-    @pytest.mark.asyncio
-    async def test_get_tool_result_not_found(self, hooks_impl):
-        """Test getting non-existent tool result."""
-        result = await hooks_impl._handle_get_tool_result(
-            reference="nonexistent",
-            session_id="test-session",
-            mode="preview"
-        )
-        
-        assert result["found"] is False
-        assert "error" in result
+        return session_id, json.loads(reference)["ref_id"], large_result
 
+    @pytest.mark.asyncio
+    async def test_a_read_is_bounded_and_says_how_to_continue(
+        self, hooks_impl, large_tool_result
+    ):
+        session_id, ref, original = large_tool_result
+        page = await hooks_impl._handle_context_read(
+            ref=ref, session_id=session_id, offset=0, limit=1000)
+
+        assert page["status"] == "success"
+        assert page["content"] == original[0:1000]
+        assert page["total_chars"] == len(original)
+        assert page["next_offset"] == 1000
+
+        nxt = await hooks_impl._handle_context_read(
+            ref=ref, session_id=session_id, offset=page["next_offset"], limit=1000)
+        assert nxt["content"] == original[1000:2000]
+
+    @pytest.mark.asyncio
+    async def test_a_negative_offset_is_the_tail(self, hooks_impl, large_tool_result):
+        """The end of a stored result without walking the whole thing to get there.
+
+        Paging forward through a large result puts it back into the context it
+        was removed from — observed live on a 100k-character result read in
+        5000-character steps.
+        """
+        session_id, ref, original = large_tool_result
+        page = await hooks_impl._handle_context_read(
+            ref=ref, session_id=session_id, offset=-300, limit=300)
+
+        assert page["content"] == original[-300:]
+        assert page["next_offset"] is None, "the tail has nothing after it"
+
+    @pytest.mark.asyncio
+    async def test_find_returns_only_the_matching_parts(
+        self, hooks_impl, large_tool_result
+    ):
+        session_id, ref, _ = large_tool_result
+        page = await hooks_impl._handle_context_read(
+            ref=ref, session_id=session_id, find="line 10:")
+
+        assert page["match_count"] >= 1
+        assert all("line 10:" in m["snippet"] for m in page["matches"])
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_ref_is_an_error_naming_where_to_look(self, hooks_impl):
+        page = await hooks_impl._handle_context_read(
+            ref="TR_doesnotexist", session_id="test-tool-pagination")
+        assert page["status"] == "error"
+        assert "list(section='tool_results')" in page["hint"]
 
 # =============================================================================
 # Pre-Layer P (Message Count Pruning) Tests
@@ -1998,7 +1631,6 @@ class TestPreLayerP:
     def strategy_with_max_messages(self, tmp_path):
         """Create strategy with max_messages limit."""
         tool_store = ToolResultStore(tmp_path / "tools.db")
-        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
         core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
         archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         
@@ -2013,7 +1645,6 @@ class TestPreLayerP:
         
         return LayeredCompactionStrategy(
             tool_store=tool_store,
-            variable_manager=variable_manager,
             core_memory=core_memory,
             archival_memory=archival_memory,
             config=config
@@ -2164,7 +1795,6 @@ class TestPreLayerP:
     async def test_pruning_disabled_when_zero(self, tmp_path):
         """Test that pruning is disabled when max_messages=0."""
         tool_store = ToolResultStore(tmp_path / "tools.db")
-        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
         core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
         archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         
@@ -2178,7 +1808,6 @@ class TestPreLayerP:
         
         strategy = LayeredCompactionStrategy(
             tool_store=tool_store,
-            variable_manager=variable_manager,
             core_memory=core_memory,
             archival_memory=archival_memory,
             config=config
@@ -2200,7 +1829,6 @@ class TestPreLayerP:
     async def test_pruning_protects_last_user_message(self, tmp_path):
         """Test that pre-layer P never removes the last user message."""
         tool_store = ToolResultStore(tmp_path / "tools.db")
-        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
         core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
         archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         
@@ -2214,7 +1842,6 @@ class TestPreLayerP:
         
         strategy = LayeredCompactionStrategy(
             tool_store=tool_store,
-            variable_manager=variable_manager,
             core_memory=core_memory,
             archival_memory=archival_memory,
             config=config
@@ -2252,13 +1879,17 @@ class TestPreLayerPRecoverability:
         archival = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         strat = LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
-            variable_manager=VariableManager(min_content_tokens=50,
-                                             storage_path=tmp_path / "vars.json"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
             archival_memory=archival,
             config=CompactionConfig(
                 layer1_threshold=10**9, layer2_threshold=10**9,
                 layer3_threshold=10**9, max_messages=6,
+                # These tests pin WHICH messages a prune picks and whether they
+                # survive the trip. The headroom decides HOW MANY, and at its
+                # default (50) a limit of 6 would empty the list — the picking
+                # would then be untestable. Its own behaviour is pinned in
+                # TestPruneHysteresis.
+                max_messages_headroom=0,
                 keep_system_messages=True,
             ),
         )
@@ -2529,13 +2160,15 @@ class TestPreLayerPRecoverability:
         archival = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         strat = LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
-            variable_manager=VariableManager(min_content_tokens=50,
-                                             storage_path=tmp_path / "vars.json"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
             archival_memory=archival,
             config=CompactionConfig(
                 layer1_threshold=10**9, layer2_threshold=10**9,
                 layer3_threshold=10**9, max_messages=8,
+                # See the fixture above: the headroom decides how many go, and
+                # at its default the whole list would go — leaving no surviving
+                # pair to check for splits.
+                max_messages_headroom=0,
                 keep_system_messages=keep_system,
             ),
         )
@@ -2645,8 +2278,6 @@ class TestPreLayerPRecoverability:
         """
         strat = LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
-            variable_manager=VariableManager(min_content_tokens=50,
-                                             storage_path=tmp_path / "vars.json"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
             archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="t"),
             config=CompactionConfig(
@@ -2788,54 +2419,6 @@ class TestPreLayerPRecoverability:
             "the batch came back out of order")
 
     @pytest.mark.asyncio
-    async def test_archived_text_survives_the_variable_garbage_collector(
-        self, tmp_path
-    ):
-        """The archive must be self-contained, or Layer 2 empties it out.
-
-        Layer 1 replaces long assistant prose with a `$VAR_n` reference. If
-        Pre-Layer P archives that reference verbatim and then removes the last
-        live mention, `cleanup_unused_variables` — which scans only the LIVE
-        messages — deletes the body in the SAME compaction. The archived copy
-        would keep a dangling pointer and the content would be gone from every
-        store.
-        """
-        archival = ArchivalMemory(tmp_path / "archive.db", session_id="t")
-        variables = VariableManager(min_content_tokens=10,
-                                    storage_path=tmp_path / "vars.json")
-        strat = LayeredCompactionStrategy(
-            tool_store=ToolResultStore(tmp_path / "tools.db"),
-            variable_manager=variables,
-            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
-            archival_memory=archival,
-            config=CompactionConfig(
-                layer1_threshold=10**9, layer2_threshold=1, layer3_threshold=10**9,
-                target_tokens=0, archive_after_turns=1,
-                max_messages=6, keep_system_messages=True,
-            ),
-        )
-        secret = "Der unersetzliche Absatz. " * 20
-        var_name, _ = await variables.create_variable(secret)
-        assert var_name, "fixture broken: no variable was created"
-
-        messages = [{"role": "user", "content": "die Aufgabe"},
-                    {"role": "assistant", "content": f"siehe {var_name}"}]
-        for i in range(6):
-            messages.append({"role": "user", "content": f"Frage {i}"})
-
-        await strat.compact(messages, current_tokens=10_000, force=True)
-
-        stored = [r[0] for r in archival._db.execute(
-            "SELECT content FROM archived_messages").fetchall()]
-        dangling = [s for s in stored
-                    if var_name in s and secret[:30] not in s]
-        assert not dangling, (
-            f"the archived copy still points at {var_name}; "
-            f"variable still known: {variables.get_variable(var_name) is not None}")
-        assert any(secret[:30] in s for s in stored), (
-            "the variable body reached neither the archive nor the message")
-
-    @pytest.mark.asyncio
     async def test_huge_batch_still_archives_but_skips_the_vector_index(
         self, strategy, monkeypatch
     ):
@@ -2880,8 +2463,6 @@ class TestPreLayerPRecoverability:
         archival = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         strat = LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
-            variable_manager=VariableManager(min_content_tokens=50,
-                                             storage_path=tmp_path / "vars.json"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
             archival_memory=archival,
             config=CompactionConfig(
@@ -2929,7 +2510,6 @@ class TestEnsureValidMessageSequence:
     def strategy(self, tmp_path):
         """Create strategy for testing."""
         tool_store = ToolResultStore(tmp_path / "tools.db")
-        variable_manager = VariableManager(min_content_tokens=50, storage_path=tmp_path / "vars.json")
         core_memory = CoreMemory(storage_path=tmp_path / "memory.json")
         archival_memory = ArchivalMemory(tmp_path / "archive.db", session_id="test")
         
@@ -2942,7 +2522,6 @@ class TestEnsureValidMessageSequence:
         
         return LayeredCompactionStrategy(
             tool_store=tool_store,
-            variable_manager=variable_manager,
             core_memory=core_memory,
             archival_memory=archival_memory,
             config=config
@@ -3053,52 +2632,6 @@ class TestEnsureValidMessageSequence:
         assert len(user_msgs) == 1
         assert "Continue" in user_msgs[0]["content"]
 
-
-# =============================================================================
-# Recall Type Detection Tests
-# =============================================================================
-
-
-class TestDetectRecallType:
-    """Tests for _detect_recall_type pattern matching."""
-
-    @pytest.fixture
-    def hooks(self, tmp_path):
-        """Create a minimal ContextEngineerPlugin instance for testing."""
-        from plugins.context_engineer.hooks import ContextEngineerPlugin
-
-        hooks = ContextEngineerPlugin.__new__(ContextEngineerPlugin)
-        # _detect_recall_type is a pure function, needs no state
-        return hooks
-
-    def test_variable_detection(self, hooks):
-        assert hooks._detect_recall_type("$VAR_1") == "variable"
-        assert hooks._detect_recall_type("VAR_1") == "variable"
-        assert hooks._detect_recall_type("$VAR_99") == "variable"
-        assert hooks._detect_recall_type("  $VAR_3  ") == "variable"
-
-    def test_tool_result_simple(self, hooks):
-        assert hooks._detect_recall_type("TR_abc123") == "tool_result"
-        assert hooks._detect_recall_type("call_abc123") == "tool_result"
-
-    def test_tool_result_with_underscores(self, hooks):
-        """TR_00_GHGE9 pattern - real tool call IDs contain underscores."""
-        assert hooks._detect_recall_type("TR_00_GHGE9") == "tool_result"
-        assert hooks._detect_recall_type("TR_00_abc_def") == "tool_result"
-        assert hooks._detect_recall_type("call_00_GHGE9") == "tool_result"
-
-    def test_hex_hash(self, hooks):
-        assert hooks._detect_recall_type("a1b2c3d4e5f6") == "tool_result"
-        assert hooks._detect_recall_type("DEADBEEF") == "tool_result"
-
-    def test_media_path(self, hooks):
-        assert hooks._detect_recall_type("data/audio/test.wav") == "media"
-        assert hooks._detect_recall_type("/path/to/image.png") == "media"
-
-    def test_archive_fallback(self, hooks):
-        assert hooks._detect_recall_type("book_id phase blocker") == "archive"
-        assert hooks._detect_recall_type("what happened with scene 5") == "archive"
-        assert hooks._detect_recall_type("review feedback") == "archive"
 
 
 class TestSessionEvictionSkipsActiveCompactions:

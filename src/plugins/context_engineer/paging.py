@@ -21,9 +21,8 @@ from typing import Any, Dict, List, Optional
 #: Per-read ceiling. Generous enough for a real section, small enough that a
 #: mis-aimed read cannot refill the context it is protecting.
 #:
-#: Deliberately the SAME number the variable and tool-result handlers already
-#: enforce internally: a higher ceiling here would simply be refused by them,
-#: and the caller would see a validation error instead of a bounded answer.
+#: One ceiling for every kind of read — archive entries, tool results and the
+#: attached files that share their store all come back through here.
 MAX_READ_CHARS = 5000
 
 #: What a read returns when the caller names no size.
@@ -39,10 +38,19 @@ MAX_FIND_MATCHES = 12
 
 def slice_text(content: str, *, offset: int = 0,
                limit: Optional[int] = None) -> Dict[str, Any]:
-    """A bounded window into ``content``, plus how to get the rest."""
+    """A bounded window into ``content``, plus how to get the rest.
+
+    A NEGATIVE offset counts from the end — ``offset=-2000`` is the last 2000
+    characters, the ``tail`` every model already knows from files. Without it
+    the only way to reach the end of a stored result was to page forward
+    through all of it, which is the opposite of what compaction is for:
+    observed live, an agent walking a 100k-character result in 5000-character
+    steps put the whole thing back into the context it had just been freed from.
+    """
     total = len(content)
     limit = DEFAULT_READ_CHARS if limit is None else max(1, min(int(limit), MAX_READ_CHARS))
-    offset = max(0, int(offset))
+    offset = int(offset)
+    offset = max(0, total + offset) if offset < 0 else offset
 
     chunk = content[offset:offset + limit]
     end = offset + len(chunk)

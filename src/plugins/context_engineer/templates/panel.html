@@ -298,51 +298,6 @@
             justify-content: space-between;
         }
 
-        /* Variables Table */
-        .var-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        .var-table th,
-        .var-table td {
-            padding: 10px 12px;
-            text-align: left;
-            border-bottom: 1px solid #3e3e42;
-        }
-
-        .var-table th {
-            background: #1e1e1e;
-            font-weight: 600;
-            font-size: 11px;
-            text-transform: uppercase;
-            color: #858585;
-        }
-
-        .var-table tr:last-child td {
-            border-bottom: none;
-        }
-
-        .var-table tr:hover td {
-            background: #2a2d2e;
-        }
-
-        .var-name {
-            font-family: 'Consolas', monospace;
-            font-size: 12px;
-            color: #a371f7;
-            font-weight: 500;
-        }
-
-        .var-preview {
-            color: #858585;
-            font-size: 12px;
-            max-width: 400px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
         .badge {
             display: inline-block;
             padding: 2px 8px;
@@ -446,7 +401,6 @@
             <button class="tab active" data-tab="history">Compaction History</button>
             <button class="tab" data-tab="storage">Storage Stats</button>
             <button class="tab" data-tab="memory">Core Memory</button>
-            <button class="tab" data-tab="variables">Variables</button>
         </div>
 
         <div class="content">
@@ -486,22 +440,6 @@
                 </ul>
             </div>
 
-            <!-- Variables Tab -->
-            <div class="tab-content" id="tab-variables">
-                <table class="var-table">
-                    <thead>
-                        <tr>
-                            <th>Variable Name</th>
-                            <th>Type</th>
-                            <th>Preview</th>
-                            <th style="text-align: right;">Tokens</th>
-                        </tr>
-                    </thead>
-                    <tbody id="var-list">
-                        <tr><td colspan="4" class="loading"><div class="spinner"></div>Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
         </div>
     </div>
 
@@ -602,7 +540,7 @@
                 } else if (l === 'P') {
                     return `<span class="badge badge-layerP" title="Pre-Layer Prune: Message count exceeded limit, oldest messages removed">P</span>`;
                 } else if (l === '1' || l === 1) {
-                    return `<span class="badge badge-layer1" title="Layer 1: Reversible compaction (tool results stored externally, variables created)">L1</span>`;
+                    return `<span class="badge badge-layer1" title="Layer 1: Reversible compaction (tool results and attached files stored externally, inline media evicted)">L1</span>`;
                 } else if (l === '2' || l === 2) {
                     return `<span class="badge badge-layer2" title="Layer 2: Semi-reversible compaction (old messages archived with summaries)">L2</span>`;
                 } else if (l === '3' || l === 3) {
@@ -689,7 +627,6 @@
                 }
 
                 const toolResults = data.tool_results || {};
-                const variables = data.variables || {};
                 const coreMemory = data.core_memory || {};
                 const archival = data.archival_memory || {};
 
@@ -698,11 +635,6 @@
                         <h3>Tool Results</h3>
                         <div class="value">${formatNumber(toolResults.total_entries || 0)}</div>
                         <div class="subvalue">${formatNumber(toolResults.total_tokens_stored || 0)} tokens stored</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>Variables</h3>
-                        <div class="value">${formatNumber(variables.total_variables || 0)}</div>
-                        <div class="subvalue">${formatNumber(variables.total_tokens || 0)} tokens</div>
                     </div>
                     <div class="stat-card">
                         <h3>Media Compacted</h3>
@@ -756,57 +688,12 @@
             }
         }
 
-        // Load variables
-        async function loadVariables() {
-            try {
-                const url = `${basePath}/session_details${sessionId ? '?session_id=' + sessionId : ''}`;
-                const response = await fetch(url);
-                const data = await response.json();
-                
-                const container = document.getElementById('var-list');
-                
-                if (!data.success || !data.variables || !data.variables.total_variables) {
-                    container.innerHTML = `<tr><td colspan="4" class="empty-state" style="text-align: center; padding: 40px 20px; color: #858585;">No variables stored${sessionId ? ' for this session' : ''}.</td></tr>`;
-                    return;
-                }
-                
-                const vars = data.variables;
-                const varDetails = vars.variables || [];
-                
-                if (varDetails.length === 0) {
-                    container.innerHTML = `<tr><td colspan="4" class="empty-state" style="text-align: center; padding: 40px 20px; color: #858585;">No variable details available.</td></tr>`;
-                    return;
-                }
-                
-                function getBadgeClass(contentType) {
-                    const type = contentType.toLowerCase();
-                    if (type.includes('json')) return 'badge-json';
-                    if (type.includes('text')) return 'badge-text';
-                    return 'badge-other';
-                }
-                
-                container.innerHTML = varDetails.map(v => `
-                    <tr>
-                        <td><span class="var-name">${v.name}</span></td>
-                        <td><span class="badge ${getBadgeClass(v.content_type)}">${v.content_type}</span></td>
-                        <td><div class="var-preview">${v.preview || 'No preview available'}</div></td>
-                        <td style="text-align: right;"><span class="token-count">${formatNumber(v.tokens)}</span></td>
-                    </tr>
-                `).join('');
-            } catch (e) {
-                console.error('Error loading variables:', e);
-                document.getElementById('var-list').innerHTML = 
-                    `<li class="empty-state">Error loading variables</li>`;
-            }
-        }
-
         // Refresh all data
         function refreshAll() {
             loadStats();
             loadHistory();
             loadSessionDetails();
             loadMemory();
-            loadVariables();
             document.getElementById('lastUpdate').textContent = 
                 'Updated: ' + new Date().toLocaleTimeString();
         }

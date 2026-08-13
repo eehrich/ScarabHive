@@ -6,10 +6,9 @@ increasingly aggressive compression techniques based on token budget.
 Layers (in order of application):
 1. **Reversible Compaction** - Operations that can be fully undone:
    - Store tool outputs with references
-   - Create variables for large content blocks
    - Replace large audio/image inline data with references
    - Deduplicate media by hash (keep newest, compact older duplicates)
-   
+
 2. **Semi-Reversible Compaction** - Operations partially recoverable:
    - Archive old messages with summaries
    - Truncate very old tool results
@@ -43,7 +42,6 @@ from .archival_memory import ArchivalMemory
 from .core_memory import CoreMemory
 from .media_store import MediaStore
 from .tool_result_store import ToolResultStore
-from .variable_manager import VariableManager
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +68,6 @@ class CompactionConfig:
     tool_result_keep_last: int = 3   # Keep last N tool results inline (unless too large)
     tool_result_max_inline_size: int = 5000  # Max tokens before auto-archive (even if in last N)
     
-    # Variable settings
-    variable_min_size: int = 200     # Min tokens to create variable
-    assistant_keep_last: int = 3    # Keep last N assistant messages inline (never create variables for recent messages)
-    
     # Message archival settings
     archive_after_turns: int = 10    # Archive messages older than N turns
     keep_system_messages: bool = True  # Never archive system messages
@@ -82,10 +76,17 @@ class CompactionConfig:
     drop_after_turns: int = 50       # Drop messages older than N turns
     max_summary_tokens: int = 100    # Max tokens for archived summaries
     
-    # Hard message limit - drops oldest messages if exceeded (runs in Layer 3)
+    # Hard message limit - drops oldest messages if exceeded (Pre-Layer P)
     # Counts ALL messages including tool calls/results, not just user messages
     # Set to 0 to disable
     max_messages: int = 0            # 0 = disabled, e.g., 200 = keep max 200 messages
+
+    # How far BELOW max_messages a prune goes. Without it a prune trims to
+    # exactly the limit, the next step is over it again, and the front of the
+    # conversation is rewritten every single step — a prompt-cache break per
+    # step for one message of savings. With headroom the same break buys
+    # roughly `headroom` quiet steps.
+    max_messages_headroom: int = 50
     
     # Media deduplication settings
     deduplicate_media: bool = True  # Auto-compact older duplicate media (by file hash)
@@ -115,7 +116,6 @@ class CompactionResult:
     
     # What was done
     tool_results_stored: int = 0
-    variables_created: int = 0
     messages_archived: int = 0
     messages_dropped: int = 0
     media_deduplicated: int = 0  # Duplicate media compacted
@@ -258,35 +258,32 @@ class LayeredCompactionStrategy:
     
     Usage:
         strategy = LayeredCompactionStrategy(
-            tool_store, variable_manager, core_memory, archival_memory, config
+            tool_store, core_memory, archival_memory, config
         )
-        
+
         result = strategy.compact(messages, current_tokens)
-        
+
         # Use result.modified_messages as the new conversation history
     """
-    
+
     def __init__(
         self,
         tool_store: ToolResultStore,
-        variable_manager: VariableManager,
         core_memory: CoreMemory,
         archival_memory: ArchivalMemory,
         config: CompactionConfig | None = None,
         media_store: MediaStore | None = None
     ):
         """Initialize the compaction strategy.
-        
+
         Args:
             tool_store: Store for tool results
-            variable_manager: Manager for variable substitution
             core_memory: Core memory for important facts
             archival_memory: Archive for old messages
             config: Compaction configuration
             media_store: Optional store for inline media before compaction
         """
         self.tool_store = tool_store
-        self.variable_manager = variable_manager
         self.core_memory = core_memory
         self.archival_memory = archival_memory
         self.config = config or CompactionConfig()
@@ -304,7 +301,7 @@ class LayeredCompactionStrategy:
         
         Args:
             msg: Message dict to modify
-            hint_text: Hint text to add (e.g., "[Audio removed. Use recall(...)]")
+            hint_text: Hint text to add (e.g., "[Audio removed. read(ref=...)]")
         """
         import json
         
@@ -417,7 +414,22 @@ class LayeredCompactionStrategy:
                     tool_map[tc_id].append(i)
         
         return tool_map
-    
+
+    def _is_protected(self, msg: dict[str, Any]) -> bool:
+        """Messages no layer may remove or archive. One rule, every layer.
+
+        Each layer used to spell out its own version of this and they drifted:
+        Layer 3 checked only the role, so with keep_system_messages off it
+        dropped the prune breadcrumb — which is protected on its TYPE for a
+        reason. That breadcrumb is the only thing telling the agent something
+        left the view at all, and it carries the running total; dropping it
+        resets the total to zero on the next prune, so the count silently
+        restarts and the agent is told 12 messages went when it was 40.
+        """
+        if msg.get("role") == "system" and self.config.keep_system_messages:
+            return True
+        return _is_prune_notice(msg)
+
     async def compact(
         self,
         messages: list[dict[str, Any]],
@@ -703,7 +715,7 @@ class LayeredCompactionStrategy:
                 hint_text = (
                     f"[{item_type.title()} '{filename}' - duplicate compacted. "
                     f"Newer version exists later in conversation. "
-                    f"Use recall(query=\"{file_path}\") if needed.]"
+                    f"read(ref=\"{file_path}\") loads it again.]"
                 )
                 
                 # Replace in appropriate content list
@@ -893,7 +905,7 @@ class LayeredCompactionStrategy:
                         "text": (
                             f"[{item_type.title()} '{filename}' removed to reduce request size. "
                             f"Saved {item_bytes / 1024:.0f}KB."
-                            + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                            + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
                         )
                     }
                     content[item_idx] = placeholder
@@ -922,7 +934,7 @@ class LayeredCompactionStrategy:
                     hint_text = (
                         f"[{item_type.title()} '{filename}' removed to reduce request size. "
                         f"Saved {item_bytes / 1024:.0f}KB."
-                        + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                        + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
                     )
                     
                     items_to_remove.append((item_idx, hint_text, item_bytes))
@@ -1047,7 +1059,7 @@ class LayeredCompactionStrategy:
                         "type": "text",
                         "text": (
                             f"[{item_type.title()} removed after {trigger}."
-                            + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                            + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
                         )
                     }
                     content[item_idx] = placeholder
@@ -1071,7 +1083,7 @@ class LayeredCompactionStrategy:
                     
                     hint_text = (
                         f"[{item_type.title()} '{filename}' removed after {trigger}."
-                        + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                        + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
                     )
                     
                     items_to_remove.append((item_idx, hint_text, inline_tokens, item_bytes))
@@ -1189,7 +1201,7 @@ class LayeredCompactionStrategy:
                         "type": "text",
                         "text": (
                             f"[{item_type.title()} '{filename}' compacted."
-                            + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                            + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
                         )
                     }
                     content[item_idx] = placeholder
@@ -1216,7 +1228,7 @@ class LayeredCompactionStrategy:
                     
                     hint_text = (
                         f"[{item_type.title()} '{filename}' compacted."
-                        + (f" Use recall(query=\"{file_path}\") to reload.]" if file_path else "]")
+                        + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
                     )
                     
                     items_to_remove.append((item_idx, hint_text, inline_tokens, item_bytes))
@@ -1246,58 +1258,68 @@ class LayeredCompactionStrategy:
         session_id: str = "default",
         preserve_media: bool = False
     ) -> list:
-        """Compact multimodal content by replacing large items with variables/references.
-        
+        """Compact multimodal content by replacing large items with references.
+
         Handles:
-        - text_file items: Replace large content with $VAR_N references
+        - text_file items: Move large content to the tool-result store
         - audio items: Replace large base64 data with [Audio removed] placeholder
         - image items: Replace large base64 data with [Image removed] placeholder
-        
+
         Args:
             content: Multimodal content list (text, image, text_file, audio, etc.)
-            result: CompactionResult to update tokens_saved/variables_created
+            result: CompactionResult to update tokens_saved
             session_id: Session ID for media storage
             preserve_media: If True, skip audio/image/video compaction (preserve media in last user msg)
-            
+
         Returns:
             Compacted content list with large items replaced
         """
         compacted = []
-        
+
         for item in content:
             if not isinstance(item, dict):
                 compacted.append(item)
                 continue
-                
+
             item_type = item.get("type", "")
-            
-            # Compact text_file items - replace with variable reference
+
+            # An attached text file goes to the tool-result store. It used to
+            # become a $VAR, which is gone; the store holds the same thing
+            # (content, ref, summary) and its refs already work with list and
+            # read, so this is one store instead of two rather than a new path.
             if item_type == "text_file":
                 file_content = item.get("content", "")
                 file_name = item.get("name") or "file"
                 token_count = estimate_content_tokens(file_content)
-                
-                if token_count >= self.config.variable_min_size:
-                    # Create variable for file content
-                    var_name, summary = await self.variable_manager.create_variable(
-                        content=file_content,
-                        content_type="file",
-                        source=file_name
+
+                if token_count >= self.config.tool_result_min_size and file_content:
+                    # Content-derived key, so re-attaching the same file lands
+                    # on the same row instead of filling the store with copies.
+                    file_key = (
+                        f"file_{file_name}_"
+                        f"{hashlib.sha256(file_content.encode()).hexdigest()[:16]}"
                     )
-                    
-                    if var_name:  # Variable was created
-                        # Replace text_file with text containing variable reference
-                        compacted.append({
-                            "type": "text",
-                            "text": f"[File: {file_name}] → {var_name} [{summary}]"
-                        })
-                        result.variables_created += 1
-                        result.tokens_saved += token_count - estimate_content_tokens(f"{var_name} [{summary}]")
-                        logger.debug(
-                            f"Compacted text_file '{file_name}' ({token_count} tokens) → {var_name}"
-                        )
-                        continue
-            
+                    reference = await asyncio.to_thread(
+                        self.tool_store.store_and_reference,
+                        tool_call_id=file_key,
+                        tool_name=file_name,
+                        content=file_content,
+                        session_id=session_id,
+                        summary=" ".join(file_content.split())[:200],
+                    )
+                    ref_id = json.loads(reference).get("ref_id", "")
+                    hint = (
+                        f'[File "{file_name}" stored, {token_count} tokens. '
+                        f'read(ref="{ref_id}", find="...") for the parts you need.]'
+                    )
+                    compacted.append({"type": "text", "text": hint})
+                    result.tool_results_stored += 1
+                    result.tokens_saved += token_count - estimate_content_tokens(hint)
+                    logger.debug(
+                        f"Stored text_file '{file_name}' ({token_count} tokens) → {ref_id}"
+                    )
+                    continue
+
             # Compact audio items - remove large base64 inline data
             # If media_store is available, save to disk first for potential restoration
             # Skip if preserve_media is True (last user message)
@@ -1320,7 +1342,7 @@ class LayeredCompactionStrategy:
                     
                     # Create placeholder
                     if stored_path:
-                        placeholder_text = f"[Audio removed. Use recall(query=\"{stored_path}\") to reload.]"
+                        placeholder_text = f"[Audio removed. read(ref=\"{stored_path}\") loads it again.]"
                     else:
                         placeholder_text = "[Audio removed - not recoverable. Use store_fact to save key information before compaction.]"
                     
@@ -1363,7 +1385,7 @@ class LayeredCompactionStrategy:
                     
                     # Create placeholder
                     if stored_path:
-                        placeholder_text = f"[Image removed. Use recall(query=\"{stored_path}\") to reload.]"
+                        placeholder_text = f"[Image removed. read(ref=\"{stored_path}\") loads it again.]"
                     else:
                         placeholder_text = "[Image removed - not recoverable. Use store_fact to save key observations before compaction.]"
                     
@@ -1429,7 +1451,7 @@ class LayeredCompactionStrategy:
                 
                 hint_text = (
                     f"[{item_type.title()} compacted. "
-                    f"Use recall(query=\"{file_path}\") to reload.]"
+                    f"read(ref=\"{file_path}\") loads it again.]"
                 )
                 hints_to_add.append(hint_text)
                 tokens_saved += inline_tokens
@@ -1454,19 +1476,18 @@ class LayeredCompactionStrategy:
     
     async def _apply_layer1(self, result: CompactionResult) -> None:
         """Layer 1: Reversible compaction.
-        
+
         - Store tool outputs with references (auto-archives large results > max_size)
-        - Create variables for large content blocks
-        - Compact text_file items in multimodal content
+        - Move attached text files to the tool-result store
+        - Evict inline media, storing it to disk first
         """
         logger.debug("Applying Layer 1: Reversible compaction")
-        
+
         messages = result.modified_messages
-        
+
         # Process messages in reverse (newer first, but skip last N tool results UNLESS too large)
         tool_results_seen = 0
-        assistant_messages_seen = 0
-        
+
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             
@@ -1555,28 +1576,12 @@ class LayeredCompactionStrategy:
                             f"({token_count} tokens, exceeds max_inline_size)"
                         )
             
-            # Process assistant messages with large content
-            elif msg.get("role") == "assistant":
-                assistant_messages_seen += 1
-                
-                # Skip recent assistant messages - they are still relevant to the conversation
-                if assistant_messages_seen <= self.config.assistant_keep_last:
-                    continue
-                
-                content = msg.get("content")
-                if content and isinstance(content, str):
-                    token_count = estimate_content_tokens(content)
-                    
-                    if token_count >= self.config.variable_min_size:
-                        var_name, summary = await self.variable_manager.create_variable(content)
-                        if var_name:  # Non-empty var_name means variable was created
-                            var_ref = f"{var_name} [{summary}]"
-                            messages[i] = {**msg, "content": var_ref}
-                            result.variables_created += 1
-                            result.tokens_saved += (
-                                token_count - estimate_content_tokens(var_ref)
-                            )
-            
+            # Long assistant messages used to be replaced by a $VAR reference
+            # here. Measured over 1000 production compactions that fired 9
+            # times against 3730 tool results, while rewriting an old message
+            # broke the provider prompt cache from that point on every time.
+            # Layer 2 archives them by age instead, which is what actually ran.
+
             # Process user messages with multimodal content
             # Only skip the LAST user message for audio/image/video media preservation
             # text_file items should always be processed (they are code/text)
@@ -1601,7 +1606,6 @@ class LayeredCompactionStrategy:
         result.final_tokens = self._estimate_messages_tokens(messages)
         logger.debug(
             f"Layer 1 complete: stored {result.tool_results_stored} tool results, "
-            f"created {result.variables_created} variables, "
             f"saved {result.tokens_saved} tokens"
         )
     
@@ -1723,20 +1727,17 @@ class LayeredCompactionStrategy:
             f"Layer 2 complete: archived {result.messages_archived} messages "
             f"(including tool_call pairs)"
         )
-        
-        # Cleanup unreferenced variables after archiving messages
-        removed = await self.variable_manager.cleanup_unused_variables(messages)
-        if removed > 0:
-            logger.debug(f"Cleaned up {removed} unreferenced variables")
 
     async def _apply_layer3(self, result: CompactionResult) -> None:
-        """Layer 3: Irreversible compaction.
-        
-        - Drop old messages entirely
-        - Ensures tool_calls and tool_results are dropped together
-        - Compress remaining summaries
+        """Layer 3: last-resort compaction — messages leave the conversation.
+
+        "Irreversible" used to be literal: this layer deleted outright, while
+        Pre-Layer P right next to it wrote everything to the archive first. Same
+        operation, two different answers to "is the content gone afterwards".
+        It goes through the same archive-then-delete path now, so what leaves
+        the view here is still reachable through the retrieval tools.
         """
-        logger.debug("Applying Layer 3: Irreversible compaction")
+        logger.debug("Applying Layer 3: dropping old messages")
         
         messages = result.modified_messages
         
@@ -1754,15 +1755,14 @@ class LayeredCompactionStrategy:
         
         for i, msg in enumerate(messages):
             role = msg.get("role")
-            
-            # Always keep system messages
-            if role == "system" and self.config.keep_system_messages:
+
+            if self._is_protected(msg):
                 continue
-            
+
             # Calculate message age
             message_turn = sum(1 for ui in user_indices if ui <= i)
             turns_old = current_turn - message_turn
-            
+
             if turns_old >= self.config.drop_after_turns:
                 indices_to_remove.add(i)
                 
@@ -1778,11 +1778,10 @@ class LayeredCompactionStrategy:
                     if tc_id and tc_id in tool_map:
                         indices_to_remove.update(tool_map[tc_id])
         
-        # Remove in reverse order to preserve indices
-        result.messages_dropped = len(indices_to_remove)
-        for i in sorted(indices_to_remove, reverse=True):
-            del messages[i]
-        
+        result.messages_dropped = await self._archive_then_remove(
+            messages, indices_to_remove, "Layer 3"
+        )
+
         # The summaries on the remaining archive references STAY. This pass used
         # to strip them down to a bare ref_id, which was consistent while there
         # was no way to follow a reference: a pointer you cannot dereference is
@@ -1798,18 +1797,9 @@ class LayeredCompactionStrategy:
             f"Layer 3 complete: dropped {result.messages_dropped} messages "
             f"(including tool_call pairs)"
         )
-        
-        # Ensure valid message sequence after dropping
-        extra_dropped = self._ensure_valid_message_sequence(messages, "Layer 3")
-        result.messages_dropped += extra_dropped
-        
+
         # Note: max_messages limit is now handled by Pre-Layer P at the start of compact()
         # This ensures message count is limited even when token thresholds aren't reached
-        
-        # Cleanup unreferenced variables after dropping messages
-        removed = await self.variable_manager.cleanup_unused_variables(messages)
-        if removed > 0:
-            logger.debug(f"Cleaned up {removed} unreferenced variables")
 
     async def _prune_by_message_count(self, result: CompactionResult) -> None:
         """Pre-Layer P: Prune oldest messages to enforce max_messages limit.
@@ -1835,7 +1825,14 @@ class LayeredCompactionStrategy:
         if len(messages) <= max_msgs:
             return
 
-        excess = len(messages) - max_msgs
+        # Prune down to the low-water mark, not back to the limit. Trimming to
+        # exactly max_messages means the next step is over it again and prunes
+        # again, and every prune rewrites the front of the conversation — so
+        # the provider prompt cache was being thrown away on EVERY step once a
+        # session reached the limit. Going deeper once buys `headroom` quiet
+        # steps for the same single cache break.
+        target = max(1, max_msgs - max(0, self.config.max_messages_headroom))
+        excess = len(messages) - target
 
         # The breadcrumb below is itself a message. Removing exactly `excess`
         # and then adding it would land one over the limit and re-trigger on
@@ -1846,24 +1843,14 @@ class LayeredCompactionStrategy:
 
         logger.info(
             f"Pre-Layer P: {len(messages)} messages exceeds limit of {max_msgs}, "
-            f"pruning ~{excess} oldest messages"
+            f"pruning ~{excess} oldest down to {target}"
         )
 
         # Build tool_call mapping to keep pairs together
         tool_map = self._build_tool_call_map(messages)
 
-        protected: set[int] = set()
-        if self.config.keep_system_messages:
-            protected = {
-                i for i, msg in enumerate(messages) if msg.get("role") == "system"
-            }
-        # The breadcrumb is protected on its TYPE, not on its role. With
-        # keep_system_messages off it is otherwise both the cheapest thing in
-        # the list (rank 1) and the oldest, so it gets evicted and re-added
-        # every single round: the count resets to the current round forever and
-        # one real message dies per step to pay for it.
-        protected.update(i for i, msg in enumerate(messages)
-                         if _is_prune_notice(msg))
+        protected = {i for i, msg in enumerate(messages)
+                     if self._is_protected(msg)}
 
         user_indices = [
             i for i, msg in enumerate(messages) if msg.get("role") == "user"
@@ -1880,50 +1867,9 @@ class LayeredCompactionStrategy:
             messages, tool_map, protected, excess
         )
 
-        snapshot = list(messages)
-        selected = [messages[i] for i in sorted(indices_to_remove)]
-
-        # Archive BEFORE deleting. Placeholders are skipped inside: their body
-        # is already in a store, and archiving a pointer would only produce a
-        # pointer to a pointer (the chain Layer 2 guards against).
-        if not await self._archive_pruned(selected):
-            # Nothing was stored, so nothing may be dropped. An over-long
-            # context is a cost; destroyed content is not recoverable, and the
-            # breadcrumb would be promising a lookup that cannot succeed. The
-            # token-based layers still run after this.
-            logger.warning(
-                f"Pre-Layer P: skipping the prune of {len(selected)} messages — "
-                f"the archive write failed and dropping them would destroy them"
-            )
-            return
-
-        for idx in sorted(indices_to_remove, reverse=True):
-            del messages[idx]
-
-        # Ensure valid message sequence after pruning
-        # Note: _ensure_valid_message_sequence rebuilds tool_map internally at each iteration
-        extra_pruned = self._ensure_valid_message_sequence(messages, "Pre-Layer P")
-
-        # That pass deletes on its own account, so ask the list what actually
-        # went rather than trusting the selection. Identity, not equality:
-        # duplicate contents are common and nothing here rewrites a message.
-        survivors = {id(m) for m in messages}
-        removed = [m for m in snapshot if id(m) not in survivors]
-        if extra_pruned:
-            # These are already gone — the sequence fix deletes to make the
-            # request valid at all, and that cannot be undone. Archive what we
-            # can and say so if it fails.
-            already = {id(m) for m in selected}
-            if not await self._archive_pruned(
-                [m for m in removed if id(m) not in already]
-            ):
-                logger.error(
-                    f"Pre-Layer P: {extra_pruned} messages removed by the "
-                    f"sequence fix could not be archived and are lost"
-                )
-        pruned_count = len(removed)
-
-        self._leave_prune_notice(messages, pruned_count)
+        pruned_count = await self._archive_then_remove(
+            messages, indices_to_remove, "Pre-Layer P"
+        )
 
         result.messages_pruned = pruned_count
         result.final_tokens = self._estimate_messages_tokens(messages)
@@ -2067,6 +2013,69 @@ class LayeredCompactionStrategy:
                 groups[member] = unit
         return groups
 
+    async def _archive_then_remove(
+        self,
+        messages: list[dict[str, Any]],
+        indices_to_remove: set[int],
+        caller: str,
+    ) -> int:
+        """Store the selected messages, then delete them. Returns how many went.
+
+        The ONLY way a message may leave the conversation. Both callers used to
+        carry their own copy of this sequence and they disagreed on the one
+        thing that matters: Pre-Layer P archived first, Layer 3 deleted outright.
+        A single path means a new layer cannot get that wrong by omission.
+
+        Zero means nothing was removed — the archive write failed and the
+        messages are still in the list. That order is deliberate: the write is
+        all-or-nothing (one malformed message aborts the batch), so deleting
+        anyway would destroy the whole batch while the breadcrumb promises they
+        can be looked up. An over-long context is a cost; destroyed content is
+        not recoverable, and the remaining layers still run.
+        """
+        if not indices_to_remove:
+            return 0
+
+        snapshot = list(messages)
+        selected = [messages[i] for i in sorted(indices_to_remove)]
+
+        # Placeholders are skipped inside: their body is already in a store, and
+        # archiving a pointer would only produce a pointer to a pointer.
+        if not await self._archive_pruned(selected):
+            logger.warning(
+                f"{caller}: skipping the removal of {len(selected)} messages — "
+                f"the archive write failed and dropping them would destroy them"
+            )
+            return 0
+
+        for idx in sorted(indices_to_remove, reverse=True):
+            del messages[idx]
+
+        # Note: _ensure_valid_message_sequence rebuilds tool_map internally at
+        # each iteration, since indices move as it deletes.
+        extra = self._ensure_valid_message_sequence(messages, caller)
+
+        # That pass deletes on its own account, so ask the list what actually
+        # went rather than trusting the selection. Identity, not equality:
+        # duplicate contents are common and nothing here rewrites a message.
+        survivors = {id(m) for m in messages}
+        removed = [m for m in snapshot if id(m) not in survivors]
+        if extra:
+            # These are already gone — the sequence fix deletes to make the
+            # request valid at all, and that cannot be undone. Archive what we
+            # can and say so if it fails.
+            already = {id(m) for m in selected}
+            if not await self._archive_pruned(
+                [m for m in removed if id(m) not in already]
+            ):
+                logger.error(
+                    f"{caller}: {extra} messages removed by the sequence fix "
+                    f"could not be archived and are lost"
+                )
+
+        self._leave_prune_notice(messages, len(removed))
+        return len(removed)
+
     async def _archive_pruned(self, removed: list[dict[str, Any]]) -> bool:
         """Write pruned messages to the archive. True when they are safe to drop.
 
@@ -2093,19 +2102,6 @@ class LayeredCompactionStrategy:
                    if _ref_type(m) is None and not _is_retrieval_result(m)]
         if not payload:
             return True
-
-        # Variables are expanded into the archived copy. Layer 1 replaces long
-        # assistant prose with a `$VAR_n` reference, and Layer 2/3 later call
-        # cleanup_unused_variables(), which scans only the LIVE messages — so
-        # the body of a variable whose last reference Pre-Layer P just removed
-        # is deleted in the same compaction. The archived text would keep a
-        # dangling `$VAR_n` and the content would be gone from every store.
-        expand = self.variable_manager.expand_variables
-        payload = [
-            {**m, "content": expand(m["content"])}
-            if isinstance(m.get("content"), str) and "$VAR_" in m["content"] else m
-            for m in payload
-        ]
 
         # Embedding is the whole cost of a large batch: 4682 messages take 0.08 s
         # as rows and 80 s with the vector index. In steady state that never
@@ -2179,8 +2175,8 @@ class LayeredCompactionStrategy:
                 "type": PRUNE_NOTICE_TYPE,
                 "total_removed": total,
                 # No promise that all N sit in the history archive: the count
-                # includes placeholders whose bodies live in the tool-result and
-                # variable stores instead. "Retrievable" is true for all of them.
+                # includes placeholders whose bodies live in the tool-result
+                # store instead. "Retrievable" is true for all of them.
                 "hint": (
                     f"{total} earlier messages of this conversation were moved "
                     f"out of view to keep it within limits. They are stored, "
@@ -2350,7 +2346,7 @@ class LayeredCompactionStrategy:
         # artifacts (OpenAI encrypted reasoning items, Gemini thought
         # signatures) are integrity-protected over the EXACT history that
         # produced them. If this compaction pass mutated the history in ANY
-        # way — tool results swapped for refs, content replaced by variables,
+        # way — tool results swapped for refs, attached files stored away,
         # media evicted, messages archived/dropped/pruned — those artifacts
         # are stale and will fail provider verification on a later turn
         # (HTTP 400 "encrypted content … could not be verified", deep into a
@@ -2358,7 +2354,6 @@ class LayeredCompactionStrategy:
         # resets deterministically instead of failing reactively.
         mutated = (
             result.tool_results_stored
-            + result.variables_created
             + result.messages_archived
             + result.messages_dropped
             + result.media_deduplicated
@@ -2399,6 +2394,11 @@ class LayeredCompactionStrategy:
         eine Gesamtzahl. Also nur konstante Beschreibungen hier, nichts,
         was sich pro Turn bewegt.
 
+        Die Variablen-Sektion war genau so ein Verstoss: sie listete JEDE
+        angelegte Variable mit Namen und Zusammenfassung, aenderte sich also
+        bei jeder neuen -- und entwertete den Cache fuer die ganze
+        Konversation dahinter. Sie ist mit der $VAR-Ersetzung weg.
+
         Returns:
             System prompt section
         """
@@ -2415,19 +2415,14 @@ class LayeredCompactionStrategy:
                 "the matching part, or read(ref=ref_id) to page through it."
             )
         
-        # Variables
-        var_section = self.variable_manager.to_system_prompt_section()
-        if var_section:
-            sections.append(var_section)
-        
         # Archival memory - wrap sync SQLite operation
         archive_stats = await asyncio.to_thread(self.archival_memory.get_stats)
         if archive_stats["total_messages"] > 0:
             sections.append(
                 "## Conversation Archive\n"
-                "Older messages have been archived. "
-                "When you see a JSON reference with `type: archived_ref`, the full message "
-                "has been stored and can be retrieved using the `recall` tool."
+                "Older messages have been archived. When you see a JSON reference "
+                "with `type: archived_ref`, read(ref=ref_id) returns that message; "
+                "list(section='history') shows what else is back there."
             )
         
         # Core memory

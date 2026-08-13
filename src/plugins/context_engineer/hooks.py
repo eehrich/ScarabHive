@@ -22,19 +22,16 @@ from .compaction import CompactionConfig, LayeredCompactionStrategy
 from .core_memory import CoreMemory
 from .media_store import MediaStore
 from .paging import (
-    DEFAULT_READ_CHARS,
-    MAX_READ_CHARS,
     find_in_text,
     slice_text,
 )
 from .tool_result_store import ToolResultStore
-from .variable_manager import VariableManager
 
 logger = logging.getLogger(__name__)
 
 #: What the list tool can browse. Named sections, not guessed ones — the whole
 #: point of replacing `recall` is that the caller says which store it means.
-CONTEXT_SECTIONS = ("history", "tool_results", "variables", "facts")
+CONTEXT_SECTIONS = ("history", "tool_results", "facts")
 
 #: Rows per list page. A map has to fit in the context it is describing.
 MAX_LIST_LIMIT = 50
@@ -42,7 +39,6 @@ MAX_LIST_LIMIT = 50
 #: Reference shapes, in the order they are tested. Each store owns a distinct
 #: prefix, so dispatch is a lookup rather than the heuristic `recall` used.
 _REF_PATTERNS = (
-    ("variable", re.compile(r"\A\$?VAR_\d+\Z", re.IGNORECASE)),
     ("tool_result", re.compile(r"\A\$?(TR_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+)\Z")),
     ("message", re.compile(r"\Aarch_[A-Za-z0-9]+\Z")),
 )
@@ -110,6 +106,20 @@ def _resolve_archive_chain(archival: "ArchivalMemory", ref: str):
     return None, hops
 
 
+def _page_start(offset: int | None, total: int, limit: int) -> int:
+    """Where a browse page starts, in file-reader terms.
+
+    ``None`` means the caller named no position and gets the tail — the newest
+    entries, which is what an agent asking "what left my context" wants. A
+    negative offset counts back from the end, a non-negative one is absolute.
+    Same rule as ``slice_text`` inside a single item, so one habit covers both.
+    """
+    if offset is None:
+        return max(0, total - limit)
+    offset = int(offset)
+    return max(0, total + offset) if offset < 0 else offset
+
+
 def _one_line(text: str, limit: int) -> str:
     """Collapse to a single bounded line — list rows must stay scannable."""
     flat = " ".join(str(text or "").split())
@@ -141,7 +151,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
     """Schema-based plugin for advanced context engineering.
     
     Implements layered compaction strategy:
-    1. Reversible: Store tool results, create variables
+    1. Reversible: Store tool results and attached files, evict media
     2. Semi-Reversible: Archive old messages with summaries
     3. Irreversible: Drop very old messages
     
@@ -199,15 +209,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.tool_result_keep_last = int(config.get("tool_result_keep_last", 3))
         self.tool_result_max_inline_size = int(config.get("tool_result_max_inline_size", 5000))
         
-        # Variable settings
-        self.variable_min_size = int(config.get("variable_min_size", 200))
-        self.assistant_keep_last = int(config.get("assistant_keep_last", 3))
-        
         # Message settings
         self.archive_after_turns = int(config.get("archive_after_turns", 10))
         self.drop_after_turns = int(config.get("drop_after_turns", 50))
         self.keep_system_messages = bool(config.get("keep_system_messages", True))
-        self.max_messages = int(config.get("max_messages", 0))  # 0 = disabled
+        self.max_messages = int(config.get("max_messages", 0))
+        self.max_messages_headroom = int(config.get("max_messages_headroom", 50))  # 0 = disabled
         
         # Rate limiting
         self.min_time_between = float(config.get("min_time_between_compactions", 120.0))
@@ -286,7 +293,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 means later calls with different overrides are ignored.
 
         Returns:
-            Dict with tool_store, variable_manager, core_memory, archival_memory
+            Dict with tool_store, core_memory, archival_memory
         """
         if session_id in self._session_components:
             # Update last accessed time
@@ -307,10 +314,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             
             # Initialize components
             tool_store = ToolResultStore(session_path / "tool_results.db")
-            variable_manager = VariableManager(
-                min_content_tokens=self.variable_min_size,
-                storage_path=session_path / "variables.json"
-            )
             core_memory = CoreMemory(storage_path=session_path / "core_memory.json")
             archival_memory = ArchivalMemory(
                 session_path / "archive.db",
@@ -342,12 +345,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 tool_result_min_size=_o("tool_result_min_size", self.tool_result_min_size),
                 tool_result_keep_last=_o("tool_result_keep_last", self.tool_result_keep_last),
                 tool_result_max_inline_size=_o("tool_result_max_inline_size", self.tool_result_max_inline_size),
-                variable_min_size=_o("variable_min_size", self.variable_min_size),
-                assistant_keep_last=_o("assistant_keep_last", self.assistant_keep_last),
                 archive_after_turns=_o("archive_after_turns", self.archive_after_turns),
                 drop_after_turns=_o("drop_after_turns", self.drop_after_turns),
                 keep_system_messages=_o("keep_system_messages", self.keep_system_messages),
                 max_messages=_o("max_messages", self.max_messages),
+                max_messages_headroom=_o("max_messages_headroom", self.max_messages_headroom),
                 deduplicate_media=_o("deduplicate_media", self.deduplicate_media),
                 compact_media_after_user_message=_o("compact_media_after_user_message", self.compact_media_after_user_message),
                 compact_media_after_final_response=_o("compact_media_after_final_response", self.compact_media_after_final_response),
@@ -366,7 +368,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Create strategy
             strategy = LayeredCompactionStrategy(
                 tool_store=tool_store,
-                variable_manager=variable_manager,
                 core_memory=core_memory,
                 archival_memory=archival_memory,
                 config=compaction_config,
@@ -375,7 +376,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             
             self._session_components[session_id] = {
                 "tool_store": tool_store,
-                "variable_manager": variable_manager,
                 "core_memory": core_memory,
                 "archival_memory": archival_memory,
                 "media_store": media_store,
@@ -554,7 +554,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             something_compacted = (
                 result.tokens_saved > 0 or
                 result.tool_results_stored > 0 or
-                result.variables_created > 0 or
                 result.messages_archived > 0 or
                 result.messages_dropped > 0 or
                 result.messages_pruned > 0 or  # Pre-Layer P (message count limit)
@@ -592,7 +591,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "reduction_percent": result.reduction_percent,
                     "layers_applied": result.layers_applied,
                     "tool_results_stored": result.tool_results_stored,
-                    "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
                     "messages_dropped": result.messages_dropped,
                     "messages_pruned": result.messages_pruned,  # Pre-Layer P
@@ -733,7 +731,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "reduction_percent": result.reduction_percent,
                     "layers_applied": result.layers_applied,
                     "tool_results_stored": result.tool_results_stored,
-                    "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
                     "messages_dropped": result.messages_dropped,
                     "messages_pruned": result.messages_pruned,
@@ -865,191 +862,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
     
     # === MCP Tool Handlers ===
     # These are called by the MCP server when tools are invoked
-    
-    def get_tool_handlers(self) -> dict[str, Any]:
-        """Get tool handler functions for MCP server.
-        
-        Returns:
-            Dict mapping tool names to handler functions
-        """
-        return {
-            "recall": self._handle_recall,
-            "store_fact": self._handle_store_fact,
-            # Legacy handlers kept for backward compatibility but no longer exposed as tools
-            "get_variable": self._handle_get_variable,
-            "get_tool_result": self._handle_get_tool_result,
-            "stats": self._handle_stats,
-            "restore_multimodal": self._handle_restore_multimodal
-        }
-    
-    def _detect_recall_type(self, query: str) -> str:
-        """Detect what type of recall is needed based on query pattern.
-        
-        Returns one of: 'variable', 'tool_result', 'media', 'archive'
-        """
-        import re
-        from pathlib import Path
-        
-        query_stripped = query.strip()
-        
-        # Pattern 1: Variable reference ($VAR_N or VAR_N)
-        if re.match(r'^\$?VAR_\d+$', query_stripped, re.IGNORECASE):
-            return 'variable'
-        
-        # Pattern 2: Tool result reference (TR_xxx, $TR_xxx, or call_xxx).
-        # Accept the leading "$" too — agents often conflate TR_ refs with
-        # variable syntax (e.g. "$TR_BFCDDCA04A") and would otherwise get
-        # misrouted into the variable handler.
-        if (re.match(r'^\$?TR_[a-zA-Z0-9_]+$', query_stripped)
-                or re.match(r'^call_[a-zA-Z0-9_]+$', query_stripped)):
-            return 'tool_result'
-        
-        # Pattern 3: Looks like a hex hash (8+ hex chars)
-        if re.match(r'^[a-f0-9]{8,}$', query_stripped, re.IGNORECASE):
-            return 'tool_result'
-        
-        # Pattern 4: File path with media extension
-        media_extensions = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac',
-                          '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
-                          '.mp4', '.webm', '.avi', '.mov'}
-        
-        # Check if it looks like a path
-        if '/' in query_stripped or '\\' in query_stripped or query_stripped.startswith('data/'):
-            suffix = Path(query_stripped).suffix.lower()
-            if suffix in media_extensions:
-                return 'media'
-        
-        # Default: archive search
-        return 'archive'
-    
-    async def _handle_recall(
-        self,
-        query: str,
-        mode: str = "auto",
-        limit: int = 5,
-        session_id: str = "default"
-    ) -> dict[str, Any]:
-        """Handle unified recall tool - auto-detects and retrieves any stored content.
-        
-        Supports:
-        - Archived messages (semantic/text search)
-        - Variables ($VAR_N)
-        - Tool results (TR_xxx or hash)
-        - Media files (file paths)
-        
-        Args:
-            query: Search query, variable name, reference, or file path
-            mode: Force specific mode or 'auto' to detect
-            limit: Max results for archive search
-            session_id: Session ID
-            
-        Returns:
-            Retrieved content based on detected/specified mode
-        """
-        
-        # Determine recall type
-        if mode == "auto":
-            recall_type = self._detect_recall_type(query)
-        else:
-            recall_type = mode
-        
-        # Handle each type
-        if recall_type == 'variable':
-            # Normalize variable name
-            var_name = query.strip().upper()
-            if not var_name.startswith('$'):
-                var_name = '$' + var_name
-            
-            return await self._handle_get_variable(
-                variable_name=var_name,
-                session_id=session_id,
-                mode="preview"
-            )
-        
-        elif recall_type == 'tool_result':
-            # Explicit TR_xxx lookup → return the FULL stored result. The
-            # 500-char preview default was for archive browsing; when the
-            # agent has a concrete reference it wants the data back, not a
-            # teaser (otherwise it loops calling the original tool again).
-            ref = query.strip()
-            if ref.startswith("$"):
-                ref = ref[1:]
-            return await self._handle_get_tool_result(
-                reference=ref,
-                session_id=session_id,
-                mode="full",
-            )
-        
-        elif recall_type == 'media':
-            return await self._handle_restore_multimodal(
-                path=query.strip(),
-                session_id=session_id
-            )
-        
-        elif recall_type == 'core_memory':
-            # Search only core memory facts
-            components = self._get_session_components(session_id)
-            core_memory: CoreMemory = components["core_memory"]
-            query_lower = query.lower()
-            matching_facts = [
-                {
-                    "content": f.content,
-                    "category": f.category,
-                    "importance": f.importance,
-                    "created_at": f.created_at.isoformat()
-                }
-                for f in core_memory.facts
-                if query_lower in f.content.lower()
-            ]
-            return {
-                "recall_type": "core_memory",
-                "query": query,
-                "core_memory_facts": matching_facts,
-                "core_memory_total": len(matching_facts),
-                "hint": "No matching facts found. Facts are stored via store_fact tool." if not matching_facts else None
-            }
-        
-        else:  # archive search + core memory fallback
-            components = self._get_session_components(session_id)
-            archival: ArchivalMemory = components["archival_memory"]
-            core_memory: CoreMemory = components["core_memory"]
-            
-            results = archival.search(query, limit=limit)
-            
-            # Also search core memory facts (store_fact targets)
-            query_lower = query.lower()
-            matching_facts = [
-                {
-                    "content": f.content,
-                    "category": f.category,
-                    "importance": f.importance,
-                    "created_at": f.created_at.isoformat()
-                }
-                for f in core_memory.facts
-                if query_lower in f.content.lower()
-            ]
-            
-            archive_results = [
-                {
-                    "id": r.id,
-                    "role": r.role,
-                    "summary": r.summary,
-                    "content_preview": r.content[:500] + "..." if len(r.content) > 500 else r.content,
-                    "timestamp": r.timestamp.isoformat()
-                }
-                for r in results
-            ]
-            
-            return {
-                "recall_type": "archive",
-                "query": query,
-                "results": archive_results,
-                "total_found": len(archive_results),
-                "core_memory_facts": matching_facts if matching_facts else None,
-                "core_memory_total": len(matching_facts) if matching_facts else 0,
-                "hint": "Use recall(query='$VAR_N') for variables, recall(query='TR_xxx') for tool results, or recall(query='/path/to/file.wav') for media" if not archive_results and not matching_facts else None
-            }
-    
+
     async def _handle_store_fact(
         self,
         fact: str,
@@ -1080,294 +893,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             "importance": importance,
             "total_facts": len(core_memory.facts)
         }
-    
-    async def _handle_get_variable(
-        self,
-        variable_name: str,
-        session_id: str = "default",
-        mode: str = "preview",
-        offset: int = 0,
-        limit: int = 1000,
-        search: str | None = None,
-        context_chars: int = 150
-    ) -> dict[str, Any]:
-        """Handle get_variable tool - retrieve stored variable with pagination.
-        
-        Args:
-            variable_name: Variable name (e.g., $VAR_1)
-            session_id: Session ID
-            mode: Retrieval mode (preview, chunk, search, full)
-            offset: Start position for chunk mode
-            limit: Max chars for chunk mode (max 10000 per request)
-            search: Search query for search mode
-            context_chars: Context around search matches
-            
-        Returns:
-            Variable content (possibly truncated) or error
-        """
-        # Validate pagination limit
-        max_limit = 5000
-        if limit > max_limit:
-            return {
-                "found": False,
-                "variable_name": variable_name,
-                "error": f"Limit {limit} exceeds maximum allowed {max_limit}. Use multiple requests with offset to retrieve large content."
-            }
-        
-        components = self._get_session_components(session_id)
-        variable_manager: VariableManager = components["variable_manager"]
-        
-        entry = variable_manager.get_variable(variable_name)
-        
-        if not entry:
-            return {
-                "found": False,
-                "variable_name": variable_name,
-                "error": f"Variable {variable_name} not found"
-            }
-        
-        content = entry.content
-        total_chars = len(content)
-        
-        # Apply mode-specific content extraction
-        if mode == "preview":
-            # Return first ~500 chars with truncation indicator
-            preview_limit = 500
-            extracted = content[:preview_limit]
-            truncated = total_chars > preview_limit
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "preview",
-                "content": extracted,
-                "truncated": truncated,
-                "total_chars": total_chars,
-                "returned_chars": len(extracted),
-                "content_type": entry.content_type,
-                "hint": "Use mode='chunk' with offset/limit or mode='search' to access more content" if truncated else None
-            }
-        
-        elif mode == "chunk":
-            # Paginated access
-            extracted = content[offset:offset + limit]
-            has_more = (offset + limit) < total_chars
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "chunk",
-                "content": extracted,
-                "offset": offset,
-                "limit": limit,
-                "returned_chars": len(extracted),
-                "total_chars": total_chars,
-                "has_more": has_more,
-                "next_offset": offset + limit if has_more else None,
-                "content_type": entry.content_type
-            }
-        
-        elif mode == "search":
-            # Search within content
-            if not search:
-                return {
-                    "found": True,
-                    "variable_name": variable_name,
-                    "mode": "search",
-                    "error": "search parameter required for mode='search'"
-                }
-            
-            matches = []
-            search_lower = search.lower()
-            content_lower = content.lower()
-            pos = 0
-            
-            while len(matches) < 10:  # Limit to 10 matches
-                idx = content_lower.find(search_lower, pos)
-                if idx == -1:
-                    break
-                
-                # Extract context around match
-                start = max(0, idx - context_chars)
-                end = min(total_chars, idx + len(search) + context_chars)
-                snippet = content[start:end]
-                
-                # Add ellipsis indicators
-                prefix = "..." if start > 0 else ""
-                suffix = "..." if end < total_chars else ""
-                
-                matches.append({
-                    "position": idx,
-                    "snippet": f"{prefix}{snippet}{suffix}"
-                })
-                pos = idx + 1
-            
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "search",
-                "query": search,
-                "match_count": len(matches),
-                "matches": matches,
-                "total_chars": total_chars,
-                "content_type": entry.content_type,
-                "hint": "Use mode='chunk' with offset near match position for more context" if matches else None
-            }
-        
-        else:  # mode == "full"
-            # Return everything (use sparingly!)
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "full",
-                "content": content,
-                "total_chars": total_chars,
-                "content_type": entry.content_type,
-                "token_count": entry.token_count,
-                "created_at": entry.created_at.isoformat(),
-                "warning": "Full content returned - consider using preview/chunk/search to save tokens"
-            }
-    
-    async def _handle_get_tool_result(
-        self,
-        reference: str,
-        session_id: str = "default",
-        mode: str = "preview",
-        offset: int = 0,
-        limit: int = 1000,
-        search: str | None = None,
-        context_chars: int = 150
-    ) -> dict[str, Any]:
-        """Handle get_tool_result tool - retrieve stored tool output with pagination.
-        
-        Args:
-            reference: Reference ID or hash
-            session_id: Session ID
-            mode: Retrieval mode (preview, chunk, search, full)
-            offset: Start position for chunk mode
-            limit: Max chars for chunk mode (max 10000 per request)
-            search: Search query for search mode
-            context_chars: Context around search matches
-            
-        Returns:
-            Tool result content (possibly truncated) or error
-        """
-        # Validate pagination limit
-        max_limit = 5000
-        if limit > max_limit:
-            return {
-                "found": False,
-                "reference": reference,
-                "error": f"Limit {limit} exceeds maximum allowed {max_limit}. Use multiple requests with offset to retrieve large content."
-            }
-        
-        components = self._get_session_components(session_id)
-        tool_store: ToolResultStore = components["tool_store"]
-        
-        # Try by ID first, then by hash
-        entry = tool_store.retrieve(reference)
-        if not entry:
-            entry = tool_store.retrieve_by_hash(reference)
-        
-        if not entry:
-            return {
-                "found": False,
-                "reference": reference,
-                "error": f"Tool result with reference '{reference}' not found"
-            }
-        
-        content = entry.content
-        total_chars = len(content)
-        
-        # Apply mode-specific content extraction
-        if mode == "preview":
-            preview_limit = 500
-            extracted = content[:preview_limit]
-            truncated = total_chars > preview_limit
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "preview",
-                "content": extracted,
-                "truncated": truncated,
-                "total_chars": total_chars,
-                "returned_chars": len(extracted),
-                "hint": "Use mode='chunk' with offset/limit or mode='search' to access more content" if truncated else None
-            }
-        
-        elif mode == "chunk":
-            extracted = content[offset:offset + limit]
-            has_more = (offset + limit) < total_chars
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "chunk",
-                "content": extracted,
-                "offset": offset,
-                "limit": limit,
-                "returned_chars": len(extracted),
-                "total_chars": total_chars,
-                "has_more": has_more,
-                "next_offset": offset + limit if has_more else None
-            }
-        
-        elif mode == "search":
-            if not search:
-                return {
-                    "found": True,
-                    "reference": reference,
-                    "tool_name": entry.tool_name,
-                    "mode": "search",
-                    "error": "search parameter required for mode='search'"
-                }
-            
-            matches = []
-            search_lower = search.lower()
-            content_lower = content.lower()
-            pos = 0
-            
-            while len(matches) < 10:
-                idx = content_lower.find(search_lower, pos)
-                if idx == -1:
-                    break
-                
-                start = max(0, idx - context_chars)
-                end = min(total_chars, idx + len(search) + context_chars)
-                snippet = content[start:end]
-                
-                prefix = "..." if start > 0 else ""
-                suffix = "..." if end < total_chars else ""
-                
-                matches.append({
-                    "position": idx,
-                    "snippet": f"{prefix}{snippet}{suffix}"
-                })
-                pos = idx + 1
-            
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "search",
-                "query": search,
-                "match_count": len(matches),
-                "matches": matches,
-                "total_chars": total_chars,
-                "hint": "Use mode='chunk' with offset near match position for more context" if matches else None
-            }
-        
-        else:  # mode == "full"
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "full",
-                "content": content,
-                "total_chars": total_chars,
-                "token_count": entry.token_count,
-                "stored_at": entry.timestamp.isoformat(),
-                "warning": "Full content returned - consider using preview/chunk/search to save tokens"
-            }
     
     @staticmethod
     def _is_within(path: "Path", root: "Path") -> bool:
@@ -1513,7 +1038,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         components = self._get_session_components(session_id)
         
         tool_store: ToolResultStore = components["tool_store"]
-        variable_manager: VariableManager = components["variable_manager"]
         core_memory: CoreMemory = components["core_memory"]
         archival: ArchivalMemory = components["archival_memory"]
         
@@ -1528,7 +1052,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         
         return {
             "tool_results": tool_store.get_stats(),
-            "variables": variable_manager.get_stats(),
             "core_memory": {
                 "facts": len(core_memory.facts),
                 "facts_count": len(core_memory.facts),  # Added for UI compatibility
@@ -1564,7 +1087,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
     #
     # Replaces the single `recall` tool, which took a free-text query and
     # guessed from its shape which of five stores was meant. The guess was
-    # documented as misfiring (agents writing "$TR_…" landed in the variable
+    # documented as misfiring (agents writing "$TR_…" landed in the wrong
     # handler), and the stores answered in four different shapes, so no stable
     # expectation could form. These three verbs are the ones every model is
     # already fluent in: what is there, where is it, give me a piece of it.
@@ -1573,7 +1096,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
     async def _handle_context_list(
         self,
         section: str | None = None,
-        offset: int = 0,
+        offset: int | None = None,
         limit: int = 20,
         role: str | None = None,
         filter: str | None = None,
@@ -1591,9 +1114,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         defaults to the conversation; filtering has no natural order across
         stores and searches all of them. Both are overridable, and the reply
         echoes which section it used.
+
+        Offsets read like a file, and all sections are chronological:
+        no offset → the LAST page (what just left the view, which is what an
+        agent asks about); a negative offset counts back from the end; a
+        non-negative one is absolute. Defaulting to the oldest page meant the
+        recent entries — the ones the conversation was actually about — could
+        only be reached by knowing the total and doing the arithmetic.
         """
         limit = max(1, min(int(limit), MAX_LIST_LIMIT))
-        offset = max(0, int(offset))
         needle = (filter or "").strip()
         section = section or ("all" if needle else "history")
         components = self._get_session_components(session_id)
@@ -1615,6 +1144,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         wanted = CONTEXT_SECTIONS if section == "all" else (section,)
         entries: list[dict[str, Any]] = []
         total = 0
+        # Only meaningful while browsing; a filter ranks rather than orders, so
+        # it has no page to be at. Resolved per section against that section's
+        # count — safe because browsing is always exactly one section.
+        start = max(0, int(offset)) if offset is not None else 0
 
         if "history" in wanted:
             archival: ArchivalMemory = components["archival_memory"]
@@ -1626,9 +1159,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     # offering it: the caller believes it narrowed the result.
                     found = [m for m in found if m.role == role]
             else:
-                found = archival.get_session_messages(
-                    session_id=session_id, limit=limit, role=role, offset=offset)
                 total += archival.count_session_messages(session_id, role=role)
+                start = _page_start(offset, total, limit)
+                found = archival.get_session_messages(
+                    session_id=session_id, limit=limit, role=role, offset=start)
             for m in found:
                 row = {
                     "ref": m.id, "kind": "message", "role": m.role,
@@ -1645,8 +1179,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             if needle:
                 rows = tool_store.search_entries(needle, session_id=session_id, limit=limit)
             else:
-                rows = tool_store.list_entries(session_id, offset=offset, limit=limit)
                 total += tool_store.count_entries(session_id)
+                start = _page_start(offset, total, limit)
+                rows = tool_store.list_entries(session_id, offset=start, limit=limit)
             for r in rows:
                 row = {
                     "ref": r["ref"], "kind": "tool_result", "tool": r["tool"],
@@ -1658,23 +1193,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     row["summary"] = _one_line(r.get("summary") or "", 200)
                 entries.append(row)
 
-        if "variables" in wanted:
-            variable_manager: VariableManager = components["variable_manager"]
-            rows = variable_manager.get_stats().get("variables", [])
-            if needle:
-                rows = [r for r in rows
-                        if needle.lower() in (r.get("preview") or "").lower()
-                        or needle.lower() in r["name"].lower()]
-            else:
-                total += len(rows)
-                rows = rows[offset:offset + limit]
-            for r in rows[:limit]:
-                entries.append({
-                    "ref": r["name"], "kind": "variable",
-                    "content_type": r.get("content_type"), "tokens": r.get("tokens"),
-                    "summary": _one_line(r.get("preview") or "", 200),
-                })
-
         if "facts" in wanted:
             core_memory: CoreMemory = components["core_memory"]
             facts = list(core_memory.facts)
@@ -1683,7 +1201,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                          if needle.lower() in getattr(f, "content", "").lower()][:limit]
             else:
                 total += len(facts)
-                facts = facts[offset:offset + limit]
+                start = _page_start(offset, total, limit)
+                facts = facts[start:start + limit]
             for f in facts:
                 row = {
                     "ref": None, "kind": "fact",
@@ -1711,9 +1230,14 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "the match is often the whole answer; read a ref only if you "
                 "need more of that item (find= gets just its matching parts)")
         else:
-            shown = offset + len(entries)
+            shown = start + len(entries)
             out["total"] = total
-            out["offset"] = offset
+            out["offset"] = start
+            # Both directions, because the default page is now the LAST one:
+            # with only next_offset a caller landing on the tail cannot tell
+            # that anything came before it.
+            out["has_more_before"] = start > 0
+            out["has_more_after"] = shown < total
             out["next_offset"] = shown if shown < total else None
         return out
 
@@ -1742,7 +1266,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "status": "error",
                 "error": f"'{ref}' is not a known reference",
                 "hint": ("refs look like arch_… (archived message), TR_… (tool "
-                         "result), $VAR_n (variable) or a media file path; "
+                         "result) or a media file path; "
                          "list and search return valid refs"),
             }
 
@@ -1774,46 +1298,24 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             result = await self._handle_restore_multimodal(path=ref, session_id=session_id)
             return {"status": "success", "ref": ref, "kind": "media", **result}
 
-        # Variables and tool results already page internally — reuse that instead
-        # of implementing the slicing a third time, then normalise the answer so
-        # every read looks the same to the model.
-        if kind == "variable":
-            legacy = await self._handle_get_variable(
-                variable_name=ref, session_id=session_id,
-                mode="search" if find else "chunk",
-                offset=offset, limit=min(int(limit or DEFAULT_READ_CHARS), MAX_READ_CHARS),
-                search=find)
-            name_key = "variable_name"
-        else:
-            legacy = await self._handle_get_tool_result(
-                reference=ref.lstrip("$"), session_id=session_id,
-                mode="search" if find else "chunk",
-                offset=offset, limit=min(int(limit or DEFAULT_READ_CHARS), MAX_READ_CHARS),
-                search=find)
-            name_key = "tool_name"
-
-        if not legacy.get("found"):
+        # Tool results (and the attached files that share this store) go through
+        # the same two paging helpers as the archive above, so every read
+        # answers in one shape. There used to be a second, private
+        # implementation here with four modes, two of which nothing called.
+        tool_store: ToolResultStore = components["tool_store"]
+        bare = ref.lstrip("$")
+        entry = tool_store.retrieve(bare) or tool_store.retrieve_by_hash(bare)
+        if entry is None:
             return {"status": "error", "ref": ref, "kind": kind,
-                    "error": legacy.get("error", "not found"),
-                    "hint": "list and search return valid refs"}
+                    "error": f"no stored tool result '{ref}'",
+                    "hint": "list(section='tool_results') shows valid refs"}
 
-        out: dict[str, Any] = {
+        base = {
             "status": "success", "ref": ref, "kind": kind,
-            "tool": legacy.get(name_key),
-            "total_chars": legacy.get("total_chars"),
+            "tool": entry.tool_name, "tokens": entry.token_count,
+            "at": entry.timestamp.isoformat(),
+            "summary": _one_line(entry.summary or "", 200),
         }
         if find:
-            matches = legacy.get("matches", [])
-            return {**out, "matches": matches, "match_count": len(matches)}
-
-        returned = legacy.get("returned_chars", 0)
-        total = legacy.get("total_chars") or 0
-        end = offset + returned
-        return {
-            **out,
-            "content": legacy.get("content", ""),
-            "offset": offset,
-            "returned_chars": returned,
-            "truncated": end < total or offset > 0,
-            "next_offset": end if end < total else None,
-        }
+            return {**base, **find_in_text(entry.content, find)}
+        return {**base, **slice_text(entry.content, offset=offset, limit=limit)}

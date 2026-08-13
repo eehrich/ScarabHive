@@ -1,11 +1,10 @@
 """Context Engineer MCP Server - Advanced context management tools.
 
 Provides MCP tools for:
-- Recall: Search archived conversation history
-- Store Fact: Add important facts to core memory
-- Get Variable: Retrieve stored variable content
-- Get Tool Result: Retrieve stored tool output
-- Stats: Get context engineering statistics
+- list: Browse or filter what was moved out of the conversation
+- read: Read one stored item by reference, bounded (also restores media)
+- store_fact: Add important facts to core memory
+- compact: Trigger compaction manually
 
 Also implements pre_llm_call hook for automatic context engineering.
 """
@@ -29,14 +28,13 @@ logger = logging.getLogger(__name__)
 
 class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
     """Unified MCP server and hook for context engineering.
-    
+
     Provides MCP tools for manual context management:
-    - recall: Search archived conversation history
+    - list: What is stored — refs and summaries, never bodies
+    - read: One item by ref, bounded; a media path restores that file
     - store_fact: Add facts to persistent core memory
-    - get_variable: Retrieve content stored as variables
-    - get_tool_result: Retrieve stored tool outputs
-    - stats: Get context engineering statistics
-    
+    - compact: Run a compaction now
+
     Implements pre_llm_call hook for automatic context compaction.
     """
     
@@ -84,7 +82,6 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self.tool_result_min_size = int(config_dict.get("tool_result_min_size", 500))
         self.tool_result_keep_last = int(config_dict.get("tool_result_keep_last", 3))
         self.tool_result_max_inline_size = int(config_dict.get("tool_result_max_inline_size", 5000))
-        self.variable_min_size = int(config_dict.get("variable_min_size", 200))
         self.archive_after_turns = int(config_dict.get("archive_after_turns", 10))
         self.enable_semantic_search = bool(config_dict.get("enable_semantic_search", False))
         
@@ -96,6 +93,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         
         # Pre-Layer P: Hard message limit
         self.max_messages = int(config_dict.get("max_messages", 0))
+        self.max_messages_headroom = int(config_dict.get("max_messages_headroom", 50))
         
         # Media store settings
         self.store_media_before_compaction = bool(config_dict.get("store_media_before_compaction", True))
@@ -127,7 +125,6 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl.tool_result_min_size = self.tool_result_min_size
         self._hooks_impl.tool_result_keep_last = self.tool_result_keep_last
         self._hooks_impl.tool_result_max_inline_size = self.tool_result_max_inline_size
-        self._hooks_impl.variable_min_size = self.variable_min_size
         self._hooks_impl.archive_after_turns = self.archive_after_turns
         self._hooks_impl.enable_semantic_search = self.enable_semantic_search
         self._hooks_impl.deduplicate_media = self.deduplicate_media
@@ -138,6 +135,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self._hooks_impl.media_store_ttl_seconds = self.media_store_ttl_seconds
         self._hooks_impl.media_store_max_files = self.media_store_max_files
         self._hooks_impl.max_messages = self.max_messages
+        self._hooks_impl.max_messages_headroom = self.max_messages_headroom
         
         logger.info(
             f"ContextEngineerServer initialized: "
@@ -216,126 +214,6 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
     # MCP Tool Handlers
     # =========================================================================
     
-    async def recall(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Universal recall tool - retrieve any compacted/stored content.
-        
-        Tool name: {{ name }}_recall → e.g., 'context_engineer_recall'
-        
-        Auto-detects query type:
-        - Plain text → archived message search
-        - $VAR_N → variable retrieval
-        - TR_xxx or hash → tool result retrieval  
-        - File path → media restoration
-        
-        Args:
-            params: {
-                "query": Search query, variable name, reference, or file path,
-                "mode": Force specific mode (auto/archive/variable/tool_result/media),
-                "limit": Max results for archive search (default 5)
-            }
-            
-        Returns:
-            Type-specific response with content
-        """
-        status = params.get("_status")
-        
-        try:
-            query = params.get("query")
-            if not query:
-                error_msg = "Query parameter is required"
-                if status:
-                    await status.error(error_msg)
-                return {"status": "error", "error": error_msg}
-            
-            mode = params.get("mode", "auto")
-            limit = int(params.get("limit", 5))
-            session_id = params.get("_session_id", "default")
-            
-            # Detect type for status message
-            if mode == "auto":
-                detected_type = self._hooks_impl._detect_recall_type(query)
-            else:
-                detected_type = mode
-                
-            if status:
-                type_msgs = {
-                    'archive': f"Searching archived context for: {query}",
-                    'variable': f"Retrieving variable: {query}",
-                    'tool_result': f"Retrieving tool result: {query}",
-                    'media': f"Restoring media: {query}"
-                }
-                await status.progress(type_msgs.get(detected_type, f"Recalling: {query}"))
-            
-            result = await self._hooks_impl._handle_recall(
-                query=query,
-                mode=mode,
-                limit=limit,
-                session_id=session_id
-            )
-            
-            if status:
-                recall_type = result.get("recall_type", detected_type)
-                if recall_type == "archive":
-                    archive_count = result.get('total_found', 0)
-                    core_count = result.get('core_memory_total', 0)
-                    parts = []
-                    if archive_count:
-                        parts.append(f"{archive_count} archived")
-                    if core_count:
-                        parts.append(f"{core_count} facts")
-                    if parts:
-                        # Calculate total chars returned
-                        total_chars = sum(
-                            len(r.get("content_preview", "")) for r in result.get("results", [])
-                        ) + sum(
-                            len(f.get("content", "")) for f in result.get("core_memory_facts", []) or []
-                        )
-                        await status.end(f"Found {' + '.join(parts)} ({total_chars} chars)")
-                    else:
-                        await status.end("Nothing found (0 results)")
-                elif recall_type == "core_memory":
-                    core_count = result.get('core_memory_total', 0)
-                    if core_count:
-                        total_chars = sum(len(f.get("content", "")) for f in result.get("core_memory_facts", []) or [])
-                        await status.end(f"Found {core_count} facts ({total_chars} chars)")
-                    else:
-                        await status.end("No matching facts found (0 results)")
-                elif recall_type == "variable":
-                    found = result.get("found", False)
-                    if found:
-                        returned = result.get("returned_chars", 0)
-                        total = result.get("total_chars", 0)
-                        truncated = result.get("truncated", False)
-                        size_info = f"{returned}/{total} chars" if truncated else f"{total} chars"
-                        await status.end(f"Retrieved variable ({size_info})")
-                    else:
-                        await status.end(f"Variable not found: {result.get('variable_name', query)}")
-                elif recall_type == "tool_result":
-                    found = result.get("found", False)
-                    if found:
-                        returned = result.get("returned_chars", 0)
-                        total = result.get("total_chars", 0)
-                        truncated = result.get("truncated", False)
-                        size_info = f"{returned}/{total} chars" if truncated else f"{total} chars"
-                        await status.end(f"Retrieved tool result ({size_info})")
-                    else:
-                        await status.end(f"Tool result not found: {query}")
-                elif recall_type == "media":
-                    await status.end("Media file queued for restoration")
-                else:
-                    await status.end("Recall complete")
-            
-            return {
-                "status": "success",
-                **result
-            }
-            
-        except Exception as e:
-            logger.exception(f"Error in recall: {e}")
-            if status:
-                await status.error(str(e))
-            return {"status": "error", "error": str(e)}
-    
     async def store_fact(self, params: dict[str, Any]) -> dict[str, Any]:
         """Store an important fact in core memory.
         
@@ -389,185 +267,6 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             
         except Exception as e:
             logger.exception(f"Error storing fact: {e}")
-            if status:
-                await status.error(str(e))
-            return {"status": "error", "error": str(e)}
-    
-    async def get_variable(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Retrieve content stored as a variable with pagination support.
-        
-        Tool name: {{ name }}_get_variable → e.g., 'context_engineer_get_variable'
-        
-        Args:
-            params: {
-                "variable_name": Variable name (e.g., $VAR_1),
-                "mode": "preview" | "chunk" | "search" | "full" (default: preview),
-                "offset": Start position for chunk mode (default: 0),
-                "limit": Max chars for chunk mode (default: 1000),
-                "search": Search query for search mode,
-                "context_chars": Context around search matches (default: 150)
-            }
-            
-        Returns:
-            Mode-dependent response with content/matches and metadata
-        """
-        status = params.get("_status")
-        
-        try:
-            variable_name = params.get("variable_name")
-            if not variable_name:
-                error_msg = "Variable name parameter is required"
-                if status:
-                    await status.error(error_msg)
-                return {"status": "error", "error": error_msg}
-            
-            session_id = params.get("_session_id", "default")
-            mode = params.get("mode", "preview")
-            
-            if status:
-                await status.progress(f"Retrieving variable {variable_name} (mode={mode})")
-            
-            result = await self._hooks_impl._handle_get_variable(
-                variable_name=variable_name,
-                session_id=session_id,
-                mode=mode,
-                offset=params.get("offset", 0),
-                limit=params.get("limit", 1000),
-                search=params.get("search"),
-                context_chars=params.get("context_chars", 150)
-            )
-            
-            if result.get("found"):
-                chars_info = f"{result.get('returned_chars', 0)}/{result.get('total_chars', 0)} chars"
-                if status:
-                    await status.end(f"Retrieved {variable_name} ({chars_info})")
-            else:
-                if status:
-                    await status.error(f"Variable {variable_name} not found")
-            
-            return {
-                "status": "success" if result.get("found") else "not_found",
-                **result
-            }
-            
-        except Exception as e:
-            logger.exception(f"Error getting variable: {e}")
-            if status:
-                await status.error(str(e))
-            return {"status": "error", "error": str(e)}
-    
-    async def get_tool_result(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Retrieve a stored tool result with pagination support.
-        
-        Tool name: {{ name }}_get_tool_result → e.g., 'context_engineer_get_tool_result'
-        
-        Args:
-            params: {
-                "reference": Reference ID or content hash,
-                "mode": "preview" | "chunk" | "search" | "full" (default: preview),
-                "offset": Start position for chunk mode (default: 0),
-                "limit": Max chars for chunk mode (default: 1000),
-                "search": Search query for search mode,
-                "context_chars": Context around search matches (default: 150)
-            }
-            
-        Returns:
-            Mode-dependent response with content/matches and metadata
-        """
-        status = params.get("_status")
-        
-        try:
-            reference = params.get("reference")
-            if not reference:
-                error_msg = "Reference parameter is required"
-                if status:
-                    await status.error(error_msg)
-                return {"status": "error", "error": error_msg}
-            
-            session_id = params.get("_session_id", "default")
-            mode = params.get("mode", "preview")
-            
-            if status:
-                await status.progress(f"Retrieving tool result {reference} (mode={mode})")
-            
-            result = await self._hooks_impl._handle_get_tool_result(
-                reference=reference,
-                session_id=session_id,
-                mode=mode,
-                offset=params.get("offset", 0),
-                limit=params.get("limit", 1000),
-                search=params.get("search"),
-                context_chars=params.get("context_chars", 150)
-            )
-            
-            if result.get("found"):
-                # Format status message based on mode
-                if result.get("mode") == "chunk":
-                    offset = result.get("offset", 0)
-                    returned = result.get("returned_chars", 0)
-                    total = result.get("total_chars", 0)
-                    chars_info = f"offset {offset}-{offset+returned}/{total} chars"
-                else:
-                    chars_info = f"{result.get('returned_chars', 0)}/{result.get('total_chars', 0)} chars"
-                
-                if status:
-                    await status.end(f"Retrieved tool result ({chars_info})")
-            else:
-                if status:
-                    await status.error(f"Tool result '{reference}' not found")
-            
-            return {
-                "status": "success" if result.get("found") else "not_found",
-                **result
-            }
-            
-        except Exception as e:
-            logger.exception(f"Error getting tool result: {e}")
-            if status:
-                await status.error(str(e))
-            return {"status": "error", "error": str(e)}
-    
-    async def stats(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Get context engineering statistics.
-        
-        Tool name: {{ name }}_stats → e.g., 'context_engineer_stats'
-        
-        Returns:
-            {
-                "tool_results": {...},
-                "variables": {...},
-                "core_memory": {...},
-                "archival_memory": {...}
-            }
-        """
-        status = params.get("_status")
-        
-        try:
-            session_id = params.get("_session_id", "default")
-            
-            if status:
-                await status.progress("Gathering context engineering statistics")
-            
-            result = await self._hooks_impl._handle_stats(session_id=session_id)
-            
-            if status:
-                tool_count = result.get("tool_results", {}).get("total_entries", 0)
-                var_count = result.get("variables", {}).get("total_variables", 0)
-                fact_count = result.get("core_memory", {}).get("facts", 0)
-                archive_count = result.get("archival_memory", {}).get("total_messages", 0)
-                
-                await status.end(
-                    f"Stats: {tool_count} tool results, {var_count} variables, "
-                    f"{fact_count} facts, {archive_count} archived messages"
-                )
-            
-            return {
-                "status": "success",
-                **result
-            }
-            
-        except Exception as e:
-            logger.exception(f"Error getting stats: {e}")
             if status:
                 await status.error(str(e))
             return {"status": "error", "error": str(e)}
@@ -697,7 +396,6 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 "reduction_percent": metadata.get("reduction_percent", 0),
                 "layers_applied": metadata.get("layers_applied", []),
                 "tool_results_stored": metadata.get("tool_results_stored", 0),
-                "variables_created": metadata.get("variables_created", 0),
                 "messages_archived": metadata.get("messages_archived", 0),
                 "messages_dropped": metadata.get("messages_dropped", 0)
             }
@@ -708,59 +406,6 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 await status.error(str(e))
             return {"status": "error", "error": str(e)}   
          
-    async def restore_multimodal(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Restore a compacted audio/image/video file back into context.
-        
-        Tool name: {{ name }}_restore_multimodal → e.g., 'context_engineer_restore_multimodal'
-        
-        Args:
-            params: {
-                "path": Full file path of the multimodal content to restore
-            }
-            
-        Returns:
-            {
-                "status": "success|error",
-                "message": str,
-                "file_info": {...},
-                "_multimodal_content": [...]  # Special key for content injection
-            }
-        """
-        status = params.get("_status")
-        
-        try:
-            path = params.get("path")
-            if not path:
-                error_msg = "Path parameter is required"
-                if status:
-                    await status.error(error_msg)
-                return {"status": "error", "error": error_msg}
-            
-            session_id = params.get("_session_id", "default")
-            
-            if status:
-                await status.progress(f"Restoring multimodal content: {path}")
-            
-            result = await self._hooks_impl._handle_restore_multimodal(
-                path=path,
-                session_id=session_id
-            )
-            
-            if result.get("status") == "success" and status:
-                file_info = result.get("file_info", {})
-                content_type = file_info.get("type", "file")
-                await status.end(f"Restored {content_type}: {file_info.get('name', 'unknown')}")
-            elif result.get("status") == "error" and status:
-                await status.error(result.get("error", "Unknown error"))
-            
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Error in restore_multimodal: {e}")
-            if status:
-                await status.error(str(e))
-            return {"status": "error", "error": str(e)}
-
     # ------------------------------------------------------------------
     # list / search / read — see hooks._handle_context_* for the rationale
     # ------------------------------------------------------------------
@@ -775,7 +420,9 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         try:
             result = await self._hooks_impl._handle_context_list(
                 section=params.get("section"),
-                offset=int(params.get("offset") or 0),
+                # None, not 0: an omitted offset means "the tail", while 0 is a
+                # real position (the very start). `or 0` collapsed the two.
+                offset=None if params.get("offset") is None else int(params["offset"]),
                 limit=int(params.get("limit") or 20),
                 role=params.get("role"),
                 filter=needle,
@@ -797,11 +444,13 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                     await status.end(f"'{needle}': {detail}")
                 else:
                     shown = result["offset"] + result["count"]
-                    more = (f", {result['total'] - shown} more"
-                            if result.get("next_offset") else "")
+                    more = (f", {result['total'] - shown} newer"
+                            if result.get("has_more_after") else "")
+                    older = (f", {result['offset']} older"
+                             if result.get("has_more_before") else "")
                     await status.end(
                         f"{result['section']}: {result['count']} of "
-                        f"{result['total']} (from #{result['offset']}{more})")
+                        f"{result['total']} (from #{result['offset']}{older}{more})")
             return result
         except Exception as e:
             logger.exception("Error in list: %s", e)
@@ -821,7 +470,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 await status.progress(f"Reading {ref}")
             result = await self._hooks_impl._handle_context_read(
                 ref=ref,
-                offset=int(params.get("offset") or 0),
+                offset=int(params.get("offset") or 0),  # negative = from the end
                 limit=params.get("limit"),
                 find=params.get("find"),
                 session_id=params.get("_session_id", "default"),

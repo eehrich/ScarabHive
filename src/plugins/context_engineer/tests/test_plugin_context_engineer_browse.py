@@ -14,12 +14,19 @@ from pathlib import Path
 
 import pytest
 
+from plugins.context_engineer.archival_memory import ArchivalMemory
+from plugins.context_engineer.compaction import (
+    CompactionConfig,
+    LayeredCompactionStrategy,
+)
+from plugins.context_engineer.core_memory import CoreMemory
 from plugins.context_engineer.hooks import ContextEngineerPlugin, _one_line, _ref_kind
 from plugins.context_engineer.paging import (
     MAX_READ_CHARS,
     find_in_text,
     slice_text,
 )
+from plugins.context_engineer.tool_result_store import ToolResultStore
 
 PLUGIN_DIR = Path(__file__).parent.parent
 
@@ -33,7 +40,7 @@ def hooks(tmp_path):
 
 @pytest.fixture
 def session(hooks):
-    """A session with archived messages, a stored tool result and a variable."""
+    """A session with archived messages and a stored tool result."""
     sid = "browse-test"
     parts = hooks._get_session_components(sid)
     archival = parts["archival_memory"]
@@ -111,14 +118,20 @@ class TestListMakesTheHistoryVisible:
         page = await hooks._handle_context_list(section="history", session_id=session, limit=10)
         assert page["total"] == 25
         assert page["count"] == 10
-        assert page["next_offset"] == 10
         assert all(e["ref"].startswith("arch_") for e in page["entries"])
+        # No offset given → the TAIL: the last 10 of 25, with 15 before it and
+        # nothing after. Landing on the oldest page by default meant the recent
+        # entries needed the total and some arithmetic to reach.
+        assert page["offset"] == 15
+        assert page["has_more_before"] is True
+        assert page["has_more_after"] is False
+        assert page["next_offset"] is None
 
     @pytest.mark.asyncio
     async def test_paging_visits_every_entry_exactly_once(self, hooks, session):
         """Without a stable order, paging silently skips or repeats — same-second
         timestamps are the norm here (a tool call and its result)."""
-        seen, offset = [], 0
+        seen, offset = [], 0   # explicit 0: from the very start, not the tail
         while offset is not None:
             page = await hooks._handle_context_list(
                 section="history", session_id=session, offset=offset, limit=7)
@@ -211,7 +224,7 @@ class TestFilteringReturnsExcerpts:
     async def test_browsing_pages_but_filtering_does_not_pretend_to(self, hooks, session):
         """Filtered hits are ranked, not ordered — offering a next_offset would
         promise a stable page that does not exist."""
-        browsing = await hooks._handle_context_list(session_id=session, limit=5)
+        browsing = await hooks._handle_context_list(session_id=session, offset=0, limit=5)
         filtering = await hooks._handle_context_list(filter="blitter", session_id=session)
         assert browsing["next_offset"] == 5
         assert "next_offset" not in filtering
@@ -226,8 +239,6 @@ class TestReferencesAreDeclaredNotGuessed:
         ("TR_BFCDDCA04A", "tool_result"),
         ("$TR_BFCDDCA04A", "tool_result"),
         ("call_abc123", "tool_result"),
-        ("$VAR_1", "variable"),
-        ("VAR_12", "variable"),
         ("/tmp/clip.wav", "media"),
         ("C:/x/img.PNG", "media"),
     ])
@@ -236,6 +247,7 @@ class TestReferencesAreDeclaredNotGuessed:
 
     @pytest.mark.parametrize("not_a_ref", [
         "chapter 3 assertions", "", "   ", "the blitter", "notes.md",
+        "$VAR_1", "VAR_12",   # variables are gone; these are just text now
     ])
     def test_prose_is_not_a_reference(self, not_a_ref):
         assert _ref_kind(not_a_ref) is None
@@ -469,13 +481,10 @@ class TestLayerTwoNeverReArchivesAPlaceholder:
         )
         from plugins.context_engineer.core_memory import CoreMemory
         from plugins.context_engineer.tool_result_store import ToolResultStore
-        from plugins.context_engineer.variable_manager import VariableManager
-
+        
         archival = ArchivalMemory(tmp_path / "archive.db", session_id="t")
         strat = LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
-            variable_manager=VariableManager(min_content_tokens=50,
-                                             storage_path=tmp_path / "vars.json"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
             archival_memory=archival,
             config=CompactionConfig(archive_after_turns=1, keep_system_messages=True),
@@ -598,13 +607,10 @@ class TestLayerOneHonoursTheExemption:
         )
         from plugins.context_engineer.core_memory import CoreMemory
         from plugins.context_engineer.tool_result_store import ToolResultStore
-        from plugins.context_engineer.variable_manager import VariableManager
-
+        
         store = ToolResultStore(tmp_path / "tools.db", session_id="t")
         strat = LayeredCompactionStrategy(
             tool_store=store,
-            variable_manager=VariableManager(min_content_tokens=50,
-                                             storage_path=tmp_path / "vars.json"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
             archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="t"),
             # every tool result is old enough and big enough to be externalised
@@ -655,3 +661,136 @@ class TestLayerOneHonoursTheExemption:
 
         assert body not in str(out[1]["content"])
         assert "tool_result_ref" in str(out[1]["content"]),             "layer 1 stopped externalising ordinary output — the exemption is too wide"
+
+
+class TestCompactedMediaStaysRestorable:
+    """Media is the one thing compaction removes that cannot be re-derived.
+
+    Layer 1 evicts inline audio/images and leaves a text hint naming the path.
+    That hint used to say `recall(query=...)` — a tool that no longer exists,
+    which would leave the model reading a dead instruction with the bytes gone
+    from the conversation. The hint and the tool have to be one thing.
+    """
+
+    @pytest.fixture
+    def media_file(self, tmp_path, monkeypatch):
+        """A file inside the allowed roots — restore refuses anything else."""
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / "data" / "clip.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"RIFF....WAVEfake audio payload")
+        return path
+
+    @pytest.mark.asyncio
+    async def test_the_hint_names_a_tool_that_exists(self, tmp_path, media_file):
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="t"),
+            config=CompactionConfig(always_compact_media_keep_last=1),
+        )
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "hoer dir das an"},
+                {"type": "audio", "path": str(media_file),
+                 "source": {"type": "base64", "media_type": "audio/wav",
+                            "data": "A" * 4000}},
+            ]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "und das hier"},
+                {"type": "audio", "path": str(media_file),
+                 "source": {"type": "base64", "media_type": "audio/wav",
+                            "data": "B" * 4000}},
+            ]},
+        ]
+
+        result = await strat.compact(messages, current_tokens=100, force=True)
+
+        hints = [part["text"]
+                 for msg in result.modified_messages
+                 if isinstance(msg.get("content"), list)
+                 for part in msg["content"]
+                 if isinstance(part, dict) and part.get("type") == "text"
+                 and "compacted" in part.get("text", "").lower()]
+        assert hints, "no media was compacted — this fixture proves nothing"
+        assert all("read(ref=" in h for h in hints), hints
+        assert not any("recall(" in h for h in hints), (
+            "the hint still points at the removed recall tool")
+
+    @pytest.mark.asyncio
+    async def test_read_on_a_media_path_queues_the_file_again(self, hooks, media_file):
+        """The restore itself: read() must hand back the multimodal payload that
+        the agent runtime re-injects, exactly as the removed tool did."""
+        out = await hooks._handle_context_read(
+            ref=str(media_file), session_id="media-test")
+
+        assert out["status"] == "success", out
+        assert out["kind"] == "media"
+        assert out["_multimodal_content"][0]["path"] == str(media_file)
+        assert out["file_info"]["type"] == "audio"
+
+    @pytest.mark.asyncio
+    async def test_a_path_outside_the_data_roots_is_refused(self, hooks, tmp_path):
+        """The containment check must survive the move from recall to read —
+        without it this is an arbitrary file read straight into the context."""
+        outside = tmp_path.parent / "elsewhere.wav"
+        outside.write_bytes(b"nope")
+        out = await hooks._handle_context_read(
+            ref=str(outside), session_id="media-test")
+        assert out["status"] == "error"
+
+
+class TestBrowsingReadsLikeAFile:
+    """One offset habit for the whole surface: no offset = tail, negative = from
+    the end, non-negative = absolute — inside an item and across a store alike.
+
+    Before this, `list` always started at the oldest entry and the two stores
+    disagreed on direction (history ascending, tool results descending), so the
+    same offset meant opposite ends depending on the section.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_offset_gives_the_newest_entries(self, hooks, session):
+        page = await hooks._handle_context_list(
+            section="history", session_id=session, limit=5)
+        newest = await hooks._handle_context_list(
+            section="history", session_id=session, offset=20, limit=5)
+        assert [e["ref"] for e in page["entries"]] == [e["ref"] for e in newest["entries"]]
+
+    @pytest.mark.asyncio
+    async def test_a_negative_offset_counts_back_from_the_end(self, hooks, session):
+        tail = await hooks._handle_context_list(
+            section="history", session_id=session, offset=-5, limit=5)
+        assert tail["offset"] == 20
+        assert tail["count"] == 5
+        assert tail["has_more_after"] is False
+
+    @pytest.mark.asyncio
+    async def test_offset_zero_is_still_the_oldest_page(self, hooks, session):
+        """0 must stay a real position, not collapse into "unspecified"."""
+        first = await hooks._handle_context_list(
+            section="history", session_id=session, offset=0, limit=5)
+        assert first["offset"] == 0
+        assert first["has_more_before"] is False
+        assert first["has_more_after"] is True
+
+    @pytest.mark.asyncio
+    async def test_both_sections_run_in_the_same_direction(self, hooks, session):
+        """Same offset, same end — otherwise no arithmetic on it can be right."""
+        parts = hooks._get_session_components(session)
+        store = parts["tool_store"]
+        for i in range(5):
+            store.store_and_reference(tool_call_id=f"call_order_{i}",
+                                      tool_name="t", content=f"Ergebnis {i}",
+                                      session_id=session, summary=f"Ergebnis {i}")
+
+        oldest = await hooks._handle_context_list(
+            section="tool_results", session_id=session, offset=0, limit=1)
+        newest = await hooks._handle_context_list(
+            section="tool_results", session_id=session, offset=-1, limit=1)
+
+        # The session fixture stored `call_big` before these, so offset 0 must
+        # land on it — the same end that offset 0 means for the history.
+        assert oldest["entries"][0]["tool"] == "writer_content_batch_scene"
+        assert "Ergebnis 4" in newest["entries"][0]["summary"]

@@ -10,7 +10,6 @@ from plugins.context_engineer.compaction import (
 )
 from plugins.context_engineer.core_memory import CoreMemory
 from plugins.context_engineer.tool_result_store import ToolResultStore
-from plugins.context_engineer.variable_manager import VariableManager
 from plugins.context_engineer.archival_memory import ArchivalMemory
 
 
@@ -28,9 +27,6 @@ class TestMediaBytesTracking:
         store_path = tmp_path / "tool_results.db"
         tool_store = ToolResultStore(store_path)
         
-        var_path = tmp_path / "variables.json"
-        variable_manager = VariableManager(var_path)
-        
         core_path = tmp_path / "core_memory.json"
         core_memory = CoreMemory(core_path)
         
@@ -46,7 +42,6 @@ class TestMediaBytesTracking:
         
         strategy = LayeredCompactionStrategy(
             tool_store,
-            variable_manager,
             core_memory,
             archival_memory,
             config
@@ -55,7 +50,6 @@ class TestMediaBytesTracking:
         return {
             "strategy": strategy,
             "tool_store": tool_store,
-            "variable_manager": variable_manager,
             "core_memory": core_memory,
             "archival_memory": archival_memory,
             "config": config
@@ -256,9 +250,6 @@ class TestMediaDeduplication:
         store_path = tmp_path / "tool_results.db"
         tool_store = ToolResultStore(store_path)
         
-        var_path = tmp_path / "variables.json"
-        variable_manager = VariableManager(var_path)
-        
         core_path = tmp_path / "core_memory.json"
         core_memory = CoreMemory(core_path)
         
@@ -273,7 +264,6 @@ class TestMediaDeduplication:
         
         strategy = LayeredCompactionStrategy(
             tool_store,
-            variable_manager,
             core_memory,
             archival_memory,
             config
@@ -346,9 +336,6 @@ class TestByteLimitCompaction:
         store_path = tmp_path / "tool_results.db"
         tool_store = ToolResultStore(store_path)
         
-        var_path = tmp_path / "variables.json"
-        variable_manager = VariableManager(var_path)
-        
         core_path = tmp_path / "core_memory.json"
         core_memory = CoreMemory(core_path)
         
@@ -362,7 +349,6 @@ class TestByteLimitCompaction:
         
         strategy = LayeredCompactionStrategy(
             tool_store,
-            variable_manager,
             core_memory,
             archival_memory,
             config

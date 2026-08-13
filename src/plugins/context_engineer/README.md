@@ -6,8 +6,8 @@ Advanced context window optimization for long-running agent conversations using 
 
 The Context Engineer plugin provides intelligent context management to prevent token limits from being exceeded during long conversations. It implements a multi-layered approach:
 
-1. **Tool Result Store** - Compact references to tool outputs
-2. **Variable Manager** - $VAR_N substitution for large content blocks
+1. **Tool Result Store** - Compact references to tool outputs and attached files
+2. **Media Store** - Inline audio/images written to disk before eviction
 3. **Core Memory** - Always-present important facts (MemGPT pattern)
 4. **Archival Memory** - Searchable conversation history with FTS5
 5. **Layered Compaction** - Progressive compression strategy
@@ -20,18 +20,19 @@ The Context Engineer plugin provides intelligent context management to prevent t
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
-│  │   Core Memory   │  │  Tool Result    │  │    Variable     │     │
-│  │  (always in     │  │    Store        │  │    Manager      │     │
-│  │   context)      │  │  (SQL refs)     │  │  ($VAR_N refs)  │     │
+│  │   Core Memory   │  │  Tool Result    │  │  Media Store    │     │
+│  │  (always in     │  │    Store        │  │  (files on      │     │
+│  │   context)      │  │  (SQL refs)     │  │   disk)         │     │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘     │
 │           │                    │                    │               │
 │           └────────────────────┼────────────────────┘               │
 │                                │                                    │
 │                    ┌───────────▼───────────┐                        │
 │                    │  Layered Compaction   │                        │
+│                    │  P:  Message count    │                        │
 │                    │  L1: Reversible       │                        │
 │                    │  L2: Semi-reversible  │                        │
-│                    │  L3: Irreversible     │                        │
+│                    │  L3: Last resort      │                        │
 │                    └───────────┬───────────┘                        │
 │                                │                                    │
 │                    ┌───────────▼───────────┐                        │
@@ -40,8 +41,8 @@ The Context Engineer plugin provides intelligent context management to prevent t
 │                    └───────────────────────┘                        │
 │                                                                     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Hook: pre_llm_call  │  Tools: list, read, store_fact,             │
-│                      │         stats, compact  (recall: deprecated) │
+│  Hook: pre_llm_call  │  Tools: list, read, store_fact, compact     │
+│                      │                                              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -87,27 +88,15 @@ entry = store.retrieve_by_id("call_abc123")
 print(entry.content)  # Full content
 ```
 
-### Variable Manager (`variable_manager.py`)
-
-Creates $VAR_N references for large content blocks like code files, documents, or data. The LLM can reference variables by name.
-
-```python
-from plugins.context_engineer.variable_manager import VariableManager
-
-vm = VariableManager(min_content_tokens=500)
-
-# Create variable for large content
-var_name, summary = vm.create_variable(
-    content="def process_data():\n    # ... 500 lines ...",
-    content_type="code",
-    source="main.py"
-)
-# Returns: ("$VAR_1", "[Python code: function process_data, ~500 lines]")
-
-# Expand variables in text
-expanded = vm.expand_variables("Look at $VAR_1 for the implementation")
-```
-
+> **Entfernt:** Die $VAR-Ersetzung (`variable_manager.py`) gab es bis 2026-08.
+> Gemessen ueber 1000 produktive Kompaktionen: 9 angelegte Variablen gegen 3730
+> ausgelagerte Tool-Ergebnisse — bei 6 von 1000 Ereignissen ueberhaupt aktiv.
+> Sie kostete dabei zweimal Cache: das Umschreiben alter Assistant-Nachrichten
+> brach den Praefix ab dieser Stelle, und ihre System-Prompt-Sektion listete
+> jede Variable namentlich, aenderte sich also bei jeder neuen und entwertete
+> den Cache fuer die ganze Konversation dahinter. Angehaengte Textdateien
+> liegen jetzt im Tool-Result-Store: gleiche Form (Inhalt, Ref, Zusammenfassung),
+> und `list`/`read` bedienen ihn ohnehin schon.
 ### Archival Memory (`archival_memory.py`)
 
 Searchable archive of conversation history using SQLite FTS5 for text search and optional VectorStore for semantic search (supports ChromaDB and sqlite-vec backends).
@@ -159,7 +148,7 @@ config = CompactionConfig(
 )
 
 strategy = LayeredCompactionStrategy(
-    tool_store, variable_manager, core_memory, archival_memory, config
+    tool_store, core_memory, archival_memory, config
 )
 
 result = strategy.compact(messages, current_tokens=95000)
@@ -176,9 +165,13 @@ The plugin exposes these tools to the agent:
 | `list` | Browse what is stored, or filter it — refs, summaries, excerpts; no bodies |
 | `read` | Read ONE ref, always bounded, says how to continue |
 | `store_fact` | Add important fact to core memory |
-| `stats` | Get current context statistics |
 | `compact` | Manually trigger compaction |
-| `recall` | **Deprecated** — the single guessing tool these two replace |
+
+`recall`, `get_variable`, `get_tool_result`, `stats` and `restore_multimodal`
+were removed in 2026-08. The last four were already unreachable: they were not
+declared in `schema.yaml`, and the schema is what the dispatcher routes on.
+`recall` guessed the store from a free-text query and is fully covered by
+`list` + `read` — including restoring media, via `read(ref="…/clip.wav")`.
 
 ### list / read
 
@@ -221,7 +214,6 @@ agents who wrote `$TR_…`. Every store owns a prefix, so dispatch is a lookup:
 |---|---|
 | `arch_…` | an archived message |
 | `TR_…`, `call_…` | a stored tool result |
-| `$VAR_n` | a stored content block |
 | `…/file.png` | media to restore |
 
 A ref that is not one of these is an error naming the valid shapes — never a
