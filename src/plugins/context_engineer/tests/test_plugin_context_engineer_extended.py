@@ -13,6 +13,79 @@ from plugins.context_engineer.tool_result_store import ToolResultStore
 from plugins.context_engineer.archival_memory import ArchivalMemory
 
 
+class TestMediaEvictionBooksWhatItRemoved:
+    """Der gemeinsame Rauswurf zaehlt, was er entfernt — und nur das.
+
+    Beide Zusicherungen hier waren ungeprueft, solange jede Auswahlregel ihren
+    eigenen Rauswurf hatte: die vorhandenen Byte-Tests werden schon von Layer 1
+    gruen gemacht, das den Zaehler auf einem anderen Weg fuellt. Eine Mutation
+    im Medien-Rauswurf selbst (Bytes nicht hochzaehlen, Auswahl umdrehen) blieb
+    dadurch unsichtbar — und ``media_bytes_saved`` entscheidet in ``_finalize``,
+    ob Reasoning-Artefakte verworfen werden. Ein zu kleiner Zaehler heisst
+    spaeter HTTP 400.
+
+    Die zwei Nutzlasten sind ABSICHTLICH verschieden gross: damit sagt die
+    Byte-Zahl allein schon, WELCHE der beiden rausgeflogen ist.
+    """
+
+    OLD_PAYLOAD = 3000
+    NEW_PAYLOAD = 5000
+
+    @pytest.fixture
+    def strategy(self, tmp_path):
+        """Nur der Medien-Rauswurf laeuft: die Token-Layer sind unerreichbar
+        hochgesetzt, sonst faerbt Layer 1 die Zaehler mit ein."""
+        return LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            core_memory=CoreMemory(tmp_path / "memory.json"),
+            archival_memory=ArchivalMemory(tmp_path / "archive.db"),
+            config=CompactionConfig(
+                layer1_threshold=10**9, layer2_threshold=10**9,
+                layer3_threshold=10**9, target_tokens=10**9,
+                deduplicate_media=False,
+                always_compact_media_keep_last=1,
+            ),
+        )
+
+    def _conversation(self) -> list[dict]:
+        def audio(size: int) -> dict:
+            return {"type": "audio",
+                    "source": {"type": "base64", "media_type": "audio/wav",
+                               "data": "A" * size}}
+        return [
+            {"role": "user", "content": [{"type": "text", "text": "alt"},
+                                         audio(self.OLD_PAYLOAD)]},
+            {"role": "assistant", "content": "verstanden"},
+            {"role": "user", "content": [{"type": "text", "text": "neu"},
+                                         audio(self.NEW_PAYLOAD)]},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_byte_counter_matches_the_item_that_actually_left(self, strategy):
+        result = await strategy.compact(self._conversation(), current_tokens=100)
+
+        assert result.media_always_compacted == 1, (
+            "nichts wurde kompaktiert — der Test wuerde nichts pruefen")
+        assert result.media_bytes_saved == self.OLD_PAYLOAD, (
+            "der Byte-Zaehler passt zu keiner der beiden Nutzlasten "
+            f"(alt={self.OLD_PAYLOAD}, neu={self.NEW_PAYLOAD})")
+
+    @pytest.mark.asyncio
+    async def test_the_newest_message_keeps_its_media(self, strategy):
+        """Die Richtung der Auswahl. Andersherum bleibt die Zahl der Hinweise
+        gleich — nur das Falsche ist weg, und der Agent sieht die Datei nicht
+        mehr, ueber die gerade gesprochen wird."""
+        result = await strategy.compact(self._conversation(), current_tokens=100)
+
+        kinds = [[part.get("type") for part in msg["content"]]
+                 for msg in result.modified_messages
+                 if isinstance(msg.get("content"), list)]
+        assert kinds[0] == ["text", "text"], (
+            f"die aeltere Nachricht haelt ihr Audio fest: {kinds[0]}")
+        assert kinds[1] == ["text", "audio"], (
+            f"die neueste Nachricht hat ihr Audio verloren: {kinds[1]}")
+
+
 # =============================================================================
 # Media Bytes Tracking Tests
 # =============================================================================

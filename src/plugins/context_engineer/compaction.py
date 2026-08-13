@@ -28,8 +28,9 @@ import hashlib
 import json
 import logging
 import os
+from collections import defaultdict
 from dataclasses import dataclass, field, fields
-from typing import Any
+from typing import Any, Iterator, NamedTuple
 
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
@@ -268,6 +269,25 @@ _PLACEHOLDER_ROLES = {
     PRUNE_NOTICE_TYPE: ("system",),
 }
 
+#: Media item types that can appear in a message's ``content`` list.
+_MEDIA_TYPES = ("image", "image_url", "audio", "video")
+
+
+class _MediaPick(NamedTuple):
+    """One media item chosen for eviction, plus the words for its hint.
+
+    Everything that distinguishes the eviction reasons lives in ``subject`` and
+    ``reason``; the mechanics below them are identical for all of them.
+    """
+
+    msg_idx: int
+    item_idx: int
+    item: dict[str, Any]
+    in_mm: bool
+    subject: str
+    reason: str
+
+
 #: Above this many messages in one prune, the archive is written WITHOUT the
 #: vector index (see _archive_pruned). Measured: ~17 ms per message of embedding
 #: against 0.02 ms for the row itself, and the largest of 1000 production prunes
@@ -355,6 +375,9 @@ class LayeredCompactionStrategy:
         self.archival_memory = archival_memory
         self.config = config or CompactionConfig()
         self.media_store = media_store
+        #: Set per run by ``compact``; pre-set so a directly called layer
+        #: cannot fail on a missing attribute instead of storing the media.
+        self._current_session_id = "default"
     
     def _add_media_hint_to_content(
         self,
@@ -715,116 +738,167 @@ class LayeredCompactionStrategy:
         
         return "unknown"
     
-    async def _deduplicate_media(self, result: CompactionResult) -> None:
-        """Deduplicate media items by hash - keep newest, compact older duplicates.
-        
-        Scans all messages for media items, groups by hash, and compacts all
-        but the newest occurrence of each duplicate.
-        
-        Args:
-            result: CompactionResult to update
+    def _iter_media(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        mm_types: tuple[str, ...] | None = None,
+    ) -> Iterator[tuple[int, int, dict[str, Any], bool]]:
+        """Every media item in the conversation — both storage places, one walk.
+
+        Yields ``(msg_idx, item_idx, item, in_mm)``. ``in_mm`` is not decoration:
+        it decides HOW the item leaves later, and the two ways are genuinely
+        different (see ``_evict_media``).
+
+        ``mm_types=None`` means every dict in ``multimodal_content`` counts.
+        That is what three of the four selections want, because a tool
+        attachment carries no dependable ``type`` — only the always-compact rule
+        narrows it, and it says so.
         """
-        if not self.config.deduplicate_media:
-            return
-        
-        messages = result.modified_messages
-        
-        # Map: hash -> list of (message_idx, item_idx, item, is_multimodal_content)
-        media_by_hash: dict[str, list[tuple[int, int, dict, bool]]] = {}
-        
-        # Scan all messages for media items
         for msg_idx, msg in enumerate(messages):
-            # Check content list (user messages with images/audio)
             content = msg.get("content")
             if isinstance(content, list):
                 for item_idx, item in enumerate(content):
-                    if not isinstance(item, dict):
-                        continue
-                    item_type = item.get("type", "")
-                    if item_type in ("image", "image_url", "audio", "video"):
-                        media_hash = self._compute_media_hash(item)
-                        if media_hash:
-                            if media_hash not in media_by_hash:
-                                media_by_hash[media_hash] = []
-                            media_by_hash[media_hash].append((msg_idx, item_idx, item, False))
-            
-            # Check multimodal_content (tool responses with files)
+                    if isinstance(item, dict) and item.get("type", "") in _MEDIA_TYPES:
+                        yield msg_idx, item_idx, item, False
+
             mm_content = msg.get("multimodal_content")
-            if mm_content and isinstance(mm_content, list):
+            if isinstance(mm_content, list):
                 for item_idx, item in enumerate(mm_content):
                     if not isinstance(item, dict):
                         continue
-                    media_hash = self._compute_media_hash(item)
-                    if media_hash:
-                        if media_hash not in media_by_hash:
-                            media_by_hash[media_hash] = []
-                        media_by_hash[media_hash].append((msg_idx, item_idx, item, True))
-        
-        # Compact duplicates (keep newest = highest message index)
-        # Track items to remove (we can't modify list while iterating)
-        items_to_remove: list[tuple[int, int, str, str]] = []  # (msg_idx, item_idx, hint_text, location)
-        
-        for media_hash, occurrences in media_by_hash.items():
-            if len(occurrences) <= 1:
-                continue  # No duplicates
-            
-            # Sort by message index (ascending) - newest is last
-            occurrences.sort(key=lambda x: x[0])
-            
-            # Compact all except the last (newest) one
-            for msg_idx, item_idx, item, is_mm_content in occurrences[:-1]:
-                msg = messages[msg_idx]
-                filename = self._get_media_filename(item)
-                item_type = item.get("type", "media")
-                inline_tokens = estimate_inline_data_tokens(item)
-                file_path = item.get("path", "N/A")
-                
-                hint_text = (
-                    f"[{item_type.title()} '{filename}' - duplicate compacted. "
-                    f"Newer version exists later in conversation. "
-                    f"read(ref=\"{file_path}\") loads it again.]"
-                )
-                
-                # Replace in appropriate content list
-                if is_mm_content:
-                    mm_list = msg.get("multimodal_content", [])
-                    if item_idx < len(mm_list):
-                        # Mark for removal and add hint to content
-                        items_to_remove.append((msg_idx, item_idx, hint_text, "multimodal_content"))
-                else:
-                    content_list = msg.get("content", [])
-                    if isinstance(content_list, list) and item_idx < len(content_list):
-                        # Replace with text placeholder in content list
-                        content_list[item_idx] = {"type": "text", "text": hint_text}
-                
-                result.media_deduplicated += 1
-                result.tokens_saved += inline_tokens
-                logger.info(
-                    f"Deduplicated media '{filename}' (hash={media_hash[:8]}...): "
-                    f"{inline_tokens:,} tokens saved"
-                )
-        
-        # Remove items from multimodal_content (process in reverse to maintain indices)
-        # Group by message index and sort by item_idx descending
-        from collections import defaultdict
-        removals_by_msg: dict[int, list[tuple[int, str]]] = defaultdict(list)
-        for msg_idx, item_idx, hint_text, location in items_to_remove:
-            if location == "multimodal_content":
-                removals_by_msg[msg_idx].append((item_idx, hint_text))
-        
-        for msg_idx, removals in removals_by_msg.items():
+                    if mm_types is None or item.get("type", "") in mm_types:
+                        yield msg_idx, item_idx, item, True
+
+    def _media_subject(self, item: dict[str, Any], with_filename: bool = True) -> str:
+        """What a hint calls the item it replaces."""
+        subject = item.get("type", "media").title()
+        if with_filename:
+            return f"{subject} '{self._get_media_filename(item)}'"
+        return subject
+
+    def _media_hint(
+        self,
+        subject: str,
+        reason: str,
+        path: str,
+        *,
+        always_ref: bool = False,
+        unrecoverable: str = "",
+    ) -> str:
+        """The ONE place a model-facing media hint is written.
+
+        The path stays in DOUBLE QUOTES because that is literally what the model
+        copies into ``read(ref="…")``. Every eviction path used to spell this
+        out for itself, which is how eleven of these hints kept pointing at
+        ``recall(query=…)`` long after that tool was deleted — a dead
+        instruction handed over at the exact moment the bytes left the context.
+        """
+        if path or always_ref:
+            return f'[{subject} {reason} read(ref="{path}") loads it again.]'
+        return unrecoverable or f"[{subject} {reason}]"
+
+    async def _evict_media(
+        self,
+        result: CompactionResult,
+        picks: list[_MediaPick],
+        *,
+        store: bool = False,
+        count_bytes: bool = True,
+        ref_fallback: str | None = None,
+    ) -> int:
+        """Throw the picked media out and leave exactly one hint per item.
+
+        The ONE eviction. Everything above it only decides WHICH items go. The
+        asymmetry between the two storage places is real and lives here:
+
+        * ``content`` item → REPLACED in place by a ``{"type": "text"}`` item,
+          because a content list is positional and the model reads it in order.
+        * ``multimodal_content`` item → DELETED, hint appended to the content,
+          because that list is re-encoded verbatim at call time and has no slot
+          for prose.
+
+        ``store`` saves an inline payload to disk first, but only for content
+        items — a ``multimodal_content`` item already IS a file reference.
+        ``ref_fallback`` (dedup only) names the address when the item has none
+        and makes the ``read(...)`` suffix unconditional.
+
+        Returns the number of items evicted; ``tokens_saved`` and (unless
+        ``count_bytes`` is off) ``media_bytes_saved`` are booked here. The
+        per-reason counter stays with the caller — one of them assigns where the
+        others add, and that difference is load-bearing in ``_finalize``.
+        """
+        messages = result.modified_messages
+        mm_removals: dict[int, list[tuple[int, str]]] = defaultdict(list)
+        evicted = 0
+
+        for msg_idx, item_idx, item, in_mm, subject, reason in picks:
+            path = item.get("path", "" if ref_fallback is None else ref_fallback)
+            if store and not in_mm and not path:
+                source = item.get("source", {})
+                item_type = item.get("type", "")
+                media_type = (source.get("media_type", item_type)
+                              if isinstance(source, dict) else item_type)
+                path = self._store_inline_media(
+                    item, str(media_type), self._current_session_id) or path
+
+            hint = self._media_hint(subject, reason, path,
+                                    always_ref=ref_fallback is not None)
+
+            if in_mm:
+                mm_removals[msg_idx].append((item_idx, hint))
+            else:
+                messages[msg_idx]["content"][item_idx] = {"type": "text", "text": hint}
+
+            evicted += 1
+            result.tokens_saved += estimate_inline_data_tokens(item)
+            if count_bytes:
+                result.media_bytes_saved += self._estimate_item_bytes(item)
+            logger.debug("Evicted media: %s", hint)
+
+        # Delete from the tail forwards so the lower indices stay valid.
+        for msg_idx, removals in mm_removals.items():
             msg = messages[msg_idx]
             mm_list = msg.get("multimodal_content", [])
-            # Sort by item_idx descending to remove from end first
-            for item_idx, hint_text in sorted(removals, key=lambda x: x[0], reverse=True):
+            for item_idx, hint in sorted(removals, key=lambda x: x[0], reverse=True):
                 if item_idx < len(mm_list):
                     del mm_list[item_idx]
-                    self._add_media_hint_to_content(msg, hint_text)
-        
+                    self._add_media_hint_to_content(msg, hint)
+
+        return evicted
+
+    async def _deduplicate_media(self, result: CompactionResult) -> None:
+        """Selection: the same bytes twice — every occurrence but the newest goes.
+
+        Nothing is written to disk here, and that is deliberate: the payload is
+        still in the conversation a few messages further down.
+        """
+        if not self.config.deduplicate_media:
+            return
+
+        by_hash: dict[str, list[tuple[int, int, dict[str, Any], bool]]] = defaultdict(list)
+        for found in self._iter_media(result.modified_messages):
+            media_hash = self._compute_media_hash(found[2])
+            if media_hash:
+                by_hash[media_hash].append(found)
+
+        picks = [
+            _MediaPick(msg_idx, item_idx, item, in_mm, self._media_subject(item),
+                       "- duplicate compacted. Newer version exists later in "
+                       "conversation.")
+            for occurrences in by_hash.values() if len(occurrences) > 1
+            # Ascending by message index, so the LAST one is the newest.
+            for msg_idx, item_idx, item, in_mm in sorted(occurrences,
+                                                         key=lambda o: o[0])[:-1]
+        ]
+
+        result.media_deduplicated += await self._evict_media(
+            result, picks, count_bytes=False, ref_fallback="N/A")
+
         if result.media_deduplicated > 0:
-            result.final_tokens = self._estimate_messages_tokens(messages)
+            result.final_tokens = self._estimate_messages_tokens(result.modified_messages)
             logger.info(f"Media deduplication: {result.media_deduplicated} duplicates compacted")
-    
+
     def _store_inline_media(
         self,
         item: dict[str, Any],
@@ -936,88 +1010,29 @@ class LayeredCompactionStrategy:
         messages = result.modified_messages
         if not messages:
             return
-        
-        compacted_count = 0
-        bytes_saved = 0
-        
-        # Protect last N messages
-        protected_indices = set(range(max(0, len(messages) - keep_last_n), len(messages)))
-        
-        for msg_idx, msg in enumerate(messages):
-            if msg_idx in protected_indices:
-                continue  # Don't compact recent messages
-            
-            # Process content list
-            content = msg.get("content")
-            if isinstance(content, list):
-                for item_idx, item in enumerate(content):
-                    if not isinstance(item, dict):
-                        continue
-                    item_type = item.get("type", "")
-                    if item_type not in ("image", "image_url", "audio", "video"):
-                        continue
-                    
-                    # Estimate bytes for this item
-                    item_bytes = self._estimate_item_bytes(item)
-                    if item_bytes < 10000:  # Skip small items (<10KB)
-                        continue
-                    
-                    filename = self._get_media_filename(item)
-                    inline_tokens = estimate_inline_data_tokens(item)
-                    file_path = item.get("path", "")
-                    
-                    # Replace with text placeholder
-                    placeholder = {
-                        "type": "text",
-                        "text": (
-                            f"[{item_type.title()} '{filename}' removed to reduce request size. "
-                            f"Saved {item_bytes / 1024:.0f}KB."
-                            + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
-                        )
-                    }
-                    content[item_idx] = placeholder
-                    compacted_count += 1
-                    bytes_saved += item_bytes
-                    result.tokens_saved += inline_tokens
-            
-            # Process multimodal_content
-            mm_content = msg.get("multimodal_content")
-            if mm_content and isinstance(mm_content, list):
-                items_to_remove: list[tuple[int, str, int]] = []  # (item_idx, hint_text, bytes_saved)
-                for item_idx, item in enumerate(mm_content):
-                    if not isinstance(item, dict):
-                        continue
-                    
-                    # Estimate bytes for this item
-                    item_bytes = self._estimate_item_bytes(item)
-                    if item_bytes < 10000:  # Skip small items (<10KB)
-                        continue
-                    
-                    item_type = item.get("type", "media")
-                    filename = self._get_media_filename(item)
-                    inline_tokens = estimate_inline_data_tokens(item)
-                    file_path = item.get("path", "")
-                    
-                    hint_text = (
-                        f"[{item_type.title()} '{filename}' removed to reduce request size. "
-                        f"Saved {item_bytes / 1024:.0f}KB."
-                        + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
-                    )
-                    
-                    items_to_remove.append((item_idx, hint_text, item_bytes))
-                    compacted_count += 1
-                    bytes_saved += item_bytes
-                    result.tokens_saved += inline_tokens
-                
-                # Remove items in reverse order to maintain indices
-                for item_idx, hint_text, _ in sorted(items_to_remove, key=lambda x: x[0], reverse=True):
-                    del mm_content[item_idx]
-                    self._add_media_hint_to_content(msg, hint_text)
-        
+
+        # Selection: everything outside the last N messages, but only items big
+        # enough to be part of the problem — a 2 KB thumbnail never blew a
+        # 90 MB request, and evicting it costs a hint that is nearly as long.
+        cutoff = max(0, len(messages) - keep_last_n)
+        picks = []
+        for msg_idx, item_idx, item, in_mm in self._iter_media(messages):
+            if msg_idx >= cutoff:
+                continue
+            item_bytes = self._estimate_item_bytes(item)
+            if item_bytes < 10000:
+                continue
+            picks.append(_MediaPick(
+                msg_idx, item_idx, item, in_mm, self._media_subject(item),
+                f"removed to reduce request size. Saved {item_bytes / 1024:.0f}KB."))
+
+        bytes_before = result.media_bytes_saved
+        compacted_count = await self._evict_media(result, picks)
+
         if compacted_count > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
             result.media_compacted_after_event += compacted_count
-            result.media_bytes_saved += bytes_saved  # Track bytes saved for UI
+            bytes_saved = result.media_bytes_saved - bytes_before
             logger.warning(
                 f"Byte limit compaction: {compacted_count} media items compacted, "
                 f"saved {bytes_saved / (1024*1024):.1f}MB"
@@ -1088,81 +1103,25 @@ class LayeredCompactionStrategy:
         messages = result.modified_messages
         if not messages:
             return
-        
-        # Find the last message index to protect (don't compact its media)
-        last_msg_idx = len(messages) - 1
-        
-        # Compact all media in older messages
-        for msg_idx in range(last_msg_idx):  # Exclude last message
-            msg = messages[msg_idx]
-            
-            # Process content list
-            content = msg.get("content")
-            if isinstance(content, list):
-                for item_idx, item in enumerate(content):
-                    if not isinstance(item, dict):
-                        continue
-                    item_type = item.get("type", "")
-                    if item_type not in ("image", "image_url", "audio", "video"):
-                        continue
-                    if item.get("compacted"):
-                        continue  # Already compacted
-                    
-                    filename = self._get_media_filename(item)
-                    inline_tokens = estimate_inline_data_tokens(item)
-                    item_bytes = self._estimate_item_bytes(item)
-                    file_path = item.get("path", "")
-                    
-                    # If no file_path, try to store inline data before removing
-                    if not file_path:
-                        source = item.get("source", {})
-                        media_type = source.get("media_type", item_type) if isinstance(source, dict) else item_type
-                        stored_path = self._store_inline_media(item, str(media_type), self._current_session_id)
-                        if stored_path:
-                            file_path = stored_path
-                    
-                    # Replace with text placeholder
-                    placeholder = {
-                        "type": "text",
-                        "text": (
-                            f"[{item_type.title()} removed after {trigger}."
-                            + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
-                        )
-                    }
-                    content[item_idx] = placeholder
-                    result.media_compacted_after_event += 1
-                    result.tokens_saved += inline_tokens
-                    result.media_bytes_saved += item_bytes
-            
-            # Process multimodal_content
-            mm_content = msg.get("multimodal_content")
-            if mm_content and isinstance(mm_content, list):
-                items_to_remove: list[tuple[int, str, int, int]] = []  # (item_idx, hint_text, tokens, bytes)
-                for item_idx, item in enumerate(mm_content):
-                    if not isinstance(item, dict):
-                        continue
-                    
-                    item_type = item.get("type", "media")
-                    filename = self._get_media_filename(item)
-                    inline_tokens = estimate_inline_data_tokens(item)
-                    item_bytes = self._estimate_item_bytes(item)
-                    file_path = item.get("path", "")
-                    
-                    hint_text = (
-                        f"[{item_type.title()} '{filename}' removed after {trigger}."
-                        + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
-                    )
-                    
-                    items_to_remove.append((item_idx, hint_text, inline_tokens, item_bytes))
-                
-                # Remove items in reverse order to maintain indices
-                for item_idx, hint_text, inline_tokens, item_bytes in sorted(items_to_remove, key=lambda x: x[0], reverse=True):
-                    del mm_content[item_idx]
-                    self._add_media_hint_to_content(msg, hint_text)
-                    result.media_compacted_after_event += 1
-                    result.tokens_saved += inline_tokens
-                    result.media_bytes_saved += item_bytes
-        
+
+        # Selection: everything but the newest message.
+        picks = []
+        for msg_idx, item_idx, item, in_mm in self._iter_media(messages):
+            if msg_idx >= len(messages) - 1:
+                continue
+            if item.get("compacted") and not in_mm:
+                continue  # already a placeholder
+            picks.append(_MediaPick(
+                msg_idx, item_idx, item, in_mm,
+                # The content variant names no file and never has — its hint
+                # sits in the reading order right where the item was, so the
+                # position already says which one went.
+                self._media_subject(item, with_filename=in_mm),
+                f"removed after {trigger}."))
+
+        result.media_compacted_after_event += await self._evict_media(
+            result, picks, store=True)
+
         if result.media_compacted_after_event > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
             logger.info(
@@ -1186,136 +1145,37 @@ class LayeredCompactionStrategy:
             result: CompactionResult to update
         """
         messages = result.modified_messages
-        if not messages:
-            logger.debug("_compact_media_always: no messages")
-            return
-        
         keep_count = self.config.always_compact_media_keep_last
-        if keep_count <= 0:
-            logger.debug(f"_compact_media_always: disabled (keep_count={keep_count})")
+        if not messages or keep_count <= 0:
             return
-        
-        logger.info(f"_compact_media_always: scanning {len(messages)} messages, keep_last={keep_count}")
-        
-        # Find all message indices that have media content
-        messages_with_media: list[int] = []
-        for msg_idx, msg in enumerate(messages):
-            has_media = False
-            
-            # Check content list for media items
-            content = msg.get("content")
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") in ("image", "image_url", "audio", "video"):
-                        # For always-compact, count ALL media (even already compacted)
-                        # We want to manage which messages keep their media references
-                        has_media = True
-                        break
-            
-            # Check multimodal_content
-            if not has_media:
-                mm_content = msg.get("multimodal_content")
-                if mm_content and isinstance(mm_content, list):
-                    for item in mm_content:
-                        if isinstance(item, dict) and item.get("type") in ("image", "audio", "video"):
-                            has_media = True
-                            break
-            
-            if has_media:
-                messages_with_media.append(msg_idx)
-        
-        logger.info(f"_compact_media_always: found {len(messages_with_media)} messages with media")
-        
-        if not messages_with_media:
+
+        # Selection: the last N messages that CARRY media keep theirs, the rest
+        # lose it. multimodal_content is narrowed to real media here, unlike
+        # everywhere else — this is the only rule that lets an item decide
+        # whether a whole MESSAGE counts as recent, so a stray attachment must
+        # not spend one of the N slots.
+        found = list(self._iter_media(messages, mm_types=("image", "audio", "video")))
+        with_media = sorted({msg_idx for msg_idx, _, _, _ in found})
+        if not with_media:
             return
-        
-        # Determine which message indices to protect (keep last N with media)
-        protected_indices = set(messages_with_media[-keep_count:])
-        
-        # Compact media in all non-protected messages
-        compacted_count = 0
-        for msg_idx in messages_with_media:
-            if msg_idx in protected_indices:
-                continue
-            
-            msg = messages[msg_idx]
-            
-            # Process content list
-            content = msg.get("content")
-            if isinstance(content, list):
-                for item_idx, item in enumerate(content):
-                    if not isinstance(item, dict):
-                        continue
-                    item_type = item.get("type", "")
-                    if item_type not in ("image", "image_url", "audio", "video"):
-                        continue
-                    
-                    filename = self._get_media_filename(item)
-                    inline_tokens = estimate_inline_data_tokens(item)
-                    item_bytes = self._estimate_item_bytes(item)
-                    file_path = item.get("path", "")
-                    
-                    # Store inline data before removing if configured
-                    if not file_path and self.config.store_media_before_compaction:
-                        source = item.get("source", {})
-                        media_type = source.get("media_type", item_type) if isinstance(source, dict) else item_type
-                        stored_path = self._store_inline_media(item, str(media_type), self._current_session_id)
-                        if stored_path:
-                            file_path = stored_path
-                    
-                    # Replace with text placeholder
-                    placeholder = {
-                        "type": "text",
-                        "text": (
-                            f"[{item_type.title()} '{filename}' compacted."
-                            + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
-                        )
-                    }
-                    content[item_idx] = placeholder
-                    compacted_count += 1
-                    result.tokens_saved += inline_tokens
-                    result.media_bytes_saved += item_bytes
-            
-            # Process multimodal_content
-            mm_content = msg.get("multimodal_content")
-            if mm_content and isinstance(mm_content, list):
-                items_to_remove: list[tuple[int, str, int, int]] = []
-                for item_idx, item in enumerate(mm_content):
-                    if not isinstance(item, dict):
-                        continue
-                    
-                    item_type = item.get("type", "media")
-                    if item_type not in ("image", "audio", "video"):
-                        continue
-                    
-                    filename = self._get_media_filename(item)
-                    inline_tokens = estimate_inline_data_tokens(item)
-                    item_bytes = self._estimate_item_bytes(item)
-                    file_path = item.get("path", "")
-                    
-                    hint_text = (
-                        f"[{item_type.title()} '{filename}' compacted."
-                        + (f" read(ref=\"{file_path}\") loads it again.]" if file_path else "]")
-                    )
-                    
-                    items_to_remove.append((item_idx, hint_text, inline_tokens, item_bytes))
-                
-                # Remove items in reverse order to maintain indices
-                for item_idx, hint_text, inline_tokens, item_bytes in sorted(items_to_remove, key=lambda x: x[0], reverse=True):
-                    del mm_content[item_idx]
-                    self._add_media_hint_to_content(msg, hint_text)
-                    compacted_count += 1
-                    result.tokens_saved += inline_tokens
-                    result.media_bytes_saved += item_bytes
-        
+
+        protected = set(with_media[-keep_count:])
+        picks = [
+            _MediaPick(msg_idx, item_idx, item, in_mm,
+                       self._media_subject(item), "compacted.")
+            for msg_idx, item_idx, item, in_mm in found
+            if msg_idx not in protected
+        ]
+
+        compacted_count = await self._evict_media(result, picks, store=True)
         result.media_always_compacted = compacted_count
-        
+
         if compacted_count > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
             logger.info(
                 f"Always-compact media: {compacted_count} items compacted, "
                 f"kept last {keep_count} messages with media "
-                f"({len(protected_indices)} protected)"
+                f"({len(protected)} protected)"
             )
 
     async def _compact_multimodal_content(
@@ -1387,85 +1247,44 @@ class LayeredCompactionStrategy:
                     )
                     continue
 
-            # Compact audio items - remove large base64 inline data
-            # If media_store is available, save to disk first for potential restoration
-            # Skip if preserve_media is True (last user message)
-            elif item_type == "audio":
+            # Inline audio/image payloads: save to disk first, so the placeholder
+            # can name an address instead of an apology. Skipped entirely when
+            # preserve_media is set (the last user message keeps its media).
+            elif item_type in ("audio", "image", "image_url"):
                 if preserve_media:
                     compacted.append(item)
                     continue
-                    
+
                 inline_tokens = estimate_inline_data_tokens(item)
                 if inline_tokens >= self.config.tool_result_min_size:
-                    # Get audio metadata if available
+                    is_audio = item_type == "audio"
+                    subject = "Audio" if is_audio else "Image"
+                    # Only steers the stored file's extension — _store_inline_media
+                    # re-derives the type from the payload it actually finds.
                     source = item.get("source", {})
-                    media_type = source.get("media_type", "audio") if isinstance(source, dict) else "audio"
-                    
-                    # Estimate bytes for tracking
+                    media_type = (source.get("media_type", subject.lower())
+                                  if isinstance(source, dict) else subject.lower())
+
                     item_bytes = self._estimate_item_bytes(item)
-                    
-                    # Try to store before removing
                     stored_path = self._store_inline_media(item, media_type, session_id)
-                    
-                    # Create placeholder
-                    if stored_path:
-                        placeholder_text = f"[Audio removed. read(ref=\"{stored_path}\") loads it again.]"
-                    else:
-                        placeholder_text = "[Audio removed - not recoverable. Use store_fact to save key information before compaction.]"
-                    
-                    compacted.append({
-                        "type": "text",
-                        "text": placeholder_text
-                    })
+
+                    compacted.append({"type": "text", "text": self._media_hint(
+                        subject, "removed.", stored_path or "",
+                        unrecoverable=(
+                            f"[{subject} removed - not recoverable. Use store_fact "
+                            f"to save key "
+                            f"{'information' if is_audio else 'observations'} "
+                            f"before compaction.]"),
+                    )})
                     result.tokens_saved += inline_tokens
                     result.media_compacted_after_event += 1
                     result.media_bytes_saved += item_bytes
-                    logger.debug(f"Removed audio inline data: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved")
+                    logger.debug(
+                        f"Removed {subject.lower()} inline data: {inline_tokens:,} "
+                        f"tokens, {item_bytes / 1024:.0f}KB saved")
                     continue
-            
-            # Compact image items - remove large base64 inline data  
-            # If media_store is available, save to disk first for potential restoration
-            # Skip if preserve_media is True (last user message)
-            elif item_type in ("image", "image_url"):
-                if preserve_media:
-                    compacted.append(item)
-                    continue
-                    
-                inline_tokens = estimate_inline_data_tokens(item)
-                if inline_tokens >= self.config.tool_result_min_size:
-                    # Get image metadata if available
-                    source = item.get("source", {})
-                    image_url = item.get("image_url", {})
-                    media_type = "image"
-                    if isinstance(source, dict):
-                        media_type = source.get("media_type", "image")
-                    elif isinstance(image_url, dict):
-                        url = image_url.get("url", "")
-                        if "data:" in url and ";" in url:
-                            media_type = url.split(";")[0].replace("data:", "")
-                    
-                    # Estimate bytes for tracking
-                    item_bytes = self._estimate_item_bytes(item)
-                    
-                    # Try to store before removing
-                    stored_path = self._store_inline_media(item, media_type, session_id)
-                    
-                    # Create placeholder
-                    if stored_path:
-                        placeholder_text = f"[Image removed. read(ref=\"{stored_path}\") loads it again.]"
-                    else:
-                        placeholder_text = "[Image removed - not recoverable. Use store_fact to save key observations before compaction.]"
-                    
-                    compacted.append({
-                        "type": "text", 
-                        "text": placeholder_text
-                    })
-                    result.tokens_saved += inline_tokens
-                    result.media_compacted_after_event += 1
-                    result.media_bytes_saved += item_bytes
-                    logger.debug(f"Removed image inline data: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved")
-                    continue
-                
+
+
             # Keep item as-is (including small items and non-compactable types)
             compacted.append(item)
         
@@ -1516,11 +1335,8 @@ class LayeredCompactionStrategy:
                 # Estimate bytes for tracking (base64 encoded size)
                 item_bytes = self._estimate_item_bytes(item)
                 
-                hint_text = (
-                    f"[{item_type.title()} compacted. "
-                    f"read(ref=\"{file_path}\") loads it again.]"
-                )
-                hints_to_add.append(hint_text)
+                hints_to_add.append(
+                    self._media_hint(item_type.title(), "compacted.", file_path))
                 tokens_saved += inline_tokens
                 
                 # Track media compaction for UI
