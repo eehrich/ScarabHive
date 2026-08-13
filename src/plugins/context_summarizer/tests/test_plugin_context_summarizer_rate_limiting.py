@@ -19,7 +19,20 @@ def summarizer_plugin():
     mcp_config = MCPConfig()
     
     plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
-    return plugin.server._hooks_impl
+    impl = plugin.server._hooks_impl
+
+    # Pin the summariser's OWN llm: the rate limit is only recorded after a
+    # summarisation actually succeeds, so an uncontrolled LLM makes the first
+    # call fail on insufficient_reduction and the second one is never rate
+    # limited. Until the config chain was fixed this seam was closed by
+    # accident (invalid profile -> fallback to the agent's mock).
+    from unittest.mock import AsyncMock as _AsyncMock
+    summary_llm = _AsyncMock()
+    summary_llm.chat = _AsyncMock(return_value="Kurze Zusammenfassung.")
+    summary_llm.model_name = "stub"
+    impl._summarizer_llm = summary_llm
+
+    return impl
 
 
 @pytest.fixture

@@ -10,7 +10,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
@@ -46,10 +46,46 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Session tracking for rate limiting (with LRU eviction)
         self._last_summarization_time: Dict[str, float] = {}  # session_id -> timestamp
 
-        # Load config - for hooks, config is a raw dict from YAML
-        config = self.get_config()
-        
-        # Memory management settings
+        self.apply_config(None)
+
+        # Store system_config for later LLM instantiation
+        self._system_config = None
+        self._summarizer_llm = None
+
+        logger.info(
+            f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
+            f"max_messages={self.max_messages or 'disabled'}, "
+            f"chunk_size={self.chunk_size}, max_chunks={self.max_chunks}, preserve_recent={self.preserve_recent}, "
+            f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
+        )
+
+    def apply_config(self, values: Optional[Dict[str, Any]] = None) -> None:
+        """Take the plugin's configuration as ONE mapping.
+
+        ``values`` comes from config/plugins.yaml and wins over the defaults
+        schema.yaml declares. One place reads a key, so there is no second copy
+        that can drift.
+
+        What this replaced: server.py kept its OWN default table and then
+        copied every value onto this object. Two of its fallbacks were wrong
+        and nothing said so.
+
+        - ``llm_profile`` fell back to 'fast', a profile config/llm.yaml does
+          not define at all.
+        - ``summary_prompt_template`` fell back to '' — and since the prompt is
+          built as ``template.replace('{messages}', …)``, an empty template
+          yields an EMPTY prompt: the messages are never substituted in,
+          because the replace runs on the template. Measured on the production
+          path (server + the shipped plugins.yaml): len 0. The summarizer was
+          calling the LLM with an empty user message and putting whatever came
+          back in place of real conversation.
+
+        Both went unnoticed because plugins.yaml sets neither key, so the
+        fallback was always the effective value, and because the copy happened
+        AFTER the schema had resolved the correct default — overwriting it.
+        """
+        config = {**(self.get_config() or {}), **(values or {})}
+
         self._max_tracked_sessions = int(config.get('max_tracked_sessions', 200))
         self.trigger_percentage = float(config.get('summarization_trigger_percentage', 0.60))
         self.chunk_size = int(config.get('summarization_chunk_size', 10))
@@ -65,17 +101,15 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self.max_preview_length = int(config.get('max_message_preview_length', 5000))
         self.min_time_between = float(config.get('min_time_between_summarizations', 200.0))
         self.max_messages = int(config.get('max_messages', 0))  # 0 = disabled
-        
-        # Store system_config for later LLM instantiation
-        self._system_config = None
-        self._summarizer_llm = None
 
-        logger.info(
-            f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
-            f"max_messages={self.max_messages or 'disabled'}, "
-            f"chunk_size={self.chunk_size}, max_chunks={self.max_chunks}, preserve_recent={self.preserve_recent}, "
-            f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
-        )
+        if not self.prompt_template.strip():
+            # Never summarise with an empty instruction. Refusing loudly beats
+            # sending an empty prompt and storing the answer as a summary.
+            raise ValueError(
+                "context_summarizer: summary_prompt_template is empty — the "
+                "summarisation prompt would be empty and the result would "
+                "replace real conversation. Check schema.yaml's default."
+            )
 
     async def summarize_context(self, context: HookContext) -> HookResult:
         """Summarize older messages when context exceeds token limit.

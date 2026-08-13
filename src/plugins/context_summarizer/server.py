@@ -46,19 +46,19 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
         hook_config = getattr(mcp_config, 'hook_config', {})
         PluginHook.__init__(self, name, config=hook_config)
 
-        # Load configuration
-        config_dict = mcp_config.config if hasattr(mcp_config, 'config') else {}
-        self.trigger_percentage = float(config_dict.get('summarization_trigger_percentage', 0.60))
-        self.chunk_size = int(config_dict.get('summarization_chunk_size', 10))
-        self.preserve_recent = int(config_dict.get('preserve_recent_count', 10))
-        self.preserve_system = bool(config_dict.get('preserve_system_messages', True))
-        self.llm_profile = str(config_dict.get('llm_profile', 'fast'))
-        self.prompt_template = str(config_dict.get('summary_prompt_template', ''))
-        self.min_reduction = float(config_dict.get('min_summary_reduction', 0.3))
-        self.store_metadata = bool(config_dict.get('store_original_metadata', True))
-        self.marker_format = str(config_dict.get('summary_marker_format',
-                                        '[Summary of {count} messages from {start_time} to {end_time}]'))
-        self.max_preview_length = int(config_dict.get('max_message_preview_length', 5000))
+        # Load configuration. ONE mapping, handed over whole — the hook merges
+        # it over the schema defaults and owns every key from there.
+        #
+        # This used to be a second default table here plus a line-per-key copy
+        # onto the hook, which ran AFTER the schema had already resolved the
+        # right values and overwrote them. Two of those fallbacks were wrong:
+        # llm_profile fell back to 'fast' (not a profile config/llm.yaml
+        # defines) and summary_prompt_template to '' — and an empty template
+        # makes `template.replace('{messages}', …)` an EMPTY prompt. Measured
+        # on this exact path: the summarizer called the LLM with an empty user
+        # message. Neither key is set in plugins.yaml, so the wrong fallback
+        # was always the effective value.
+        config_dict = dict(mcp_config.config) if getattr(mcp_config, 'config', None) else {}
 
         # Web UI history tracking
         self.summarization_history: List[Dict[str, Any]] = []
@@ -71,24 +71,19 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             plugin_dir,
             summarization_history=self.summarization_history
         )
-        
-        # Override hook config with server config (from plugin_configs.yaml)
-        # This ensures both MCP tools and hooks use the same configuration
-        self._hooks_impl.trigger_percentage = self.trigger_percentage
-        self._hooks_impl.chunk_size = self.chunk_size
-        self._hooks_impl.preserve_recent = self.preserve_recent
-        self._hooks_impl.preserve_system = self.preserve_system
-        self._hooks_impl.llm_profile = self.llm_profile
-        self._hooks_impl.prompt_template = self.prompt_template
-        self._hooks_impl.min_reduction = self.min_reduction
-        self._hooks_impl.store_metadata = self.store_metadata
-        self._hooks_impl.marker_format = self.marker_format
-        self._hooks_impl.max_preview_length = self.max_preview_length
+        self._hooks_impl.apply_config(config_dict)
+
+        # The MCP tool below reports the threshold; read it off the hook so
+        # there is one source rather than a copy that can disagree.
+        self.trigger_percentage = self._hooks_impl.trigger_percentage
 
         logger.info(
             f"ContextSummarizerServer initialized: trigger={self.trigger_percentage:.0%} of context window, "
-            f"chunk_size={self.chunk_size}, preserve_recent={self.preserve_recent}, "
-            f"llm_profile={self.llm_profile}"
+            f"chunk_size={self._hooks_impl.chunk_size}, "
+            f"preserve_recent={self._hooks_impl.preserve_recent}, "
+            f"llm_profile={self._hooks_impl.llm_profile}, "
+            f"max_messages={self._hooks_impl.max_messages or 'disabled'}, "
+            f"min_time_between={self._hooks_impl.min_time_between}s"
         )
 
     # =========================================================================

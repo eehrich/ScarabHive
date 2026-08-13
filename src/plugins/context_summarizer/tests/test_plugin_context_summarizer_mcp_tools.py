@@ -32,6 +32,17 @@ def plugin():
     mcp_config = MCPConfig()
 
     plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
+
+    # Pin the summariser's OWN llm. Until the config chain was fixed, the
+    # configured profile was the invalid 'fast', client creation failed, and
+    # the plugin silently fell back to the agent's mock — which is why these
+    # tests passed without ever pinning anything. With a valid profile it
+    # builds a real client, so the seam has to be closed explicitly.
+    summary_llm = AsyncMock()
+    summary_llm.chat = AsyncMock(return_value="Kurze Zusammenfassung des Abschnitts.")
+    summary_llm.model_name = "stub"
+    plugin.server._hooks_impl._summarizer_llm = summary_llm
+
     return plugin
 
 
