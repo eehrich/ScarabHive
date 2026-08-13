@@ -1831,7 +1831,15 @@ class LayeredCompactionStrategy:
         # the provider prompt cache was being thrown away on EVERY step once a
         # session reached the limit. Going deeper once buys `headroom` quiet
         # steps for the same single cache break.
-        target = max(1, max_msgs - max(0, self.config.max_messages_headroom))
+        #
+        # Capped at half the limit. Unclamped, any max_messages below the
+        # headroom (default 50) drove the target to 1 — max(1, 40 - 50) — so
+        # the FIRST prune collapsed the conversation to the protected minimum
+        # instead of trimming 50 messages. The cap also keeps excess small
+        # enough that _select_prune_candidates' window (2 * excess) stays in
+        # the old head instead of reaching into the working tail.
+        headroom = min(max(0, self.config.max_messages_headroom), max_msgs // 2)
+        target = max(1, max_msgs - headroom)
         excess = len(messages) - target
 
         # The breadcrumb below is itself a message. Removing exactly `excess`
@@ -2177,11 +2185,16 @@ class LayeredCompactionStrategy:
                 # No promise that all N sit in the history archive: the count
                 # includes placeholders whose bodies live in the tool-result
                 # store instead. "Retrievable" is true for all of them.
+                # Every call named here must WORK. This said "section='history'
+                # or 'all'", and list(section='all') without a filter is an
+                # error by design — so the one message telling the agent where
+                # its history went also handed it a call that fails.
                 "hint": (
                     f"{total} earlier messages of this conversation were moved "
                     f"out of view to keep it within limits. They are stored, "
-                    f"not gone: find them with your context list tool "
-                    f"(section='history' or 'all') and fetch one with read(ref=...)."
+                    f"not gone: list(section='history') shows the most recent "
+                    f"of them, list(filter='...') searches everything, and "
+                    f"read(ref=...) fetches one."
                 )
             })
         })

@@ -126,7 +126,6 @@ Progressive compression strategy that applies increasingly aggressive techniques
 
 **Layer 1 (Reversible):**
 - Store tool outputs with compact references
-- Create variables for large content blocks
 - **Media Deduplication** - Auto-detect duplicate media by file hash, compact older duplicates (keep newest)
 
 **Layer 2 (Semi-Reversible):**
@@ -230,7 +229,7 @@ list: {}                                     # -> refs + summaries + next_offset
 list: {offset: 20}                           # next page
 list: {section: tool_results}                # stored tool outputs
 
-# Find it by keyword (messages, tool outputs, variables and facts)
+# Find it by keyword (messages, tool outputs and facts)
 list: {filter: "database optimization"}      # -> refs + matching excerpts
 
 # Read one of them
@@ -286,8 +285,6 @@ context_engineer:
     tool_result_min_size: 500
     tool_result_keep_last: 3
     
-    # Variables
-    variable_min_size: 500
     
     # Archival
     archive_after_turns: 20
@@ -312,7 +309,6 @@ Access the context engineering dashboard at `/plugins/context_engineer/panel`:
 - View current token usage
 - Browse core memory facts
 - Search archived messages
-- View stored variables
 - See compaction statistics
 
 ## Media Management
@@ -367,7 +363,8 @@ Data is stored under `data/context_engineer/{session_id}/`:
 data/context_engineer/
 └── {session_id}/
     ├── core_memory.json      # Important facts
-    ├── variables.json        # Variable store
+    │                         # (variables.json may still exist from before
+    │                          2026-08; nothing reads it and it can be deleted)
     ├── tool_results.db       # SQLite tool outputs
     └── archival.db           # SQLite archived messages + FTS
 ```
@@ -379,7 +376,7 @@ The plugin uses `estimate_content_tokens()` from `agent_system.llm.token_utils` 
 ## Best Practices
 
 1. **Add facts proactively** - Use `store_fact` to preserve important information before it's compacted
-2. **Reference variables** - Tell the LLM about available variables so it can request content when needed
+2. **Reference stored content** - Leave a ref where the content was, so the LLM can fetch it on demand
 3. **Monitor stats** - Use the web panel or `stats` tool to track context usage
 4. **Tune thresholds** - Adjust compaction thresholds based on your model's context window
 5. **Use semantic search** - Enable ChromaDB for better archival retrieval in long conversations
@@ -389,7 +386,7 @@ The plugin uses `estimate_content_tokens()` from `agent_system.llm.token_utils` 
 The plugin handles errors gracefully:
 - If archival storage fails, messages are kept in context
 - If compaction fails, original messages are preserved
-- Missing variables/tool results return helpful error messages
+- Missing tool results return helpful error messages naming where to find valid refs
 
 ## Future Enhancements
 

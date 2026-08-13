@@ -74,7 +74,7 @@ tools:
         Read ONE stored item by its ref. Always bounded — the answer says how
         much is left (next_offset) so you can continue.
 
-        Refs come from list/search, or from the placeholder left where the
+        Refs come from list, or from the placeholder left where the
         content used to be in this conversation:
         - arch_… an archived message
         - TR_…   a stored tool result (also attached files)

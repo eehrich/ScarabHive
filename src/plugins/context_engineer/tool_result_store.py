@@ -103,7 +103,7 @@ class ToolResultStore:
     
     When tool results are cleared from the context, they are stored here
     with a compact reference. The LLM can request the full content via
-    the get_tool_result tool if needed.
+    the read tool if needed.
     
     Reference format: [Tool:{tool_name} ref:{short_id} hash:{content_hash}]
     
@@ -172,6 +172,16 @@ class ToolResultStore:
             self._db.execute(
                 "UPDATE tool_results SET short_id = ? WHERE id = ?",
                 (_compute_short_id(legacy_id), legacy_id),
+            )
+        # Rows written before the store knew its session_id are tagged
+        # "default" and are invisible to list/search, which query the real id.
+        # The database file is per-session, so every row in it belongs to this
+        # session by construction — re-tagging them is safe and turns a
+        # half-populated catalogue back into a complete one.
+        if self.session_id:
+            self._db.execute(
+                "UPDATE tool_results SET session_id = ? WHERE session_id = 'default'",
+                (self.session_id,),
             )
         self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_tool_results_session

@@ -965,12 +965,14 @@ plugins:
         # Pre-Layer P: Hard message limit - prunes oldest messages if exceeded
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
-        max_messages: 0                # 0 = disabled, e.g., 200 = keep max 200 messages
-        # War abgeschaltet, weil ein Prune exakt auf max_messages trimmte: der
-        # naechste Schritt lag wieder darueber, also Prune + Cache-Bruch bei
-        # JEDEM Schritt. Mit headroom kuerzt ein Prune tiefer und der naechste
-        # kommt erst ~50 Schritte spaeter — ein Bruch statt fuenfzig.
-        max_messages_headroom: 50
+        # IMMER NOCH AUS (0). Der Grund fuer das Abschalten war, dass ein Prune
+        # exakt auf max_messages trimmte: der naechste Schritt lag wieder
+        # darueber, also Prune + Cache-Bruch bei JEDEM Schritt. Das ist mit
+        # max_messages_headroom behoben — ein Bruch statt fuenfzig. Zum
+        # Einschalten hier einen Wert setzen (z.B. 200); solange 0 steht,
+        # laeuft Pre-Layer P nicht und der Headroom hat keine Wirkung.
+        max_messages: 0                # 0 = aus, z.B. 200 = hoechstens 200 Nachrichten
+        max_messages_headroom: 50      # wie weit UNTER max_messages ein Prune kuerzt
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 

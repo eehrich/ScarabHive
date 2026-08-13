@@ -1,4 +1,4 @@
-"""Bounded reads over stored text — the `read` half of list/search/read.
+"""Bounded reads over stored text — the `read` half of list/read.
 
 Retrieval used to be all-or-nothing: asking for a stored tool result returned
 the whole thing, measured in production at 134k characters in one call. That
@@ -48,19 +48,29 @@ def slice_text(content: str, *, offset: int = 0,
     steps put the whole thing back into the context it had just been freed from.
     """
     total = len(content)
-    limit = DEFAULT_READ_CHARS if limit is None else max(1, min(int(limit), MAX_READ_CHARS))
+    # 0 means "no size given", not "zero characters". The handler this replaced
+    # wrote `limit or DEFAULT_READ_CHARS`, so a 0 became 2000; going through
+    # max(1, ...) turned it into a ONE-character answer and a next_offset walk
+    # into one call per character.
+    limit = (DEFAULT_READ_CHARS if not limit or int(limit) <= 0
+             else min(int(limit), MAX_READ_CHARS))
     offset = int(offset)
     offset = max(0, total + offset) if offset < 0 else offset
 
     chunk = content[offset:offset + limit]
     end = offset + len(chunk)
-    truncated = end < total or offset > 0
     return {
         "content": chunk,
         "offset": offset,
         "returned_chars": len(chunk),
         "total_chars": total,
-        "truncated": truncated,
+        "truncated": end < total or offset > 0,
+        # Both directions, like the list tool. A tail read answers
+        # truncated=True with next_offset=None, which alone reads as a dead
+        # end — "you did not see everything" and no way to continue. What is
+        # missing there sits BEFORE the window.
+        "has_more_before": offset > 0,
+        "has_more_after": end < total,
         "next_offset": end if end < total else None,
     }
 

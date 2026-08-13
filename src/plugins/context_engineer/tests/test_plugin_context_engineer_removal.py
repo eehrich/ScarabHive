@@ -194,3 +194,95 @@ class TestLayer3DoesNotDestroy:
         assert kept, "der Hinweis wurde verworfen — der Agent kann nicht wissen, dass es etwas zu holen gibt"
         assert json.loads(kept[0]["content"])["total_removed"] >= 137, (
             "der Laufzaehler wurde zurueckgesetzt")
+
+
+class TestLayer1ResultsAreFindable:
+    """A stored result the agent cannot LIST is only half stored.
+
+    Layer 1 called store_and_reference without a session_id, so every result
+    landed under "default" while list/search query the real id. Measured: one
+    compaction, then list(section='tool_results') answered "0 of 0" - and the
+    system prompt tells the model to look exactly there. read(ref=...) still
+    worked, which is why nothing noticed: the catalogue was blind, not the
+    content. The tests that covered list() seeded the store by hand with the
+    right id and so never exercised the path production uses.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_compacted_result_shows_up_in_the_catalogue(self, tmp_path):
+        from pathlib import Path
+
+        from plugins.context_engineer.hooks import ContextEngineerPlugin
+
+        hooks = ContextEngineerPlugin(Path("src/plugins/context_engineer"))
+        hooks._storage_base = tmp_path
+        sid = "a-real-session"
+        strat = hooks._get_session_components(sid)["strategy"]
+        strat.config.layer1_threshold = 1
+        strat.config.tool_result_min_size = 20
+        strat.config.tool_result_keep_last = 0
+
+        messages = [
+            {"role": "user", "content": "mach was"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "name": "t", "tool_call_id": "call_1",
+             "content": "sehr grosses Werkzeug-Ergebnis " * 80},
+        ]
+        result = await strat.compact(
+            messages, current_tokens=10**6, force=True, session_id=sid)
+        assert result.tool_results_stored == 1, "fixture stored nothing"
+
+        listed = await hooks._handle_context_list(
+            section="tool_results", session_id=sid)
+        assert listed["total"] == 1, (
+            "the compacted result is not in the catalogue - list() is blind "
+            "while the system prompt points the model at it")
+        assert "Werkzeug-Ergebnis" in listed["entries"][0]["summary"], (
+            "the preview never reaches the only place that shows it")
+
+        found = await hooks._handle_context_list(
+            filter="Werkzeug", session_id=sid)
+        assert found["count"] >= 1, "search cannot reach it either"
+
+
+class TestHeadroomNeverCollapsesTheConversation:
+    """The headroom must trim, not empty.
+
+    Unclamped, max(1, max_messages - headroom) went to 1 for ANY limit below
+    the default headroom of 50: an agent configured with max_messages=40 lost
+    its whole conversation on the first prune instead of 20 messages.
+    """
+
+    @pytest.mark.parametrize("max_messages", [200, 40, 30, 10, 2])
+    @pytest.mark.asyncio
+    async def test_a_prune_keeps_a_workable_conversation(self, tmp_path, max_messages):
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="t"),
+            config=CompactionConfig(
+                layer1_threshold=10**9, layer2_threshold=10**9,
+                layer3_threshold=10**9,
+                max_messages=max_messages, max_messages_headroom=50,
+                keep_system_messages=True,
+            ),
+        )
+        messages = [{"role": "user", "content": "die Aufgabe"}]
+        messages += [{"role": "assistant", "content": f"Antwort {i}"}
+                     for i in range(max_messages * 2)]
+        messages += [{"role": "user", "content": "letzte Frage"}]
+
+        result = await strat.compact(messages, current_tokens=100)
+        kept = len(result.modified_messages)
+
+        # The floor is 3 and cannot be crossed: the first user message (the
+        # task), the last one (or the request is invalid) and the breadcrumb
+        # are all protected. A limit below that is a nonsense config, and
+        # Pre-Layer P already logs a warning when it cannot reach it.
+        assert kept <= max(max_messages, 3), f"still over the limit: {kept}"
+        # Half the limit is the deepest a prune may ever go.
+        assert kept >= min(max_messages // 2, max_messages), (
+            f"max_messages={max_messages} collapsed to {kept} messages - the "
+            f"headroom cut deeper than the limit itself")

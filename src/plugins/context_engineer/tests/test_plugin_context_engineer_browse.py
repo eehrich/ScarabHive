@@ -1,4 +1,4 @@
-"""Tests for the list / search / read browsing surface.
+"""Tests for the list / read browsing surface.
 
 The tool it replaces took a free-text query and guessed which of five stores was
 meant. Two consequences drove this rewrite and are pinned here:
@@ -794,3 +794,199 @@ class TestBrowsingReadsLikeAFile:
         # land on it — the same end that offset 0 means for the history.
         assert oldest["entries"][0]["tool"] == "writer_content_batch_scene"
         assert "Ergebnis 4" in newest["entries"][0]["summary"]
+
+
+class TestModelFacingTextNamesLiveToolsOnly:
+    """Every tool call NAMED in text the model reads must actually exist.
+
+    This class of bug kept recurring and is invisible without a check: the
+    system-prompt section pointed at `get_tool_result` after that tool was
+    gone, eleven media hints pointed at `recall(query=...)` after `recall` was
+    removed, two error hints offered a `search` tool that had been folded into
+    `list`, and the prune breadcrumb told the agent to call
+    `list(section='all')` — which is an error by design without a filter.
+
+    Each was a dead end handed to a model at exactly the moment its content had
+    left the context. So this does not grep the source; it GENERATES the real
+    strings and checks what they name.
+    """
+
+    #: Non-tool words that may legitimately appear as `word(` in these strings.
+    _NOT_A_TOOL = frozenset({"e.g", "z.B", "section", "ref", "find", "query"})
+
+    @staticmethod
+    def _live_tool_names() -> set[str]:
+        import yaml
+        schema = yaml.safe_load(
+            (PLUGIN_DIR / "schema.yaml").read_text(encoding="utf-8"))
+        # "{{ name }}_read" -> "read": the model sees the prefixed name, but the
+        # hints are written unprefixed, which is what we are checking.
+        return {t["function"]["name"].split("_", 1)[-1].strip()
+                for t in schema["tools"]}
+
+    @classmethod
+    def _named_calls(cls, text: str) -> set[str]:
+        import re
+        return {m for m in re.findall(r"\b([a-z_][a-z0-9_]*)\s*\(", text or "")
+                if m not in cls._NOT_A_TOOL}
+
+    @pytest.mark.asyncio
+    async def test_restoration_block_and_breadcrumb(self, hooks, session, tmp_path):
+        """The system-prompt block and the prune notice."""
+        strat = hooks._get_session_components(session)["strategy"]
+        block = await strat.get_restoration_context()
+        assert block, "fixture stored nothing — this test would be vacuous"
+
+        messages = []
+        strat._leave_prune_notice(messages, 137)
+        breadcrumb = messages[0]["content"]
+
+        live = self._live_tool_names()
+        for label, text in (("restoration block", block), ("prune notice", breadcrumb)):
+            dead = self._named_calls(text) - live
+            assert not dead, f"{label} names tools that do not exist: {dead}\n{text}"
+
+    @pytest.mark.asyncio
+    async def test_every_call_the_breadcrumb_names_actually_succeeds(
+        self, hooks, session
+    ):
+        """Naming a live tool is not enough — the ARGUMENTS must work too.
+
+        `list(section='all')` named a real tool and still failed every time,
+        because 'all' requires a filter. Only running it catches that.
+        """
+        strat = hooks._get_session_components(session)["strategy"]
+        messages = []
+        strat._leave_prune_notice(messages, 5)
+        breadcrumb = messages[0]["content"]
+
+        import re
+        # Only the calls with concrete arguments; '...' is a placeholder the
+        # model is meant to fill in, so those are exercised with a real value.
+        for section in re.findall(r"list\(section='([a-z_]+)'\)", breadcrumb):
+            out = await hooks._handle_context_list(
+                section=section, session_id=session)
+            assert out["status"] == "success", (
+                f"the breadcrumb tells the agent to call list(section='{section}'), "
+                f"which returns: {out.get('error')}")
+
+        if "list(filter=" in breadcrumb:
+            out = await hooks._handle_context_list(
+                filter="blitter", session_id=session)
+            assert out["status"] == "success", out.get("error")
+
+    @pytest.mark.asyncio
+    async def test_media_hints_name_a_live_tool(self, hooks, tmp_path, monkeypatch):
+        """The hints left where audio/images were evicted."""
+        monkeypatch.chdir(tmp_path)
+        clip = tmp_path / "data" / "clip.wav"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(b"RIFF....WAVEfake")
+
+        strat = LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="t"),
+            config=CompactionConfig(always_compact_media_keep_last=1),
+        )
+        audio = {"type": "audio", "path": str(clip),
+                 "source": {"type": "base64", "media_type": "audio/wav",
+                            "data": "A" * 4000}}
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "hoer"}, dict(audio)]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": [{"type": "text", "text": "und das"}, dict(audio)]},
+        ]
+        result = await strat.compact(messages, current_tokens=100, force=True)
+
+        hints = [part["text"]
+                 for msg in result.modified_messages
+                 if isinstance(msg.get("content"), list)
+                 for part in msg["content"]
+                 if isinstance(part, dict) and part.get("type") == "text"
+                 and ("compacted" in part.get("text", "").lower()
+                      or "removed" in part.get("text", "").lower())]
+        assert hints, "no media hint was produced — this test would be vacuous"
+
+        live = self._live_tool_names()
+        for h in hints:
+            dead = self._named_calls(h) - live
+            assert not dead, f"media hint names tools that do not exist: {dead}\n{h}"
+
+    @pytest.mark.asyncio
+    async def test_error_hints_name_a_live_tool(self, hooks, session):
+        """What the model reads when it gets a reference wrong."""
+        errors = [
+            await hooks._handle_context_read(ref="", session_id=session),
+            await hooks._handle_context_read(ref="nonsense prose", session_id=session),
+            await hooks._handle_context_read(ref="TR_doesnotexist", session_id=session),
+            await hooks._handle_context_read(ref="arch_doesnotexist", session_id=session),
+            await hooks._handle_context_list(section="all", session_id=session),
+            await hooks._handle_context_list(section="nope", session_id=session),
+        ]
+        live = self._live_tool_names()
+        for out in errors:
+            assert out["status"] == "error", out
+            dead = self._named_calls(out.get("hint", "")) - live
+            assert not dead, (
+                f"error hint names tools that do not exist: {dead}\n{out['hint']}")
+
+
+class TestReadEnvelopeEdges:
+    """Three edges the list/read rewrite left rough."""
+
+    @pytest.mark.asyncio
+    async def test_a_zero_limit_means_unspecified_not_one_character(
+        self, hooks, session
+    ):
+        """The handler this replaced wrote `limit or DEFAULT_READ_CHARS`, so a
+        0 became 2000. Routing it through max(1, ...) instead made read() return
+        a SINGLE character, turning a next_offset walk into one call per char."""
+        listed = await hooks._handle_context_list(
+            section="tool_results", session_id=session)
+        out = await hooks._handle_context_read(
+            ref=listed["entries"][0]["ref"], session_id=session, limit=0)
+        assert out["returned_chars"] > 1, (
+            f"limit=0 returned {out['returned_chars']} chars")
+
+    @pytest.mark.asyncio
+    async def test_a_tail_read_is_not_a_dead_end(self, hooks, session):
+        """truncated=True with next_offset=None says "you did not see
+        everything" and offers no way to continue. What is missing sits
+        BEFORE the window, and the envelope has to say so."""
+        listed = await hooks._handle_context_list(
+            section="tool_results", session_id=session)
+        out = await hooks._handle_context_read(
+            ref=listed["entries"][0]["ref"], session_id=session,
+            offset=-300, limit=300)
+
+        assert out["truncated"] is True
+        assert out["next_offset"] is None
+        assert out["has_more_before"] is True, (
+            "a tail read claims to be incomplete without saying in which "
+            "direction the rest lies")
+        assert out["has_more_after"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_content_hash_in_a_placeholder_can_be_read(
+        self, hooks, session
+    ):
+        """Every tool_result_ref placeholder carries a content_hash and is
+        resent on every turn forever. The store has a retrieve_by_hash
+        fallback for it — but _ref_kind rejected a bare hash before that
+        fallback could run, so the field was pure recurring cost."""
+        import json as _json
+        parts = hooks._get_session_components(session)
+        placeholder = _json.loads(parts["tool_store"].store_and_reference(
+            tool_call_id="call_hashcheck", tool_name="t",
+            content="der gesuchte Inhalt " * 30, session_id=session))
+
+        out = await hooks._handle_context_read(
+            ref=placeholder["content_hash"], session_id=session)
+        assert out["status"] == "success", out
+        assert "der gesuchte Inhalt" in out["content"]
+
+    def test_prose_is_still_not_mistaken_for_a_hash(self):
+        """The hash pattern must not swallow ordinary words."""
+        for prose in ("the blitter", "chapter 3", "deadbeefcafe", "notes.md", ""):
+            assert _ref_kind(prose) != "tool_result", prose

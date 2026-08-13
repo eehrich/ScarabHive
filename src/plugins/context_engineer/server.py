@@ -407,7 +407,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             return {"status": "error", "error": str(e)}   
          
     # ------------------------------------------------------------------
-    # list / search / read — see hooks._handle_context_* for the rationale
+    # list / read — see hooks._handle_context_* for the rationale
     # ------------------------------------------------------------------
 
     async def list(self, params: dict[str, Any]) -> dict[str, Any]:

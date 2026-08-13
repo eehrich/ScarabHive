@@ -41,6 +41,12 @@ MAX_LIST_LIMIT = 50
 _REF_PATTERNS = (
     ("tool_result", re.compile(r"\A\$?(TR_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+)\Z")),
     ("message", re.compile(r"\Aarch_[A-Za-z0-9]+\Z")),
+    # The `content_hash` the tool_result_ref placeholder carries. Without this
+    # the field was advertised in every placeholder — and resent on every turn
+    # forever — while _ref_kind rejected it before the retrieve_by_hash
+    # fallback below could ever run. Either the field earns its bytes or it
+    # should not be in the placeholder; this makes it earn them.
+    ("tool_result", re.compile(r"\A[0-9a-f]{8}\Z")),
 )
 
 #: File suffixes that mean "a stored media file", not a text reference.
@@ -313,7 +319,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             session_path.mkdir(parents=True, exist_ok=True)
             
             # Initialize components
-            tool_store = ToolResultStore(session_path / "tool_results.db")
+            # The session_id is load-bearing, not decoration: every write that
+            # omits it falls back to "default", while list/search read with the
+            # REAL id and find nothing. Measured before this: a compaction
+            # stored a result, and list(section='tool_results') answered
+            # "0 of 0" — the agent could not see its own catalogue, and the
+            # system prompt telling it to look there was a dead instruction.
+            # Setting it on the store fixes every call site at once.
+            tool_store = ToolResultStore(session_path / "tool_results.db",
+                                         session_id=session_id)
             core_memory = CoreMemory(storage_path=session_path / "core_memory.json")
             archival_memory = ArchivalMemory(
                 session_path / "archive.db",
@@ -925,9 +939,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
         file_path = Path(path)
 
-        # SECURITY: `path` comes straight from LLM tool args (recall(query=
-        # "/path/to/file")). Without containment this is an arbitrary file read
-        # primitive: the file is base64-injected into the model context. Restrict
+        # SECURITY: `path` comes straight from LLM tool args
+        # (read(ref="/path/to/file.wav")). Without containment this is an
+        # arbitrary file read primitive: the file is base64-injected into the
+        # model context. Restrict
         # to the project data roots where all plugin media legitimately lives
         # (context_engineer media store, comfyui outputs, audio, covers - all
         # under data/). Reject anything outside, including symlink escapes.
@@ -1027,7 +1042,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self,
         session_id: str = "default"
     ) -> dict[str, Any]:
-        """Handle stats tool - get context engineering statistics.
+        """Context engineering statistics. NOT a tool — the stats tool was
+        removed; this serves the web panel via web_endpoints.py.
         
         Args:
             session_id: Session ID
@@ -1083,7 +1099,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             logger.debug(f"Cleaned up session components for {session_id}")
 
     # ------------------------------------------------------------------
-    # list / search / read — the browsing surface over stored context
+    # list / read — the browsing surface over stored context
     #
     # Replaces the single `recall` tool, which took a free-text query and
     # guessed from its shape which of five stores was meant. The guess was
@@ -1258,7 +1274,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         ref = str(ref or "").strip()
         if not ref:
             return {"status": "error", "error": "ref is required",
-                    "hint": "get a ref from the list or search tool"}
+                    "hint": "get a ref from the list tool, or from a placeholder in this conversation"}
 
         kind = _ref_kind(ref)
         if kind is None:
@@ -1266,8 +1282,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "status": "error",
                 "error": f"'{ref}' is not a known reference",
                 "hint": ("refs look like arch_… (archived message), TR_… (tool "
-                         "result) or a media file path; "
-                         "list and search return valid refs"),
+                         "result or attached file) or a media file path; "
+                         "list returns valid refs"),
             }
 
         components = self._get_session_components(session_id)
