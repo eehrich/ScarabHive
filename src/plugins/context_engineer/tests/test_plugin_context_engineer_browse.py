@@ -714,9 +714,17 @@ class TestCompactedMediaStaysRestorable:
                  if isinstance(part, dict) and part.get("type") == "text"
                  and "compacted" in part.get("text", "").lower()]
         assert hints, "no media was compacted — this fixture proves nothing"
-        assert all("read(ref=" in h for h in hints), hints
-        assert not any("recall(" in h for h in hints), (
-            "the hint still points at the removed recall tool")
+        # Deliberately NOT `assert "read(ref=" in hint`: that pins wording, and
+        # wording is what legitimately moves when someone rewrites the hint.
+        # What must hold is semantic — the address in the hint has to be one
+        # the read path actually accepts. That the hint names a LIVE tool is
+        # checked generically in TestModelFacingTextNamesLiveToolsOnly.
+        import re
+        for hint in hints:
+            quoted = re.findall(r'"([^"]+)"', hint)
+            assert quoted, f"the hint names no address at all: {hint}"
+            assert any(_ref_kind(q) == "media" for q in quoted), (
+                f"the hint's address is not something read() resolves: {hint}")
 
     @pytest.mark.asyncio
     async def test_read_on_a_media_path_queues_the_file_again(self, hooks, media_file):
