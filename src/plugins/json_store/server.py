@@ -863,6 +863,13 @@ class JsonStoreServer(SchemaBasedMCPServer):
 
         # Vor dem Dispatch, damit KEINE Operation den privaten Fallback nimmt —
         # ein Lesen im falschen Namespace ist genauso still wie ein Schreiben.
+        #
+        # ponytail: Erkennung, nicht Verhinderung. Das Tool-Schema (schema.yaml)
+        # nennt ``namespace`` weiterhin „optional" und teilt ``required`` mit
+        # allen Instanzen — es per Instanz zu verschaerfen braeuchte einen
+        # Mechanismus in der MCP-Basis. Der Riegel kostet damit EINE verworfene
+        # LLM-Runde statt fuenf; auf Prevention umbauen, wenn eine zweite
+        # Instanz denselben Bedarf hat.
         if self._require_namespace and (params.get("namespace") in (None, "")):
             return {
                 "status": "error",
