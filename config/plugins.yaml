@@ -956,7 +956,7 @@ plugins:
         archive_after_turns: 9999      # Archive messages older than N turns, deactivated, breaks cache
         keep_system_messages: true     # Never archive/drop system messages
 
-        semantic_search: true          # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
+        enable_semantic_search: true   # VectorStore-Semantiksuche (ChromaDB oder sqlite-vec)
         
         # Irreversible compaction settings
         drop_after_turns: 30           # Drop messages older than N turns (Layer 3 only)

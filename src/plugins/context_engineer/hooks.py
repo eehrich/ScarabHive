@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,14 @@ from agent_system.llm.models import ChatMessage
 from agent_system.mcp.status import StatusScope, status_bus
 
 from .archival_memory import ArchivalMemory
-from .compaction import CompactionConfig, LayeredCompactionStrategy
+from .compaction import (
+    PLUGIN_LEVEL_KEYS,
+    CompactionConfig,
+    LayeredCompactionStrategy,
+    _coerce,
+    compaction_config_from,
+    unknown_config_keys,
+)
 from .core_memory import CoreMemory
 from .media_store import MediaStore
 from .paging import (
@@ -193,55 +201,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # holds references and is mid-flight on a worker thread (use-after-close).
         self._active_compactions: set[str] = set()
         
-        # Load config from schema (will be overridden by server.py sync)
-        config = self.get_config()
-        
-        # Memory management settings
-        self._session_ttl_seconds = int(config.get("session_ttl_seconds", 7200))
-        self._max_tracked_sessions = int(config.get("max_tracked_sessions", 100))
-        
-        # Token thresholds
-        self.layer1_threshold = int(config.get("layer1_threshold", 80000))
-        self.layer2_threshold = int(config.get("layer2_threshold", 100000))
-        self.layer3_threshold = int(config.get("layer3_threshold", 120000))
-        self.target_tokens = int(config.get("target_tokens", 60000))
-        
-        # Byte size limits (Gemini has 100MB limit)
-        self.max_request_bytes = int(config.get("max_request_bytes", 90 * 1024 * 1024))  # 90 MB
-        self.target_request_bytes = int(config.get("target_request_bytes", 70 * 1024 * 1024))  # 70 MB
-        
-        # Tool result settings
-        self.tool_result_min_size = int(config.get("tool_result_min_size", 500))
-        self.tool_result_keep_last = int(config.get("tool_result_keep_last", 3))
-        self.tool_result_max_inline_size = int(config.get("tool_result_max_inline_size", 5000))
-        
-        # Message settings
-        self.archive_after_turns = int(config.get("archive_after_turns", 10))
-        self.drop_after_turns = int(config.get("drop_after_turns", 50))
-        self.keep_system_messages = bool(config.get("keep_system_messages", True))
-        self.max_messages = int(config.get("max_messages", 0))
-        self.max_messages_headroom = int(config.get("max_messages_headroom", 50))  # 0 = disabled
-        
-        # Rate limiting
-        self.min_time_between = float(config.get("min_time_between_compactions", 120.0))
-        
-        # Optional features
-        self.enable_semantic_search = bool(config.get("enable_semantic_search", False))
-        
-        # Media handling settings
-        self.deduplicate_media = bool(config.get("deduplicate_media", True))
-        self.compact_media_after_user_message = bool(config.get("compact_media_after_user_message", False))
-        self.compact_media_after_final_response = bool(config.get("compact_media_after_final_response", False))
-        self.always_compact_media_keep_last = int(config.get("always_compact_media_keep_last", 0))
-        
-        # Media store settings (for storing inline base64 before compaction)
-        self.store_media_before_compaction = bool(config.get("store_media_before_compaction", True))
-        self.media_store_ttl_seconds = int(config.get("media_store_ttl_seconds", 86400 * 7))  # 7 days
-        self.media_store_max_files = int(config.get("media_store_max_files", 500))
-        
-        # Storage paths (will be session-specific)
-        self._storage_base = Path(config.get("storage_path", "data/context_engineer"))
-        
+        self.apply_config(None)
+
         logger.info(
             f"ContextEngineerPlugin initialized: "
             f"thresholds=L1:{self.layer1_threshold}/L2:{self.layer2_threshold}/"
@@ -253,7 +214,52 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             f"always_compact_media_keep_last={self.always_compact_media_keep_last}, "
             f"max_messages={self.max_messages}"
         )
-    
+
+    def apply_config(self, values: dict[str, Any] | None) -> None:
+        """Take the plugin's configuration as ONE mapping.
+
+        ``values`` comes from config/plugins.yaml and wins over the defaults in
+        schema.yaml. Every CompactionConfig field is set as an attribute of the
+        same name, because the compaction thresholds are also read directly
+        here (engineer_context checks them before deciding to run at all).
+
+        This replaces three hand-maintained lists that all had to name the same
+        key — read it in server.py, copy it onto this object, name it a third
+        time when constructing CompactionConfig. A key missing from any of them
+        was dropped in silence. Measured on the shipped config: 5 of 25
+        settings never arrived. A loop over the dataclass fields cannot forget
+        one, and unknown_config_keys() covers the other half — a key whose NAME
+        is wrong maps to nothing and now says so.
+        """
+        merged = {**(self.get_config() or {}), **(values or {})}
+
+        unknown = unknown_config_keys(merged)
+        if unknown:
+            logger.warning(
+                "[ContextEngineer] these config keys reach nothing and are "
+                "ignored: %s — check the spelling against CompactionConfig's "
+                "fields or PLUGIN_LEVEL_KEYS",
+                ", ".join(unknown),
+            )
+
+        self._config = merged
+
+        # Compaction settings: one attribute per dataclass field, defaults from
+        # the dataclass itself so there is no second copy of them anywhere.
+        for f in fields(CompactionConfig):
+            setattr(self, f.name, _coerce(merged[f.name], f.type, f.name)
+                    if f.name in merged else f.default)
+
+        # Plugin-level settings — the ones with no CompactionConfig field.
+        # PLUGIN_LEVEL_KEYS must list exactly these, or unknown_config_keys()
+        # would report a key that is in fact used.
+        self._session_ttl_seconds = int(merged.get("session_ttl_seconds", 7200))
+        self._max_tracked_sessions = int(merged.get("max_tracked_sessions", 100))
+        self.min_time_between = float(merged.get("min_time_between_compactions", 120.0))
+        self.enable_semantic_search = bool(merged.get("enable_semantic_search", False))
+        self.core_memory_max_tokens = int(merged.get("core_memory_max_tokens", 2000))
+        self._storage_base = Path(merged.get("storage_path", "data/context_engineer"))
+
     def _cleanup_expired_sessions(self) -> None:
         """Remove expired session components based on TTL and max count."""
         current_time = time.time()
@@ -306,13 +312,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             self._session_components[session_id]["last_accessed"] = time.time()
             return self._session_components[session_id]
 
-        # `_o(key, default)`: return override if present, else the plugin default
-        # captured at __init__. Pure helper so the CompactionConfig block stays
-        # readable.
         ov = overrides or {}
-        def _o(key: str, default: Any) -> Any:
-            return ov.get(key, default)
-        
         if session_id not in self._session_components:
             # Create session-specific storage paths
             session_path = self._storage_base / session_id
@@ -328,7 +328,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Setting it on the store fixes every call site at once.
             tool_store = ToolResultStore(session_path / "tool_results.db",
                                          session_id=session_id)
-            core_memory = CoreMemory(storage_path=session_path / "core_memory.json")
+            core_memory = CoreMemory(storage_path=session_path / "core_memory.json",
+                                     max_tokens=self.core_memory_max_tokens)
             archival_memory = ArchivalMemory(
                 session_path / "archive.db",
                 session_id=session_id,
@@ -345,33 +346,19 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     max_files=self.media_store_max_files
                 )
             
-            # Create compaction config — `_o(...)` lets per-agent hook overrides
-            # relax fields like `tool_result_keep_last` for media-heavy agents
-            # (cover_artist, repeated comfyui image loads) without touching the
-            # plugin-wide default for every other agent.
-            compaction_config = CompactionConfig(
-                layer1_threshold=_o("layer1_threshold", self.layer1_threshold),
-                layer2_threshold=_o("layer2_threshold", self.layer2_threshold),
-                layer3_threshold=_o("layer3_threshold", self.layer3_threshold),
-                target_tokens=_o("target_tokens", self.target_tokens),
-                max_request_bytes=_o("max_request_bytes", self.max_request_bytes),
-                target_request_bytes=_o("target_request_bytes", self.target_request_bytes),
-                tool_result_min_size=_o("tool_result_min_size", self.tool_result_min_size),
-                tool_result_keep_last=_o("tool_result_keep_last", self.tool_result_keep_last),
-                tool_result_max_inline_size=_o("tool_result_max_inline_size", self.tool_result_max_inline_size),
-                archive_after_turns=_o("archive_after_turns", self.archive_after_turns),
-                drop_after_turns=_o("drop_after_turns", self.drop_after_turns),
-                keep_system_messages=_o("keep_system_messages", self.keep_system_messages),
-                max_messages=_o("max_messages", self.max_messages),
-                max_messages_headroom=_o("max_messages_headroom", self.max_messages_headroom),
-                deduplicate_media=_o("deduplicate_media", self.deduplicate_media),
-                compact_media_after_user_message=_o("compact_media_after_user_message", self.compact_media_after_user_message),
-                compact_media_after_final_response=_o("compact_media_after_final_response", self.compact_media_after_final_response),
-                always_compact_media_keep_last=_o("always_compact_media_keep_last", self.always_compact_media_keep_last),
-                store_media_before_compaction=self.store_media_before_compaction,
-                media_store_ttl_seconds=self.media_store_ttl_seconds,
-                media_store_max_files=self.media_store_max_files
-            )
+            # Per-agent hook overrides relax fields like `tool_result_keep_last`
+            # for media-heavy agents (cover_artist, repeated comfyui image
+            # loads) without touching the plugin-wide default for everyone else.
+            # By field name, so an override now works for EVERY field — the
+            # hand-written list this replaces silently ignored an override for
+            # any field its author had not thought to include, and three of
+            # them (store_media_before_compaction, media_store_ttl_seconds,
+            # media_store_max_files) were not even wired to `_o`.
+            compaction_config = compaction_config_from({
+                **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
+                **{k: v for k, v in ov.items()
+                   if k not in PLUGIN_LEVEL_KEYS},
+            })
             
             logger.info(
                 f"[ContextEngineer] Created CompactionConfig for session {session_id}: "

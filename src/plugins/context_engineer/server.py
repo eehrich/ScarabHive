@@ -58,93 +58,46 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         hook_config = getattr(mcp_config, "hook_config", {})
         PluginHook.__init__(self, name, config=hook_config)
         
-        # Load configuration
-        config_dict = mcp_config.config if hasattr(mcp_config, "config") else {}
-        
-        # Token thresholds
-        self.layer1_threshold = int(config_dict.get("layer1_threshold", 80000))
-        self.layer2_threshold = int(config_dict.get("layer2_threshold", 100000))
-        self.layer3_threshold = int(config_dict.get("layer3_threshold", 120000))
-        self.target_tokens = int(config_dict.get("target_tokens", 60000))
-        # Cache-Hysterese: Mindestabstand zwischen prefix-brechenden
-        # Kompaktionen (docs/prompt_cache_design.md par. 3.5)
-        self.min_time_between_compactions = float(config_dict.get("min_time_between_compactions", 120.0))
-        
-        # ============================================================
-        # CONFIG LOADING - WICHTIG für neue Parameter:
-        # 1. Hier aus config_dict laden (plugins.yaml Werte)
-        # 2. Unten zu self._hooks_impl syncen
-        # 3. In schema.yaml unter 'config:' Sektion hinzufügen (für Defaults)
-        # 4. In hooks.py __init__ auch laden (für get_config() Fallback)
-        # ============================================================
-        
-        # Feature settings
-        self.tool_result_min_size = int(config_dict.get("tool_result_min_size", 500))
-        self.tool_result_keep_last = int(config_dict.get("tool_result_keep_last", 3))
-        self.tool_result_max_inline_size = int(config_dict.get("tool_result_max_inline_size", 5000))
-        self.archive_after_turns = int(config_dict.get("archive_after_turns", 10))
-        self.enable_semantic_search = bool(config_dict.get("enable_semantic_search", False))
-        
-        # Media handling settings
-        self.deduplicate_media = bool(config_dict.get("deduplicate_media", True))
-        self.compact_media_after_user_message = bool(config_dict.get("compact_media_after_user_message", False))
-        self.compact_media_after_final_response = bool(config_dict.get("compact_media_after_final_response", False))
-        self.always_compact_media_keep_last = int(config_dict.get("always_compact_media_keep_last", 0))
-        
-        # Pre-Layer P: Hard message limit
-        self.max_messages = int(config_dict.get("max_messages", 0))
-        self.max_messages_headroom = int(config_dict.get("max_messages_headroom", 50))
-        
-        # Media store settings
-        self.store_media_before_compaction = bool(config_dict.get("store_media_before_compaction", True))
-        self.media_store_ttl_seconds = int(config_dict.get("media_store_ttl_seconds", 86400 * 7))  # 7 days
-        self.media_store_max_files = int(config_dict.get("media_store_max_files", 500))
-        
+        # Load configuration. ONE mapping, handed over whole — the plugin maps
+        # it onto CompactionConfig by field name and warns about keys that
+        # reach nothing.
+        #
+        # This used to be two hand-maintained lists (read every key here, then
+        # copy every key onto _hooks_impl) plus a third inside hooks.py, with a
+        # comment block reminding the next author to touch all four places. It
+        # drifted: measured on the shipped config, 5 of 25 settings never
+        # arrived — including a request-size guard deliberately lowered to
+        # 29 MB for a provider cap, running at 90 MB, and `semantic_search`,
+        # whose name was simply wrong with nothing to say so.
+        config_dict = dict(mcp_config.config) if getattr(mcp_config, "config", None) else {}
+
         # Web UI history tracking - load from persistent storage
         self.stats_history: list[dict[str, Any]] = []
         self._history_file = Path("data/context_engineer/history.json")
         self._load_history()
-        
+
         # Import and instantiate the hook implementation
         from plugins.context_engineer.hooks import ContextEngineerPlugin
-        
+
         plugin_dir = Path(__file__).parent
         self._hooks_impl = ContextEngineerPlugin(
             plugin_dir,
             stats_history=self.stats_history,
             history_callback=self._save_history_sync  # Sync callback, runs in thread pool
         )
-        
-        # Sync config to hooks implementation
-        # WICHTIG: Neue Parameter hier hinzufügen! (siehe Kommentar oben)
-        self._hooks_impl.layer1_threshold = self.layer1_threshold
-        self._hooks_impl.layer2_threshold = self.layer2_threshold
-        self._hooks_impl.layer3_threshold = self.layer3_threshold
-        self._hooks_impl.target_tokens = self.target_tokens
-        self._hooks_impl.min_time_between = self.min_time_between_compactions
-        self._hooks_impl.tool_result_min_size = self.tool_result_min_size
-        self._hooks_impl.tool_result_keep_last = self.tool_result_keep_last
-        self._hooks_impl.tool_result_max_inline_size = self.tool_result_max_inline_size
-        self._hooks_impl.archive_after_turns = self.archive_after_turns
-        self._hooks_impl.enable_semantic_search = self.enable_semantic_search
-        self._hooks_impl.deduplicate_media = self.deduplicate_media
-        self._hooks_impl.compact_media_after_user_message = self.compact_media_after_user_message
-        self._hooks_impl.compact_media_after_final_response = self.compact_media_after_final_response
-        self._hooks_impl.always_compact_media_keep_last = self.always_compact_media_keep_last
-        self._hooks_impl.store_media_before_compaction = self.store_media_before_compaction
-        self._hooks_impl.media_store_ttl_seconds = self.media_store_ttl_seconds
-        self._hooks_impl.media_store_max_files = self.media_store_max_files
-        self._hooks_impl.max_messages = self.max_messages
-        self._hooks_impl.max_messages_headroom = self.max_messages_headroom
-        
+        self._hooks_impl.apply_config(config_dict)
+        self.config = config_dict
+
+        cfg = self._hooks_impl
         logger.info(
             f"ContextEngineerServer initialized: "
-            f"thresholds=L1:{self.layer1_threshold}/L2:{self.layer2_threshold}/"
-            f"L3:{self.layer3_threshold}, target={self.target_tokens}, "
-            f"compact_media_after_user_message={self.compact_media_after_user_message}, "
-            f"compact_media_after_final_response={self.compact_media_after_final_response}, "
-            f"always_compact_media_keep_last={self.always_compact_media_keep_last}, "
-            f"max_messages={self.max_messages}"
+            f"thresholds=L1:{cfg.layer1_threshold}/L2:{cfg.layer2_threshold}/"
+            f"L3:{cfg.layer3_threshold}, target={cfg.target_tokens}, "
+            f"max_request_bytes={cfg.max_request_bytes // (1024*1024)}MB, "
+            f"compact_media_after_user_message={cfg.compact_media_after_user_message}, "
+            f"compact_media_after_final_response={cfg.compact_media_after_final_response}, "
+            f"always_compact_media_keep_last={cfg.always_compact_media_keep_last}, "
+            f"max_messages={cfg.max_messages}"
         )
     
     def _load_history_sync(self) -> list[dict[str, Any]]:

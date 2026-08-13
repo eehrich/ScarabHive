@@ -28,7 +28,7 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
@@ -104,6 +104,73 @@ class CompactionConfig:
     store_media_before_compaction: bool = True  # Save inline media to disk before removing
     media_store_ttl_seconds: int = 86400 * 7  # 7 days TTL for stored media
     media_store_max_files: int = 500  # Max files per session
+
+
+#: Config keys the plugin consumes that are NOT CompactionConfig fields.
+#: Anything a config file sets must be one or the other — see
+#: ``unknown_config_keys``, which is what turns a typo into a log line instead
+#: of silence.
+PLUGIN_LEVEL_KEYS = frozenset({
+    "session_ttl_seconds",
+    "max_tracked_sessions",
+    "min_time_between_compactions",
+    "enable_semantic_search",
+    "core_memory_max_tokens",
+    "storage_path",
+})
+
+
+def _coerce(value: Any, type_name: str, field_name: str) -> Any:
+    """YAML already yields ints and bools; this only catches the odd string.
+
+    A value that cannot be coerced is passed through UNCHANGED rather than
+    dropped: a wrong type is the operator's to see, and silently substituting
+    a default here would be the same disappearing act this module exists to
+    stop.
+    """
+    try:
+        if type_name == "bool":
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in ("1", "true", "yes", "on")
+        if type_name == "int":
+            return int(value)
+        if type_name == "float":
+            return float(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[ContextEngineer] config '%s' = %r is not a %s; using it as-is",
+            field_name, value, type_name)
+    return value
+
+
+def compaction_config_from(values: dict[str, Any]) -> CompactionConfig:
+    """Build the config by FIELD NAME. The dataclass IS the schema.
+
+    Every setting used to be hand-written in three separate lists (read it in
+    server.py, copy it onto the hook, name it again when constructing this
+    object) and a key missing from any of them was dropped without a word.
+    Measured on the shipped config: 5 of 25 settings never arrived — among
+    them a request-size guard an operator had deliberately lowered to 29 MB
+    to stay under a provider cap, running at 90 MB.
+    """
+    typed = {f.name: f.type for f in fields(CompactionConfig)}
+    return CompactionConfig(**{
+        name: _coerce(values[name], typed[name], name)
+        for name in typed if name in values
+    })
+
+
+def unknown_config_keys(values: Any) -> list[str]:
+    """Keys that reach neither the compaction config nor the plugin itself.
+
+    This is the half a generic mapping cannot do on its own: mapping by field
+    name makes a correctly-named key arrive, but a MISSPELLED one still lands
+    nowhere. Shipped example: `semantic_search`, where the code reads
+    `enable_semantic_search` — set to true for months, off the whole time.
+    """
+    known = {f.name for f in fields(CompactionConfig)} | PLUGIN_LEVEL_KEYS
+    return sorted(set(values) - known)
 
 
 @dataclass

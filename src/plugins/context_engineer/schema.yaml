@@ -246,10 +246,6 @@ config:
     description: "Maximum token size for inline tool results. Results exceeding this are ALWAYS archived, even if in last N."
 
   # Tool Result Clearing (Legacy - kept for compatibility)
-  tool_result_clearing_enabled:
-    type: boolean
-    default: true
-    description: "Enable automatic tool result clearing for old tool outputs"
 
   # Memory Management
   session_ttl_seconds:
@@ -266,24 +262,9 @@ config:
     minimum: 10
     maximum: 1000
 
-  keep_recent_tools:
-    type: integer
-    default: 5
-    minimum: 1
-    maximum: 50
-    description: "Number of recent tool results to keep uncleared"
 
-  min_tool_result_size:
-    type: integer
-    default: 100
-    minimum: 10
-    description: "Minimum character count to trigger tool result clearing"
 
   # Core Memory
-  core_memory_enabled:
-    type: boolean
-    default: true
-    description: "Enable core memory for persistent facts"
 
   core_memory_max_tokens:
     type: integer
@@ -292,21 +273,9 @@ config:
     maximum: 10000
     description: "Maximum tokens for core memory section"
 
-  auto_extract_decisions:
-    type: boolean
-    default: true
-    description: "Automatically extract decisions from assistant messages"
 
   # Archival Memory
-  archival_enabled:
-    type: boolean
-    default: true
-    description: "Enable archival memory for old messages"
 
-  archival_semantic_search:
-    type: boolean
-    default: false
-    description: "Use ChromaDB for semantic search (requires chromadb)"
 
   # Media Deduplication and Compaction
   deduplicate_media:
@@ -353,29 +322,8 @@ config:
     description: "Minimum seconds between compaction runs per session (anti-thrash; each run breaks the prompt-cache prefix)"
 
   # Compaction Strategy
-  compaction_strategy:
-    type: string
-    enum: ["none", "layered", "aggressive"]
-    default: "layered"
-    description: "Compaction strategy: none, layered (progressive), aggressive"
 
   # Layered thresholds (percentage of context window)
-  layer_tool_clearing:
-    type: number
-    default: 0.40
-    minimum: 0.1
-    maximum: 0.9
-    description: "Trigger tool result clearing at this context usage"
 
-  layer_archival_paging:
-    type: number
-    default: 0.60
-    minimum: 0.1
-    maximum: 0.9
-    description: "Trigger archival paging at this context usage"
 
   # Storage paths (relative to data_dir)
-  storage_dir:
-    type: string
-    default: "context_engineer"
-    description: "Directory for storing context data (relative to data_dir)"
