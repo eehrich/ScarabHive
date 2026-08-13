@@ -72,7 +72,10 @@ plugins:
         system_prompt: |
           You are a skills agent. You have access to a set of skills that you can use to answer questions and solve problems. You can use the skills to read reference material. 
 
-          Make tool calls parallelly if possible. You can also use the skills_sam agent to manage sub-agents that can use skills for parallel processing. Make tool calls parallelly if possible. If you need to handle multimodal input, you can use the skills_agent_multimodal agent.
+          Make tool calls parallelly if possible. You can also use the skills_sam agent to manage sub-agents that can use skills for parallel processing. Make tool calls parallelly if possible. 
+          {% if not multimodal %}
+          If you need to handle multimodal input, you can use the skills_agent_multimodal agent.
+          {% endif %}
 
           - You have a terminal tool that you can use to run commands on the system. Be careful when execute command to avoid any destructive operations. Make backup before executing any command. 
           - You can also use the basic_operations tool to perform basic operations.
@@ -97,6 +100,14 @@ plugins:
 
       agent_config:
         llm_profile: [or-gemini-3.6-flash, or-gemini-flash-lite, or-gemini-flash, or-claude-sonnet]
+        tools:
+          allowed:
+            - "+audio_ops/*"
+            - "+image_compose/*"
+
+        template_vars:
+          multimodal: true           
+
       metadata:
         visibility: "tool"
 
