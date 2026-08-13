@@ -105,6 +105,10 @@ config:
       can revert mistakes (each mutation snapshots the doc first). The interface
       is single-step; depth lets 'undo' be called repeatedly to walk back a few
       steps. 0 disables undo (no snapshots kept).
+  require_namespace:
+    type: boolean
+    default: false
+    description: "Reject any call that omits 'namespace' instead of silently scoping it to the caller's own session. Turn this on for stores that exist ONLY as a shared workspace: there a missing namespace is never intended, and the default is invisible — the write succeeds and returns a doc id that nobody, not even its author, can resolve afterwards."
   max_docs:
     type: integer
     default: 50

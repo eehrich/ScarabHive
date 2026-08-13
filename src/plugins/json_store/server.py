@@ -73,6 +73,17 @@ class JsonStoreServer(SchemaBasedMCPServer):
 
         config_dict = getattr(mcp_config, "config", None) or {}
         self._session_scoped: bool = bool(config_dict.get("session_scoped", True))
+        # A missing ``namespace`` silently falls back to the caller's own
+        # session (see ``_ns``). For a store whose ONLY purpose is a shared
+        # workspace that default is wrong and invisible: the write reports
+        # success and returns a doc id that nobody — not even its author, who
+        # reads WITH the namespace — can ever resolve. Observed on a v6 beat
+        # panel: one writer omitted the namespace five times in a row, each
+        # ~11 KB delta landing in its private session, five failed read-backs,
+        # ~3 minutes and five LLM turns burnt before it happened to switch.
+        # With this flag the first such call fails loudly instead.
+        self._require_namespace: bool = bool(
+            config_dict.get("require_namespace", False))
         self._max_docs: int = int(config_dict.get("max_docs", 50))
         self._max_doc_bytes: int = int(config_dict.get("max_doc_bytes", 2 * 1024 * 1024))
         # Idle namespaces are dropped after this TTL so a months-running server
@@ -849,6 +860,19 @@ class JsonStoreServer(SchemaBasedMCPServer):
             return {"status": "error",
                     "error": f"Unknown or missing operation '{operation}'. "
                              f"Valid: {sorted(handlers)}"}
+
+        # Vor dem Dispatch, damit KEINE Operation den privaten Fallback nimmt —
+        # ein Lesen im falschen Namespace ist genauso still wie ein Schreiben.
+        if self._require_namespace and (params.get("namespace") in (None, "")):
+            return {
+                "status": "error",
+                "error": (
+                    "'namespace' is required on this store — pass the shared "
+                    "store id you were given (the same value on every call). "
+                    "Without it your documents land in a private, "
+                    "per-session space that nobody else can read."
+                ),
+            }
 
         result = await handler(params)
 

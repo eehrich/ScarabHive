@@ -1631,3 +1631,80 @@ class TestNotFoundRecovery:
         assert res["status"] == "error"
         assert "available keys" in res["error"]
         assert "beats" in res["error"]
+
+
+# ---------------------------------------------------------------------------
+# require_namespace — the silent private-fallback guard
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def shared_only_server(mock_system_config):
+    """A store that exists ONLY as a shared workspace."""
+    return JsonStoreServer(
+        "json_store", mock_system_config,
+        MCPConfig(type="json_store", enabled=True,
+                  config={"require_namespace": True}),
+    )
+
+
+class TestRequireNamespace:
+    """Without the flag a missing ``namespace`` scopes the document to the
+    caller's own session — correct for a general store, wrong and INVISIBLE
+    for a shared one: the write succeeds, returns a doc id, and every later
+    read (which does pass the namespace) misses it.
+
+    Measured on a v6 beat panel: one writer omitted the namespace five times,
+    each ~11 KB, five failed read-backs, ~3 minutes and five LLM turns burnt.
+    """
+
+    @pytest.mark.asyncio
+    async def test_write_without_namespace_is_rejected(self, shared_only_server):
+        res = await shared_only_server.manage_json(
+            {"operation": "write", "data": {"a": 1}, **SID},
+        )
+        assert res["status"] == "error"
+        assert "namespace" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_every_operation_is_covered_not_just_write(
+        self, shared_only_server,
+    ):
+        """Ein Lesen im falschen Namespace ist genauso still wie ein
+        Schreiben — der Riegel sitzt deshalb vor dem Dispatch."""
+        for op in ("read", "list", "outline", "stats", "delete_doc", "undo"):
+            res = await shared_only_server.manage_json(
+                {"operation": op, "doc": "d", **SID},
+            )
+            assert res["status"] == "error", op
+            assert "namespace" in res["error"], op
+
+    @pytest.mark.asyncio
+    async def test_leerer_namespace_zaehlt_als_fehlend(self, shared_only_server):
+        res = await shared_only_server.manage_json(
+            {"operation": "write", "namespace": "", "data": {"a": 1}, **SID},
+        )
+        assert res["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_mit_namespace_laeuft_es_durch(self, shared_only_server):
+        wrote = await shared_only_server.manage_json(
+            {"operation": "write", "namespace": "16459", "data": {"a": 1}, **SID},
+        )
+        assert wrote["status"] == "ok", wrote
+        # Der gemeldete Doc-Name muss auch auflösbar sein — genau das war
+        # im Fehlerfall nicht so.
+        back = await shared_only_server.manage_json(
+            {"operation": "read", "namespace": "16459",
+             "doc": wrote["doc"], **SID},
+        )
+        assert back["status"] == "ok"
+        assert json.loads(back["json"]) == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_ohne_flag_bleibt_das_alte_verhalten(self, server):
+        """Der generische Store darf sich nicht ändern — die
+        Session-Skopierung ist dort ein Feature."""
+        res = await server.manage_json(
+            {"operation": "write", "data": {"a": 1}, **SID},
+        )
+        assert res["status"] == "ok"
