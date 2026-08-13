@@ -147,3 +147,60 @@ class TestPerAgentOverrides:
             assert got == probe, (
                 f"per-Agent-Override fuer {f.name} wurde verschluckt "
                 f"(gesetzt {probe}, wirksam {got})")
+
+
+class TestSemanticSearchActuallyRuns:
+    """Semantische Suche muss suchen, nicht nur teuer sein.
+
+    ChromaDB antwortet PRO ANFRAGE: {"ids": [[id, ...]]}. Diese verschachtelte
+    Form an SQLite zu binden gibt "Error binding parameter 1: type 'list' is
+    not supported" — und der umschliessende except machte daraus einen stillen
+    Rueckfall auf die Textsuche. Die semantische Suche lief also nie, waehrend
+    jeder Archiv-Schreibvorgang ~78 ms Einbettung fuer einen Index bezahlte,
+    den niemand las.
+
+    Monatelang unsichtbar, weil der Config-Schluessel falsch geschrieben war
+    (`semantic_search` statt `enable_semantic_search`) und die Funktion damit
+    nie lief. Ein Schalter, der nichts einschaltet, verdeckt einen kaputten
+    Motor.
+    """
+
+    @pytest.fixture
+    def archive(self, tmp_path):
+        from plugins.context_engineer.archival_memory import ArchivalMemory
+
+        a = ArchivalMemory(tmp_path / "a.db", session_id="s",
+                           enable_semantic_search=True,
+                           vector_store_path=tmp_path / "v")
+        if not a.enable_semantic_search:
+            pytest.skip("kein Vektor-Backend verfuegbar")
+        for text in (
+            "Der Blitter kopiert Speicherbloecke ohne die CPU zu belasten.",
+            "Kapitel 3 handelt von der Reise durch die Wueste.",
+            "Die Rechnung ueber 4711 Euro wurde am Dienstag bezahlt.",
+            "Ein Grafikchip verschiebt Bilddaten parallel zum Hauptprozessor.",
+            "Das Pferd stand am Brunnen und trank.",
+        ):
+            a.store({"role": "assistant", "content": text}, session_id="s")
+        return a
+
+    def test_it_finds_by_meaning_not_by_word(self, archive, caplog):
+        """Der Grafikchip-Satz teilt KEIN Wort mit der Anfrage.
+
+        Genau daran haengt der Beweis: waere der Rueckfall auf die Textsuche
+        noch aktiv, koennte dieser Treffer nicht auftauchen.
+        """
+        import logging
+
+        with caplog.at_level(logging.ERROR):
+            hits = archive.search("Hardware die Speicher bewegt",
+                                  session_id="s", limit=2, use_semantic=True)
+
+        assert not [r for r in caplog.records if "falling back to text" in r.message], (
+            "die semantische Suche ist auf die Textsuche zurueckgefallen — "
+            "sie laeuft also gar nicht")
+
+        found = " ".join(m.content for m in hits)
+        assert "Grafikchip" in found, (
+            f"nur woertliche Treffer gefunden: {[m.content[:40] for m in hits]}")
+        assert "Pferd" not in found and "Rechnung" not in found

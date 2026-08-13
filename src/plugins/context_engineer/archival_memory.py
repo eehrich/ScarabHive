@@ -603,8 +603,21 @@ class ArchivalMemory:
             if not results or not results.get("ids") or not results["ids"]:
                 return []
             
-            # Fetch full messages from SQLite
+            # Fetch full messages from SQLite.
+            #
+            # ChromaDB answers PER QUERY: {"ids": [[id, id, ...]]}. Binding that
+            # nested form gives "Error binding parameter 1: type 'list' is not
+            # supported", which the except below turned into a text-search
+            # fallback — so semantic search never actually ran, while every
+            # archive write still paid ~78 ms of embedding for an index nothing
+            # read. Invisible for months because the config key that switches
+            # this on was misspelled and the feature was simply never exercised.
+            # sqlite-vec answers flat, so accept both shapes.
             ids = results["ids"]
+            if ids and isinstance(ids[0], list):
+                ids = ids[0]
+            if not ids:
+                return []
             placeholders = ",".join("?" * len(ids))
             cursor = self._db.execute(f"""
                 SELECT id, role, content, summary, timestamp, session_id,
