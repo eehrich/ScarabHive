@@ -719,7 +719,80 @@ class TestLayeredCompactionStrategy:
         
         # First tool result should be stored (not the last one)
         assert result.tool_results_stored >= 1 or result.layers_applied == []
-    
+
+    async def test_layer1_stores_a_preview_but_keeps_the_placeholder_lean(
+        self, strategy_components
+    ):
+        """The tool_result_ref placeholder must stay small and STABLE.
+
+        It replaces the tool message and stays in the conversation, so
+        anything embedded in it is resent on every future turn, not paid
+        once. The preview belongs where it's read on demand -- the stored
+        entry, which list(section='tool_results') shows -- not baked into
+        what gets resent unconditionally.
+
+        Also regression for the blank-preview bug: 'summary' was defined on
+        ToolResultEntry ("Optional LLM-generated summary") but no caller ever
+        populated it, so list() had nothing to show either.
+        """
+        strategy = strategy_components["strategy"]
+        tool_store = strategy_components["tool_store"]
+        large_content = "The quick brown fox jumps over the lazy dog. " * 50
+
+        messages = [
+            {"role": "user", "content": "Read the file"},
+            {"role": "assistant", "tool_calls": [{"id": "call_preview", "function": {"name": "read"}}]},
+            {"role": "tool", "name": "read_file", "tool_call_id": "call_preview", "content": large_content},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "tool_calls": [{"id": "call_filler", "function": {"name": "read"}}]},
+            {"role": "tool", "name": "read_file", "tool_call_id": "call_filler", "content": "filler " * 100},
+        ]
+
+        result = await strategy.compact(messages, current_tokens=600)
+        assert result.tool_results_stored >= 1
+
+        stored = [m for m in result.modified_messages if m.get("tool_call_id") == "call_preview"]
+        assert stored, "the tool result for call_preview should have been archived"
+        ref_data = json.loads(stored[0]["content"])
+        assert ref_data["type"] == "tool_result_ref"
+        assert "preview" not in ref_data, "the placeholder must not carry a per-turn-resent preview"
+
+        entry = tool_store.retrieve(ref_data["ref_id"])
+        assert "quick brown fox" in entry.summary, "list() needs a real summary to show"
+
+    async def test_layer1_does_not_rearchive_its_own_placeholder(self, strategy_components):
+        """An already-archived tool_result_ref must not become a ref-to-a-ref.
+
+        Layer 2 already guards this (see its comment: chains 20 levels deep,
+        637 of 1286 entries nothing but pointers). Layer 1 runs first and
+        lacked the same guard: with a low enough tool_result_min_size, a
+        placeholder from an earlier turn -- small as it is -- crossed the
+        threshold again on the NEXT compaction pass and got wrapped in
+        another placeholder, compounding every turn instead of staying put.
+        """
+        strategy = strategy_components["strategy"]
+        big = "The quick brown fox jumps over the lazy dog. " * 50
+
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1", "function": {"name": "read"}}]},
+            {"role": "tool", "name": "read_file", "tool_call_id": "call_1", "content": big},
+            {"role": "assistant", "tool_calls": [{"id": "call_2", "function": {"name": "read"}}]},
+            {"role": "tool", "name": "read_file", "tool_call_id": "call_2", "content": "filler " * 60},
+        ]
+
+        pass1 = await strategy.compact(list(messages), current_tokens=600)
+        ref1 = next(m for m in pass1.modified_messages if m.get("tool_call_id") == "call_1")
+        assert json.loads(ref1["content"])["type"] == "tool_result_ref"
+
+        # Same messages, compacted again next turn -- exactly what happens
+        # every turn once the message/token count keeps tripping compaction.
+        turn2 = list(pass1.modified_messages) + [{"role": "user", "content": "next turn"}]
+        pass2 = await strategy.compact(turn2, current_tokens=600)
+        ref2 = next(m for m in pass2.modified_messages if m.get("tool_call_id") == "call_1")
+
+        assert ref2["content"] == ref1["content"], "an already-archived placeholder must not change"
+        assert json.loads(ref2["content"])["ref_id"] == json.loads(ref1["content"])["ref_id"]
+
     async def test_compaction_result_stats(self, strategy_components):
         """Test that CompactionResult has correct statistics."""
         strategy = strategy_components["strategy"]

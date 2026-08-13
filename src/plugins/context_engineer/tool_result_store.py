@@ -254,14 +254,19 @@ class ToolResultStore:
             f"tokens={token_count}, hash={content_hash}"
         )
         
-        # Return compact reference as JSON (preserves structure, valid for tool messages)
+        # Return compact reference as JSON (preserves structure, valid for tool messages).
+        # Deliberately NOT embedding 'summary' here: this placeholder replaces
+        # the tool message and stays in the conversation, so every byte added
+        # here is resent on EVERY future turn, forever — not a one-time cost.
+        # 'summary' is stored (for list() to show on demand) but kept out of
+        # what gets resent unconditionally.
         import json
         return json.dumps({
             "type": "tool_result_ref",
             "tool_name": tool_name,
             "ref_id": short_id,
             "content_hash": content_hash,
-            "token_count": token_count
+            "token_count": token_count,
         })
     
     @_synchronized

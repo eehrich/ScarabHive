@@ -1482,7 +1482,17 @@ class LayeredCompactionStrategy:
             # Process tool results
             if msg.get("role") == "tool":
                 tool_results_seen += 1
-                
+
+                # Already a pointer — re-archiving it stores a pointer to a
+                # pointer and gains nothing, the content is long gone from
+                # this message. Layer 2 has this exact guard (see the comment
+                # there: chains 20 levels deep, 637 of 1286 entries nothing
+                # but pointers); Layer 1 runs BEFORE Layer 2 and never had it,
+                # so a small-enough placeholder could loop back through here
+                # on a later turn and get "archived" again.
+                if _ref_type(msg) is not None:
+                    continue
+
                 content = msg.get("content", "")
                 # Handle multimodal content - compact text_file items
                 if isinstance(content, list):
@@ -1520,13 +1530,19 @@ class LayeredCompactionStrategy:
                     # Store and replace with reference
                     tool_name = msg.get("name", "unknown")
                     tool_call_id = msg.get("tool_call_id", "")
-                    
+
+                    # A bare ref+token_count gives the model nothing to decide
+                    # what to find= for — it can only page blindly. A cheap
+                    # preview (no LLM call) is enough to point it at find=.
+                    preview = " ".join(content.split())[:200]
+
                     # Wrap sync SQLite operation in thread pool
                     reference = await asyncio.to_thread(
                         self.tool_store.store_and_reference,
                         tool_call_id=tool_call_id,
                         tool_name=tool_name,
-                        content=content
+                        content=content,
+                        summary=preview,
                     )
                     
                     messages[i] = {**msg, "content": reference}
@@ -2393,10 +2409,10 @@ class LayeredCompactionStrategy:
         if tool_stats["total_entries"] > 0:
             sections.append(
                 "## Tool Results\n"
-                "Some tool results have been stored externally. "
-                "When you see a JSON reference with `type: tool_result_ref`, "
-                "you can retrieve the full result using the `get_tool_result` tool "
-                "with the ref_id."
+                "Some tool results have been stored externally. When you see a JSON "
+                "reference with `type: tool_result_ref`, use list(section='tool_results') "
+                "to see what it contains, then read(ref=ref_id, find=\"...\") for just "
+                "the matching part, or read(ref=ref_id) to page through it."
             )
         
         # Variables
