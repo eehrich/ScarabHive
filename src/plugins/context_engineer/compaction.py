@@ -272,6 +272,18 @@ _PLACEHOLDER_ROLES = {
 #: Media item types that can appear in a message's ``content`` list.
 _MEDIA_TYPES = ("image", "image_url", "audio", "video")
 
+#: What a hint CALLS each of them. Not ``type.title()``: that spells
+#: ``image_url`` as "Image_Url", a word the model has never seen, and it raises
+#: outright on an item whose ``type`` is not a string — which
+#: ``multimodal_content`` does not promise.
+_MEDIA_SUBJECTS = {"image": "Image", "image_url": "Image",
+                   "audio": "Audio", "video": "Video"}
+
+#: The session every caller lands in that brought no session id of its own.
+#: Named rather than spelled out four times, because it is the one value whose
+#: appearance means "someone forgot" and not "someone chose".
+_SHARED_SESSION_ID = "default"
+
 
 class _MediaPick(NamedTuple):
     """One media item chosen for eviction, plus the words for its hint.
@@ -377,7 +389,10 @@ class LayeredCompactionStrategy:
         self.media_store = media_store
         #: Set per run by ``compact``; pre-set so a directly called layer
         #: cannot fail on a missing attribute instead of storing the media.
-        self._current_session_id = "default"
+        #: It is a SHARED pot, not a private one — ``_store_inline_media`` says
+        #: so out loud the first time anything lands in it.
+        self._current_session_id = _SHARED_SESSION_ID
+        self._warned_shared_session = False
     
     def _add_media_hint_to_content(
         self,
@@ -408,7 +423,14 @@ class LayeredCompactionStrategy:
                 try:
                     data = json.loads(content)
                     if isinstance(data, dict):
-                        data["_media_compacted"] = hint_text
+                        # APPEND, never assign: one tool result routinely carries
+                        # several attachments, and each gets its own hint through
+                        # here. Assigning let the last one silently delete every
+                        # earlier hint, so a removed attachment left no trace at
+                        # all — the plain-text branch below always appended.
+                        previous = data.get("_media_compacted")
+                        data["_media_compacted"] = (
+                            f"{previous}\n{hint_text}" if previous else hint_text)
                         msg["content"] = json.dumps(data, ensure_ascii=False)
                     else:
                         # Non-dict JSON, append as suffix
@@ -454,8 +476,8 @@ class LayeredCompactionStrategy:
                             text = item.get("text", "")
                             total_bytes += len(text.encode('utf-8')) if isinstance(text, str) else 0
                         
-                        # Image/audio inline data - check various formats
-                        elif item.get("type") in ("image", "audio", "image_url"):
+                        # Inline media - check various formats
+                        elif item.get("type") in _MEDIA_TYPES:
                             total_bytes += self._estimate_item_bytes(item)
             
             # Tool calls
@@ -771,8 +793,8 @@ class LayeredCompactionStrategy:
                         yield msg_idx, item_idx, item, True
 
     def _media_subject(self, item: dict[str, Any], with_filename: bool = True) -> str:
-        """What a hint calls the item it replaces."""
-        subject = item.get("type", "media").title()
+        """What a hint calls the item it replaces (see ``_MEDIA_SUBJECTS``)."""
+        subject = _MEDIA_SUBJECTS.get(str(item.get("type", "")), "Media")
         if with_filename:
             return f"{subject} '{self._get_media_filename(item)}'"
         return subject
@@ -783,7 +805,6 @@ class LayeredCompactionStrategy:
         reason: str,
         path: str,
         *,
-        always_ref: bool = False,
         unrecoverable: str = "",
     ) -> str:
         """The ONE place a model-facing media hint is written.
@@ -794,7 +815,7 @@ class LayeredCompactionStrategy:
         ``recall(query=…)`` long after that tool was deleted — a dead
         instruction handed over at the exact moment the bytes left the context.
         """
-        if path or always_ref:
+        if path:
             return f'[{subject} {reason} read(ref="{path}") loads it again.]'
         return unrecoverable or f"[{subject} {reason}]"
 
@@ -805,7 +826,6 @@ class LayeredCompactionStrategy:
         *,
         store: bool = False,
         count_bytes: bool = True,
-        ref_fallback: str | None = None,
     ) -> int:
         """Throw the picked media out and leave exactly one hint per item.
 
@@ -819,9 +839,11 @@ class LayeredCompactionStrategy:
           for prose.
 
         ``store`` saves an inline payload to disk first, but only for content
-        items — a ``multimodal_content`` item already IS a file reference.
-        ``ref_fallback`` (dedup only) names the address when the item has none
-        and makes the ``read(...)`` suffix unconditional.
+        items — a ``multimodal_content`` item already IS a file reference. An
+        item that ends up with no address gets a hint WITHOUT a ``read(...)``
+        suffix: dedup used to substitute the literal "N/A" there, handing the
+        model ``read(ref="N/A")`` — the dead instruction ``_media_hint`` exists
+        to prevent, and ``read(ref="")`` for an item carrying an empty path.
 
         Returns the number of items evicted; ``tokens_saved`` and (unless
         ``count_bytes`` is off) ``media_bytes_saved`` are booked here. The
@@ -833,17 +855,19 @@ class LayeredCompactionStrategy:
         evicted = 0
 
         for msg_idx, item_idx, item, in_mm, subject, reason in picks:
-            path = item.get("path", "" if ref_fallback is None else ref_fallback)
+            path = item.get("path", "")
             if store and not in_mm and not path:
                 source = item.get("source", {})
                 item_type = item.get("type", "")
                 media_type = (source.get("media_type", item_type)
                               if isinstance(source, dict) else item_type)
-                path = self._store_inline_media(
+                # Off the event loop: this base64-decodes and writes a file, and
+                # the byte-limit caller arrives with dozens of items at 90 MB.
+                path = await asyncio.to_thread(
+                    self._store_inline_media,
                     item, str(media_type), self._current_session_id) or path
 
-            hint = self._media_hint(subject, reason, path,
-                                    always_ref=ref_fallback is not None)
+            hint = self._media_hint(subject, reason, path)
 
             if in_mm:
                 mm_removals[msg_idx].append((item_idx, hint))
@@ -861,9 +885,16 @@ class LayeredCompactionStrategy:
             msg = messages[msg_idx]
             mm_list = msg.get("multimodal_content", [])
             for item_idx, hint in sorted(removals, key=lambda x: x[0], reverse=True):
-                if item_idx < len(mm_list):
-                    del mm_list[item_idx]
-                    self._add_media_hint_to_content(msg, hint)
+                # Every index came from enumerating THIS list, nothing shrinks it
+                # between selection and here, and the descending order keeps the
+                # lower ones valid — so a miss is impossible, not merely unlikely.
+                # It used to be skipped silently, which would have left three
+                # counters claiming an eviction that never happened.
+                assert item_idx < len(mm_list), (
+                    f"multimodal_content shrank under the eviction: index "
+                    f"{item_idx} of {len(mm_list)} in message {msg_idx}")
+                del mm_list[item_idx]
+                self._add_media_hint_to_content(msg, hint)
 
         return evicted
 
@@ -893,7 +924,7 @@ class LayeredCompactionStrategy:
         ]
 
         result.media_deduplicated += await self._evict_media(
-            result, picks, count_bytes=False, ref_fallback="N/A")
+            result, picks, count_bytes=False)
 
         if result.media_deduplicated > 0:
             result.final_tokens = self._estimate_messages_tokens(result.modified_messages)
@@ -921,7 +952,18 @@ class LayeredCompactionStrategy:
         """
         if not self.media_store or not self.config.store_media_before_compaction:
             return None
-        
+
+        # media_store_max_files is a PER-SESSION quota, so everyone who arrives
+        # without a session id shares one pot and evicts each other's files.
+        # Once per strategy is enough to find the caller; per item would be
+        # dozens of lines in a single byte-limit compaction.
+        if session_id == _SHARED_SESSION_ID and not self._warned_shared_session:
+            self._warned_shared_session = True
+            logger.warning(
+                "Storing media under the shared '%s' session — no session id "
+                "reached the compaction, so this run shares one per-session "
+                "file quota with every other such caller", _SHARED_SESSION_ID)
+
         try:
             # Extract base64 data from item - check all possible formats
             base64_data = None
@@ -1027,7 +1069,10 @@ class LayeredCompactionStrategy:
                 f"removed to reduce request size. Saved {item_bytes / 1024:.0f}KB."))
 
         bytes_before = result.media_bytes_saved
-        compacted_count = await self._evict_media(result, picks)
+        # store=True like every other eviction: this one fires at 90 MB, i.e.
+        # when the payload is at its largest, and used to drop inline data with
+        # no copy on disk and a hint that could name no address.
+        compacted_count = await self._evict_media(result, picks, store=True)
 
         if compacted_count > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
@@ -1250,15 +1295,14 @@ class LayeredCompactionStrategy:
             # Inline audio/image payloads: save to disk first, so the placeholder
             # can name an address instead of an apology. Skipped entirely when
             # preserve_media is set (the last user message keeps its media).
-            elif item_type in ("audio", "image", "image_url"):
+            elif item_type in _MEDIA_TYPES:
                 if preserve_media:
                     compacted.append(item)
                     continue
 
                 inline_tokens = estimate_inline_data_tokens(item)
                 if inline_tokens >= self.config.tool_result_min_size:
-                    is_audio = item_type == "audio"
-                    subject = "Audio" if is_audio else "Image"
+                    subject = self._media_subject(item, with_filename=False)
                     # Only steers the stored file's extension — _store_inline_media
                     # re-derives the type from the payload it actually finds.
                     source = item.get("source", {})
@@ -1270,11 +1314,12 @@ class LayeredCompactionStrategy:
 
                     compacted.append({"type": "text", "text": self._media_hint(
                         subject, "removed.", stored_path or "",
+                        # The advice used to be "use store_fact BEFORE
+                        # compaction" — read at the one moment compaction has
+                        # already happened. What is left to do is ask again.
                         unrecoverable=(
-                            f"[{subject} removed - not recoverable. Use store_fact "
-                            f"to save key "
-                            f"{'information' if is_audio else 'observations'} "
-                            f"before compaction.]"),
+                            f"[{subject} removed - not recoverable. Ask for it "
+                            f"again if you still need it.]"),
                     )})
                     result.tokens_saved += inline_tokens
                     result.media_compacted_after_event += 1
@@ -1335,8 +1380,9 @@ class LayeredCompactionStrategy:
                 # Estimate bytes for tracking (base64 encoded size)
                 item_bytes = self._estimate_item_bytes(item)
                 
-                hints_to_add.append(
-                    self._media_hint(item_type.title(), "compacted.", file_path))
+                hints_to_add.append(self._media_hint(
+                    self._media_subject(item, with_filename=False),
+                    "compacted.", file_path))
                 tokens_saved += inline_tokens
                 
                 # Track media compaction for UI

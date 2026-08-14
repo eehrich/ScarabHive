@@ -682,7 +682,7 @@ class TestCompactedMediaStaysRestorable:
         return path
 
     @pytest.mark.asyncio
-    async def test_the_hint_names_a_tool_that_exists(self, tmp_path, media_file):
+    async def test_the_hint_names_a_tool_that_exists(self, tmp_path, media_file, hooks):
         strat = LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
@@ -716,15 +716,27 @@ class TestCompactedMediaStaysRestorable:
         assert hints, "no media was compacted — this fixture proves nothing"
         # Deliberately NOT `assert "read(ref=" in hint`: that pins wording, and
         # wording is what legitimately moves when someone rewrites the hint.
-        # What must hold is semantic — the address in the hint has to be one
-        # the read path actually accepts. That the hint names a LIVE tool is
-        # checked generically in TestModelFacingTextNamesLiveToolsOnly.
+        # Checking the QUOTES instead was no better — it passes for any hint
+        # that happens to quote something and says nothing about whether the
+        # model can act on it. So the call is parsed out of the hint and RUN:
+        # a hint that lost its restore instruction has nothing to parse, and
+        # one that kept a dead address fails on the answer.
         import re
         for hint in hints:
-            quoted = re.findall(r'"([^"]+)"', hint)
-            assert quoted, f"the hint names no address at all: {hint}"
-            assert any(_ref_kind(q) == "media" for q in quoted), (
-                f"the hint's address is not something read() resolves: {hint}")
+            calls = re.findall(r'(\w+)\(ref="([^"]*)"', hint)
+            assert calls, (
+                f"the hint tells the model nothing about getting the media "
+                f"back: {hint}")
+            for tool_name, ref in calls:
+                # No getattr default: a hint naming a tool that does not exist
+                # must break here, not silently pass.
+                handler = getattr(hooks, f"_handle_context_{tool_name}")
+                out = await handler(ref=ref, session_id="media-test")
+                assert out["status"] == "success", (
+                    f"the hint says {tool_name}(ref={ref!r}); it answers: {out}")
+                assert out["kind"] == "media", (
+                    f"{tool_name}(ref={ref!r}) hands back {out['kind']}, "
+                    f"not the media the hint replaced")
 
     @pytest.mark.asyncio
     async def test_read_on_a_media_path_queues_the_file_again(self, hooks, media_file):
