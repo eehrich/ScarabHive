@@ -102,8 +102,8 @@ plugins:
         llm_profile: [or-gemini-3.6-flash, or-gemini-flash-lite, or-gemini-flash, or-claude-sonnet]
         tools:
           allowed:
-            - "+audio_ops/*"
-            - "+image_compose/*"
+
+            - "+media_ops/*"
 
         template_vars:
           multimodal: true           

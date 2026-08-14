@@ -123,6 +123,77 @@ class MultimodalError:
     error: str  # Human-readable error message
 
 
+def extract_inline_media(item: Any) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
+    """Pull the payload back out of a message content item — the inverse of the
+    injection builders in this module.
+
+    Media sits in a conversation in one of five shapes, all written by the
+    functions below (or by multimodal_processor.encode_*_to_data_url):
+
+    1. ``{"source": {"data": <base64 str|bytes>, "media_type": ...}}``  Anthropic
+    2. ``{"image_url": {"url": "data:<mime>;base64,..."}}``             OpenAI
+    3. ``{"inline_data": {"data": ..., "mime_type": ...}}``             Gemini
+    4. ``{"audio_url": "data:<mime>;base64,..."}``                      OpenAI audio
+    5. ``{"video_url": "data:<mime>;base64,..."}``
+
+    Items that carry only a file path (MultimodalToolContent) or a remote URL
+    have no inline payload and yield ``(None, mime, name)``.
+
+    Args:
+        item: Content item — dict or pydantic model (ImageContent, AudioContent, …).
+
+    Returns:
+        (raw bytes or None, mime type or None, original filename or None)
+
+    Raises:
+        ValueError: a base64 payload is present but cannot be decoded.
+    """
+    if isinstance(item, dict):
+        d: Any = item
+    elif hasattr(item, "model_dump"):
+        d = item.model_dump()
+    else:
+        return None, None, None
+    if not isinstance(d, dict):
+        return None, None, None
+
+    name = d.get("name")
+    mime = d.get("media_type") or d.get("mime_type")
+
+    def _from_data_url(url: Any) -> Tuple[Optional[str], Optional[str]]:
+        if isinstance(url, str) and ";base64," in url:
+            head, payload = url.split(";base64,", 1)
+            return payload, (head[5:] if head.startswith("data:") else None)
+        return None, None
+
+    b64: Optional[str] = None
+
+    for container, mime_key in ((d.get("source"), "media_type"),
+                                (d.get("inline_data"), "mime_type")):
+        if isinstance(container, dict) and container.get("data"):
+            data = container["data"]
+            mime = container.get(mime_key) or mime
+            if isinstance(data, bytes):
+                return data, mime, name
+            b64 = data
+            break
+
+    if b64 is None:
+        image_url = d.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+        for candidate in (url, d.get("audio_url"), d.get("video_url")):
+            payload, url_mime = _from_data_url(candidate)
+            if payload:
+                b64, mime = payload, (url_mime or mime)
+                break
+
+    if b64 is None:
+        return None, mime, name
+    # binascii.Error is a ValueError subclass — a corrupt payload surfaces
+    # instead of silently becoming "no media here".
+    return base64.b64decode(b64), mime, name
+
+
 def encode_multimodal_item(
     item: "MultimodalToolContent | Dict[str, Any]",
     max_size_mb: Optional[float] = None

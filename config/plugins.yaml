@@ -190,6 +190,24 @@ plugins:
       overlap_check_enabled: true   # warn on text/svg BBox overlap pairs after render
       overlap_min_gap_px: 30        # required clearance between text/svg layers (px)
 
+    media_ops:
+      type: media_ops
+      enabled: true
+      description: "Load media files from disk into the agent's context, and save context media back to disk"
+      # Sandbox for BOTH directions: the path comes straight from LLM arguments,
+      # whatever is read ends up base64-encoded in the model context, and
+      # whatever is written lands on disk. Only paths whose RESOLVED form
+      # (symlinks followed, `..` collapsed) lies inside one of these roots are
+      # loaded or written — everything else is refused with an error, never
+      # silently redirected. Keep the list minimal; all plugin-produced media
+      # (comfyui outputs, audio_ops storage, covers, context_engineer media
+      # store) lives under data/. Relative paths resolve against the project root.
+      allowed_directories:
+        - data
+      # Per-file ceiling in MB. A 200 MB video would blow up the request before
+      # it is ever sent, so refuse it here and name the actual size.
+      max_file_size_mb: 20
+
     comfyui:
       type: comfyui
       enabled: true
