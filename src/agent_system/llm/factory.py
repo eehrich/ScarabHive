@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from ..config.models import (
-    AgentSystemConfig, AgentConfig, LLMModelConfig, resolve_llm_params,
+    AgentSystemConfig, AgentConfig, LLMModelConfig, LLMSystemConfig,
+    resolve_llm_params,
 )
 from .clients import make_llm, LLMClient
 
@@ -227,6 +228,55 @@ def create_llm_from_profile(
     return underlying_client
 
 
+def _targets_openrouter(model_config: LLMModelConfig) -> bool:
+    """Redet dieses Modell mit OpenRouter?
+
+    Massgeblich ist die WIRKSAME base_url, nicht die konfigurierte: ``make_llm()``
+    setzt fuer ``openai_responses`` mangels base_url OpenRouter ein (clients.py),
+    fuer ``openai_httpx``/``openai`` dagegen api.openai.com. Ein Responses-Eintrag
+    ohne base_url landet also bei OpenRouter — wer hier nur das Config-Feld
+    ansieht, laesst ihn still durchs Raster.
+    """
+    base_url = model_config.base_url
+    if not base_url:
+        return model_config.provider == "openai_responses"
+    return "openrouter.ai" in base_url.lower()
+
+
+def _resolve_provider_routing(
+    llm_system: LLMSystemConfig, model_config: LLMModelConfig
+) -> Optional[Dict[str, Any]]:
+    """System-Default und Modell-Eintrag zum OpenRouter-"provider"-Objekt mischen.
+
+    Der System-Default (``llm_system.openrouter_routing``, z.B. ``{sort: price}``
+    fuer den jeweils guenstigsten Anbieter) greift nur an OpenRouter-Endpunkten:
+    ``provider`` ist ein OpenRouter-Body-Feld, ein fremder Endpunkt bekaeme einen
+    unbekannten Key.
+
+    Gemischt wird FLACH und nur auf oberster Ebene: ein Schluessel, den der
+    Modell-Eintrag setzt, ersetzt den Default-Wert **ganz**. Bei verschachtelten
+    Werten heisst das, dass Unter-Schluessel des Defaults verschwinden —
+    ``max_price: {prompt: 1, completion: 2}`` + Modell ``max_price: {prompt: 5}``
+    ergibt ``{prompt: 5}``, der completion-Deckel ist weg. Absicht: ein
+    Deep-Merge auf einem freien ``Dict[str, Any]`` waere die groessere
+    Ueberraschung.
+
+    Der Modell-Eintrag kann den Default pro Schluessel ueberstimmen, ihn aber
+    nicht abschalten — ``provider_routing: {}`` heisst "nichts eigenes", nicht
+    "kein Routing". Wer ein einzelnes Modell herausnehmen will, setzt dort einen
+    Gegenwert (z.B. ``sort: throughput``).
+
+    Achtung auf die Semantik, nicht nur auf die Schluessel: ein Modell mit
+    ``order`` behaelt sein ``order``, sendet ab jetzt aber ``{order: [...],
+    sort: ...}`` — das ist ein anderes Routing als vorher.
+    """
+    per_model = model_config.provider_routing
+    defaults = llm_system.openrouter_routing
+    if not defaults or not _targets_openrouter(model_config):
+        return per_model
+    return {**defaults, **(per_model or {})}
+
+
 def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentConfig) -> dict:
     """
     Resolve LLM configuration for a specific agent using the profile system.
@@ -340,8 +390,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if model_config.prompt_cache_marker_style is not None:
         llm_kwargs["prompt_cache_marker_style"] = model_config.prompt_cache_marker_style
 
-    if model_config.provider_routing is not None:
-        llm_kwargs["provider_routing"] = model_config.provider_routing
+    provider_routing = _resolve_provider_routing(config.llm_system, model_config)
+    if provider_routing is not None:
+        llm_kwargs["provider_routing"] = provider_routing
 
     if model_config.reasoning_details_mode is not None:
         llm_kwargs["reasoning_details_mode"] = model_config.reasoning_details_mode

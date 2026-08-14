@@ -6,6 +6,23 @@ llm_system:
     write: 10.0        # Write timeout - sending request data (seconds)
     pool: 5.0          # Pool timeout - getting connection from pool (seconds)
 
+  # OpenRouter-Anbieterwahl fuer ALLE Modelle, die mit OpenRouter reden.
+  # Aus, solange der Block auskommentiert ist. Pro Schluessel ueberstimmt der
+  # Modell-Eintrag (provider_routing in llm_openrouter.yaml) diesen Default —
+  # ueberstimmen ja, abschalten nein: ein leeres provider_routing am Modell
+  # heisst "nichts eigenes", nicht "kein Routing". Wer ein einzelnes Modell
+  # herausnehmen will, setzt dort einen Gegenwert (z.B. sort: throughput).
+  #
+  # openrouter_routing:
+  #   sort: price        # guenstigster Anbieter zuerst ("price"|"throughput"|"latency")
+  #
+  # ⚠️ sort schaltet OpenRouters Load-Balancing ab. 26 der Modelle setzen
+  # provider_routing.order, um beim selben Backend zu bleiben — dort liegt der
+  # implizite Prompt-Cache. Preis-Sortierung verwaessert das, und ein Cache-Miss
+  # kostet bei Langkontext leicht mehr als der guenstigere Anbieter spart.
+  # Deckel ohne diese Nebenwirkung (Preis in $/1M Token):
+  #   max_price: {prompt: 1, completion: 2}
+
   # =============================================================================
   # BATCH PROCESSING CONFIGURATION
   # =============================================================================

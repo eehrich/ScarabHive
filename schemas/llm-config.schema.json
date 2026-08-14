@@ -40,6 +40,66 @@
             }
           }
         },
+        "openrouter_routing": {
+          "type": "object",
+          "description": "System-wide default for the OpenRouter \"provider\" routing object. Applies to every model with an openrouter.ai base_url; a model's own provider_routing wins per key. Omit to disable.",
+          "properties": {
+            "sort": {
+              "description": "Provider ranking: \"price\" (cheapest, same as the \":floor\" model suffix), \"throughput\", or \"latency\" — or an object {by, partition} for the partitioned form. Disables OpenRouter load balancing and weakens order-based cache stickiness.",
+              "oneOf": [
+                {"type": "string", "enum": ["price", "throughput", "latency"]},
+                {
+                  "type": "object",
+                  "properties": {
+                    "by": {"type": "string", "enum": ["price", "throughput", "latency"]},
+                    "partition": {"type": "string"}
+                  }
+                }
+              ]
+            },
+            "max_price": {
+              "type": "object",
+              "description": "Price ceiling in $ per 1M tokens, e.g. {prompt: 1, completion: 2}. Caps cost without changing provider ranking.",
+              "properties": {
+                "prompt": {"type": "number", "minimum": 0},
+                "completion": {"type": "number", "minimum": 0},
+                "request": {"type": "number", "minimum": 0},
+                "image": {"type": "number", "minimum": 0}
+              }
+            },
+            "order": {
+              "type": "array",
+              "description": "Provider slugs to try first, in order",
+              "items": {"type": "string"}
+            },
+            "only": {
+              "type": "array",
+              "description": "Restrict routing to these provider slugs",
+              "items": {"type": "string"}
+            },
+            "ignore": {
+              "type": "array",
+              "description": "Never route to these provider slugs",
+              "items": {"type": "string"}
+            },
+            "allow_fallbacks": {
+              "type": "boolean",
+              "description": "Fall back to other providers when the preferred ones are unavailable",
+              "default": true
+            },
+            "require_parameters": {
+              "type": "boolean",
+              "description": "Only route to providers supporting every request parameter",
+              "default": false
+            },
+            "data_collection": {
+              "type": "string",
+              "enum": ["allow", "deny"],
+              "description": "Whether providers that may train on the data are eligible",
+              "default": "allow"
+            }
+          }
+        },
         "models": {
           "type": "object",
           "description": "LLM model definitions",
