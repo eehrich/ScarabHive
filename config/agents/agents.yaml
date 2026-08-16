@@ -99,7 +99,7 @@ plugins:
       description: "Agent that uses skills and can handle multimodal input"
 
       agent_config:
-        llm_profile: [or-gemini-3.6-flash, or-gemini-flash-lite, or-gemini-flash, or-claude-sonnet]
+        llm_profile: [or-gemini-flash, or-gemini-flash-lite, or-claude-sonnet]
         tools:
           allowed:
 
