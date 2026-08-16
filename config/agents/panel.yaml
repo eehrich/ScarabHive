@@ -24,7 +24,7 @@ plugins:
       description: "panel spawns x subagents and consolitate the results"
 
       agent_config:
-        llm_profile: [deepseek-chat-nostream, or-gmini-flash-unlimited]
+        llm_profile: [deepseek-chat-nostream, or-gemini-flash-unlimited]
         llm_profile_advanced: [deepseek-pro-nostream, or-gpt-full]
         max_steps: 100
         system_template: "./prompts/panel_moderator.md"
@@ -67,7 +67,7 @@ plugins:
       description: "panel panel teilnehmer"
 
       agent_config:        
-        llm_profile: [deepseek-chat-nostream, or-gmini-flash-unlimited]
+        llm_profile: [deepseek-chat-nostream, or-gemini-flash-unlimited]
         llm_profile_advanced: [deepseek-pro-nostream, or-gpt-full]
 
         max_steps: 5
