@@ -20,7 +20,9 @@ from ...core.cancellation import get_cancellation_manager, CancellationToken
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...utils.reasoning_artifacts import strip_all_reasoning_artifacts
-from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
+import httpx
+
+from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...mcp.status import (
     status_scope,
@@ -2222,7 +2224,49 @@ class Agent(MCPServer):
                     else:
                         logger.error(f"[{self.name}] No fallback profiles available, server error unrecoverable")
                         raise
-                
+
+                except (LLMConnectionError, httpx.TransportError) as e:
+                    # Transport errors (connect/read timeout, network failure) — the
+                    # endpoint is unreachable, there is no HTTP response. Try the next
+                    # profile, NOT persistent (same reasoning as LLMServerError above).
+                    # Raw httpx.TransportError covers clients that re-raise transport
+                    # failures untyped (e.g. the OpenAI responses client).
+                    if fallback_index < len(fallback_profiles):
+                        fallback_profile = fallback_profiles[fallback_index]
+                        fallback_index += 1
+                        logger.warning(
+                            f"[{self.name}] Connection/transport error from LLM: {e}. "
+                            f"Switching to fallback profile: {fallback_profile}"
+                        )
+                        await status_worker.progress(
+                            f"Connection error, switching to {fallback_profile}",
+                            meta={"step": step + 1, "fallback": fallback_profile}
+                        )
+                        # NON-persistent: unreachable endpoints are transient — the
+                        # next request should retry the original model directly.
+                        fallback_llm = self._switch_to_fallback_llm(
+                            fallback_profile, persistent=False,
+                            messages=messages)
+                        if fallback_llm:
+                            current_llm = fallback_llm
+                            # Request-scoped swap (like the upstream-error path,
+                            # unlike LLMServerError): without it, EVERY following
+                            # step retries the dead endpoint first (~connect
+                            # timeout x retries per step), and the post-loop
+                            # final-answer call (`final_llm = _active_fallback_llm
+                            # or active_llm`) would hit the dead endpoint again —
+                            # its failure text contains "timeout", which the
+                            # final-call catch-all misreports as "cancelled".
+                            # A 5xx answers instantly, a dead endpoint does not.
+                            active_llm = fallback_llm
+                            continue  # Retry with fallback (non-persistent)
+                        else:
+                            logger.error(f"[{self.name}] Failed to create fallback LLM for connection error")
+                            raise
+                    else:
+                        logger.error(f"[{self.name}] No fallback profiles available, connection error unrecoverable")
+                        raise
+
                 except asyncio.CancelledError:
                     # Streaming was cancelled - send proper status events and cancelled event
                     logger.info(f"Request {request_id} cancelled during LLM call at step {step + 1}")

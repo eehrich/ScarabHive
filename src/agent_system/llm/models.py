@@ -29,6 +29,16 @@ class LLMServerError(Exception):
         self.status_code = status_code
 
 
+class LLMConnectionError(Exception):
+    """Raised when the LLM endpoint is unreachable (connect/read timeout, network
+    error) after all retries are exhausted - triggers fallback. Unlike
+    LLMServerError there is never an HTTP response, so no status code exists."""
+    def __init__(self, message: str, provider: str = "", model: str = ""):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+
+
 class ContentType(str, Enum):
     """Types of content in multimodal messages."""
     TEXT = "text"

@@ -38,7 +38,7 @@ from agent_system.llm.cache_key import (
     strip_cache_breakpoints,
 )
 from agent_system.llm.clients import LLMClient
-from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError
+from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from agent_system.core.cancellation import CancellationToken
 from agent_system.llm import openai_utils
 from agent_system.llm.gemini_utils import sanitize_schema_for_gemini
@@ -1258,14 +1258,17 @@ class HTTPXOpenAIClient(LLMClient):
                 raise  # Re-raise HTTP errors immediately
             except asyncio.CancelledError:
                 raise  # Re-raise cancellation
-            except (LLMRateLimitError, LLMServerError):
+            except (LLMRateLimitError, LLMServerError, LLMConnectionError):
                 # Typed fallback errors (incl. LLMQuotaExhaustedError, a
                 # subclass of LLMRateLimitError) are raised intentionally above
                 # for the agent server's LLM-fallback mechanism. They must NOT
                 # be caught by the generic handler below (which would re-wrap
                 # them in a plain Exception and break fallback detection). The
                 # streaming path does not catch them either - this keeps both
-                # paths consistent.
+                # paths consistent. LLMConnectionError is not raised inside
+                # this try today (it is produced by the generic handler below)
+                # - listed defensively so a future raise site cannot be
+                # re-wrapped into an untyped Exception.
                 raise
             except Exception as e:
                 last_exception = e
@@ -1285,6 +1288,14 @@ class HTTPXOpenAIClient(LLMClient):
                         f"model={self.model} url={url}: {err_label}"
                     )
                     await self._report_status(status_scope, f"Request failed after retries: {self.model} ({err_label})")
+                    if isinstance(last_exception, httpx.TransportError):
+                        # Endpoint nicht erreichbar (ConnectTimeout, ReadTimeout,
+                        # Netzfehler) — getypt werfen, damit der Agent-Server auf
+                        # das naechste Profil der llm_profile-Kette wechseln kann.
+                        raise LLMConnectionError(
+                            f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}",
+                            provider="openai_httpx", model=self.model,
+                        ) from last_exception
                     raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}") from last_exception
 
         # Should never reach here
@@ -2027,7 +2038,9 @@ class HTTPXOpenAIClient(LLMClient):
                 else:
                     logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
                     await self._report_status(status_scope, f"Timeout after retries: {self.model}")
-                    raise Exception(f"Request timed out: {e}") from e
+                    raise LLMConnectionError(
+                        f"Request timed out: {e}", provider="openai_httpx", model=self.model,
+                    ) from e
 
             except httpx.HTTPStatusError as e:
                 last_exception = e  # type: ignore[assignment]  # Can be HTTPStatusError, TimeoutException, or NetworkError
@@ -2059,7 +2072,9 @@ class HTTPXOpenAIClient(LLMClient):
                 else:
                     logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
                     await self._report_status(status_scope, f"Network error after retries: {self.model}")
-                    raise Exception(f"Network/protocol error: {e}") from e
+                    raise LLMConnectionError(
+                        f"Network/protocol error: {e}", provider="openai_httpx", model=self.model,
+                    ) from e
 
         # Should never reach here, but just in case
         raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception

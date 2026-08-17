@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
+from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError
 
 if TYPE_CHECKING:
     from .queue_manager import BatchQueueManager
@@ -387,9 +387,15 @@ class BatchLLMClient(LLMClient):
         except asyncio.CancelledError:
             logger.info("Batch request cancelled")
             raise
-        except (LLMRateLimitError, LLMQuotaExhaustedError):
-            # Propagate rate limit errors for fallback handling
-            await self._report_status(status_scope, f"Rate limited: {self.model_name}")
+        except (LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError):
+            # Typisierte Fallback-Fehler durchreichen — der Agent-Server
+            # schaltet darauf die Profil-Kette. Der Generic-Handler unten
+            # (return None) wuerde LLMConnectionError schlucken und in
+            # fallback_to_sync degradieren — gegen einen toten Endpoint hilft
+            # der Sync-Weg desselben Providers nicht. LLMServerError (5xx)
+            # bleibt BEWUSST beim Sync-Fallback: der Batch-Weg kann kaputt
+            # sein, waehrend der Sync-Weg antwortet.
+            await self._report_status(status_scope, f"LLM error: {self.model_name}")
             raise
         except Exception as e:
             logger.error("Batch request failed: %s", e)

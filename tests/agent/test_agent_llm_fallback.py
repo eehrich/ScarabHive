@@ -1,4 +1,5 @@
 """Test Agent LLM profile fallback behavior."""
+import httpx
 import pytest
 import time
 from unittest.mock import MagicMock, patch
@@ -13,7 +14,7 @@ from agent_system.config.models import (
     LLMProfile,
 )
 from agent_system.mcp.base import MCPRegistry
-from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
+from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError
 
 
 @pytest.fixture
@@ -527,3 +528,100 @@ async def test_max_steps_final_call_uses_persistent_fallback(system_config_with_
     # (alter Bug: Final-Call ging an active_llm = Original -> call_count 1/1)
     assert fallback.call_count == 2
     assert original.call_count == 0
+
+
+class _TransportErrorLLM:
+    """Fake-Primary: wirft bei jedem Call einen Transportfehler (Endpoint tot)."""
+
+    def __init__(self, exc: Exception):
+        self.exc = exc
+        self.call_count = 0
+
+    def supports_streaming(self):
+        return False
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        self.call_count += 1
+        raise self.exc
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [
+    LLMConnectionError("HTTP request failed after 2 attempts (ConnectTimeout)",
+                       provider="openai_httpx", model="deepseek-v4-flash"),
+    httpx.ConnectTimeout("timed out"),
+], ids=["typed_llm_connection_error", "raw_httpx_transport_error"])
+async def test_transport_error_switches_to_fallback_profile(system_config_with_profiles, exc):
+    """Job-532-Regression: Ein ConnectTimeout nach allen Client-Retries toetete
+    den Sub-Agent, obwohl die llm_profile-Kette einen cross-provider-Fallback
+    definierte — Transportfehler hatten keine Fehlerklasse, die der Retry-Loop
+    im Agent-Server matcht (nur RateLimit/Quota/ServerError). Jetzt wechseln
+    LLMConnectionError UND rohe httpx-Transportfehler (Clients, die ungetypt
+    re-raisen) NON-persistent auf das naechste Profil der Kette."""
+    agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=3)
+    agent_config.tools.allowed = ["*"]
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+
+    primary = _TransportErrorLLM(exc)
+    fallback = _ScriptedLLM("fallback")
+
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=primary)
+    # Netzgrenze: der Profil-Wechsel selbst laeuft produktiv, nur der Bau des
+    # Fallback-Clients wird ersetzt (sonst entstuende ein echter API-Client).
+    agent._create_fallback_llm = lambda profile: fallback
+
+    events = []
+    async for event in agent.run_events("test task"):
+        events.append(event)
+        if event.get("type") == "end":
+            break
+
+    final_events = [e for e in events if e.get("type") == "final"]
+    assert final_events, f"kein final-Event; events={[e.get('type') for e in events]}"
+    assert "FINAL-fallback" in str(final_events[-1].get("summary"))
+    assert primary.call_count >= 1, "fixture never called the primary"
+    assert fallback.call_count >= 1, "fallback chain was never consulted"
+    # NON-persistent (wie LLMServerError): der naechste Request soll wieder
+    # das Original versuchen — kein Recovery-Fenster, kein gemerkter Fallback.
+    assert agent._active_fallback_llm is None
+    assert agent._active_fallback_profile is None
+
+
+@pytest.mark.asyncio
+async def test_transport_error_final_call_after_max_steps_uses_fallback(
+    system_config_with_profiles,
+):
+    """Review-F1: Der Final-Answer-Call NACH max_steps waehlt
+    ``_active_fallback_llm or active_llm`` — der non-persistente Transport-
+    Switch muss ``active_llm`` mitziehen. Sonst geht der allerletzte Call an
+    den toten Endpoint, dessen Fehlertext enthaelt "timeout", und der
+    Final-Call-Catch-all meldet den Run per String-Match als cancelled statt
+    mit der laengst vorliegenden Fallback-Antwort. Nebeneffekt des Swaps:
+    Folge-Steps probieren den toten Endpoint nicht jedes Mal neu (Review-F2,
+    ~Connect-Timeout x Retries pro Step)."""
+    agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=1)
+    agent_config.tools.allowed = ["*"]
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+
+    primary = _TransportErrorLLM(
+        LLMConnectionError("connect timeout", model="deepseek-v4-flash"))
+    fallback = _ScriptedLLM("fallback")
+
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=primary)
+    agent._create_fallback_llm = lambda profile: fallback
+
+    events = []
+    async for event in agent.run_events("test task"):
+        events.append(event)
+        if event.get("type") == "end":
+            break
+
+    final_events = [e for e in events if e.get("type") == "final"]
+    assert final_events, f"kein final-Event; events={[e.get('type') for e in events]}"
+    assert "FINAL-fallback" in str(final_events[-1].get("summary"))
+    # Step 1 UND Final-Call liefen auf dem Fallback; der tote Primary wurde
+    # nach dem Switch nie wieder angefasst.
+    assert primary.call_count == 1
+    assert fallback.call_count == 2

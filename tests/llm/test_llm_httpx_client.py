@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 
 from agent_system.llm.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
+from agent_system.llm.models import LLMConnectionError
 from agent_system.core.cancellation import CancellationToken
 
 
@@ -371,6 +372,51 @@ class TestCancellationHandling(TestHTTPXOpenAIClient):
             assert result == "Hello! How can I help you today?"
 
 
+class TestTransportErrorTyping(TestHTTPXOpenAIClient):
+    """Transportfehler (Endpoint tot) muessen als LLMConnectionError ankommen —
+    Job-532-Regression: das nackte Exception-Wrapping machte die
+    llm_profile-Fallback-Kette des Agent-Servers blind fuer ConnectTimeouts,
+    der Sub-Agent starb trotz konfiguriertem cross-provider-Fallback."""
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_connect_timeout_raises_typed_error(self, sample_messages):
+        client = create_test_client()
+        client.capabilities = {"streaming": False}  # wie deepseek-chat-nostream
+        # Trennschaerfe: die Schleife laeuft ueber max(max_retries,
+        # rate_limit_max_retries) — mit beiden gleich koennte die Assertion
+        # unten die beiden Groessen nicht unterscheiden.
+        client.rate_limit_max_retries = 1
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.post = AsyncMock(side_effect=httpx.ConnectTimeout("timed out"))
+            mock_async_client.return_value = mock_client
+
+            with pytest.raises(LLMConnectionError) as exc_info:
+                await client.chat_tools(sample_messages, tools=[])
+            assert exc_info.value.model == "gpt-3.5-turbo"
+            # Retries wurden ausgeschoepft, BEVOR getypt geworfen wird
+            assert mock_client.post.await_count == client.max_retries + 1
+
+    @pytest.mark.asyncio
+    async def test_streaming_network_error_raises_typed_error(self, sample_messages):
+        # Timeout-Variante deckt test_max_retries_exceeded (oben) ab — hier
+        # der Netzfehler-Handler, die dritte Raise-Stelle des Mappings.
+        client = create_test_client()
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.stream = Mock(
+                side_effect=httpx.NetworkError("Connection reset by peer"))
+            mock_async_client.return_value = mock_client
+
+            with pytest.raises(LLMConnectionError):
+                await client.chat(sample_messages)
+            assert mock_client.stream.call_count == client.max_retries + 1
+
+
 class TestErrorHandling(TestHTTPXOpenAIClient):
     """Test error handling and retry logic."""
     
@@ -554,9 +600,11 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
             mock_client.stream = Mock(side_effect=timeout_error)  # Always timeout
             mock_async_client.return_value = mock_client
             
-            with pytest.raises(Exception) as exc_info:
+            # Nach den Retries muss der Fehler GETYPT ankommen (Job-532):
+            # ein nacktes Exception waere fuer die Fallback-Kette unsichtbar.
+            with pytest.raises(LLMConnectionError) as exc_info:
                 await client.chat(sample_messages)
-            
+
             assert "timed out" in str(exc_info.value).lower() or "timeout" in str(exc_info.value).lower()
             # Should try max_retries + 1 times (2 + 1 = 3)
             assert mock_client.stream.call_count == 3
