@@ -14,6 +14,7 @@ This document explains how to create plugins (MCP servers) for AgentSystem. It w
   - [Agent-Based Plugins](#agent-based-plugins)
   - [Plugin Types Summary](#plugin-types-summary)
 - [Tools and Parameters](#tools-and-parameters)
+- [Model Experience (required in every plugin README)](#model-experience-required-in-every-plugin-readme)
 - [Advanced Features](#advanced-features)
   - [Status and Progress Reporting](#status-and-progress-reporting)
   - [Cooperative Cancellation](#cooperative-cancellation)
@@ -1540,6 +1541,75 @@ return {
     "request_id": request_id,
     "forced": token.is_forced if token else False
 }
+```
+
+## Model Experience (required in every plugin README)
+
+A plugin's real interface is not its Python signature — it is **what the model
+sees**, and **what that costs**. Both have repeatedly been reconstructed by
+hand during reviews because nobody wrote them down. Three short sections in
+your `README.md` remove that guesswork. They are required for new plugins;
+retrofit an existing plugin only when you are already editing it.
+
+### 1. What the model sees
+
+The literal text that reaches the model — tool descriptions are obvious, but
+the ones that get forgotten matter more: **error strings**, injected context,
+and any notice that replaces a result. Quote them verbatim, don't paraphrase;
+the exact wording is the contract, and a reviewer must be able to compare it
+against the code.
+
+```markdown
+### What the model sees
+
+Normal result: `{"status": "ok", "matches": [...]}`.
+
+On a path outside `allowed_directories`, verbatim:
+
+    Path is outside the allowed directories. Allowed: <list>.
+
+Nothing else from this plugin enters the context.
+```
+
+### 2. Token and cache effect
+
+State whether the plugin changes anything **before** the end of the request —
+system prompt, tool list, injected context, or an existing message. That is
+the question that decides whether it breaks the provider's prompt cache, and a
+cache break costs far more than the bytes it saves.
+
+The three honest answers:
+
+| Answer | Meaning |
+|---|---|
+| **Append-only** | New content lands after the reusable prefix. No invalidation. |
+| **Prefix-changing** | Alters system prompt, tool schemas, or an earlier message — invalidates everything after it. Say WHEN it happens and how often. |
+| **None** | The plugin contributes nothing to the model context at all. |
+
+```markdown
+### Token and cache effect
+
+Append-only. Results are added at the end of the conversation; the plugin
+never rewrites an existing message. Per call ~200 tokens, dominated by the
+match list.
+```
+
+### 3. Known gaps
+
+What the plugin deliberately does NOT do, and why. This is the same rule the
+codebase follows elsewhere: naming a gap is a decision; leaving it unnamed is
+an accident waiting to be rediscovered. If a limit is deliberate, its reason
+belongs here — otherwise the next person "fixes" it and reintroduces the
+problem it was avoiding.
+
+```markdown
+### Known gaps
+
+- Symlinks are resolved before the containment check, so a link INTO an
+  allowed directory is followed. Deliberate: the alternative rejects ordinary
+  working setups.
+- No quota — a caller can fill the allowed directory. The boundary is who
+  gets the tool, not how much they write.
 ```
 
 ## Advanced Features
