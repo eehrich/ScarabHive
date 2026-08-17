@@ -52,7 +52,7 @@ tools:
             description: "Only when CREATING a document: 'owner' (default) = only you may modify it later, everyone sharing the namespace may read it; 'shared' = anyone may modify it. Ignored for existing documents."
           path:
             type: string
-            description: "read/set_value: dot path, [i] for arrays (e.g. 'milestones[2].label')"
+            description: "read/set_value: dot path, [i] for arrays (e.g. 'milestones[2].label'). stats: dot-path to the subtree whose CHILDREN are compared (e.g. 'beats'); empty = whole doc"
           value:
             description: "set_value: the value to set (any JSON type)"
           paths:
@@ -67,9 +67,6 @@ tools:
           depth:
             type: integer
             description: "outline: nesting depth (default 3)"
-          path:
-            type: string
-            description: "stats: dot-path to the subtree whose CHILDREN are compared (e.g. 'beats'); empty = whole doc"
           min_children:
             type: integer
             description: "stats: report terms present in at least this many children (default 2)"

@@ -31,7 +31,7 @@ external_servers:
           - hello
         blocked: []
     
-      controlhost:
+    controlhost:
       url: http://192.0.2.114:8000/mcp
       enabled: false
       description: controlhost MCP server
