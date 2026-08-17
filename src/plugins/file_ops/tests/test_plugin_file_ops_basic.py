@@ -172,7 +172,13 @@ async def test_outside_allowed_dir_blocked(file_ops_server, tmp_path):
 
     assert result["status"] == "error"
     assert result["error_type"] == "SecurityError"
-    assert "outside allowed directories" in result["error"].lower()
+    # Semantic instead of literal: the message must tell the model WHICH path
+    # was refused and what is allowed instead, otherwise it guesses. Asserting
+    # on the exact wording only turned this test red when the boundary was
+    # unified — it never found a defect.
+    assert str(outside_file) in result["error"]
+    assert any(str(d) in result["error"]
+               for d in file_ops_server.validator.allowed_dirs)
 
 
 @pytest.mark.asyncio

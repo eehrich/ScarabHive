@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import re
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -193,9 +194,11 @@ class TestLoad:
 
     async def test_relative_path_resolves_against_the_project_root(
             self, server, media_root, image_file):
-        # Production resolves relative paths against cwd; pin the server's root
-        # to the fixture so the test doesn't depend on where pytest was started.
-        server.project_root = media_root.parent
+        # Production resolves relative paths against cwd; pin the sandbox's
+        # base to the fixture so the test doesn't depend on where pytest was
+        # started. The base lives IN the sandbox — an attribute set beside it
+        # would have no effect, and the test would not notice.
+        server.sandbox = replace(server.sandbox, base=media_root.parent.resolve())
         res = await server.call("media_ops_load",
                                 {"path": f"media/{image_file.name}"})
         assert res["status"] == "success", res
@@ -469,3 +472,30 @@ class TestSchema:
         assert mentioned, "no tool referenced anywhere — check would be vacuous"
         assert mentioned <= declared, f"names a tool that does not exist: " \
                                       f"{mentioned - declared}"
+
+
+class TestReadOnly:
+    """A read-only sandbox must not advertise `save`, and must refuse it."""
+
+    @staticmethod
+    def _server(media_root: Path) -> MediaOpsServer:
+        cfg = MCPConfig(type="media_ops", enabled=True, config={
+            "allowed_directories": [str(media_root)],
+            "read_only": True,
+        })
+        return MediaOpsServer("media_ops", SimpleNamespace(), cfg)
+
+    def test_save_is_not_offered(self, media_root):
+        names = {t["function"]["name"] for t in self._server(media_root).get_tools()}
+        assert "media_ops_save" not in names, names
+        # Counter-check: reading is still offered, so an empty tool list
+        # cannot make this pass.
+        assert "media_ops_load" in names, names
+
+    async def test_save_refuses_before_validating_its_arguments(self, media_root):
+        """First gate, so the reason is the sandbox and not a complaint about
+        the id — with no arguments at all it still says read-only."""
+        res = await self._server(media_root).save({})
+        assert res["status"] == "error", res
+        assert res["error_type"] == "PermissionError", res
+        assert "read-only" in res["error"]

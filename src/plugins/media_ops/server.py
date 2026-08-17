@@ -13,9 +13,11 @@ Both directions, because neither existed:
 SECURITY: every path — the one read AND the one written — arrives verbatim from
 LLM tool arguments. Unbounded, ``load`` is an arbitrary-file-read primitive
 whose payload lands base64-encoded in the model context, and ``save`` an
-arbitrary-file-write primitive. Both therefore route through ``_resolve()``:
-resolve (which also collapses ``..`` and follows symlinks), then assert the
-result lies inside one of the configured ``allowed_directories``.
+arbitrary-file-write primitive. Both therefore route through ``_resolve()``,
+which delegates to the shared ``agent_system.utils.path_sandbox`` — the same
+boundary ``file_ops`` uses, so there is one interpretation of "inside
+``allowed_directories``" rather than one per plugin. ``save`` declares itself
+as a write, so a ``read_only`` sandbox refuses it without a second flag.
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.utils.multimodal_tool_content import extract_inline_media
+from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -77,28 +80,47 @@ class MediaOpsServer(SchemaBasedMCPServer):
         cfg = {**top_level, **sub}
 
         project_root = Path.cwd()
-        allowed = cfg.get("allowed_directories") or ["data"]
-        self.allowed_roots: list[Path] = [_abs(project_root, d) for d in allowed]
         self.max_file_size_mb: float = float(cfg.get("max_file_size_mb", 20))
-        self.project_root = project_root
+        # Deliberately NO self.project_root: the base lives in the sandbox. A
+        # second attribute beside it can be set without taking effect — a test
+        # walked straight past that and stayed green.
 
-        logger.info("MediaOpsServer '%s' initialized — roots=%s, max=%.1f MB",
-                    name, [str(r) for r in self.allowed_roots], self.max_file_size_mb)
+        # The boundary itself is shared (agent_system.utils.path_sandbox) —
+        # the same resolution file_ops uses, instead of two readings of one
+        # idea. read_only belongs to that vocabulary: when set, this server
+        # still loads but no longer writes anything back.
+        self.sandbox = PathSandbox.from_config(
+            cfg.get("allowed_directories") or ["data"],
+            base=project_root,
+            read_only=bool(cfg.get("read_only", False)),
+        )
 
-    def _resolve(self, path: str) -> Path:
+        logger.info("MediaOpsServer '%s' initialized — roots=%s, max=%.1f MB, read_only=%s",
+                    name, [str(r) for r in self.sandbox.roots], self.max_file_size_mb,
+                    self.sandbox.read_only)
+
+    def get_template_vars(self) -> Dict[str, Any]:
+        """Feed schema.yaml so a read-only sandbox does not advertise `save`.
+
+        Same pattern as file_ops: refusing at the boundary is correct but
+        costs the model a turn on a tool it was offered and cannot use.
+        """
+        vars = super().get_template_vars()
+        vars["read_only"] = self.sandbox.read_only
+        return vars
+
+    @property
+    def allowed_roots(self) -> list[Path]:
+        """The resolved roots (for callers and tests that read them)."""
+        return list(self.sandbox.roots)
+
+    def _resolve(self, path: str, *, write: bool = False) -> Path:
         """Resolve `path` and assert it is inside a sandbox root.
 
         resolve() collapses ``..`` and follows symlinks, so both traversal and
-        symlink escapes are caught here. Raises ValueError otherwise.
+        symlink escapes are caught. Raises PathSandboxDenied otherwise.
         """
-        full = _abs(self.project_root, path)
-        if not any(full == r or r in full.parents for r in self.allowed_roots):
-            logger.warning("media_ops rejected out-of-root path: %r", path)
-            raise ValueError(
-                f"Path is outside the allowed media directories: {path}. "
-                f"Allowed: {', '.join(str(r) for r in self.allowed_roots)}"
-            )
-        return full
+        return self.sandbox.resolve(path, write=write)
 
     async def load(self, params: Dict[str, Any]) -> Dict[str, Any]:
         path = params.get("path")
@@ -107,7 +129,7 @@ class MediaOpsServer(SchemaBasedMCPServer):
 
         try:
             full = self._resolve(path)
-        except ValueError as e:
+        except PathSandboxDenied as e:
             return _error(str(e), "PermissionError")
 
         if not full.is_file():
@@ -192,6 +214,14 @@ class MediaOpsServer(SchemaBasedMCPServer):
         }
 
     async def save(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        # First gate, before anything else: a read-only sandbox cannot be
+        # talked into a write by any argument, and the model gets the reason
+        # instead of a validation complaint about the arguments it supplied.
+        if self.sandbox.read_only:
+            return _error(
+                f"Sandbox is read-only, refusing to write: {params.get('path')}",
+                "PermissionError")
+
         media_id = params.get("id")
         target = params.get("path")
         if not media_id or not isinstance(media_id, str):
@@ -227,8 +257,8 @@ class MediaOpsServer(SchemaBasedMCPServer):
             }
 
         try:
-            full = self._resolve(target)
-        except ValueError as e:
+            full = self._resolve(target, write=True)
+        except PathSandboxDenied as e:
             return _error(str(e), "PermissionError")
 
         if full.suffix.lower() not in MEDIA_TYPES:
@@ -336,12 +366,6 @@ def _context_media(messages: Any) -> List[Dict[str, Any]]:
                 seen.add(entry["id"])
             entries.append(entry)
     return entries
-
-
-def _abs(project_root: Path, path: str) -> Path:
-    """Absolute, fully resolved path — relative input is project-root based."""
-    p = Path(path)
-    return (p if p.is_absolute() else project_root / p).resolve()
 
 
 def _error(msg: str, kind: str) -> Dict[str, Any]:

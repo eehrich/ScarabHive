@@ -27,7 +27,14 @@ media_ops:
   allowed_directories:
     - data          # relative paths resolve against the project root
   max_file_size_mb: 20
+  # read_only: true   # optional: still loads, never writes back
 ```
+
+The boundary itself is `agent_system.utils.path_sandbox` — the same one
+`file_ops` uses, so "inside `allowed_directories`" means one thing in this
+codebase rather than one thing per plugin. `read_only` comes from that shared
+vocabulary; `save` declares itself as a write and is refused by the boundary,
+not by a flag beside it.
 
 One root is enough because everything plugin-produced — ComfyUI output,
 `audio_ops` storage, covers, the `context_engineer` media store — lives under
@@ -59,7 +66,25 @@ On a path outside the sandbox, both `load` and `save` return this verbatim
 (`error_type: "PermissionError"`):
 
 ```text
-Path is outside the allowed media directories: <path>. Allowed: <roots>
+Path is outside the allowed directories: <path>. Allowed: <roots>
+```
+
+With `read_only: true` the model is not offered `save` at all — the tool is
+hidden at schema level, the same way `file_ops` hides its write tools. Should
+it be reached anyway (a stale schema, a direct call), it refuses on the first
+line, before any argument is validated:
+
+```text
+Sandbox is read-only, refusing to write: <path>
+```
+
+A path outside the sandbox is also refused for a `~` at the front, because
+nothing here expands it and it would otherwise create a directory literally
+named `~`:
+
+```text
+Path starts with '~', which is not expanded here and would create a directory
+literally named '~': <path>. Use an explicit path under: <roots>
 ```
 
 When `save` targets an item the plugin cannot reconstruct:

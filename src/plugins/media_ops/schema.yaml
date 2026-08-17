@@ -36,6 +36,7 @@ tools:
         properties: {}
         additionalProperties: false
 
+{% if not read_only %}
   - type: function
     function:
       name: "{{ name }}_save"
@@ -63,6 +64,7 @@ tools:
             description: "Replace an existing file at that path."
         required: [id, path]
         additionalProperties: false
+{% endif %}
 
 config:
   type: object
