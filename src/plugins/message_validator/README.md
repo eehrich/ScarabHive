@@ -2,7 +2,9 @@
 
 **Plugin Type:** Hook-only (inherits only from `PluginHook`)
 
-Comprehensive message validation and repair before LLM calls to ensure OpenAI API compliance and proper message formatting.
+Message validation and repair before LLM calls, so a malformed history does not get the whole request rejected by the provider.
+
+It repairs STRUCTURE - tool-call pairing, tool names, message sequence. It does not inspect or rewrite content: no truncation, no sanitising, no role rewriting. Earlier revisions of this file claimed all three.
 
 ## Features
 
@@ -40,13 +42,13 @@ message_validator:
 
 ### PRE_LLM_CALL
 
-Validates and sanitizes messages before sending to the LLM.
+Validates and repairs messages before sending to the LLM.
 
 **Input Context:**
 - `messages`: List of conversation messages
 
 **Output Result:**
-- `messages`: Validated and sanitized message list
+- `messages`: Validated and repaired message list
 - `metadata.validation`: Validation statistics including:
   - `status`: 'passed', 'passed_with_fixes', or 'failed'
   - `total_messages`: Number of input messages
@@ -60,11 +62,6 @@ Validates and sanitizes messages before sending to the LLM.
 ### Required Fields
 - `role`: Must be present and valid
 - `content`: Must be present (string or list for multimodal)
-
-### Role Validation
-- Default valid roles: `system`, `user`, `assistant`, `function`, `tool`
-- Custom roles can be configured via `valid_roles`
-- Invalid roles are auto-fixed to `user` in non-strict mode
 
 ### What is actually checked
 
@@ -138,25 +135,14 @@ See `docs/plugin_architecture.md` for more details on plugin types.
 Run tests for this plugin:
 
 ```bash
-pytest tests/test_message_validator_plugin.py -v
+pytest src/plugins/message_validator/tests -v
 ```
 
 ## Performance
 
 - **Overhead**: <2ms per LLM call for typical conversations
-- **Regex Operations**: Minimal - only runs on string content when sanitization is enabled
+- **Regex Operations**: Minimal - one pattern check per tool name
 - **Memory**: Minimal - operates on message copies, no persistent state
-
-## Security Considerations
-
-- **XSS Prevention**: Removes common XSS patterns
-- **Injection Prevention**: Blocks JavaScript protocol and event handlers
-- **Length Protection**: Prevents denial-of-service via oversized messages
-
-**Note**: This is a reference implementation. For production use, consider:
-- More comprehensive pattern matching
-- Integration with dedicated security libraries
-- Configurable sanitization rules per deployment
 
 ## See Also
 
