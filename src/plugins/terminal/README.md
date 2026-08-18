@@ -273,14 +273,94 @@ except asyncio.CancelledError:
     print("Command cancelled")
 ```
 
+## Confinement (`sandbox:`)
+
+The pattern list in `security.py` is a hand-brake against slips, **not** a
+security boundary — it says so itself, and it is right: everything it blocks
+is reachable through `sh -c`, a pipe, `xargs` or `python -c`. Filtering
+command *text* buys nothing.
+
+Confinement works the other way round: the process is handed to the kernel
+already unable to reach outside its workspace, whatever it then runs.
+
+```yaml
+terminal:
+  type: terminal
+  sandbox:
+    mode: workspace-write      # read-only | workspace-write | danger-full-access
+    workspace_root: .          # optional; defaults to initial_cwd
+```
+
+| Mode | File effects |
+|---|---|
+| `read-only` | the process may not modify files |
+| `workspace-write` | it may modify files under `workspace_root` |
+| `danger-full-access` | no restriction — **the default** |
+
+The default is `danger-full-access`, which behaves exactly as this plugin did
+before confinement existed. Confinement is opt-in because no backend covers
+every platform we run on yet.
+
+**Backends.** Linux: bubblewrap (`apt install bubblewrap`), verified live
+against 0.9.0. Windows: none — a confining mode there refuses every command
+rather than running it unconfined. Modes describe **file effects only**; no
+network, syscall or device restriction is claimed, because none is enforced.
+
+**Fail-closed.** If the requested mode cannot be enforced, the command does
+not run:
+
+```text
+sandbox mode "workspace-write" is requested but no sandbox backend is usable
+on this host; refusing to run the command unconfined. Install bubblewrap
+(Linux) — otherwise switch the consumer to danger-full-access.
+```
+
+## Model Experience
+
+### What the model sees
+
+Normal results are unchanged: `{"status": "success", "exit_code": ..., "stdout": ...}`.
+
+A command refused by the pattern list returns `error_type: "SecurityError"`
+naming the pattern. A command that cannot be confined returns
+`error_type: "SandboxUnavailable"` with the text above — the model can tell
+"your command was rejected" from "this host cannot confine me" and does not
+retry the latter with a reworded command.
+
+Under confinement, a denied write is **not** a plugin error: the command runs
+and fails on its own, so the model sees the ordinary non-zero exit code and
+the shell's `Permission denied` on stdout. That is deliberate — it is what the
+same command does against an unwritable directory anywhere else.
+
+### Token and cache effect
+
+Append-only. The plugin contributes nothing to the system prompt or the tool
+list beyond its three static tool definitions; confinement adds no tokens at
+all, because the wrapping happens below the model. Output is capped at
+`max_output_size_kb` (60 KB default).
+
+### Known gaps
+
+- **Windows has no backend.** Confinement there is refusal, not enforcement.
+- **File effects only.** A confined process still has the network.
+- **The workspace is one directory.** No multi-root policy; a job needing two
+  trees has to be given a common parent.
+- **The persistent session path is wired but unreachable.** Nothing currently
+  instantiates `PersistentTerminal`; every command runs as its own `bash -c`.
+  Its spawn is confined anyway, so reviving the class cannot revive an
+  unconfined spawn — but that path is not live-verified.
+- **Confinement is decided at spawn.** A mode change takes effect on the next
+  command, never on one already running.
+
 ## Security Best Practices
 
-1. **Never execute untrusted user input directly** - Always validate and sanitize commands
-2. **Use whitelist when possible** - Restrict to known-safe commands
-3. **Limit timeouts** - Prevent resource exhaustion with reasonable timeout values
-4. **Monitor background processes** - Track and clean up background processes
-5. **Review blacklist** - Customize blocked patterns for your environment
-6. **Disable command chains if not needed** - Reduces attack surface
+1. **Prefer confinement over pattern lists** - `sandbox.mode` is a boundary, the blacklist is a hand-brake
+2. **Never execute untrusted user input directly** - Always validate and sanitize commands
+3. **Use whitelist when possible** - Restrict to known-safe commands
+4. **Limit timeouts** - Prevent resource exhaustion with reasonable timeout values
+5. **Monitor background processes** - Track and clean up background processes
+6. **Review blacklist** - Customize blocked patterns for your environment
+7. **Disable command chains if not needed** - Reduces attack surface
 
 ## Architecture
 

@@ -7,6 +7,7 @@ background process management, and output capture.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
@@ -14,6 +15,7 @@ from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from .executor import CommandExecutor
 from .platform_detect import PlatformDetector
 from .process_manager import ProcessManager
+from agent_system.utils.process_sandbox import ProcessSandbox
 from .security import CommandSecurityValidator
 
 if TYPE_CHECKING:
@@ -115,6 +117,18 @@ class TerminalServer(SchemaBasedMCPServer):
             bash_path_config = 'auto'
             initial_cwd = None
 
+        # Process confinement. Absent or unset, the mode is
+        # danger-full-access and nothing about spawning changes; an
+        # unknown mode raises here rather than silently not confining.
+        sandbox_config = getattr(mcp_config, 'sandbox', None)
+        if not isinstance(sandbox_config, dict):
+            sandbox_config = {}
+        self.sandbox = ProcessSandbox.from_config(
+            sandbox_config, base=initial_cwd or Path.cwd())
+        if self.sandbox.confines:
+            logger.info("Terminal confinement: mode=%s workspace=%s",
+                        self.sandbox.mode, self.sandbox.workspace_root)
+
         # Detect bash path
         detector = PlatformDetector()
         if bash_path_config == 'auto':
@@ -141,7 +155,8 @@ class TerminalServer(SchemaBasedMCPServer):
             bash_path=bash_path,
             security_validator=self.security,
             initial_cwd=initial_cwd,
-            max_output_kb=self.max_output_kb
+            max_output_kb=self.max_output_kb,
+            sandbox=self.sandbox,
         )
 
         # Initialize process manager for background processes

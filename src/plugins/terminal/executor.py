@@ -6,6 +6,7 @@ import os
 import time
 from typing import Dict, Optional
 
+from agent_system.utils.process_sandbox import ProcessSandbox, SandboxUnavailable
 from .security import CommandSecurityValidator
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,8 @@ class PersistentTerminal:
         self,
         bash_path: str,
         initial_cwd: Optional[str] = None,
-        max_output_kb: int = 60
+        max_output_kb: int = 60,
+        sandbox: Optional[ProcessSandbox] = None,
     ):
         """
         Initialize persistent terminal.
@@ -53,6 +55,7 @@ class PersistentTerminal:
             max_output_kb: Maximum output size in KB (default: 60, like GitHub Copilot)
         """
         self.bash_path = bash_path
+        self.sandbox = sandbox or ProcessSandbox()
         self.cwd = initial_cwd or os.getcwd()
         self.env = os.environ.copy()
         self.max_output_kb = max_output_kb
@@ -69,8 +72,11 @@ class PersistentTerminal:
 
         logger.info(f"Starting persistent terminal with bash: {self.bash_path}")
 
+        # The whole session is confined, not each command: everything the
+        # session spawns inherits the cage, which is the point.
+        confined = self.sandbox.confine([self.bash_path], cwd=self.cwd)
         self.process = await asyncio.create_subprocess_exec(
-            self.bash_path,
+            *confined.argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,  # Merge stderr into stdout for interleaved output
@@ -225,7 +231,8 @@ class CommandExecutor:
         bash_path: str,
         security_validator: CommandSecurityValidator,
         initial_cwd: Optional[str] = None,
-        max_output_kb: int = 60
+        max_output_kb: int = 60,
+        sandbox: Optional[ProcessSandbox] = None,
     ):
         """
         Initialize command executor.
@@ -240,6 +247,9 @@ class CommandExecutor:
         self.security = security_validator
         self.initial_cwd = initial_cwd or os.getcwd()
         self.max_output_kb = max_output_kb
+        # danger-full-access by default: confine() then returns the argv
+        # untouched, so an unconfigured deployment behaves exactly as before.
+        self.sandbox = sandbox or ProcessSandbox()
         self.default_terminal: Optional[PersistentTerminal] = None
 
     async def execute(
@@ -283,10 +293,10 @@ class CommandExecutor:
                 exec_env.update(env)
 
             # Create subprocess
+            confined = self.sandbox.confine(
+                [self.bash_path, "-c", command], cwd=cwd or self.initial_cwd)
             process = await asyncio.create_subprocess_exec(
-                self.bash_path,
-                "-c",
-                command,
+                *confined.argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # Merge for interleaved output
                 cwd=cwd or self.initial_cwd,
@@ -350,6 +360,16 @@ class CommandExecutor:
                     "command": command
                 }
 
+        except SandboxUnavailable as e:
+            # Expected outcome of a configured policy, not an incident: log it
+            # without a traceback, or a confined deployment drowns its own log.
+            logger.warning("Refusing to run unconfined: %s", e)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": "SandboxUnavailable",
+                "command": command,
+            }
         except Exception as e:
             logger.error(f"Error executing command '{command}': {e}", exc_info=True)
             return {
@@ -397,10 +417,10 @@ class CommandExecutor:
                 exec_env.update(env)
 
             # Create subprocess
+            confined = self.sandbox.confine(
+                [self.bash_path, "-c", command], cwd=cwd or self.initial_cwd)
             process = await asyncio.create_subprocess_exec(
-                self.bash_path,
-                "-c",
-                command,
+                *confined.argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd or self.initial_cwd,
@@ -419,6 +439,16 @@ class CommandExecutor:
                 "pid": process.pid
             }
 
+        except SandboxUnavailable as e:
+            # Expected outcome of a configured policy, not an incident: log it
+            # without a traceback, or a confined deployment drowns its own log.
+            logger.warning("Refusing to run unconfined: %s", e)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": "SandboxUnavailable",
+                "command": command,
+            }
         except Exception as e:
             logger.error(f"Error starting background process '{command}': {e}", exc_info=True)
             return {
