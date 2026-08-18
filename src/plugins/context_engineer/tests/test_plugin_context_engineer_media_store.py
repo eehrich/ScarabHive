@@ -132,3 +132,60 @@ class TestMediaStore:
         assert stats["total_size_bytes"] > 0
         assert stats["ttl_seconds"] == 3600
         assert stats["max_files"] == 10
+
+
+class TestEveryWireShapeIsStoredBeforeEviction:
+    """Media that is not stored cannot be restored.
+
+    The extraction used to be four hand-written format branches inside
+    compaction.py, and they were one short: video_url was missing. Inline
+    video was evicted without ever being written to disk, so the agent had
+    no way back to it. Extraction now goes through the shared
+    extract_inline_media, the same one media_ops uses.
+
+    Driving EVERY shape is the point - a test for the shape the author
+    happens to think of is exactly how the gap survived.
+    """
+
+    PAYLOAD = bytes([0, 1]) + b'binary-payload'
+    SHAPES = ['anthropic_source', 'openai_image_url', 'gemini_inline_data',
+              'openai_audio_url', 'video_url']
+
+    def _item(self, shape):
+        b64 = base64.b64encode(self.PAYLOAD).decode()
+        return {
+            'anthropic_source': {'type': 'image',
+                                 'source': {'data': b64, 'media_type': 'image/png'}},
+            'openai_image_url': {'type': 'image_url',
+                                 'image_url': {'url': 'data:image/png;base64,' + b64}},
+            'gemini_inline_data': {'type': 'image',
+                                   'inline_data': {'data': b64, 'mime_type': 'image/png'}},
+            'openai_audio_url': {'type': 'audio',
+                                 'audio_url': 'data:audio/wav;base64,' + b64},
+            'video_url': {'type': 'video',
+                          'video_url': 'data:video/mp4;base64,' + b64},
+        }[shape]
+
+    def _compactor(self, tmp_path):
+        from plugins.context_engineer.compaction import LayeredCompactionStrategy
+
+        compactor = LayeredCompactionStrategy.__new__(LayeredCompactionStrategy)
+        compactor.media_store = MediaStore(storage_path=tmp_path / 'media',
+                                           ttl_seconds=3600, max_files=50)
+        compactor.config = type('Cfg', (), {'store_media_before_compaction': True})()
+        compactor._warned_shared_session = True
+        return compactor
+
+    @pytest.mark.parametrize('shape', SHAPES)
+    def test_the_payload_reaches_disk(self, tmp_path, shape):
+        stored = self._compactor(tmp_path)._store_inline_media(self._item(shape), 'image', 's1')
+
+        assert stored, shape + ': nothing stored - it could not be restored'
+        assert Path(stored).read_bytes() == self.PAYLOAD, \
+            shape + ': stored bytes differ from the payload'
+
+    def test_an_item_without_media_stores_nothing(self, tmp_path):
+        """Counter-check: the tests above must pass because the shapes are
+        recognised, not because the store accepts anything."""
+        assert self._compactor(tmp_path)._store_inline_media(
+            {'type': 'text', 'text': 'hello'}, 'image', 's1') is None

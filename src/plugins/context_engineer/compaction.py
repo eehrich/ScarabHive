@@ -24,6 +24,7 @@ with minimum information loss.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -32,6 +33,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, fields
 from typing import Any, Iterator, NamedTuple
 
+from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
     estimate_content_tokens,
@@ -965,62 +967,23 @@ class LayeredCompactionStrategy:
                 "file quota with every other such caller", _SHARED_SESSION_ID)
 
         try:
-            # Extract base64 data from item - check all possible formats
-            base64_data = None
-            source_name = item.get("name")
-            
-            # Format 1: source.data (Anthropic/Gemini format)
-            source = item.get("source", {})
-            if isinstance(source, dict):
-                base64_data = source.get("data")
-                if base64_data and isinstance(base64_data, bytes):
-                    # Convert bytes to base64 string
-                    import base64
-                    base64_data = base64.b64encode(base64_data).decode("utf-8")
-                # Get media_type from source if available
-                if not media_type or media_type in ("audio", "image"):
-                    media_type = source.get("media_type", media_type)
-            
-            # Format 2: image_url.url (OpenAI format with data URL)
-            if not base64_data:
-                image_url = item.get("image_url", {})
-                if isinstance(image_url, dict):
-                    url = image_url.get("url", "")
-                    if isinstance(url, str) and ";base64," in url:
-                        # Extract base64 part and mime type from data URL
-                        parts = url.split(";base64,", 1)
-                        base64_data = parts[1]
-                        if parts[0].startswith("data:"):
-                            media_type = parts[0][5:]  # Extract mime type
-            
-            # Format 3: inline_data.data (Gemini native format)
-            if not base64_data:
-                inline_data = item.get("inline_data", {})
-                if isinstance(inline_data, dict):
-                    data = inline_data.get("data")
-                    if data:
-                        if isinstance(data, bytes):
-                            import base64
-                            base64_data = base64.b64encode(data).decode("utf-8")
-                        else:
-                            base64_data = data
-                        # Get mime_type from inline_data
-                        if inline_data.get("mime_type"):
-                            media_type = inline_data["mime_type"]
-            
-            # Format 4: audio_url (data URL for audio)
-            if not base64_data:
-                audio_url = item.get("audio_url", "")
-                if isinstance(audio_url, str) and ";base64," in audio_url:
-                    parts = audio_url.split(";base64,", 1)
-                    base64_data = parts[1]
-                    if parts[0].startswith("data:"):
-                        media_type = parts[0][5:]  # Extract mime type
-            
-            if not base64_data:
-                logger.debug(f"No base64 data found in item with keys: {list(item.keys())}")
+            # ONE extractor for every wire shape, shared with media_ops:
+            # agent_system.utils.multimodal_tool_content.extract_inline_media.
+            # This used to be four hand-written format branches here, and they
+            # were one short — `video_url` was missing, so inline video was
+            # evicted without ever being stored and could not be restored.
+            raw_bytes, mime, source_name = extract_inline_media(item)
+            if raw_bytes is None:
+                # Kept for the diagnostic, not for the outcome: without it the
+                # encode below raises and the outer handler returns None too.
+                # A mutation removing this stays green for exactly that reason.
+                logger.debug(f"No inline data found in item with keys: {list(item.keys())}")
                 return None
-            
+
+            base64_data = base64.b64encode(raw_bytes).decode("ascii")
+            media_type = mime or media_type
+            source_name = source_name or item.get("name")
+
             # Store the media
             stored_path = self.media_store.store(
                 data=base64_data,
