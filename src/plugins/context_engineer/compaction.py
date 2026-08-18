@@ -700,43 +700,50 @@ class LayeredCompactionStrategy:
         return self._finalize(result)
     
     def _compute_media_hash(self, item: dict[str, Any]) -> str | None:
-        """Compute a hash for a media item to detect duplicates.
-        
-        Uses file path as primary identifier. If path doesn't exist, 
-        falls back to inline data hash.
-        
+        """Identity of a media item, for duplicate detection.
+
+        A path identifies a file; everything else is identified by its actual
+        payload, pulled out by the ONE shared extractor
+        (`extract_inline_media`) that also feeds `_store_inline_media`.
+
+        This used to be a fourth hand-written format reader and recognised
+        exactly one of the five wire shapes — the OpenAI data URL. Anthropic
+        `source.data`, Gemini `inline_data`, `audio_url` and `video_url` all
+        hashed to None, so deduplication silently never fired for them: the
+        same 40 MB image twice in a conversation stayed twice in the request.
+
+        It also hashed only the first 1000 base64 characters. Two different
+        videos sharing a prefix (container header plus metadata) compared
+        equal, and one of them was dropped as a duplicate. Hashing the full
+        payload costs a hash over bytes we already hold in memory.
+
         Args:
             item: Media item dict (from multimodal_content or content list)
-            
+
         Returns:
-            Hash string or None if not hashable
+            Hash string or None if the item carries neither path nor payload
         """
-        # Primary: use file path
         file_path = item.get("path", "")
         if file_path:
-            # Normalize path for consistent hashing
             normalized = os.path.normpath(file_path)
             return hashlib.md5(normalized.encode()).hexdigest()[:16]
-        
-        # Fallback: hash inline data if present
-        inline_data = item.get("data")
-        if inline_data and isinstance(inline_data, str):
-            # Hash first 1000 chars of base64 data (enough for uniqueness)
-            return hashlib.md5(inline_data[:1000].encode()).hexdigest()[:16]
-        
-        # Check for image_url format
-        image_url = item.get("image_url", {})
-        if isinstance(image_url, dict):
-            url = image_url.get("url", "")
-            if url.startswith("data:"):
-                # Data URL - hash the data portion
-                data_start = url.find(",")
-                if data_start > 0:
-                    data = url[data_start + 1:data_start + 1001]  # First 1000 chars
-                    return hashlib.md5(data.encode()).hexdigest()[:16]
-        
+
+        try:
+            raw_bytes, _, _ = extract_inline_media(item)
+        except ValueError:
+            # The extractor deliberately raises on a corrupt payload rather
+            # than pretending there is no media. Identity is a different
+            # question: an item we cannot decode is simply not provably equal
+            # to anything, so it must not be merged with another one — and it
+            # must not take the whole compaction down either.
+            logger.debug("Media item has an undecodable payload, not hashable")
+            return None
+
+        if raw_bytes:
+            return hashlib.md5(raw_bytes).hexdigest()[:16]
+
         return None
-    
+
     def _get_media_filename(self, item: dict[str, Any]) -> str:
         """Extract original filename from media item.
         
@@ -980,13 +987,16 @@ class LayeredCompactionStrategy:
                 logger.debug(f"No inline data found in item with keys: {list(item.keys())}")
                 return None
 
-            base64_data = base64.b64encode(raw_bytes).decode("ascii")
+            # Raw bytes straight through: media_store.store() takes
+            # `str | bytes` and b64decodes a string right back. Encoding
+            # here would cost an encode, a decode and a 1.33x copy per
+            # item — on the byte-limit path that is dozens of items at 90 MB.
             media_type = mime or media_type
             source_name = source_name or item.get("name")
 
             # Store the media
             stored_path = self.media_store.store(
-                data=base64_data,
+                data=raw_bytes,
                 media_type=media_type,
                 session_id=session_id,
                 source_name=source_name

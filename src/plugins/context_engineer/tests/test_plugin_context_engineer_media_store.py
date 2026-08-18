@@ -189,3 +189,64 @@ class TestEveryWireShapeIsStoredBeforeEviction:
         recognised, not because the store accepts anything."""
         assert self._compactor(tmp_path)._store_inline_media(
             {'type': 'text', 'text': 'hello'}, 'image', 's1') is None
+
+
+class TestMediaIdentityForDeduplication:
+    """_compute_media_hash decides what counts as the same media.
+
+    It was a fourth hand-written format reader and recognised exactly ONE of
+    the five wire shapes - the OpenAI data URL. Everything else hashed to
+    None, so deduplication never fired for it: the same 40 MB image twice in
+    a conversation stayed twice in the request.
+
+    It also hashed only the first 1000 base64 characters, so two different
+    videos sharing a container header compared equal and one was dropped as
+    a duplicate - a deletion, not just a missed saving.
+    """
+
+    def _hash(self, item):
+        from plugins.context_engineer.compaction import LayeredCompactionStrategy
+        return LayeredCompactionStrategy.__new__(
+            LayeredCompactionStrategy)._compute_media_hash(item)
+
+    def _shapes(self, payload):
+        b64 = base64.b64encode(payload).decode()
+        return {
+            'anthropic': {'type': 'image', 'source': {'data': b64}},
+            'openai': {'type': 'image_url',
+                       'image_url': {'url': 'data:image/png;base64,' + b64}},
+            'gemini': {'type': 'image', 'inline_data': {'data': b64}},
+            'audio': {'type': 'audio', 'audio_url': 'data:audio/wav;base64,' + b64},
+            'video': {'type': 'video', 'video_url': 'data:video/mp4;base64,' + b64},
+            'loose': {'type': 'image', 'data': b64},
+        }
+
+    def test_every_shape_is_hashable(self):
+        hashes = {k: self._hash(v) for k, v in self._shapes(b'payload').items()}
+        unhashed = [k for k, h in hashes.items() if h is None]
+        assert not unhashed, 'these shapes never deduplicate: ' + str(unhashed)
+
+    def test_the_same_payload_is_the_same_media_whatever_the_shape(self):
+        hashes = set(self._hash(v) for v in self._shapes(b'payload').values())
+        assert len(hashes) == 1, 'one payload produced ' + str(len(hashes)) + ' identities'
+
+    def test_a_shared_prefix_is_not_the_same_media(self):
+        """The truncated hash merged different files that begin alike."""
+        prefix = b'A' * 4000
+        one = self._hash({'type': 'video', 'data': base64.b64encode(prefix + b'ONE').decode()})
+        two = self._hash({'type': 'video', 'data': base64.b64encode(prefix + b'TWO').decode()})
+        assert one and two, 'fixture produced no hash - test would be vacuous'
+        assert one != two, 'two different files share one identity - one gets dropped'
+
+    def test_a_path_still_wins_over_the_payload(self):
+        assert self._hash({'type': 'image', 'path': '/tmp/a.png'}) == \
+               self._hash({'type': 'image', 'path': '/tmp/a.png'})
+
+    def test_an_undecodable_payload_is_not_an_identity_and_does_not_raise(self):
+        """The extractor raises on a corrupt payload on purpose. Identity is a
+        different question, and a broken item must not take the whole
+        compaction down with it."""
+        assert self._hash({'type': 'image', 'source': {'data': 'ABC123XYZ' * 199}}) is None
+
+    def test_an_item_without_media_has_no_identity(self):
+        assert self._hash({'type': 'text', 'text': 'hello'}) is None

@@ -188,6 +188,17 @@ def extract_inline_media(item: Any) -> Tuple[Optional[bytes], Optional[str], Opt
                 break
 
     if b64 is None:
+        # Last resort: payload directly on the item. Not written by any builder
+        # in this module, but older conversation entries and hand-built items
+        # carry it, and dropping the shape here silently disables both
+        # deduplication and pre-compaction storage for them.
+        loose = d.get("data")
+        if isinstance(loose, bytes):
+            return loose, mime, name
+        if isinstance(loose, str) and loose:
+            b64 = loose
+
+    if b64 is None:
         return None, mime, name
     # binascii.Error is a ValueError subclass — a corrupt payload surfaces
     # instead of silently becoming "no media here".
