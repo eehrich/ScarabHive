@@ -73,8 +73,3 @@ config:
     default: true
     description: "Remove duplicate messages during optimization"
   
-  truncate_mode:
-    type: string
-    enum: ["truncate_oldest", "truncate_middle"]
-    default: "truncate_oldest"
-    description: "Strategy for reducing context size (summarization moved to context_summarizer plugin)"

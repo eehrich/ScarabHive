@@ -176,6 +176,10 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         self.dedup_similarity_threshold = float(getattr(mcp_config, "dedup_similarity_threshold", 0.82))
         self.exact_duplicate_threshold = float(getattr(mcp_config, "exact_duplicate_threshold", 0.95))
         self.consolidation_llm_profile = str(getattr(mcp_config, "consolidation_llm_profile", "turbo"))
+        # Deployment default for extraction. A per-agent hook may override it
+        # with `extraction_llm_profile`; without this the plugin-level key was
+        # declared in schema.yaml, shipped in plugins.yaml, and read by nobody.
+        self.llm_profile = str(getattr(mcp_config, "llm_profile", "turbo"))
 
         # Lesson ID counters (agent_name -> int)
         self._lesson_counters: Dict[str, int] = {}
@@ -1729,7 +1733,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 server=self,
                 max_lessons=max_lessons,
                 auto_approve=auto_approve,
-                llm_profile=config.get("extraction_llm_profile", "turbo"),
+                llm_profile=config.get("extraction_llm_profile", self.llm_profile),
                 agent=context.agent,
             )
 

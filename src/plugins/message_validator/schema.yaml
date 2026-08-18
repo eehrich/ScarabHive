@@ -34,37 +34,6 @@ config:
     default: false
     description: "Reject invalid messages instead of fixing them"
   
-  max_message_length:
-    type: integer
-    default: 100000
-    description: "Maximum allowed message length"
-    minimum: 1000
-    maximum: 1000000
-  
-  sanitize_content:
-    type: boolean
-    default: true
-    description: "Sanitize message content (remove dangerous patterns)"
-  
-  enforce_alternating:
-    type: boolean
-    default: true
-    description: "Enforce alternating user/assistant pattern by merging consecutive duplicates"
-  
-  allowed_roles:
-    type: array
-    items:
-      type: string
-      enum: ["system", "user", "assistant", "tool"]
-    default: ["system", "user", "assistant", "tool"]
-    description: "List of allowed message roles"
-  
-  validation_level:
-    type: string
-    enum: ["minimal", "standard", "strict"]
-    default: "standard"
-    description: "Validation strictness level"
-  
   max_tool_response_size_kb:
     type: integer
     default: 50

@@ -23,13 +23,18 @@ message_validator:
   enabled: true
   config:
     log_level: "warning"             # Logging level for validation issues
-    strict_mode: false              # Reject invalid vs auto-fix
-    max_message_length: 100000      # Maximum allowed message length
-    allow_empty_messages: false     # Allow messages with empty content
-    sanitize_content: true          # Remove potentially harmful content
-    valid_roles: ['system', 'user', 'assistant', 'function', 'tool']
-    enforce_alternating: false      # Require alternating user/assistant
+    strict_mode: false               # Reject invalid vs auto-fix
+    max_tool_response_size_kb: 50    # Tool response size that is an error
+    warn_tool_response_size_kb: 20   # Tool response size that warns
 ```
+
+
+> **Removed knobs.** `max_message_length`, `sanitize_content`,
+> `enforce_alternating`, `allowed_roles` and `validation_level` used to be
+> declared in `schema.yaml` and documented here, but no line of this plugin
+> ever read them. A knob an operator can set and that does nothing is worse
+> than an absent one — it is silently ignored configuration. They were dropped
+> rather than implemented, because nobody asked for the behaviour.
 
 ## Hook Points
 
@@ -61,22 +66,30 @@ Validates and sanitizes messages before sending to the LLM.
 - Custom roles can be configured via `valid_roles`
 - Invalid roles are auto-fixed to `user` in non-strict mode
 
-### Content Validation
-- **Empty Content**: Rejected unless `allow_empty_messages` is true
-- **Length Limits**: Truncated if exceeding `max_message_length`
-- **Type Checking**: Must be string or list (multimodal)
+### What is actually checked
 
-### Content Sanitization
-Removes potentially harmful patterns:
-- `<script>` tags and content
-- `javascript:` protocol
-- Event handlers (`onclick`, `onerror`, etc.)
+Every entry below corresponds to a check in `hooks.py`; nothing here is
+aspirational.
 
-### Sequence Validation
-If `enforce_alternating` is true:
-- User and assistant messages must alternate
-- System messages are ignored in alternation check
-- Non-alternating messages are flagged as issues
+**Tool-call integrity** — the class of defect that makes a provider reject the
+whole request:
+- a tool response whose `tool_call_id` matches no assistant tool call
+- a tool message without a `tool_call_id`
+- an assistant tool call with no corresponding tool response
+- a tool name that violates the OpenAI pattern `^[a-zA-Z0-9_-]+$`
+
+**Tool response shape:**
+- malformed JSON in a tool response
+- size above `max_tool_response_size_kb` (error) or `warn_tool_response_size_kb` (warning)
+
+**Conversation shape:**
+- an assistant message with neither content nor tool calls
+- a first non-system message that is not `user`
+- two consecutive assistant messages
+
+It does NOT truncate, sanitize content, rewrite roles, or enforce a strict
+alternation. Earlier revisions of this file described all four; none of them
+existed in the code.
 
 ## Operating Modes
 
