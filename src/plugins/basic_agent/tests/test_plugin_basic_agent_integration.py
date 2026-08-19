@@ -19,7 +19,7 @@ class TestBasicAgentIntegration:
             AgentSystemConfig, MCPConfig, AgentConfig,
             LLMSystemConfig, LLMModelConfig, LLMProfile
         )
-        
+
         # Create proper config objects
         self.system_config = AgentSystemConfig(
             llm_system=LLMSystemConfig(
@@ -33,16 +33,15 @@ class TestBasicAgentIntegration:
                 default_profile="normal"
             )
         )
-        
+
         self.mcp_config = MCPConfig(
             type="basic_agent",
             enabled=True,
             agent_config=AgentConfig(
-                llm_system=self.system_config.llm_system,
                 max_steps=10
             )
         )
-        
+
         # Keep old dict for backward compat if needed
         self.config = {
             "parent_llm": {
@@ -67,7 +66,7 @@ class TestBasicAgentIntegration:
         """Test task execution with mocked agent events."""
         # Create agent instance
         agent = PLUGIN_FACTORY("integration_agent", self.system_config, self.mcp_config)
-        
+
         # Mock the run_events method to simulate agent execution
         mock_events = [
             {"type": "start"},
@@ -75,32 +74,32 @@ class TestBasicAgentIntegration:
             {"type": "mcp_result", "server": "script_interpreter"},
             {"type": "final", "summary": "The calculation 2+2 equals 4."},
         ]
-        
+
         async def mock_run_events(*args, **kwargs):
             for event in mock_events:
                 yield event
-        
+
         agent.run_events = mock_run_events
-        
+
         # Mock status object
         mock_status = AsyncMock()
-        
+
         # Test task execution
         params = {
             "task": "Calculate 2+2",
             "request_id": "test_req_123",
             "_status": mock_status
         }
-        
+
         result = await agent.call("integration_agent_execute_task", params)
-        
+
         # Verify result
         assert result["status"] == "success"
         assert "The calculation 2+2 equals 4." in result["result"]
         assert result["request_id"] == "test_req_123"
         assert "tool_calls" in result
         assert result["steps"] >= 1
-        
+
         # Verify status updates were called
         mock_status.progress.assert_called()
 
@@ -108,34 +107,34 @@ class TestBasicAgentIntegration:
     async def test_execute_task_with_error_event(self):
         """Test task execution handling error events."""
         agent = PLUGIN_FACTORY("error_agent", self.system_config, self.mcp_config)
-        
+
         # Mock events with error
         mock_events = [
             {"type": "start"},
             {"type": "error", "message": "Test error occurred"},
         ]
-        
+
         async def mock_run_events(*args, **kwargs):
             for event in mock_events:
                 yield event
-        
+
         agent.run_events = mock_run_events
-        
+
         # Mock status object
         mock_status = AsyncMock()
-        
+
         # Test task execution
         params = {
             "task": "Failing task",
             "_status": mock_status
         }
-        
+
         result = await agent.call("error_agent_execute_task", params)
-        
+
         # Verify error handling
         assert result["status"] == "error"
         assert "Test error occurred" in result["error"]
-        
+
         # Verify error status was called
         mock_status.error.assert_called()
 
@@ -143,25 +142,25 @@ class TestBasicAgentIntegration:
     async def test_execute_task_with_exception(self):
         """Test task execution with exception handling."""
         agent = PLUGIN_FACTORY("exception_agent", self.system_config, self.mcp_config)
-        
+
         # Mock run_events to raise exception (needs to be async generator)
         async def mock_run_events(*args, **kwargs):
             raise RuntimeError("Simulated runtime error")
             yield  # Never reached, but makes it a generator
-        
+
         agent.run_events = mock_run_events
-        
+
         # Mock status object
         mock_status = AsyncMock()
-        
+
         # Test task execution
         params = {
             "task": "Exception task",
             "_status": mock_status
         }
-        
+
         result = await agent.call("exception_agent_execute_task", params)
-        
+
         # Verify exception handling
         assert result["status"] == "error"
         assert "Simulated runtime error" in result["error"]
@@ -170,12 +169,12 @@ class TestBasicAgentIntegration:
     async def test_list_tools_integration(self):
         """Test list_tools integration with real registry."""
         agent = PLUGIN_FACTORY("list_agent", self.system_config, self.mcp_config)
-        
+
         # Test list_available_tools call (the actual tool name from schema)
         params = {}
-        
+
         result = await agent.call("list_agent_list_available_tools", params)
-        
+
         # Verify result structure
         assert isinstance(result, list)
         # Verify simplified tool structure
@@ -188,7 +187,7 @@ class TestBasicAgentIntegration:
     async def test_multiple_tool_calls_tracking(self):
         """Test tracking of multiple tool calls in execution."""
         agent = PLUGIN_FACTORY("multi_agent", self.system_config, self.mcp_config)
-        
+
         # Mock events with multiple tool calls
         mock_events = [
             {"type": "start"},
@@ -198,25 +197,25 @@ class TestBasicAgentIntegration:
             {"type": "mcp_result", "server": "script_interpreter"},
             {"type": "final", "summary": "Time checked and code executed successfully."},
         ]
-        
+
         async def mock_run_events(*args, **kwargs):
             for event in mock_events:
                 yield event
-        
+
         agent.run_events = mock_run_events
-        
+
         # Test task execution
         params = {
             "task": "Check time and run code",
             "_status": AsyncMock()
         }
-        
+
         result = await agent.call("multi_agent_execute_task", params)
-        
+
         # Verify multiple tool calls were tracked
         assert result["status"] == "success"
         assert len(result["tool_calls"]) == 2
-        
+
         # Check tool call details
         tool_calls = result["tool_calls"]
         assert tool_calls[0]["tool"] == "datetime"
@@ -228,26 +227,26 @@ class TestBasicAgentIntegration:
     async def test_task_execution_without_status(self):
         """Test task execution when no status object is provided."""
         agent = PLUGIN_FACTORY("no_status_agent", self.system_config, self.mcp_config)
-        
+
         # Mock simple successful execution
         mock_events = [
             {"type": "final", "summary": "Task completed without status tracking."},
         ]
-        
+
         async def mock_run_events(*args, **kwargs):
             for event in mock_events:
                 yield event
-        
+
         agent.run_events = mock_run_events
-        
+
         # Test task execution without status
         params = {
             "task": "Simple task",
             # No _status provided
         }
-        
+
         result = await agent.call("no_status_agent_execute_task", params)
-        
+
         # Should work without status object
         assert result["status"] == "success"
         assert "Task completed without status tracking." in result["result"]
@@ -255,24 +254,24 @@ class TestBasicAgentIntegration:
     def test_plugin_schema_consistency(self):
         """Test that plugin schema is consistent with implementation."""
         agent = PLUGIN_FACTORY("schema_agent", self.system_config, self.mcp_config)
-        
+
         # Get schema tools
         tools = agent.get_tools()
-        
+
         # Verify schema structure
         assert len(tools) == 2
-        
+
         execute_tool = next((t for t in tools if t["function"]["name"] == "schema_agent_execute_task"), None)
         list_tool = next((t for t in tools if t["function"]["name"] == "schema_agent_list_available_tools"), None)
-        
+
         assert execute_tool is not None
         assert list_tool is not None
-        
+
         # Verify execute tool schema
         execute_params = execute_tool["function"]["parameters"]
         assert "task" in execute_params["properties"]
         assert execute_params["required"] == ["task"]
-        
+
         # Verify list tool has no required params
         list_params = list_tool["function"]["parameters"]
         assert list_params.get("required", []) == []
@@ -281,13 +280,13 @@ class TestBasicAgentIntegration:
     async def test_parameter_filtering(self):
         """Test that internal parameters are filtered from tool call tracking."""
         agent = PLUGIN_FACTORY("filter_agent", self.system_config, self.mcp_config)
-        
+
         # Mock events with internal parameters
         mock_events = [
             {
-                "type": "mcp_call", 
-                "server": "test_server", 
-                "action": "test_action", 
+                "type": "mcp_call",
+                "server": "test_server",
+                "action": "test_action",
                 "params": {
                     "public_param": "value1",
                     "_status": "internal_status",
@@ -297,32 +296,32 @@ class TestBasicAgentIntegration:
             },
             {"type": "final", "summary": "Parameter filtering test completed."},
         ]
-        
+
         async def mock_run_events(*args, **kwargs):
             for event in mock_events:
                 yield event
-        
+
         agent.run_events = mock_run_events
-        
+
         # Test task execution
         params = {
             "task": "Parameter filtering test",
             "_status": AsyncMock()
         }
-        
+
         result = await agent.call("filter_agent_execute_task", params)
-        
+
         # Verify internal parameters were filtered out
         assert result["status"] == "success"
         assert len(result["tool_calls"]) == 1
-        
+
         tool_call = result["tool_calls"][0]
         filtered_params = tool_call["params"]
-        
+
         # Should contain public parameters
         assert "public_param" in filtered_params
         assert "another_param" in filtered_params
-        
+
         # Should not contain internal parameters
         assert "_status" not in filtered_params
         assert "_cancellation_token" not in filtered_params

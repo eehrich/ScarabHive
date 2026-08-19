@@ -828,7 +828,7 @@ class TestContextPersistence:
         
         agent = MagicMock()
         agent.name = "test_agent"
-        agent.agent_config = AgentConfig(template_vars={}, default_llm_profile="chat")
+        agent.agent_config = AgentConfig(template_vars={}, llm_profile="chat")
         
         # Simulate session not found, then creation
         mock_session_manager = AsyncMock()

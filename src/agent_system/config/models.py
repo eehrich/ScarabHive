@@ -8,7 +8,7 @@ for LLM and MCP configurations.
 from __future__ import annotations
 
 import re
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Literal, Optional, Dict, List, Any, Union
 
 
@@ -331,6 +331,18 @@ class SkillsConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
+
+    # extra="forbid", not the pydantic default "ignore". A keyword this model
+    # does not know used to be dropped without a word — and
+    # `default_llm_profile` is a read-only PROPERTY below, so
+    # `AgentConfig(default_llm_profile="turbo")` silently kept the "normal"
+    # default. Two plugins built their LLM that way and ran for months on a
+    # model nobody chose. A typo in a config key has to be loud; it is the
+    # cheapest possible moment to catch it.
+    #
+    # Measured before switching: zero agent_config blocks in config/ or src/
+    # carry an unknown key, so no deployment is refused by this.
+    model_config = ConfigDict(extra="forbid")
     # LLM-KETTE (seit 2026-07: neue Semantik!): Liste = [primär, fallback1, fallback2, ...]
     # — Position 0 ist das Standard-Modell, ALLE weiteren Einträge sind Fallbacks
     # in Reihenfolge (Rate-Limit/Upstream-Fehler). String = nur Primär, keine Fallbacks.

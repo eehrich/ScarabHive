@@ -284,7 +284,7 @@ async def test_context_vars_inheritance():
         # Create mock registry with test agent
         registry = MagicMock()
         mock_agent = MagicMock()
-        mock_agent.agent_config = AgentConfig(default_llm_profile="test_profile")
+        mock_agent.agent_config = AgentConfig(llm_profile="test_profile")
         registry.get = MagicMock(return_value=mock_agent)
         
         # Create SubAgentManager
@@ -317,7 +317,7 @@ async def test_context_vars_inheritance():
         parent_agent = MagicMock()
         parent_agent.name = "parent_agent"
         parent_agent.agent_config = AgentConfig(
-            default_llm_profile="test_profile",
+            llm_profile="test_profile",
             template_vars={"book_id": "42", "workflow_phase": "planning"}
         )
         
@@ -385,7 +385,7 @@ async def test_context_vars_loaded_into_agent_template_vars():
         # Create mock agent with a real session_tracker (session-isolated)
         mock_agent = MagicMock()
         mock_agent.agent_config = AgentConfig(
-            default_llm_profile="test_profile",
+            llm_profile="test_profile",
             template_vars={}
         )
         mock_agent._session_tracker = SessionTracker()

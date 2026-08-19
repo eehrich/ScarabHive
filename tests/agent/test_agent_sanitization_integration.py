@@ -12,15 +12,6 @@ from tool_execution_test_helpers import execute_tools_collect
 def create_test_config():
     """Create a test configuration with the new LLM system structure."""
     return AgentConfig(
-        llm_system=LLMSystemConfig(
-            models={
-                "gpt-4": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="fake-key")
-            },
-            profiles={
-                "normal": LLMProfile(model_ref="gpt-4")
-            },
-            default_profile="normal"
-        ),
         max_steps=1
     )
 
@@ -32,7 +23,7 @@ class TestAgentSanitizationIntegration:
     async def test_agent_sanitizes_user_input(self):
         """Test that user input is sanitized before being sent to LLM."""
         from agent_system.config.models import AgentSystemConfig, MCPConfig
-        
+
         # Create mock config
         agent_config = create_test_config()
         system_config = AgentSystemConfig(
@@ -47,42 +38,42 @@ class TestAgentSanitizationIntegration:
             )
         )
         mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        
+
         # Create mock registry
         registry = MCPRegistry()
-        
+
         # Create agent
         agent = Agent("test_agent", system_config, mcp_config, registry)
-        
+
         # Mock the LLM to capture what messages it receives
         captured_messages = []
-        
+
         async def mock_chat_tools_streaming(messages, tools, cancellation_token=None, status_scope=None):
             captured_messages.extend(messages)
             # Yield streaming chunks
             yield {"type": "content_delta", "delta": "Test", "accumulated": "Test"}
             yield {"type": "final", "assistant": {"role": "assistant", "content": "Test response"}}
-        
+
         agent.llm = AsyncMock()
         agent.llm.supports_streaming = lambda: True
         agent.llm.chat_tools_streaming = mock_chat_tools_streaming
-        
+
         # Test with problematic input containing null bytes and control characters
         problematic_input = "Hello\x00world\x01test\u200Bdata"
-        
+
         # Call the agent (tool param is agent name, task in params)
         await agent.call(agent.name, {"task": problematic_input})
-        
+
         # Verify the user message was sanitized
         user_messages = [msg for msg in captured_messages if msg.role == "user"]
         assert len(user_messages) == 1
         user_content = user_messages[0].content
-        
+
         # Should not contain problematic characters
         assert "\x00" not in user_content
         assert "\x01" not in user_content
         assert "\u200B" not in user_content
-        
+
         # Should contain the safe parts
         assert "Hello" in user_content
         assert "world" in user_content

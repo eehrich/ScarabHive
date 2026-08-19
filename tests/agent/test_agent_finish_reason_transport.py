@@ -34,7 +34,7 @@ def _llm_system():
 
 
 def _agent(max_steps=1):
-    agent_config = AgentConfig(llm_system=_llm_system(), max_steps=max_steps)
+    agent_config = AgentConfig(max_steps=max_steps)
     system_config = AgentSystemConfig(llm_system=_llm_system())
     mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     return Agent("test_agent", system_config, mcp_config, MCPRegistry())

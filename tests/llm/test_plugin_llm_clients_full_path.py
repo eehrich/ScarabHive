@@ -328,3 +328,103 @@ class TestTheShippedConfigurationReachesTheSummarizer:
         assert getattr(client, "model", None) == expected, (
             f"plugins.yaml asks for {profile!r} ({expected}), "
             f"the client speaks {getattr(client, 'model', None)!r}")
+
+
+class TestEveryResolvedFieldReachesMakeLlm:
+    """One recorder, the WHOLE handover — not a per-field sample.
+
+    Mutation runs showed 7 of the 15 forwarded fields plus the entire
+    make_kwargs base (capabilities, httpx_timeouts, ssl_verify) survived
+    removal: the per-field tests only sampled the popular fields. Recording
+    the actual make_llm call and comparing the complete kwargs closes all of
+    it in one place — including the nastiest survivor, `ssl_verify=False`
+    silently turning into the config default.
+    """
+
+    @staticmethod
+    def _record(monkeypatch):
+        from agent_system.llm import clients
+
+        calls = {}
+
+        def recorder(provider, model, api_key, base_url, context_window,
+                     ollama_mode, request_timeout, **kwargs):
+            calls.update(kwargs, provider=provider, model=model)
+            return object()
+
+        monkeypatch.setattr(clients, "make_llm", recorder)
+        return calls
+
+    @staticmethod
+    def _full_config():
+        from agent_system.config.models import (
+            AgentSystemConfig, HTTPXTimeoutConfig, LLMModelConfig, LLMProfile,
+            LLMSystemConfig, ModelCapabilitiesConfig, NetworkConfig,
+        )
+
+        return AgentSystemConfig(
+            network=NetworkConfig(ssl_verify=True),
+            llm_system=LLMSystemConfig(
+                profiles={"p": LLMProfile(model_ref="m")},
+                models={"m": LLMModelConfig(
+                    provider="openai_httpx", model="x/y", api_key="sk-test",
+                    base_url="https://openrouter.ai/api/v1",
+                    httpx_timeouts=HTTPXTimeoutConfig(read=99.0),
+                    capabilities=ModelCapabilitiesConfig(json_mode=True),
+                    include_thoughts=True, enable_prompt_caching=False,
+                    thinking_budget=1234,
+                    thinking_level="high", modalities=["text"],
+                    max_tokens=4242, temperature=0.25,
+                    safety_settings={"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"},
+                    service_tier="flex", prompt_cache_key="auto",
+                    prompt_cache_mode="multi_turn",
+                    prompt_cache_marker_style="openai",
+                    provider_routing={"order": ["openai"]},
+                    reasoning_details_mode="keep_all",
+                    parallel_tool_calls=False,
+                )},
+            ))
+
+    def test_the_complete_kwargs_arrive(self, monkeypatch):
+        calls = self._record(monkeypatch)
+        config = self._full_config()
+
+        create_llm_from_profile(config, "p", ssl_verify=False)
+
+        expected = {
+            "include_thoughts": True, "enable_prompt_caching": False,
+            "thinking_budget": 1234,
+            "thinking_level": "high", "modalities": ["text"],
+            "max_tokens": 4242, "temperature": 0.25,
+            "safety_settings": {"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"},
+            "service_tier": "flex", "prompt_cache_key": "auto",
+            "prompt_cache_mode": "multi_turn",
+            "prompt_cache_marker_style": "openai",
+            "provider_routing": {"order": ["openai"]},
+            "reasoning_details_mode": "keep_all",
+            "parallel_tool_calls": False,
+        }
+        missing = {k: v for k, v in expected.items() if calls.get(k) != v}
+        assert not missing, f"these never reached make_llm: {missing}"
+
+        assert calls["capabilities"] is not None, "capabilities dropped"
+        assert calls["capabilities"].json_mode is True
+        assert calls["httpx_timeouts"], "httpx_timeouts dropped"
+        assert calls["httpx_timeouts"]["read"] == 99.0
+
+    def test_an_explicit_ssl_verify_false_survives(self, monkeypatch):
+        """The nastiest survivor: config says verify, the caller says don't.
+        If the fallback overwrote the explicit False, TLS verification would
+        be silently re-enabled — or worse, the inverse."""
+        calls = self._record(monkeypatch)
+
+        create_llm_from_profile(self._full_config(), "p", ssl_verify=False)
+
+        assert calls["ssl_verify"] is False,             "explicit ssl_verify=False was replaced by the config default"
+
+    def test_without_a_caller_value_the_config_decides(self, monkeypatch):
+        calls = self._record(monkeypatch)
+
+        create_llm_from_profile(self._full_config(), "p")
+
+        assert calls["ssl_verify"] is True,             "network.ssl_verify never reached make_llm"

@@ -69,20 +69,30 @@ class TestClientDefault:
         assert c.reasoning_details_mode == "keep_all"
 
 
-class TestBothFactoryMakeKwargsPaths:
-    """Beide make_kwargs-Blöcke in factory.py müssen das Feld forwarden.
-    Statt die (netzwerkbehafteten) Factory-Funktionen end-to-end zu bauen,
-    pinnen wir die Quelltext-Invariante: JEDER make_kwargs-Block, der
-    provider_routing forwarded, forwarded auch reasoning_details_mode."""
+class TestTheOneForwardingPathCarriesTheMode:
+    """This used to pin that BOTH make_kwargs blocks in factory.py forward the
+    field — the two copies had drifted apart once. There is now exactly ONE
+    construction path (_build_client with _FORWARDED_FIELDS), so the "copy
+    forgotten" failure class is structurally gone.
 
-    def test_every_make_kwargs_block_forwards_mode(self):
+    The membership assertion below is deliberately weak on its own — a list
+    checked against a copy of its own content. The BEHAVIOURAL guarantee lives
+    in test_plugin_llm_clients_full_path.py::TestEveryResolvedFieldReachesMakeLlm,
+    which records the real make_llm call and dies if the field stops arriving.
+    What this file adds is the anti-drift half: no second hand-written block.
+    """
+
+    def test_the_field_is_forwarded(self):
+        from agent_system.llm import factory
+        assert "reasoning_details_mode" in factory._FORWARDED_FIELDS, (
+            "reasoning_details_mode missing from _FORWARDED_FIELDS - silent "
+            "keep_last fallback despite a keep_all config"
+        )
+
+    def test_no_second_forwarding_copy_reappears(self):
         src = (Path(__file__).parent.parent.parent /
                "src/agent_system/llm/factory.py").read_text(encoding="utf-8")
-        assert src.count('make_kwargs["provider_routing"]') >= 2, \
-            "Vorbedingung: zwei Factory-Pfade erwartet"
-        assert (src.count('make_kwargs["reasoning_details_mode"]')
-                == src.count('make_kwargs["provider_routing"]')), (
-            "Ein make_kwargs-Block forwarded provider_routing aber nicht "
-            "reasoning_details_mode — das Feld geht auf diesem Factory-Pfad "
-            "verloren (stiller keep_last-Fallback trotz keep_all-Config)."
+        assert src.count('make_kwargs["reasoning_details_mode"]') == 0, (
+            "a hand-written forwarding block is back - new fields belong in "
+            "_FORWARDED_FIELDS, not in a second copy"
         )

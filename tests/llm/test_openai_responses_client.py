@@ -349,6 +349,26 @@ class TestToolsAndPayload:
         assert p["parallel_tool_calls"] is True
         assert p["tool_choice"] == "auto"
 
+    def test_payload_carries_safety_settings(self):
+        """Previously guarded by no test — and unlike the httpx route, this
+        client sends the thresholds UNCONDITIONALLY once set (httpx only when
+        _is_gemini_via_openrouter). Since `turbo` moved to
+        gemini-3.5-flash-lite it hangs on exactly this line: if the BLOCK_NONE
+        thresholds fall out of the payload, the provider filters with its own
+        defaults and fiction prose gets silently mangled."""
+        c = _client(safety_settings={"HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
+                                     "HARM_CATEGORY_HARASSMENT": "BLOCK_ONLY_HIGH"})
+        p = c._build_payload([ChatMessage(role="user", content="hi")], None)
+        assert p["safety_settings"] == [
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+        ]
+
+    def test_payload_omits_safety_settings_when_unset(self):
+        p = _client(safety_settings=None)._build_payload(
+            [ChatMessage(role="user", content="hi")], None)
+        assert "safety_settings" not in p
+
     def test_payload_omits_unset_options(self):
         c = _client(thinking_level=None, service_tier=None,
                     provider_routing=None, max_tokens=None)

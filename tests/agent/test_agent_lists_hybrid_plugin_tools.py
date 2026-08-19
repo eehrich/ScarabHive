@@ -63,7 +63,7 @@ def _llm_system():
 
 
 def _agent_with(registry, allowed):
-    agent_config = AgentConfig(llm_system=_llm_system(), max_steps=1,
+    agent_config = AgentConfig(max_steps=1,
                                tools=ToolConfig(allowed=allowed))
     mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     return Agent("test_agent", AgentSystemConfig(llm_system=_llm_system()),

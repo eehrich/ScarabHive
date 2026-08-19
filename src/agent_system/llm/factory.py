@@ -115,8 +115,6 @@ def create_llm_from_profile(
     Returns:
         LLMClient (possibly wrapped with BatchLLMClient if batch mode enabled)
     """
-    from .clients import make_llm
-
     # Create temporary agent config with override profile (+ optional per-agent
     # llm_params so callers with agent context propagate their overrides).
     # Profil-gekeyte Params werden HIER auf das Zielprofil aufgeloest — die
@@ -126,69 +124,53 @@ def create_llm_from_profile(
         llm_profile=llm_profile,
         llm_params=resolve_llm_params(llm_params, llm_profile),
     )
-    llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-    
-    # Extract batch info before passing to make_llm
+    return _build_client(config, temp_agent_config, ssl_verify)
+
+
+
+#: Optional per-model fields forwarded verbatim when the resolver produced a
+#: non-None value. ONE list — this used to exist twice (create_llm_from_profile
+#: and LLMFactory.create), and the copies had already drifted once: a field
+#: added to one block silently never reached clients built through the other.
+_FORWARDED_FIELDS = (
+    "include_thoughts", "enable_prompt_caching", "thinking_budget",
+    "thinking_level", "modalities", "max_tokens", "temperature",
+    "safety_settings", "service_tier", "prompt_cache_key",
+    "prompt_cache_mode", "prompt_cache_marker_style", "provider_routing",
+    "reasoning_details_mode", "parallel_tool_calls",
+)
+
+
+def _build_client(
+    config: AgentSystemConfig,
+    agent_config: AgentConfig,
+    ssl_verify: Optional[bool],
+) -> LLMClient:
+    """Resolve, forward, build, and batch-wrap — the ONE construction path.
+
+    Everything after profile resolution is identical for every caller, so it
+    lives exactly once.
+    """
+    from .clients import make_llm
+
+    llm_kwargs = resolve_llm_config_for_agent(config, agent_config)
+
     is_batch_model: bool = llm_kwargs.pop("is_batch_model", False)
     batch_provider: Optional[str] = llm_kwargs.pop("batch_provider", None)
     model_ref: Optional[str] = llm_kwargs.pop("model_ref", None)
-    
-    # Use provided ssl_verify or get from config
+
     if ssl_verify is None:
         ssl_verify = getattr(config.network, "ssl_verify", None) if config.network else None
-    
-    # Build make_kwargs
-    make_kwargs = {
+
+    make_kwargs: Dict[str, Any] = {
         "ssl_verify": ssl_verify,
         "httpx_timeouts": llm_kwargs.get("httpx_timeouts"),
         "capabilities": llm_kwargs.get("capabilities"),
     }
-    
-    if llm_kwargs.get("include_thoughts") is not None:
-        make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
-    if llm_kwargs.get("enable_prompt_caching") is not None:
-        make_kwargs["enable_prompt_caching"] = llm_kwargs.get("enable_prompt_caching")
-    
-    if llm_kwargs.get("thinking_budget") is not None:
-        make_kwargs["thinking_budget"] = llm_kwargs.get("thinking_budget")
+    for field in _FORWARDED_FIELDS:
+        if llm_kwargs.get(field) is not None:
+            make_kwargs[field] = llm_kwargs[field]
 
-    if llm_kwargs.get("thinking_level") is not None:
-        make_kwargs["thinking_level"] = llm_kwargs.get("thinking_level")
-
-    if llm_kwargs.get("modalities") is not None:
-        make_kwargs["modalities"] = llm_kwargs.get("modalities")
-
-    if llm_kwargs.get("max_tokens") is not None:
-        make_kwargs["max_tokens"] = llm_kwargs.get("max_tokens")
-
-    if llm_kwargs.get("temperature") is not None:
-        make_kwargs["temperature"] = llm_kwargs.get("temperature")
-
-    if llm_kwargs.get("safety_settings") is not None:
-        make_kwargs["safety_settings"] = llm_kwargs.get("safety_settings")
-
-    if llm_kwargs.get("service_tier") is not None:
-        make_kwargs["service_tier"] = llm_kwargs.get("service_tier")
-
-    if llm_kwargs.get("prompt_cache_key") is not None:
-        make_kwargs["prompt_cache_key"] = llm_kwargs.get("prompt_cache_key")
-
-    if llm_kwargs.get("prompt_cache_mode") is not None:
-        make_kwargs["prompt_cache_mode"] = llm_kwargs.get("prompt_cache_mode")
-
-    if llm_kwargs.get("prompt_cache_marker_style") is not None:
-        make_kwargs["prompt_cache_marker_style"] = llm_kwargs.get("prompt_cache_marker_style")
-
-    if llm_kwargs.get("provider_routing") is not None:
-        make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
-
-    if llm_kwargs.get("reasoning_details_mode") is not None:
-        make_kwargs["reasoning_details_mode"] = llm_kwargs.get("reasoning_details_mode")
-
-    if llm_kwargs.get("parallel_tool_calls") is not None:
-        make_kwargs["parallel_tool_calls"] = llm_kwargs.get("parallel_tool_calls")
-
-    # Create the underlying LLM client
     underlying_client = make_llm(
         llm_kwargs["provider"],
         llm_kwargs["model"],
@@ -199,19 +181,17 @@ def create_llm_from_profile(
         llm_kwargs["request_timeout"],
         **make_kwargs,
     )
-    
-    # Wrap with batch client if this is a batch model
+
     if is_batch_model and batch_provider:
         queue_manager = get_batch_queue_manager()
         if queue_manager:
-            # Get provider config from global batch settings
             batch_system_config = config.llm_system.batch if config.llm_system else None
             if batch_system_config:
                 provider_config = getattr(batch_system_config.providers, batch_provider, None)
                 if provider_config and provider_config.enabled:
                     from .batch.batch_client import BatchLLMClient
-                    logger.info("Wrapping LLM client with batch support: model=%s, provider=%s", 
-                               model_ref, batch_provider)
+                    logger.info("Wrapping LLM client with batch support: model=%s, provider=%s",
+                                model_ref, batch_provider)
                     return BatchLLMClient(
                         underlying_client=underlying_client,
                         queue_manager=queue_manager,
@@ -224,7 +204,7 @@ def create_llm_from_profile(
             "Falling back to sync mode.",
             model_ref
         )
-    
+
     return underlying_client
 
 
@@ -449,120 +429,11 @@ class LLMFactory:
     def create(self) -> Optional[LLMClient]:
         """Create an LLM client from the provided configurations.
 
-        Returns an LLMClient instance or raises the underlying error from
-        `make_llm`. Callers may catch exceptions if they want a fallback
-        behavior (for example, running without an LLM in tests).
-        
-        If provider='batch' is set in the model config AND a global batch
-        queue manager is registered, the client will be wrapped with
-        BatchLLMClient for automatic request batching.
+        Delegates to the same construction path as create_llm_from_profile —
+        this method used to carry its own copy of the forwarding list, and the
+        two had already drifted once.
         """
         if not self.config or not self.agent_config:
             return None
 
-        # Use new profile-based resolution
-        llm_kwargs = resolve_llm_config_for_agent(self.config, self.agent_config)
-        
-        # Extract batch info before passing to make_llm
-        is_batch_model: bool = llm_kwargs.pop("is_batch_model", False)
-        batch_provider: Optional[str] = llm_kwargs.pop("batch_provider", None)
-        model_ref: Optional[str] = llm_kwargs.pop("model_ref", None)
-
-        # Propagate network SSL verification setting into the LLM client creation
-        ssl_verify = None
-        try:
-            ssl_verify = self.config.network.ssl_verify
-        except Exception:
-            ssl_verify = None
-
-        make_kwargs = {
-            "ssl_verify": ssl_verify,
-            "httpx_timeouts": llm_kwargs.get("httpx_timeouts"),
-            "capabilities": llm_kwargs.get("capabilities"),
-        }
-
-        if llm_kwargs.get("include_thoughts") is not None:
-            make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
-        if llm_kwargs.get("enable_prompt_caching") is not None:
-            make_kwargs["enable_prompt_caching"] = llm_kwargs.get("enable_prompt_caching")
-
-        # Parität zu create_llm_from_profile: diese Felder gingen hier
-        # verloren (thinking_level/-budget, max_tokens, safety_settings) —
-        # der über die Factory gebaute Default-Client ignorierte sie sonst.
-        if llm_kwargs.get("thinking_budget") is not None:
-            make_kwargs["thinking_budget"] = llm_kwargs.get("thinking_budget")
-
-        if llm_kwargs.get("thinking_level") is not None:
-            make_kwargs["thinking_level"] = llm_kwargs.get("thinking_level")
-
-        if llm_kwargs.get("max_tokens") is not None:
-            make_kwargs["max_tokens"] = llm_kwargs.get("max_tokens")
-
-        if llm_kwargs.get("temperature") is not None:
-            make_kwargs["temperature"] = llm_kwargs.get("temperature")
-
-        if llm_kwargs.get("safety_settings") is not None:
-            make_kwargs["safety_settings"] = llm_kwargs.get("safety_settings")
-
-        if llm_kwargs.get("modalities") is not None:
-            make_kwargs["modalities"] = llm_kwargs.get("modalities")
-
-        if llm_kwargs.get("service_tier") is not None:
-            make_kwargs["service_tier"] = llm_kwargs.get("service_tier")
-
-        if llm_kwargs.get("prompt_cache_key") is not None:
-            make_kwargs["prompt_cache_key"] = llm_kwargs.get("prompt_cache_key")
-
-        if llm_kwargs.get("prompt_cache_mode") is not None:
-            make_kwargs["prompt_cache_mode"] = llm_kwargs.get("prompt_cache_mode")
-
-        if llm_kwargs.get("prompt_cache_marker_style") is not None:
-            make_kwargs["prompt_cache_marker_style"] = llm_kwargs.get("prompt_cache_marker_style")
-
-        if llm_kwargs.get("provider_routing") is not None:
-            make_kwargs["provider_routing"] = llm_kwargs.get("provider_routing")
-
-        if llm_kwargs.get("reasoning_details_mode") is not None:
-            make_kwargs["reasoning_details_mode"] = llm_kwargs.get("reasoning_details_mode")
-
-        if llm_kwargs.get("parallel_tool_calls") is not None:
-            make_kwargs["parallel_tool_calls"] = llm_kwargs.get("parallel_tool_calls")
-
-        # Create the underlying LLM client
-        underlying_client = make_llm(
-            llm_kwargs["provider"],
-            llm_kwargs["model"],
-            llm_kwargs["api_key"],
-            llm_kwargs["base_url"],
-            llm_kwargs["context_window"],
-            llm_kwargs["ollama_mode"],
-            llm_kwargs["request_timeout"],
-            **make_kwargs,
-        )
-
-        # Wrap with batch client if this is a batch model
-        if is_batch_model and batch_provider:
-            queue_manager = get_batch_queue_manager()
-            if queue_manager:
-                # Get provider config from global batch settings
-                batch_system_config = self.config.llm_system.batch if self.config.llm_system else None
-                if batch_system_config:
-                    provider_config = getattr(batch_system_config.providers, batch_provider, None)
-                    if provider_config and provider_config.enabled:
-                        from .batch.batch_client import BatchLLMClient
-                        logger.debug("Wrapping LLM client with batch support: model=%s, provider=%s",
-                                   model_ref, batch_provider)
-                        return BatchLLMClient(
-                            underlying_client=underlying_client,
-                            queue_manager=queue_manager,
-                            batch_provider_config=provider_config,
-                            model_name=llm_kwargs["model"],
-                            batch_provider=batch_provider,
-                        )
-            logger.warning(
-                "Batch mode requested for model %s but batch system not available. "
-                "Falling back to sync mode.",
-                model_ref
-            )
-        
-        return underlying_client
+        return _build_client(self.config, self.agent_config, ssl_verify=None)
