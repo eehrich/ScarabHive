@@ -5,7 +5,10 @@ This directory contains JSON Schema definitions for validating AgentSystem confi
 ## Files
 
 ### Configuration Schemas
-- **`llm-config.schema.json`**: Schema for `config/llm.yaml` (LLM models and providers)
+- **`llm-config.schema.json`**: Schema for `config/llm.yaml` (LLM models and providers).
+  GENERIERT aus `agent_system.config.models.LLMSystemConfig` — nicht von Hand
+  editieren, sondern `src/scripts/generate_llm_config_schema.py` laufen lassen
+  (der Anti-Drift-Test `tests/config/test_llm_config_schema.py` wird sonst rot).
 - **`mcp-config.schema.json`**: Schema for `config/config.yaml` (main system configuration)
 - **`plugin-config.schema.json`**: Schema for `config/plugins.yaml` (plugin and agent instance configurations)
 - **`hooks-config.schema.json`**: Schema for hook configurations
@@ -76,12 +79,18 @@ Validates plugin and agent instance configurations:
 
 ### LLM Config Schema (`llm-config.schema.json`)
 
-Validates LLM configuration:
+Validates LLM configuration. Generated from the Pydantic models
+(`LLMSystemConfig` and everything it references), so it always carries the
+real providers, fields and enums. Every object is strict
+(`additionalProperties: false`): unknown keys — the class of silent dead
+config keys like the former `ollama_url`/`include_thinking` — light up in
+the editor instead of being ignored at runtime.
 
-- **httpx_timeouts**: Connection, read, write, pool timeouts
-- **models**: Model definitions with provider, API keys, capabilities
-- **capabilities**: Tools, streaming, vision, audio, JSON mode support
-- **context_window**: Token limits (1 - 2,000,000)
+Regenerate after any change to the LLM config models:
+
+```bash
+.venv/Scripts/python.exe src/scripts/generate_llm_config_schema.py
+```
 
 ### Main Config Schema (`mcp-config.schema.json`)
 
