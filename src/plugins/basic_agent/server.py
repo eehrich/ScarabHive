@@ -7,8 +7,7 @@ from typing import Dict, Any, Optional
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
 from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
 from agent_system.mcp.base import MCPRegistry
-from agent_system.llm.factory import resolve_llm_config_for_agent
-from agent_system.llm.clients import make_llm
+from agent_system.llm.factory import create_llm_from_profile
 
 logger = logging.getLogger(__name__)
 
@@ -72,26 +71,15 @@ class BasicAgent(SchemaBasedAgent):
                 }
 
             try:
-                # Create temporary agent config with the requested profile
-                temp_agent_config = AgentConfig(llm_profile=llm_profile_name)
-                llm_kwargs = resolve_llm_config_for_agent(self.system_config, temp_agent_config)
-
-                # Get SSL verify setting
-                ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
-
-                # Create LLM client with the profile
-                llm_override = make_llm(
-                    llm_kwargs["provider"],
-                    llm_kwargs["model"],
-                    llm_kwargs["api_key"],
-                    llm_kwargs["base_url"],
-                    llm_kwargs["context_window"],
-                    llm_kwargs["ollama_mode"],
-                    llm_kwargs["request_timeout"],
-                    ssl_verify=ssl_verify,
-                    httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-                    capabilities=llm_kwargs.get("capabilities"),
-                )
+                # create_llm_from_profile, not make_llm: it forwards EVERY
+                # resolved field. Hand-listing the arguments dropped
+                # thinking_level, max_tokens, safety_settings, service_tier and
+                # provider_routing — invisible for the profiles configured
+                # today, and silently wrong the moment this agent is pointed at
+                # an OpenRouter profile. The profile here comes from a runtime
+                # tool argument, so that moment is one config line away.
+                llm_override = create_llm_from_profile(
+                    self.system_config, llm_profile_name)
 
                 # Create profile info for logging
                 profile = self.system_config.llm_system.profiles[llm_profile_name]

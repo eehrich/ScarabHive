@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
 from agent_system.llm.models import ChatMessage
-from agent_system.llm.clients import make_llm
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.llm.text_sanitizer import sanitize_for_llm
 
@@ -18,8 +17,11 @@ class LLMRouterServer(SchemaBasedMCPServer):
         
         # Store the full system config for LLM routing
         self.llm_config = system_config.llm_system
-        self.agent_config = system_config
-        # _make_client passes self.ssl_verify to make_llm(), but the base
+        # NO self.agent_config alias here: it held the SYSTEM config under an
+        # agent name, and _resolve_profile_config duly handed it to
+        # resolve_llm_config_for_agent() as the first argument with a plain
+        # string as the second. The base class already exposes system_config.
+        # _make_client passes self.ssl_verify onward, but the base
         # class never sets it - without this every chat() call raised
         # AttributeError (swallowed by the broad except, so the tool was
         # silently non-functional). Mirror basic_agent/server.py.
@@ -27,23 +29,6 @@ class LLMRouterServer(SchemaBasedMCPServer):
         self.ssl_verify = getattr(network_cfg, 'ssl_verify', True) if network_cfg else True
 
 
-
-    def _resolve_profile_config(self, profile_name: str) -> dict:
-        """Resolve LLM configuration from profile name using AgentConfig."""
-        if not self.llm_config:
-            raise ValueError("Profile-based routing requires LLM system configuration")
-        
-        try:
-            from agent_system.llm.factory import resolve_llm_config_for_agent
-            
-            # Create temporary AgentConfig with the requested profile
-            temp_config = self.agent_config.model_copy()
-            temp_config.agent_llm_profiles = {f"llm_router_{profile_name}": profile_name}
-            
-            # Resolve profile to get LLM kwargs
-            return resolve_llm_config_for_agent(temp_config, f"llm_router_{profile_name}")
-        except Exception as e:
-            raise ValueError(f"Failed to resolve profile '{profile_name}': {e}")
 
     def _make_serializable(self, obj) -> Any:
         """Convert objects to JSON-serializable format."""
@@ -118,22 +103,22 @@ class LLMRouterServer(SchemaBasedMCPServer):
         return profile_details
 
     def _make_client(self, profile: str):
-        """Create an LLM client using profile-based configuration."""
+        """Create an LLM client for one profile.
+
+        create_llm_from_profile forwards every resolved field and handles
+        batch wrapping. The previous route resolved the config by hand - with
+        the arguments swapped, so it raised on every call - and then dropped
+        thinking_level, max_tokens, safety_settings, service_tier,
+        provider_routing and capabilities on the way to make_llm.
+        """
+        from agent_system.llm.factory import create_llm_from_profile
+
         try:
-            llm_kwargs = self._resolve_profile_config(profile)
-            return make_llm(
-                llm_kwargs["provider"],
-                llm_kwargs["model"],
-                llm_kwargs["api_key"],
-                llm_kwargs["base_url"],
-                llm_kwargs["context_window"],
-                llm_kwargs["ollama_mode"],
-                llm_kwargs["request_timeout"],
-                ssl_verify=self.ssl_verify,
-                httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-            )
+            return create_llm_from_profile(
+                self.system_config, profile, ssl_verify=self.ssl_verify)
         except Exception as e:
-            raise ValueError(f"Failed to create LLM client for profile '{profile}': {e}")
+            raise ValueError(
+                f"Failed to create LLM client for profile '{profile}': {e}")
 
     async def chat(self, params: dict[str, Any]) -> dict[str, Any]:
         """

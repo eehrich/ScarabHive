@@ -407,16 +407,13 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
 
         try:
             from agent_system.llm.factory import resolve_llm_config_for_agent
-            from agent_system.llm.clients import make_llm
-            from agent_system.config.models import AgentConfig
-
-            temp_cfg = AgentConfig(
-                default_llm_profile=self._llm_profile,
-                max_steps=1,
-            )
-            kw = resolve_llm_config_for_agent(
-                context.agent.system_config, temp_cfg
-            )
+            # create_llm_from_profile forwards EVERY resolved field. Listing the
+            # make_llm arguments by hand dropped thinking_level, max_tokens,
+            # safety_settings, service_tier and provider_routing - harmless for
+            # the profile configured today, silently wrong the moment this points
+            # at an OpenRouter profile. It also gets batch wrapping right, which
+            # the hand-rolled call never did.
+            from agent_system.llm.factory import create_llm_from_profile
 
             ssl_verify = None
             try:
@@ -424,18 +421,9 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             except Exception:
                 pass
 
-            self._evaluator_llm = make_llm(
-                kw["provider"],
-                kw["model"],
-                kw["api_key"],
-                kw["base_url"],
-                kw["context_window"],
-                kw["ollama_mode"],
-                kw["request_timeout"],
-                ssl_verify=ssl_verify,
-                httpx_timeouts=kw.get("httpx_timeouts"),
-                capabilities=kw.get("capabilities"),
-            )
+            self._evaluator_llm = create_llm_from_profile(
+                context.agent.system_config, self._llm_profile,
+                ssl_verify=ssl_verify)
             model_name = getattr(
                 self._evaluator_llm, "model_name", "unknown"
             )

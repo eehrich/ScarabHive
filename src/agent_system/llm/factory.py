@@ -271,7 +271,11 @@ def _resolve_provider_routing(
     sort: ...}`` — das ist ein anderes Routing als vorher.
     """
     per_model = model_config.provider_routing
-    defaults = llm_system.openrouter_routing
+    # getattr, not attribute access: callers hand in partial config objects
+    # and test doubles, and an absent optional field means "no system
+    # default" — not a crash that takes the client build with it. Two
+    # basic_agent tests died on exactly that when the field was added.
+    defaults = getattr(llm_system, "openrouter_routing", None)
     if not defaults or not _targets_openrouter(model_config):
         return per_model
     return {**defaults, **(per_model or {})}
