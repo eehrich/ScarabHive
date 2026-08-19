@@ -119,10 +119,22 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
         # round-trip, no Chat-Completions bridging — removes the
         # encrypted-reasoning 400s of that translation layer entirely.
         # See openai_responses_client.py for the full rationale.
+        # The EFFECTIVE endpoint decides which key may be used. This provider
+        # defaults to OpenRouter, so a missing OPENROUTER_API_KEY must not fall
+        # through to OPENAI_API_KEY: the client would come up healthy and put
+        # the OpenAI secret into an Authorization header addressed to
+        # openrouter.ai, and only the first turn would fail — after the key
+        # had already been sent to a third party.
+        effective_url = base_url or "https://openrouter.ai/api/v1"
+        via_openrouter = "openrouter.ai" in effective_url.lower()
         if not api_key:
-            api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_key = (os.getenv("OPENROUTER_API_KEY") if via_openrouter
+                       else os.getenv("OPENAI_API_KEY"))
         if not api_key:
-            raise ValueError("An API key is required when provider=openai_responses")
+            wanted = "OPENROUTER_API_KEY" if via_openrouter else "OPENAI_API_KEY"
+            raise ValueError(
+                f"{wanted} is required when provider=openai_responses "
+                f"targets {effective_url}")
         from .openai_responses_client import OpenAIResponsesClient
         if httpx_timeouts:
             responses_timeouts = HTTPXTimeoutConfig(
