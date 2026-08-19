@@ -134,6 +134,9 @@ class AgentCaller:
         if instance_id:
             self.last_instance_id = instance_id
         text = self._result_text(result, agent_type)
+        # Counted here at the transport seam — not in call() — so that
+        # text-level users (call_text / the v4 wrappers) are covered too.
+        self._count_transport_failure(agent_type, text)
         await self._note(f"✓ {agent_type} ({time.monotonic() - t0:.1f}s)")
         return text, instance_id
 
@@ -158,7 +161,9 @@ class AgentCaller:
         if use_advanced_model:
             params["use_advanced_model"] = True
         result = await self._invoke(params, label=instance_id)
-        return self._result_text(result, instance_id)
+        text = self._result_text(result, instance_id)
+        self._count_transport_failure("follow_up", text)
+        return text
 
     # -- structured calls with retry --------------------------------------------
 
@@ -232,7 +237,6 @@ class AgentCaller:
                 raw = await self.follow_up_text(
                     instance_id, message, use_advanced_model=use_advanced_model,
                 )
-                self._count_transport_failure("follow_up", raw)
                 return await self._validate(
                     parse_json_value(raw), schema, instance_id, use_advanced_model,
                 )
@@ -264,7 +268,6 @@ class AgentCaller:
         raw, instance_id = await self._create(
             agent_type, task, use_advanced_model=use_advanced_model,
         )
-        self._count_transport_failure(agent_type, raw)
         return await self._validate(
             parse_json_value(raw), schema, instance_id, use_advanced_model,
         )

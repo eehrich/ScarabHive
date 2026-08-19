@@ -111,6 +111,22 @@ def test_failed_as_content_is_counted_and_retried() -> None:
     assert c.counters["transport_failures:x"] == 1
 
 
+def test_text_level_calls_count_transport_failures_too() -> None:
+    """The count lives at the transport seam (_create/follow_up_text), not
+    in call(): text-level users — the v4 wrappers — must be covered, and a
+    failed continue counts under ``follow_up`` (it used to count nowhere)."""
+    agent = FakeAgent([
+        ok("Error: DNS lookup failed"),
+        ok("Cancelled: run aborted"),
+    ])
+    c = caller(agent)
+    assert asyncio.run(c.call_text("x", "task")).startswith("Error: ")
+    assert asyncio.run(c.follow_up_text("inst-1", "again")).startswith("Cancelled: ")
+    assert c.counters["transport_failures"] == 2
+    assert c.counters["transport_failures:x"] == 1
+    assert c.counters["transport_failures:follow_up"] == 1
+
+
 def test_empty_result_is_an_error() -> None:
     agent = FakeAgent([ok("   ")])
     c = caller(agent, retries=0)
