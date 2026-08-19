@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LLM Configuration Schema",
-  "description": "JSON Schema for AgentSystem LLM configuration (config/llm.yaml). GENERATED from agent_system.config.models.LLMSystemConfig by src/scripts/generate_llm_config_schema.py — do not edit by hand.",
+  "description": "JSON Schema for AgentSystem LLM configuration (config/llm.yaml). GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
   "type": "object",
   "required": [
     "llm_system"

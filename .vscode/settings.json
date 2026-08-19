@@ -8,10 +8,15 @@
   "terminal.integrated.defaultProfile.windows": "Git Bash",
   "yaml.schemas": {
     "./schemas/llm-config.schema.json": [
-      "config/llm.yaml"
+      "config/llm.yaml",
+      "config/llm_openrouter.yaml"
     ],
-    "./schemas/mcp-config.schema.json": [
+    "./schemas/main-config.schema.json": [
       "config/config.yaml"
+    ],
+    "./schemas/plugins-config.schema.json": [
+      "config/plugins.yaml",
+      "config/agents/*.yaml"
     ]
   },
   "yaml.customTags": [

@@ -517,9 +517,12 @@ hooks:
       timeout: 60.0               # Override timeout
       order:
         after: ["other_hook"]     # Override order
-      config:
-        param1: "override_value"  # Override config
 ```
+
+Ein globaler Override kennt genau diese drei Keys (`enabled`, `timeout`,
+`order`) — der Loader liest nichts anderes. Plugin-spezifische Parameter
+gehören in die Hook-Metadaten des Plugins bzw. die Agent-Overrides
+(`agent_config.hooks.overrides`), nicht hierher.
 
 ### Agent-Level Config
 

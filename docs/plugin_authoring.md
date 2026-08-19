@@ -2761,9 +2761,11 @@ hooks:
       timeout: 60.0           # Override timeout
       order:
         after: ["other_hook"] # Override order
-      config:
-        max_items: 50         # Override config values
 ```
+
+Mehr Keys kennt ein globaler Override nicht (`enabled`, `timeout`, `order`).
+Plugin-spezifische Parameter setzt man in den Hook-Metadaten des Plugins
+oder pro Agent unter `agent_config.hooks.overrides`.
 
 ### HookContext Reference
 
