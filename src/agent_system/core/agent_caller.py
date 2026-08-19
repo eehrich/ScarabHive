@@ -384,7 +384,15 @@ def parse_json_value(text: str) -> Any:
             pass
 
     repaired = repair_json(text, return_objects=True)
-    if isinstance(repaired, (dict, list)) and repaired:
+    # A repaired LIST counts only when it carries at least one object.
+    # repair_json happily extracts `[2]` out of prose like "see items [1]
+    # and [2] in the text" — accepting that as a result means no retry, no
+    # error, and a consumer that sees "0 findings" (v4 review 2026-08-19).
+    # A dict-free array as the WHOLE answer still passes via the strict
+    # fast path above.
+    if isinstance(repaired, dict) and repaired:
+        return repaired
+    if isinstance(repaired, list) and any(isinstance(v, dict) for v in repaired):
         return repaired
 
     head = text[:300].replace("\n", "\\n")

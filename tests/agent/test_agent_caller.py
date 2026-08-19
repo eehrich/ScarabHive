@@ -247,3 +247,20 @@ def test_concurrent_calls_feed_schema_errors_to_their_own_instance() -> None:
     assert (a.score, b.score) == (1, 2)
     follow_ups = [p for p in agent.calls if p["operation"] == "continue"]
     assert [p["instance_id"] for p in follow_ups] == ["inst-A"]
+
+
+class TestParseJsonValueRepairGuard:
+    """Review 2026-08-19 (v4 switch to the core parser): repair_json extracts
+    dict-free number lists out of prose ("see items [1] and [2]") — accepting
+    those as a result means no retry and a silent "0 findings"."""
+
+    def test_repaired_dict_free_list_raises(self):
+        with pytest.raises(ValueError):
+            parse_json_value("I checked the scene. See items [1] and [2] in the text.")
+
+    def test_repaired_list_with_objects_passes_through(self):
+        value = parse_json_value('Findings: [{"code": "W1"}, {"code": "W2"}] done.')
+        assert isinstance(value, list) and len(value) == 2
+
+    def test_bare_dict_free_array_still_valid_via_fast_path(self):
+        assert parse_json_value("[1, 2, 3]") == [1, 2, 3]
