@@ -25,7 +25,7 @@ The available profiles are configured in the agent's `llm_profile` configuration
 
 Common profiles include:
 
-- `turbo` - Fast, cost-effective model for simple tasks (gpt-5-nano)
+- `turbo` - Fast, lightweight profile (gemini-3.5-flash-lite via OpenRouter)
 - `normal` - Balanced model for standard tasks (gpt-5-mini)
 - `think` - Advanced model for complex reasoning (gpt-5.1) - **Often used as default**
 - `big` - Large context window model (gpt-4.1)

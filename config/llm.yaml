@@ -762,10 +762,16 @@ llm_system:
   # =============================================================================
   profiles:
     turbo:
-      model_ref: gpt-5-nano
-      description: "Model for high-speed responses and cheap, but less powerful"
+      model_ref: openrouter-gemini-3.5-flash-lite
+      description: "Fast, lightweight profile — gemini 3.5 flash-lite via OpenRouter"
       max_steps: 500
 
+    # ACHTUNG, kein Zwilling von `turbo` mehr: turbo zeigt seit 2026-08-18 auf
+    # gemini-3.5-flash-lite ueber OpenRouter, und einen OpenRouter-Batch-Pfad
+    # gibt es nicht (factory kennt nur gemini/openai/anthropic als
+    # batch_provider). Wer hierher wechselt, um zu sparen, wechselt die
+    # Modellfamilie: gpt-5.4-nano statt gemini-flash-lite, 272k statt 400k
+    # Kontext, ohne safety_settings und provider_routing.
     turbo-batch:
       model_ref: gpt-5-nano-batch
       description: "Model for high-speed responses and cheap, but less powerful (batch)"

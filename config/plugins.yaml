@@ -903,6 +903,14 @@ plugins:
       type: context_summarizer
       enabled: true
       config:
+        # Explizit, nicht ueber den schema-Default: bis 2026-08-18 hat ein
+        # Bug den konfigurierten Wert verschluckt (default_llm_profile ist
+        # eine Property, pydantic hat das kwarg still verworfen), also lief
+        # die Zusammenfassung unbeabsichtigt auf gpt-5.4-mini. Seit der Fix
+        # greift, wird das Modell hier bewusst gewaehlt: deepseek-v4-flash
+        # ist guenstiger und besser als gpt-5.4-nano, nicht-streamend (der
+        # Summarizer ruft .chat()) und hat 1M Kontext fuer lange Verlaeufe.
+        llm_profile: chat-nostream
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
