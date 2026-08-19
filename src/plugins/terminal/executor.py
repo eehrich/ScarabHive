@@ -74,7 +74,11 @@ class PersistentTerminal:
 
         # The whole session is confined, not each command: everything the
         # session spawns inherits the cage, which is the point.
-        confined = self.sandbox.confine([self.bash_path], cwd=self.cwd)
+        # Off-loop: the first confine() probes the sandbox backend with a
+        # synchronous subprocess.run (up to 10s) -- that must not freeze the
+        # event loop. Later calls hit the cached backend and are cheap.
+        confined = await asyncio.to_thread(
+            self.sandbox.confine, [self.bash_path], cwd=self.cwd)
         self.process = await asyncio.create_subprocess_exec(
             *confined.argv,
             stdin=asyncio.subprocess.PIPE,
@@ -293,7 +297,9 @@ class CommandExecutor:
                 exec_env.update(env)
 
             # Create subprocess
-            confined = self.sandbox.confine(
+            # to_thread: first call probes the backend synchronously (see start())
+            confined = await asyncio.to_thread(
+                self.sandbox.confine,
                 [self.bash_path, "-c", command], cwd=cwd or self.initial_cwd)
             process = await asyncio.create_subprocess_exec(
                 *confined.argv,
@@ -417,7 +423,9 @@ class CommandExecutor:
                 exec_env.update(env)
 
             # Create subprocess
-            confined = self.sandbox.confine(
+            # to_thread: first call probes the backend synchronously (see start())
+            confined = await asyncio.to_thread(
+                self.sandbox.confine,
                 [self.bash_path, "-c", command], cwd=cwd or self.initial_cwd)
             process = await asyncio.create_subprocess_exec(
                 *confined.argv,

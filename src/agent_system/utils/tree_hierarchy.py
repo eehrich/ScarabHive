@@ -104,9 +104,13 @@ class StatusTreeBuilder:
     - Cleanup runs automatically on add_status_event() calls
     """
     
-    # Regex to parse request_id suffixes: base_id_nnn_nnn_...
-    REQUEST_ID_PATTERN = re.compile(r'^([^_]+)(?:_(\d{3}))*$')
-    SUFFIX_PATTERN = re.compile(r'_(\d{3})')
+    # Hierarchy suffixes, matched at the RIGHT edge only: "_nnn" (internal
+    # tool requests) or the sub_agent_manager forms "_sub_<id>",
+    # "_sub_cont_<id>" (continue), "_async_<id>" and "_minlen_<n>" (retry).
+    # Matching "_nnn" anywhere in the id used to mangle "abc_001_sub_x" into
+    # "abc_sub_x" and invent parent ids that never existed.
+    SUFFIX_PATTERN = re.compile(
+        r'_((?:sub_cont|sub|async|minlen)_[0-9a-zA-Z]+|\d{3})$')
     
     def __init__(self, max_trees: int = 500, max_age_seconds: float = 3600.0):
         """Initialize the tree builder with memory limits.
@@ -137,15 +141,17 @@ class StatusTreeBuilder:
         """
         if not request_id:
             return "", []
-        
-        # Find all _nnn suffixes
-        suffixes = self.SUFFIX_PATTERN.findall(request_id)
-        
-        # Extract base_id by removing all _nnn suffixes
+
+        # Peel suffixes off the right edge until none is left
+        suffixes: List[str] = []
         base_id = request_id
-        for suffix in suffixes:
-            base_id = base_id.replace(f"_{suffix}", "", 1)
-        
+        while True:
+            m = self.SUFFIX_PATTERN.search(base_id)
+            if not m or m.start() == 0:
+                break
+            suffixes.insert(0, m.group(1))
+            base_id = base_id[:m.start()]
+
         return base_id, suffixes
 
     def get_parent_id(self, request_id: str) -> Optional[str]:

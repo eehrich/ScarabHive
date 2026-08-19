@@ -77,7 +77,7 @@ class TestInitializationService:
 
     def test_initialize_for_api(self, service):
         """Test API initialization returns session_service."""
-        session_service = service.initialize_for_api(skip_bootstrap=True)
+        session_service = service.initialize_for_api()
         
         assert session_service is not None
         assert session_service is service.session_service

@@ -117,6 +117,7 @@ class LLMModelConfig(BaseModel):
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
+    enable_prompt_caching: Optional[bool] = None  # Anthropic prompt caching (client default: True). Was a dead key in llm.yaml before this field existed.
     thinking_budget: Optional[int] = None  # Token budget for thinking (Gemini 2.5: 1-24576, default 8192)
     thinking_level: Optional[Literal["minimal", "low", "medium", "high", "max", "ultra"]] = None  # Thinking level. Gemini 3: minimal-high; OpenAI/OpenRouter reasoning.effort (gpt-5.6-Familie): zusätzlich max/ultra
     modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
@@ -214,11 +215,13 @@ class ToolConfig(BaseModel):
     blocked: Optional[List[str]] = Field(default_factory=list)  # list of blocked tools
 
     def __init__(self, **data):
-        # Convert None values to empty lists
-        if data.get("allowed") is None:
-            data["allowed"] = []
-        if data.get("blocked") is None:
-            data["blocked"] = []
+        # Normalize an explicit None to [] -- but only for keys that were
+        # actually given. Injecting absent keys would mark them as "set",
+        # so model_dump(exclude_unset=True) in the server-inheritance
+        # resolver would export phantom empty lists that wipe parent lists.
+        for key in ("allowed", "blocked"):
+            if key in data and data[key] is None:
+                data[key] = []
         super().__init__(**data)
 
 

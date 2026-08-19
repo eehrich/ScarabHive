@@ -213,7 +213,10 @@ class TestTerminalPluginUsesIt:
 
         src = inspect.getsource(executor)
         spawns = src.count("create_subprocess_exec(")
-        confines = src.count(".sandbox.confine(")
+        # Both call forms count: direct `.sandbox.confine(...)` and the
+        # off-loop `asyncio.to_thread(self.sandbox.confine, ...)` (the first
+        # confine() probes the backend with a blocking subprocess.run).
+        confines = src.count(".sandbox.confine(") + src.count(".sandbox.confine,")
         assert spawns == 3, f"spawn sites changed ({spawns}) — re-check the wiring"
         assert confines == spawns, \
             f"{spawns} spawn sites but {confines} confine() calls"

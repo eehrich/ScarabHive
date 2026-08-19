@@ -444,8 +444,13 @@ class ToolSchemaBuilder:
                     tool_name_mapping
                 )
                 internal_tools_to_add.extend(added_tools)
-            # Legacy single-tool interface
-            elif hasattr(server, 'get_schema'):
+            # Legacy single-tool interface -- LAST resort, only when neither
+            # list_tools() nor get_tools() produced anything. As an `elif` on
+            # the get_tools-if this ran exactly when list_tools() SUCCEEDED,
+            # appending a duplicate function with the server's name to the
+            # LLM schema (and never running for servers where both modern
+            # interfaces came up empty).
+            if not added_tools and hasattr(server, 'get_schema'):
                 await self._build_from_get_schema(server, tool_name, tools_schema)
 
         return internal_tools_to_add

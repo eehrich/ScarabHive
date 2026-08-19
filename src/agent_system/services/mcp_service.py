@@ -6,6 +6,7 @@ provides a unified interface for MCP operations used by both CLI and API.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -351,7 +352,7 @@ class MCPService:
 
         Returns:
             Dictionary mapping server names to tool lists.
-            Each tool dict contains: name, description, parameters, blocked.
+            Each tool dict contains: name, description, input_schema, blocked.
         """
         try:
             all_tools = await self._mcp.list_all_tools()
@@ -460,14 +461,19 @@ class MCPService:
                 else:
                     port = 80
 
-            # Try socket connection with short timeout
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)  # 2 second timeout
-            try:
-                result = sock.connect_ex((host, port))
-                return result == 0
-            finally:
-                sock.close()
+            # Try socket connection with short timeout. Off-loop on purpose:
+            # a synchronous connect_ex (plus its DNS resolution, which
+            # settimeout does not even cover) froze the whole event loop for
+            # up to 2s per unreachable server on every status call.
+            def _probe() -> bool:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)  # 2 second timeout
+                try:
+                    return sock.connect_ex((host, port)) == 0
+                finally:
+                    sock.close()
+
+            return await asyncio.to_thread(_probe)
         except Exception as e:
             logger.debug(f"Connectivity check failed for {server_name}: {e}")
             return False
@@ -634,7 +640,10 @@ class MCPService:
                     detailed_tools = [{
                         'name': tool.get("name", "unknown"),
                         'description': tool.get("description", f"Tool from {description}"),
-                        'parameters': tool.get("parameters", {}),
+                        # External tool dicts carry "input_schema" (provider
+                        # contract); "parameters" never existed there and the
+                        # .get default silently emptied every schema.
+                        'parameters': tool.get("input_schema") or tool.get("parameters", {}),
                         'blocked': tool.get("blocked", False)
                     } for tool in tools]
 

@@ -81,6 +81,7 @@ class AnthropicAsyncClient(LLMClient):
         enable_prompt_caching: bool = True,
         prompt_cache_mode: Optional[str] = None,
         reasoning_details_mode: Optional[str] = None,
+        capabilities=None,
         **extra_params
     ):
         """Initialize Anthropic client.
@@ -105,6 +106,7 @@ class AnthropicAsyncClient(LLMClient):
         
         self.model = model
         self.model_name = model  # For token tracking compatibility
+        self.capabilities = capabilities
         self.api_key = api_key
         self.base_url = base_url
         self.context_window = context_window
@@ -826,7 +828,12 @@ class AnthropicAsyncClient(LLMClient):
             raise last_exception
 
     def supports_streaming(self) -> bool:
-        """Return True - this client supports true streaming."""
+        """Streaming unless the model's capabilities explicitly disable it."""
+        if self.capabilities is not None:
+            if isinstance(self.capabilities, dict):
+                return self.capabilities.get("streaming", True)
+            if hasattr(self.capabilities, "streaming"):
+                return self.capabilities.streaming
         return True
 
     async def close(self) -> None:

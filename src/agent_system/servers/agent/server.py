@@ -153,6 +153,10 @@ class Agent(MCPServer):
         self._active_fallback_profile: Optional[str] = None
         self._fallback_activated_at: Optional[float] = None  # Timestamp when fallback was activated
         self._jittered_recovery_seconds: Optional[float] = None  # Per-instance jittered recovery time
+        # Original llm_profile_info, saved on the FIRST fallback switch so the
+        # display can be truly restored (stripping ":fallback" only left the
+        # fallback profile's name standing).
+        self._original_llm_profile_info: Optional[str] = None
 
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
@@ -472,6 +476,8 @@ class Agent(MCPServer):
                     f"[{self.name}] Stripped reasoning artifacts from {stripped} "
                     f"message(s) on model switch to {fallback_profile}"
                 )
+        if self._original_llm_profile_info is None:
+            self._original_llm_profile_info = self.llm_profile_info
         self.llm_profile_info = f"{fallback_profile}:fallback"
         if persistent:
             import time
@@ -891,8 +897,12 @@ class Agent(MCPServer):
             self._active_fallback_profile = None
             self._fallback_activated_at = None
             self._jittered_recovery_seconds = None  # Reset jitter for next fallback
-            # Restore original profile info
-            if self.llm_profile_info and ":fallback" in self.llm_profile_info:
+            # Restore the ORIGINAL profile info saved at switch time --
+            # stripping the ":fallback" suffix only kept the fallback name.
+            if self._original_llm_profile_info is not None:
+                self.llm_profile_info = self._original_llm_profile_info
+                self._original_llm_profile_info = None
+            elif self.llm_profile_info and ":fallback" in self.llm_profile_info:
                 self.llm_profile_info = self.llm_profile_info.replace(":fallback", "")
     
     def _check_fallback_recovery(self) -> bool:
@@ -1566,8 +1576,13 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
 
-        # Clean up MCP integration if we initialized it locally
-        await self._mcp_integration_manager.shutdown()
+        # NOTE: no MCP shutdown here. The integration is process-wide state;
+        # tearing it down at the end of EVERY request broke bootstrap-only
+        # processes (writer pipelines) after their first request, because
+        # MCPIntegration.shutdown() stops all plugins but leaves
+        # `initialized` True -- so the next request found a half-dead
+        # integration and never re-initialized it. Shutdown belongs to
+        # Agent.shutdown() / process end, where it already happens.
 
         # Reset the current_request_id ContextVar so it doesn't leak to other tasks
         if context and context.context_reset_token is not None:
@@ -1839,6 +1854,23 @@ class Agent(MCPServer):
         if active_llm is None:
             raise RuntimeError("No LLM available; agent requires an LLM to run")
 
+        # Non-persistent fallback (5xx/transport) from a PREVIOUS request: that
+        # swap was request-scoped, this request runs on the original again, so
+        # the display follows. Request start on purpose -- inside the step loop
+        # this restore lied as soon as a transport error swapped active_llm for
+        # the rest of the current run. reset_fallback handles the persistent case.
+        if self._active_fallback_llm is None and self._original_llm_profile_info is not None:
+            self.llm_profile_info = self._original_llm_profile_info
+            self._original_llm_profile_info = None
+
+        # Request-LOCAL display label. self.llm_profile_info is instance state
+        # on a shared singleton: a concurrent request's start-of-request
+        # restore must not flip THIS run's status line. Granularity is
+        # deliberate: label = profile at request start, or the last in-run
+        # fallback switch -- not re-derived per step (a 5xx run keeps showing
+        # the fallback label until the request ends).
+        display_profile_info = self.llm_profile_info
+
         # Extract from context
         messages = context.messages
         tools_schema = context.tools_schema
@@ -1937,7 +1969,7 @@ class Agent(MCPServer):
             elif llm_profile_info_override:
                 llm_display = f" ({llm_profile_info_override})"
             else:
-                llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
+                llm_display = f" ({display_profile_info})" if display_profile_info else " (unknown LLM)"
             await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
             # Update system message with current step number
@@ -2122,6 +2154,7 @@ class Agent(MCPServer):
                                 fallback_profile, persistent=True,
                                 messages=messages)
                             if fallback_llm:
+                                display_profile_info = f"{fallback_profile}:fallback"
                                 current_llm = fallback_llm
                                 # Also swap the run's base LLM so hooks use the
                                 # fallback too. The rate-limit path deliberately
@@ -2171,6 +2204,7 @@ class Agent(MCPServer):
                             fallback_profile, persistent=True,
                             messages=messages)
                         if fallback_llm:
+                            display_profile_info = f"{fallback_profile}:fallback"
                             current_llm = fallback_llm
 
                             recovery_seconds = 3600  # Default
@@ -2216,6 +2250,7 @@ class Agent(MCPServer):
                             fallback_profile, persistent=False,
                             messages=messages)
                         if fallback_llm:
+                            display_profile_info = f"{fallback_profile}:fallback"
                             current_llm = fallback_llm
                             continue  # Retry with fallback (non-persistent)
                         else:
@@ -2248,6 +2283,7 @@ class Agent(MCPServer):
                             fallback_profile, persistent=False,
                             messages=messages)
                         if fallback_llm:
+                            display_profile_info = f"{fallback_profile}:fallback"
                             current_llm = fallback_llm
                             # Request-scoped swap (like the upstream-error path,
                             # unlike LLMServerError): without it, EVERY following

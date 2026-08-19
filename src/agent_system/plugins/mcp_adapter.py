@@ -81,7 +81,13 @@ class PluginMCPAdapter(MCPServer):
                     )
                     tools.append(tool)
 
-        if not tools:
+        if not tools and (hasattr(self.plugin_server, 'call')
+                          or hasattr(self.plugin_server, 'call_with_status')):
+            # Legacy generic-action plugin: callable, but lists no tools.
+            # Only fabricate the catch-all tool when call_tool() can actually
+            # dispatch it -- for hook-/web-only plugins (no call path) the
+            # fabricated tool existed only to fail on every invocation; they
+            # legitimately have zero tools.
             tool = MCPTool(
                 name=self.name,
                 description=f"Generic action for {self.name}",

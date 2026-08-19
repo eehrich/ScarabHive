@@ -131,7 +131,6 @@ class InitializationService:
     def initialize_for_api(
         self,
         plugin_registry=None,
-        skip_bootstrap: bool = False
     ) -> SessionService:
         """
         Initialization for API context (FastAPI app).
@@ -143,15 +142,17 @@ class InitializationService:
         
         Args:
             plugin_registry: The global PluginMCPRegistry instance (singleton)
-            skip_bootstrap: If True, skip bootstrap (already done elsewhere)
         
         Returns:
             SessionService ready for use in API context
         """
         logger.info("[InitializationService] Initializing for API context")
         
-        # If we have a plugin_registry and need to inject
-        if plugin_registry is not None and not skip_bootstrap:
+        # The injection is this method's whole point. It used to hang off a
+        # `skip_bootstrap` flag although the method never bootstrapped
+        # anything -- the sole caller passed True and turned the call into a
+        # silent no-op while still logging "initialization complete".
+        if plugin_registry is not None:
             from .agent_injection import inject_session_service_into_agents
             logger.debug("Injecting session_service into API plugin_registry")
             inject_session_service_into_agents(plugin_registry, self.session_service)

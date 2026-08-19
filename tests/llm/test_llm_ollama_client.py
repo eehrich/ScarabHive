@@ -496,7 +496,6 @@ class TestOllamaClientStreamingUsageTracking:
         # Patch the client's _httpx attribute directly
         mock_httpx = MagicMock()
         mock_httpx.AsyncClient.return_value = mock_client_instance
-        mock_httpx.json = __import__('json')
         client._httpx = mock_httpx
         
         messages = [ChatMessage(role="user", content="Test")]
@@ -558,7 +557,6 @@ class TestOllamaClientStreamingUsageTracking:
         # Patch the client's _httpx attribute directly
         mock_httpx = MagicMock()
         mock_httpx.AsyncClient.return_value = mock_client_instance
-        mock_httpx.json = __import__('json')
         client._httpx = mock_httpx
         
         messages = [ChatMessage(role="user", content="Test")]

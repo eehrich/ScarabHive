@@ -294,7 +294,7 @@ llm_system:
       context_window: 1000000
       request_timeout: 180
       max_tokens: 32768
-      include_thinking: false
+      include_thoughts: false
       enable_prompt_caching: true
       capabilities:
         tools: true
@@ -318,7 +318,7 @@ llm_system:
       context_window: 1000000
       request_timeout: 300
       max_tokens: 32768
-      include_thinking: true
+      include_thoughts: true
       thinking_budget: 8192
       enable_prompt_caching: true
       capabilities:
@@ -341,7 +341,7 @@ llm_system:
       context_window: 1000000
       request_timeout: 300
       max_tokens: 16384
-      include_thinking: false
+      include_thoughts: false
       enable_prompt_caching: true
       capabilities:
         tools: true
@@ -364,7 +364,7 @@ llm_system:
       context_window: 1000000
       request_timeout: 600
       max_tokens: 32768
-      include_thinking: true
+      include_thoughts: true
       thinking_budget: 16384
       enable_prompt_caching: true
       capabilities:
@@ -378,10 +378,11 @@ llm_system:
 
     # Claude Fable 5 - Anthropic's most capable model: next-generation
     # intelligence for long-running agents. 1M context, 128K max output.
-    # $10/$50 per MTok. Thinking ist serverseitig IMMER an (adaptive);
-    # include_thinking MUSS false bleiben — der Client würde sonst
-    # thinking={type:enabled, budget_tokens:N} senden → 400. Ohne thinking-
-    # Param läuft Fable automatisch adaptive; Raw-CoT wird nie zurückgegeben.
+    # $10/$50 per MTok. Thinking ist serverseitig IMMER an (adaptive).
+    # include_thoughts: false, weil der Param hier nichts hinzufügt: für
+    # claude-fable-* sendet der Client bei true {type: adaptive} (kein
+    # budget_tokens — anthropic_client._ADAPTIVE_ONLY_THINKING), was dem
+    # Server-Default entspricht; Raw-CoT wird ohnehin nie zurückgegeben.
     # Einzelne Turns können viele Minuten laufen → request_timeout großzügig.
     claude-fable-5:
       provider: anthropic
@@ -390,7 +391,7 @@ llm_system:
       context_window: 1000000
       request_timeout: 600
       max_tokens: 32768
-      include_thinking: false
+      include_thoughts: false
       enable_prompt_caching: true
       capabilities:
         tools: true
@@ -409,7 +410,7 @@ llm_system:
       context_window: 200000
       request_timeout: 120
       max_tokens: 8192
-      include_thinking: false
+      include_thoughts: false
       enable_prompt_caching: true
       capabilities:
         tools: true
@@ -677,7 +678,7 @@ llm_system:
     ollama-gpt-oss-20b:
       provider: ollama
       model: gpt-oss:20b
-      ollama_url: http://192.0.2.64:11434
+      base_url: http://192.0.2.64:11434
       ollama_mode: native
       request_timeout: 240
       context_window: 65535
@@ -690,7 +691,7 @@ llm_system:
     ollama-gemma-4:
       provider: ollama
       model: gemma4:12b #gemma4:latest
-      ollama_url: http://192.0.2.64:11434
+      base_url: http://192.0.2.64:11434
       ollama_mode: native
       request_timeout: 240
       context_window: 262144

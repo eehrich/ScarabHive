@@ -150,10 +150,14 @@ class EndpointSecurityEnforcer:
                 path_pattern = parts[1]
             
             # Convert glob pattern to regex
-            # Replace * with .* for wildcards, escape other special chars
             regex_pattern = fnmatch.translate(path_pattern)
-            # fnmatch.translate adds \Z at end, we want to allow path extensions
-            regex_pattern = regex_pattern.replace(r'\Z', '')
+
+            # Only remove \Z for wildcard patterns (to allow prefix matching).
+            # For exact patterns keep \Z — unconditional removal degraded
+            # every exact rule to a prefix match ("GET /" matched ALL paths).
+            # Mirrors auth/middleware.py, which fixed this first.
+            if '*' in path_pattern or '?' in path_pattern:
+                regex_pattern = regex_pattern.replace(r'\Z', '')
             
             try:
                 compiled = re.compile(regex_pattern, re.IGNORECASE)

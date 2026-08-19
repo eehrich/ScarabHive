@@ -77,13 +77,19 @@ class MCPClientServer(SchemaBasedMCPServer):
             "External MCP servers: %d connected, %d failed",
             len(results) - len(failed), len(failed),
         )
-        capabilities.notify_tool_catalog_changed()
+        # Await the invalidation: the caller's next tool listing must see
+        # the new catalog, not a cache that a scheduled task has not
+        # cleared yet.
+        await capabilities.anotify_tool_catalog_changed()
 
     async def stop_plugin(self) -> None:
         """Close every connection and withdraw the capability."""
         capabilities.unregister_provider(capabilities.EXTERNAL_TOOLS, self)
         await self.pool.close_all()
-        capabilities.notify_tool_catalog_changed()
+        # Await the invalidation: the caller's next tool listing must see
+        # the new catalog, not a cache that a scheduled task has not
+        # cleared yet.
+        await capabilities.anotify_tool_catalog_changed()
 
     # ------------------------------------------------- ExternalToolProvider role
 
@@ -115,7 +121,10 @@ class MCPClientServer(SchemaBasedMCPServer):
             connection = await self.pool.connect(name)
         except (MCPConnectionError, Exception) as e:  # noqa: B014 - report, never raise
             return {"success": False, "server": name, "error": str(e)}
-        capabilities.notify_tool_catalog_changed()
+        # Await the invalidation: the caller's next tool listing must see
+        # the new catalog, not a cache that a scheduled task has not
+        # cleared yet.
+        await capabilities.anotify_tool_catalog_changed()
         return {
             "success": True,
             "server": name,
@@ -129,7 +138,10 @@ class MCPClientServer(SchemaBasedMCPServer):
         if not name:
             return {"success": False, "error": "Parameter 'server' is required"}
         closed = await self.pool.disconnect(name)
-        capabilities.notify_tool_catalog_changed()
+        # Await the invalidation: the caller's next tool listing must see
+        # the new catalog, not a cache that a scheduled task has not
+        # cleared yet.
+        await capabilities.anotify_tool_catalog_changed()
         return {"success": closed, "server": name,
                 "message": "disconnected" if closed else "was not connected"}
 

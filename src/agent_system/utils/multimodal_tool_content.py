@@ -279,7 +279,7 @@ def encode_multimodal_item(
 
 
 def create_injection_message_content(
-    tool_name: str,
+    tool_name: Optional[str],
     tool_call_id: Optional[str],
     encoded_items: List[EncodedMultimodalContent],
     supports_audio: bool = False
@@ -299,11 +299,18 @@ def create_injection_message_content(
     Returns:
         List of content items for ChatMessage.content
     """
-    # Build prefix text
-    prefix = f"📎 [TOOL OUTPUT: {tool_name}"
-    if tool_call_id:
-        prefix += f", call_id={tool_call_id}"
-    prefix += "]"
+    # Build prefix text. tool_name is None when the caller already printed
+    # it in a preceding note block -- interpolating None showed the model a
+    # literal "TOOL OUTPUT: None".
+    if tool_name:
+        prefix = f"📎 [TOOL OUTPUT: {tool_name}"
+        if tool_call_id:
+            prefix += f", call_id={tool_call_id}"
+        prefix += "]"
+    elif tool_call_id:
+        prefix = f"📎 [TOOL OUTPUT, call_id={tool_call_id}]"
+    else:
+        prefix = "📎 [TOOL OUTPUT]"
     
     # Add descriptions
     descriptions = [e.description for e in encoded_items if e.description]

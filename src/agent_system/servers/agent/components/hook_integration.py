@@ -326,7 +326,13 @@ class HookIntegrationManager:
         """
         if not self.is_enabled():
             return llm_response, {}
-        
+
+        # Same per-session schema as the PRE_LLM_CALL path: token-estimating
+        # post hooks (context_usage_tracker) read this field too.
+        tools_schema = None
+        if hasattr(self.agent, "get_live_tools_schema"):
+            tools_schema = self.agent.get_live_tools_schema(session_id)
+
         context = HookContext(
             hook_type=HookType.POST_LLM_CALL,
             request_id=request_id,
@@ -335,6 +341,7 @@ class HookIntegrationManager:
             agent_name=self.agent.name,
             messages=messages,
             llm_response=llm_response,
+            tools_schema=tools_schema,
             step=step,
             llm=llm,
         )

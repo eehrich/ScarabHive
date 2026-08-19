@@ -1155,16 +1155,22 @@ hooks:
   default_timeout: 30.0  # Default timeout in seconds
 
   # Per-hook configuration overrides
-  # Format: hook_name or plugin_name.hook_name
+  # Format: plugin_name.hook_name (exact, wins) or plugin_name (all hooks of that plugin)
   overrides:
     # Example: Override request_logger hooks
     # request_logger.log_pre_llm:
     #   enabled: true
     #   timeout: 5.0
 
-    # Example: Configure hook ordering
+    # AKTIVER Override (kein Beispiel): schaltet ALLE Hooks des reinen
+    # Hook-Plugins context_optimizer ab — auch wenn servers.context_optimizer
+    # aktiviert wird. Der plugin-weite Key greift seit dem Discovery-Fix
+    # wirklich (vorher wurde nur die volle plugin.hook-Form nachgeschlagen).
     context_optimizer:
       enabled: false
+
+    # Example: Configure hook ordering
+    # some_plugin.some_hook:
     #   timeout: 10.0
     #   order:
     #     after: ["begin"]

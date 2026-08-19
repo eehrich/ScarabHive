@@ -62,6 +62,9 @@ def get_configured_db() -> UserDatabase:
             db_path = Path("data/users.db")
         
         return setup_database(db_path)
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error loading configuration: {e}", err=True)
         raise typer.Exit(1)
@@ -117,6 +120,9 @@ def list_users(
         typer.echo(tabulate(rows, headers=headers, tablefmt="github"))
         typer.echo(f"\nTotal: {len(users)} users")
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error listing users: {e}", err=True)
         raise typer.Exit(1)
@@ -175,6 +181,9 @@ def create_user(
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error creating user: {e}", err=True)
         raise typer.Exit(1)
@@ -209,6 +218,9 @@ def delete_user(
             typer.echo(f"Failed to delete user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error deleting user: {e}", err=True)
         raise typer.Exit(1)
@@ -267,6 +279,9 @@ def update_user(
             typer.echo(f"Failed to update user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error updating user: {e}", err=True)
         raise typer.Exit(1)
@@ -297,6 +312,9 @@ def user_info(
         typer.echo(f"  Updated: {user.updated_at.strftime('%Y-%m-%d %H:%M:%S') if user.updated_at else '-'}")
         typer.echo(f"  Last Login: {user.last_login.strftime('%Y-%m-%d %H:%M:%S') if user.last_login else 'Never'}")
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error getting user info: {e}", err=True)
         raise typer.Exit(1)
@@ -325,6 +343,9 @@ def generate_api_key(
             typer.echo(f"Failed to generate API key for user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error generating API key: {e}", err=True)
         raise typer.Exit(1)
@@ -361,6 +382,9 @@ def revoke_api_key(
             typer.echo(f"Failed to revoke API key for user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error revoking API key: {e}", err=True)
         raise typer.Exit(1)

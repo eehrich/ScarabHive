@@ -76,6 +76,24 @@ class TestDiscovery:
         reg.discover([str(skill_root)])
         assert reg.names() == []
 
+    def test_broken_frontmatter_is_reported_not_silent(self, skill_root, caplog):
+        """A fence with unparseable YAML used to drop the skill without a
+        trace -- the operator saw nothing but a count that was one too low."""
+        d = skill_root / "broken"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\ndescription: Use when: the user asks for X\n---\nBODY\n",
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="agent_system.skills.registry"):
+            reg = SkillRegistry()
+            reg.discover([str(skill_root)])  # must not raise
+
+        assert reg.names() == []
+        assert any("frontmatter fence" in r.getMessage() and "broken" in r.getMessage()
+                   for r in caplog.records)
+
     def test_retired_manifest_layout_is_reported_not_silent(self, skill_root, caplog):
         """A skill.toml used to define a skill. Dropping out of discovery
         without a word turns the directory into a mystery — name the fix."""

@@ -1541,7 +1541,6 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
                     # rather than dropping what the user typed. A list, so a
                     # second line does not overwrite the first.
                     state.setdefault("typed_queue", []).append(submitted)
-                    state["typed_ahead"] = state["typed_queue"][0]
                     renderer.println(f"» {submitted}  (kept for the next turn)",
                                      color="36")
                 last_shown = None
@@ -1586,7 +1585,7 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         # The reader owns terminal state on POSIX -- it has to be restored on
         # every exit, including Ctrl-C, or the shell stays in cbreak.
         _stop_typing(loop, reader, poller, renderer, state)
-    for key in ("typed_ahead", "typed_partial"):
+    for key in ("typed_queue", "typed_partial"):
         if state.get(key):
             result[key] = state[key]
     return result
@@ -1609,7 +1608,7 @@ def _stop_typing(loop: asyncio.AbstractEventLoop, reader: _KeyReader,
                 logger.debug("Type-ahead poller teardown failed", exc_info=True)
         renderer.set_input_row(None)
         # A line typed but NEVER SUBMITTED is kept under its own key: it must
-        # not become the next task. state["typed_ahead"] auto-runs, and running
+        # not become the next task. state["typed_queue"] auto-runs, and running
         # a half sentence the user never pressed Enter on -- as a full billed
         # turn, right after they hit Ctrl-C to stop spending -- is the opposite
         # of what they asked for. It gets shown, not executed.
@@ -1741,12 +1740,12 @@ def run_chat_loop(
     print("Type /help for commands, /exit to quit. Ctrl-C cancels the running turn.")
     print(rule)
 
-    pending: Optional[str] = initial_task.strip() if initial_task else None
+    pending: list[str] = [initial_task.strip()] if initial_task and initial_task.strip() else []
     interrupts = 0  # consecutive Ctrl-C at the prompt; two in a row exit
     try:
         while True:
-            if pending is not None:
-                task, pending = pending, None
+            if pending:
+                task = pending.pop(0)
                 print(f"{prompt}{task}")  # keep the transcript complete
             else:
                 restore_console_input_mode(input_mode)
@@ -1835,9 +1834,11 @@ def run_chat_loop(
             started = time.monotonic()
             result = _execute_turn(loop, ctx, task, renderer)
 
-            # A line the user SUBMITTED during the turn but that never reached
-            # the agent becomes the next task -- they pressed Enter on it.
-            pending = result.get("typed_ahead") or None
+            # Lines the user SUBMITTED during the turn but that never reached
+            # the agent become the next tasks, in order -- they pressed Enter
+            # on each of them. (typed_ahead used to carry only the first line;
+            # the rest of the queue was silently lost.)
+            queued = result.get("typed_queue") or []
             # A half-typed fragment is only shown; auto-running it would spend
             # money on something the user never sent.
             if result.get("typed_partial"):
@@ -1845,14 +1846,17 @@ def run_chat_loop(
                     f"(unsent: {result['typed_partial']})", "90"))
 
             if result.get("cancelled"):
-                # Cancel means STOP. Anything queued from this turn is dropped:
-                # firing a new billed turn right after Ctrl-C is the opposite of
-                # what was asked for.
-                if pending:
-                    print(renderer._colored(f"(dropped: {pending})", "90"))
-                    pending = None
+                # Cancel means STOP. Everything queued is dropped -- the lines
+                # from this turn AND leftovers from earlier turns still sitting
+                # in `pending`: firing a new billed turn right after Ctrl-C is
+                # the opposite of what was asked for.
+                for line in (*pending, *queued):
+                    print(renderer._colored(f"(dropped: {line})", "90"))
+                pending.clear()
                 print("Turn cancelled.", file=sys.stderr)
                 continue  # nothing new worth saving; next turn saves anyway
+
+            pending.extend(queued)
 
             summary = result.get("summary")
             if summary:

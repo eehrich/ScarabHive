@@ -48,10 +48,12 @@ class GeminiClient(LLMClient):
         thinking_level: str | None = None,
         max_tokens: int | None = None,
         safety_settings: dict[str, str] | None = None,
+        capabilities=None,
         **extra_params
     ):
         self.model = model
         self.model_name = model  # For token tracking
+        self.capabilities = capabilities
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.context_window = context_window
@@ -205,6 +207,11 @@ class GeminiClient(LLMClient):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
             
+            # Per-attempt flag: a stale True from an earlier attempt made the
+            # MAX_TOKENS check throw away good follow-up answers and re-request.
+            # (got_malformed_function_call stays sticky on purpose -- mode=ANY.)
+            hit_max_tokens = False
+
             # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
             # This helps the model generate proper JSON instead of Python code
             if attempt > 0 and got_malformed_function_call:
@@ -685,6 +692,14 @@ class GeminiClient(LLMClient):
                 "functionDeclarations": function_declarations
             }]
 
+        # Same block as the streaming path: without it this path silently ran
+        # on Google's default safety thresholds instead of the configured ones.
+        if self.safety_settings:
+            payload["safetySettings"] = [
+                {"category": category, "threshold": threshold}
+                for category, threshold in self.safety_settings.items()
+            ]
+
         url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
 
         # Notify pre-request hook (LLM-client level)
@@ -977,5 +992,10 @@ class GeminiClient(LLMClient):
         return result["assistant"]["content"]
 
     def supports_streaming(self) -> bool:
-        """GeminiClient supports true streaming via SSE."""
+        """Streaming unless the model's capabilities explicitly disable it."""
+        if self.capabilities is not None:
+            if isinstance(self.capabilities, dict):
+                return self.capabilities.get("streaming", True)
+            if hasattr(self.capabilities, "streaming"):
+                return self.capabilities.streaming
         return True

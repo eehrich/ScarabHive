@@ -146,6 +146,8 @@ def create_llm_from_profile(
     
     if llm_kwargs.get("include_thoughts") is not None:
         make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
+    if llm_kwargs.get("enable_prompt_caching") is not None:
+        make_kwargs["enable_prompt_caching"] = llm_kwargs.get("enable_prompt_caching")
     
     if llm_kwargs.get("thinking_budget") is not None:
         make_kwargs["thinking_budget"] = llm_kwargs.get("thinking_budget")
@@ -222,8 +224,6 @@ def create_llm_from_profile(
             "Falling back to sync mode.",
             model_ref
         )
-    
-    return underlying_client
     
     return underlying_client
 
@@ -363,6 +363,8 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
 
     if model_config.include_thoughts is not None:
         llm_kwargs["include_thoughts"] = model_config.include_thoughts
+    if model_config.enable_prompt_caching is not None:
+        llm_kwargs["enable_prompt_caching"] = model_config.enable_prompt_caching
 
     if model_config.thinking_budget is not None:
         llm_kwargs["thinking_budget"] = model_config.thinking_budget
@@ -481,6 +483,8 @@ class LLMFactory:
 
         if llm_kwargs.get("include_thoughts") is not None:
             make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
+        if llm_kwargs.get("enable_prompt_caching") is not None:
+            make_kwargs["enable_prompt_caching"] = llm_kwargs.get("enable_prompt_caching")
 
         # Parität zu create_llm_from_profile: diese Felder gingen hier
         # verloren (thinking_level/-budget, max_tokens, safety_settings) —

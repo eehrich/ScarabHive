@@ -39,8 +39,13 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
         if not subdir.is_dir():
             continue
         
-        # Skip if it has plugin.py (it's a plugin, not a shared module)
-        if (subdir / "plugin.py").exists():
+        # Skip if it is a plugin, not a shared module. Recognized the same
+        # way the loader does: plugin.py OR a plugin manifest (plugin.toml/
+        # plugin.yaml). Plugins with entrypoint = "server:..." (audio_ops,
+        # comfyui, ...) have no plugin.py and were misclassified as shared
+        # modules -- every one of their *.py files got imported eagerly,
+        # regardless of whether the plugin was even enabled.
+        if (subdir / "plugin.py").exists() or load_plugin_metadata(subdir):
             continue
         
         # Check if it has __init__.py (it's a Python package)
@@ -106,6 +111,21 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
     if not (path and path.exists() and path.is_dir()):
         return out
 
+    # Package module + shared modules ONCE per path -- doing this inside the
+    # per-plugin loop re-scanned (and re-executed) every shared module for
+    # every plugin directory.
+    pkg_name = path.name  # e.g., "plugins" or "plugins_writer"
+    try:
+        if pkg_name not in sys.modules:
+            pkg_mod = types.ModuleType(pkg_name)
+            pkg_mod.__path__ = [str(path.resolve())]
+            sys.modules[pkg_name] = pkg_mod
+        # Register shared modules (like writer_core) that plugins depend on.
+        # This allows relative imports like "from ..writer_core import X".
+        _register_shared_modules(path, pkg_name)
+    except Exception as e:
+        logger.debug(f"Failed to prepare package structure for '{pkg_name}': {e}")
+
     for d in path.iterdir():
         if not d.is_dir():
             continue
@@ -124,20 +144,8 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
             logger.debug(f"Skipping plugin {d.name}: entrypoint file {plugin_file} not found")
             continue
         
-        # Use the parent directory name as the package name
-        # This supports both src/plugins/ and src/plugins_writer/
-        pkg_name = path.name  # e.g., "plugins" or "plugins_writer"
         plugin_pkg = f"{pkg_name}.{d.name}"
         try:
-            if pkg_name not in sys.modules:
-                pkg_mod = types.ModuleType(pkg_name)
-                pkg_mod.__path__ = [str(path.resolve())]
-                sys.modules[pkg_name] = pkg_mod
-            
-            # Also register shared modules (like writer_core) that plugins depend on
-            # This allows relative imports like "from ..writer_core import X" to work
-            _register_shared_modules(path, pkg_name)
-            
             if plugin_pkg not in sys.modules:
                 sub_mod = types.ModuleType(plugin_pkg)
                 sub_mod.__path__ = [str(d.resolve())]
@@ -491,9 +499,13 @@ async def register_plugin_hooks(
             # Build full hook name for lookup (plugin.hook_name)
             full_hook_name = f"{plugin_name}.{hook_name}"
             
-            # Global config overrides plugin defaults
-            if full_hook_name in hooks_config.overrides:
-                override = hooks_config.overrides[full_hook_name]
+            # Global config overrides plugin defaults. The exact
+            # "plugin.hook" key wins; a plugin-wide "plugin" key applies to
+            # every hook of that plugin (plugins.yaml uses both forms).
+            override = hooks_config.overrides.get(full_hook_name)
+            if override is None:
+                override = hooks_config.overrides.get(plugin_name)
+            if override is not None:
                 if 'enabled' in override:
                     enabled = override['enabled']
                 if 'timeout' in override:

@@ -25,12 +25,15 @@ from agent_system.auth.models import (
     APIKeyResponse,
 )
 from agent_system.auth.database import get_db, UserDatabase, create_user
+# Module import on purpose: the expiry values are rebound by
+# set_jwt_config() at startup. A from-import copies the value at import
+# time, so tokens were issued with the module DEFAULTS (7d/30d) instead of
+# the configured lifetimes. Read them via the module attribute at call time.
+from agent_system.auth import security as _security
 from agent_system.auth.security import (
     verify_password,
     create_access_token,
     decode_access_token,
-    ACCESS_TOKEN_EXPIRE_MINUTES,
-    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from agent_system.auth.dependencies import get_current_active_user
 
@@ -131,7 +134,7 @@ async def login(
         )
 
     # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=_security.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={
             "sub": user.username,
@@ -143,7 +146,7 @@ async def login(
     )
 
     # Create refresh token
-    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_token_expires = timedelta(days=_security.REFRESH_TOKEN_EXPIRE_DAYS)
     refresh_token = create_access_token(
         data={
             "sub": user.username,
@@ -159,7 +162,7 @@ async def login(
 
     # Set secure cookie for browser clients
     # Use both max_age and expires for maximum browser compatibility
-    cookie_max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60  # 7 days in seconds
+    cookie_max_age = _security.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # 7 days in seconds
     response.set_cookie(
         key="access_token",
         value=access_token,
@@ -176,7 +179,7 @@ async def login(
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        expires_in=_security.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -251,7 +254,7 @@ async def refresh_token(
         )
 
     # Create new access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=_security.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={
             "sub": user.username,
@@ -263,7 +266,7 @@ async def refresh_token(
     )
 
     # Optionally create new refresh token (rotation)
-    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_token_expires = timedelta(days=_security.REFRESH_TOKEN_EXPIRE_DAYS)
     new_refresh_token = create_access_token(
         data={
             "sub": user.username,
@@ -280,7 +283,7 @@ async def refresh_token(
         access_token=access_token,
         refresh_token=new_refresh_token,
         token_type="bearer",
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        expires_in=_security.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 

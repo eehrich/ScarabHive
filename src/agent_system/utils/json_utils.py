@@ -54,14 +54,23 @@ def strip_markdown_fences(text: str) -> str:
             body = stripped[nl + 1:]
         else:
             body = stripped[3:]
-        # Drop trailing fence if present
         body = body.rstrip()
         if body.endswith("```"):
-            body = body[:-3].rstrip()
-        body = body.strip()
-        if body:
-            return body
-        # Fall through: empty body, try regex below
+            # Fully fenced: return the inner content
+            inner = body[:-3].strip()
+            if inner:
+                return inner
+            # empty body -> regex below
+        elif "```" not in body:
+            # No closing fence at all: best effort, return everything after
+            # the opening fence (mirrors the old line-based strippers).
+            body = body.strip()
+            if body:
+                return body
+        # Fall through: there IS a closing fence but prose follows it
+        # (fenced JSON with a trailing "Note: ..." line), or the body was
+        # empty. Returning body here handed the caller the closing fence plus
+        # the trailing prose; the regex below extracts the fence's content.
 
     # General path: find a fence anywhere in the text (e.g. ``` ```json…``` ```
     # embedded inside surrounding prose). Returns first match's inner content.

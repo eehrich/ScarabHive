@@ -222,10 +222,20 @@ class StatusBus:
                 self.sequence_counter += 1
                 event.sequence = self.sequence_counter
             
-            # Compute tree hierarchy metadata if request_id is available
+            # Compute tree hierarchy metadata if request_id is available.
+            # Feed the REAL event into the tree (server/message/phase):
+            # _ensure_node_exists created every node as an empty "progress"
+            # stub and never updated it, so trees never counted as completed
+            # (cleanup waited the full max_age) and never got kept alive.
             if event.request_id:
                 tree_builder = get_tree_builder()
-                node = tree_builder._ensure_node_exists(event.request_id)
+                _phase = event.phase.value if hasattr(event.phase, "value") else str(event.phase)
+                node = tree_builder.add_status_event(
+                    event.request_id,
+                    server=event.server or "",
+                    message=event.message or "",
+                    phase=_phase,
+                )
                 event.parent_id = node.parent_id
                 event.depth_level = node.depth
                 event.child_count = len(node.children)

@@ -1377,8 +1377,24 @@ class TestTypeAheadPoller:
         await asyncio.gather(task, return_exceptions=True)
 
         assert agent.injected == []
-        assert state.get("typed_ahead") == "spaeter dann"
+        assert state.get("typed_queue") == ["spaeter dann"]
         assert "kept for the next turn" in out.getvalue()
+
+    async def test_two_undelivered_lines_are_both_kept_in_order(self):
+        """The old typed_ahead slot only carried the FIRST line -- the second
+        submitted line was confirmed to the user and then silently lost."""
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("erste zeile", ""), ("zweite zeile", "")])
+        r, _out = _renderer(width=200)
+        state = {}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.25)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == []
+        assert state.get("typed_queue") == ["erste zeile", "zweite zeile"]
 
     async def test_rejected_injection_is_also_kept(self):
         agent = _InjectAgent(accept=False)
@@ -1392,7 +1408,7 @@ class TestTypeAheadPoller:
         await asyncio.gather(task, return_exceptions=True)
 
         assert agent.injected == [("req-9", "abgelehnt")]
-        assert state.get("typed_ahead") == "abgelehnt"
+        assert state.get("typed_queue") == ["abgelehnt"]
 
     async def test_partial_buffer_is_shown_on_the_input_row(self):
         agent = _InjectAgent()
@@ -1425,7 +1441,7 @@ class TestTypeAheadPoller:
         await asyncio.gather(task, return_exceptions=True)
 
         assert not done, "the poller must survive an injection failure"
-        assert state.get("typed_ahead")     # and keep the text
+        assert state.get("typed_queue")     # and keep the text
 
 
 class TestTurnUsageNotDoubleCounted:

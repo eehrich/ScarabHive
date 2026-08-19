@@ -166,6 +166,13 @@ class UserDatabase:
             rows = cursor.fetchall()
             return [self._row_to_user(row) for row in rows]
     
+    def count_users(self) -> int:
+        """Total number of users (for pagination metadata)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            return int(cursor.fetchone()[0])
+
     def update_user(self, user_id: int, update: UserUpdate) -> Optional[UserInDB]:
         """
         Update user information.

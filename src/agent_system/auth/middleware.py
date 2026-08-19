@@ -225,7 +225,12 @@ class EndpointSecurityMiddleware:
                 username = payload.get("sub")
                 role = payload.get("role", "user")
 
-                if not username or not isinstance(username, str):
+                if payload.get("type", "access") != "access":
+                    # Refresh tokens are exchange-only (/auth/refresh); they
+                    # must not authenticate requests directly.
+                    logger.debug("JWT is not an access token (type=%s) - rejected",
+                                 payload.get("type"))
+                elif not username or not isinstance(username, str):
                     logger.debug("JWT token has invalid or missing 'sub' claim")
                 elif not all(c.isalnum() or c in '_-.' for c in username):
                     logger.warning("JWT token has invalid username format")
@@ -743,7 +748,9 @@ class SecurityAuditMiddleware:
                             break
                 entries = filtered_entries
         
-        return entries[-limit:]
+        # limit<=0 must mean "nothing", not "everything":
+        # entries[-0:] is the full buffer.
+        return entries[-limit:] if limit > 0 else []
     
     @classmethod
     def get_instance(cls) -> Optional["SecurityAuditMiddleware"]:

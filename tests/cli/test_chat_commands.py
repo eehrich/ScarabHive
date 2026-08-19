@@ -134,6 +134,11 @@ class TestLooksLikeCommand:
     def test_path_is_not_a_command(self):
         assert not looks_like_command("/etc/hosts")
 
+    def test_multiline_message_is_not_a_command(self):
+        """parse_chat_command treats multiline input as a message; the filter
+        must mirror that, or /history and /last hide real turns."""
+        assert not looks_like_command("/new plan fuer die woche\nzweite zeile")
+
 
 class TestArgumentSplitting:
     def test_quoted_group_stays_together(self):

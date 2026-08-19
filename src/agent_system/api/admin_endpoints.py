@@ -123,7 +123,8 @@ async def list_users(
     
     return UserListResponse(
         users=users,
-        total=len(users),
+        # Real total, not the page size -- clients paginate on skip+limit >= total.
+        total=db.count_users(),
         skip=skip,
         limit=limit,
     )

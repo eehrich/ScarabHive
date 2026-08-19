@@ -216,12 +216,28 @@ class OpenAIAsyncClient(LLMClient):
                             wait = max(retry_after, self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
                         else:
                             wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
-                        logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
-                        if cancellation_token and cancellation_token.is_cancelled:
-                            raise Exception("Request cancelled by user during rate limit backoff")
-                        await self._notify_retry("openai", self.model, self._base_url, False, "Rate limit (429)", attempt - 1, max_attempts)
-                        await self._cancellable_sleep(wait, cancellation_token)
-                        continue
+                        if attempt < max_attempts:
+                            logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                            if cancellation_token and cancellation_token.is_cancelled:
+                                raise Exception("Request cancelled by user during rate limit backoff")
+                            await self._notify_retry("openai", self.model, self._base_url, False, "Rate limit (429)", attempt - 1, max_attempts)
+                            await self._cancellable_sleep(wait, cancellation_token)
+                            continue
+                        # Retries exhausted - raise a typed error so callers can
+                        # switch to a fallback profile (mirrors
+                        # _chat_tools_chat_completions; the old code slept a
+                        # full backoff AFTER the last attempt and then returned
+                        # an error string as if it were an answer).
+                        error_text = str(e)
+                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {error_text}",
+                                provider="openai", model=self.model, retry_after=wait
+                            )
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            provider="openai", model=self.model, retry_after=wait
+                        )
                     # Handle server errors (5xx) - retry with exponential backoff
                     if status is not None and status >= 500 and attempt < max_attempts:
                         wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
@@ -284,6 +300,10 @@ class OpenAIAsyncClient(LLMClient):
             except Exception as e:
                 logger.debug(f"Failed to extract content from message: {e}")
                 return ""
+        except (LLMRateLimitError, LLMQuotaExhaustedError):
+            # Raised intentionally after retry exhaustion -- callers use these
+            # to switch to a fallback profile (same passthrough as chat_tools).
+            raise
         except Exception as e:
             try:
                 status = None

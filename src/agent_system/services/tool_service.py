@@ -390,13 +390,16 @@ class ToolService:
         allowed_tools = server_config.tools.allowed if server_config.tools else None
         blocked_tools = server_config.tools.blocked if server_config.tools else None
         
-        # Determine status
+        # Determine status. An EMPTY allowed list means "no filtering"
+        # (same rule as list_tools above and the real filter path) -- treating
+        # it as an active whitelist reported fully usable tools as blocked,
+        # because ToolConfig normalizes a bare tools: block to allowed=[].
         if blocked_tools and tool_name in blocked_tools:
             status = "blocked"
-        elif allowed_tools is not None and tool_name in allowed_tools:
+        elif allowed_tools and tool_name in allowed_tools:
             status = "allowed"
-        elif allowed_tools is not None:
-            # If allowed list exists but tool not in it, it's blocked
+        elif allowed_tools:
+            # Non-empty allowed list without this tool -> blocked
             status = "blocked"
         else:
             status = "neutral"

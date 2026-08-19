@@ -392,6 +392,12 @@ async def start_tracemalloc(nframes: int = 10) -> dict[str, Any]:
     WARNING: tracemalloc causes significant overhead and memory growth
     from FrameSummary accumulation. Use only for short debugging sessions.
     """
+    # Same gate as every other /debug/memory endpoint. Without it the trace
+    # could be STARTED (with all its overhead) while the reader endpoint
+    # stays 404 -- profiling running forever with no consumer.
+    # stop_tracemalloc stays unguarded on purpose: it is the mitigation
+    # path for a trace that outlived the flag (e.g. AGENT_START_TRACEMALLOC).
+    _check_memory_profiling_enabled()
     import tracemalloc
     
     if tracemalloc.is_tracing():

@@ -430,8 +430,11 @@ class VectorStore:
             try:
                 conn = self._get_sqlite_conn()
                 conn.execute(f"DROP TABLE IF EXISTS vec_{name}")
+                # The metadata table must go too -- leaving it made list_ids
+                # report documents whose vectors no longer existed.
+                conn.execute(f"DROP TABLE IF EXISTS meta_{name}")
                 conn.commit()
-                logger.info(f"Deleted sqlite-vec table: vec_{name}")
+                logger.info(f"Deleted sqlite-vec tables: vec_{name}, meta_{name}")
             except Exception as e:
                 logger.warning(f"Failed to delete sqlite-vec table vec_{name}: {e}")
     
@@ -447,10 +450,11 @@ class VectorStore:
             except Exception as e:
                 logger.warning(f"ChromaDB reset failed: {e}")
         else:
-            # Drop all vec_ tables
+            # Drop all vec_ and meta_ tables
             conn = self._get_sqlite_conn()
             tables = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'vec_%'"
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND (name LIKE 'vec_%' OR name LIKE 'meta_%')"
             ).fetchall()
             for (table_name,) in tables:
                 conn.execute(f"DROP TABLE IF EXISTS {table_name}")

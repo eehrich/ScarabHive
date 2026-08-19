@@ -65,6 +65,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             enable_prompt_caching=enable_prompt_caching if enable_prompt_caching is not None else True,
             prompt_cache_mode=prompt_cache_mode,
             reasoning_details_mode=reasoning_details_mode,
+            capabilities=capabilities,
         )
 
     if provider == "gemini":
@@ -88,8 +89,9 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             thinking_level=thinking_level,
             max_tokens=max_tokens,
             safety_settings=safety_settings,
+            capabilities=capabilities,
         )
-    
+
     if provider == "gemini_sdk":
         if not api_key:
             api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -112,6 +114,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             thinking_level=thinking_level,
             max_tokens=max_tokens,
             safety_settings=safety_settings,
+            capabilities=capabilities,
         )
 
     if provider == "openai_responses":
@@ -243,6 +246,7 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 verify=ssl_verify,
                 context_window=context_window,
                 capabilities=capabilities,
+                max_tokens=max_tokens,
                 default_extra=default_extra if default_extra else None
             )
 
@@ -284,7 +288,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             timeout=float(request_timeout) if request_timeout else None,
             verify=ssl_verify,
             context_window=context_window,
-            capabilities=capabilities
+            capabilities=capabilities,
+            max_tokens=max_tokens
         )
 
     raise ValueError(f"Unknown LLM provider: {provider}")

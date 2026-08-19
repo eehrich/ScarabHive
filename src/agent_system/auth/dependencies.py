@@ -6,6 +6,8 @@ Provides dependency injection functions for authentication and authorization.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import Depends, HTTPException, status, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -64,11 +66,12 @@ async def get_current_user(
     # Process JWT token if found
     if token:
         token_data = decode_access_token(token)
-        if token_data and token_data.username:
+        # Only real access tokens authenticate here. A refresh token is
+        # longer-lived and must stay exchange-only (/auth/refresh checks the
+        # mirror condition) -- accepting it would void the short expiry.
+        if token_data and token_data.username and token_data.token_type == "access":
             user_in_db = db.get_user_by_username(token_data.username)
             if user_in_db:
-                # Update last login
-                db.update_last_login(user_in_db.id)
                 # Convert to User (remove sensitive data)
                 return User(
                     id=user_in_db.id,
@@ -88,8 +91,17 @@ async def get_current_user(
         user_in_db = db.get_user_by_api_key(api_key_hash)
         if user_in_db and user_in_db.api_key:
             if verify_api_key(x_api_key, user_in_db.api_key):
-                # Update last login
-                db.update_last_login(user_in_db.id)
+                # API-key users never hit /auth/login, so this is their only
+                # last_login writer. Throttled to once per hour and off-loop:
+                # the old code wrote SQLite synchronously on EVERY request,
+                # which both blocked the event loop and turned last_login
+                # into "time of the latest request".
+                last = user_in_db.last_login
+                if last is not None and last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                if (last is None
+                        or (datetime.now(timezone.utc) - last).total_seconds() > 3600):
+                    await asyncio.to_thread(db.update_last_login, user_in_db.id)
                 return User(
                     id=user_in_db.id,
                     username=user_in_db.username,

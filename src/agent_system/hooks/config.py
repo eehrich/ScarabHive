@@ -46,8 +46,10 @@ class HooksConfig:
         Get configuration for a specific hook.
         
         Args:
-            hook_name: Name of the hook (can be simple name or plugin.hook_name)
-            
+            hook_name: Full hook name (plugin.hook_name). An override keyed on
+                just the plugin name applies to every hook of that plugin;
+                the exact plugin.hook_name key wins.
+
         Returns:
             Dictionary with hook configuration (enabled, timeout, order)
         """
@@ -58,9 +60,11 @@ class HooksConfig:
             "order": {"before": [], "after": []}
         }
         
-        # Apply overrides if they exist
-        if hook_name in self.overrides:
-            override = self.overrides[hook_name]
+        # Apply overrides if they exist (exact key wins over plugin-wide key)
+        override = self.overrides.get(hook_name)
+        if override is None and "." in hook_name:
+            override = self.overrides.get(hook_name.split(".", 1)[0])
+        if override is not None:
             if "enabled" in override:
                 config["enabled"] = override["enabled"]
             if "timeout" in override:

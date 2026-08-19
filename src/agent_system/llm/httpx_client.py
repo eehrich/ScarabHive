@@ -1416,8 +1416,11 @@ class HTTPXOpenAIClient(LLMClient):
                 self._cap_anthropic_cache_control(message_dicts, payload["tools"])
             payload["tool_choice"] = "auto"
             # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
-            if self.parallel_tool_calls and not self._is_gemini_via_openrouter:
-                payload["parallel_tool_calls"] = True
+            # Always send the value explicitly for non-Gemini (same rule as the
+            # non-streaming path): omitting it means the provider default (true)
+            # applies, so a configured False MUST be sent.
+            if not self._is_gemini_via_openrouter:
+                payload["parallel_tool_calls"] = bool(self.parallel_tool_calls)
 
         # Gemini via OpenRouter: inject safety settings for content filtering
         if self._is_gemini_via_openrouter and self.safety_settings:
@@ -1833,98 +1836,106 @@ class HTTPXOpenAIClient(LLMClient):
                             if _body_400_enc_retry_msg:
                                 break
 
-                        # After stream ends, process any remaining data in buffer
-                        # This handles the case where the last chunk doesn't end with \n
-                        # or where [DONE] is in the buffer but wasn't processed yet
-                        if line_buffer.strip():
-                            for line in line_buffer.split('\n'):
-                                line = line.strip()
-                                if not line or not line.startswith("data: "):
-                                    continue
-                                data = line[6:]
-                                if data == "[DONE]":
-                                    # Found [DONE] in remaining buffer
-                                    assistant = {
-                                        "role": "assistant",
-                                        "content": "".join(accumulated_content) if accumulated_content else ""
-                                    }
-                                    if accumulated_reasoning:
-                                        assistant["reasoning_content"] = "".join(accumulated_reasoning)
-                                    if accumulated_tool_calls:
-                                        tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
-                                        assistant["tool_calls"] = tool_calls_list
-                                    if accumulated_reasoning_details:
-                                        assistant["reasoning_details"] = [
-                                            accumulated_reasoning_details[idx]
-                                            for idx in sorted(accumulated_reasoning_details.keys())
-                                        ]
-                                    final_result = {"assistant": assistant}
-                                    if accumulated_usage:
-                                        final_result["usage"] = accumulated_usage
-                                    if _last_finish_reason:  # see note above
-                                        final_result["finish_reason"] = _last_finish_reason
-                                    _s_duration = (_time.time() - _streaming_request_start) * 1000
-                                    await self._notify_post_response({
-                                        "provider": "openai_httpx", "model": self.model,
-                                        "url": url, "is_streaming": True,
-                                        "duration_ms": _s_duration, "usage": accumulated_usage,
-                                        "finish_reason": _last_finish_reason,
-                                        "timestamp_ms": _time.time() * 1000,
-                                    })
-                                    yield {"type": "final", **final_result}
-                                    return
-                                # Try to parse remaining JSON chunks
-                                try:
-                                    chunk_data = json.loads(data)
-                                    if "usage" in chunk_data:
-                                        accumulated_usage = chunk_data["usage"]
-                                    choices = chunk_data.get("choices", [])
-                                    if choices:
-                                        delta = choices[0].get("delta", {})
-                                        if "reasoning_content" in delta and delta["reasoning_content"]:
-                                            accumulated_reasoning.append(delta["reasoning_content"])
-                                        if "content" in delta and delta["content"]:
-                                            accumulated_content.append(delta["content"])
-                                except Exception:
-                                    pass
+                        # A body-level retry was signaled from the chunk
+                        # parser. Skip the finalization tail entirely --
+                        # falling through to it yielded an EMPTY final
+                        # answer and returned, which made the retry
+                        # handlers behind the `finally` dead code (an
+                        # upstream 429 became a silent empty response).
+                        if not (_body_429_retry_msg or _body_400_sig_retry_msg
+                                or _body_400_enc_retry_msg):
+                            # After stream ends, process any remaining data in buffer
+                            # This handles the case where the last chunk doesn't end with \n
+                            # or where [DONE] is in the buffer but wasn't processed yet
+                            if line_buffer.strip():
+                                for line in line_buffer.split('\n'):
+                                    line = line.strip()
+                                    if not line or not line.startswith("data: "):
+                                        continue
+                                    data = line[6:]
+                                    if data == "[DONE]":
+                                        # Found [DONE] in remaining buffer
+                                        assistant = {
+                                            "role": "assistant",
+                                            "content": "".join(accumulated_content) if accumulated_content else ""
+                                        }
+                                        if accumulated_reasoning:
+                                            assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                                        if accumulated_tool_calls:
+                                            tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                            assistant["tool_calls"] = tool_calls_list
+                                        if accumulated_reasoning_details:
+                                            assistant["reasoning_details"] = [
+                                                accumulated_reasoning_details[idx]
+                                                for idx in sorted(accumulated_reasoning_details.keys())
+                                            ]
+                                        final_result = {"assistant": assistant}
+                                        if accumulated_usage:
+                                            final_result["usage"] = accumulated_usage
+                                        if _last_finish_reason:  # see note above
+                                            final_result["finish_reason"] = _last_finish_reason
+                                        _s_duration = (_time.time() - _streaming_request_start) * 1000
+                                        await self._notify_post_response({
+                                            "provider": "openai_httpx", "model": self.model,
+                                            "url": url, "is_streaming": True,
+                                            "duration_ms": _s_duration, "usage": accumulated_usage,
+                                            "finish_reason": _last_finish_reason,
+                                            "timestamp_ms": _time.time() * 1000,
+                                        })
+                                        yield {"type": "final", **final_result}
+                                        return
+                                    # Try to parse remaining JSON chunks
+                                    try:
+                                        chunk_data = json.loads(data)
+                                        if "usage" in chunk_data:
+                                            accumulated_usage = chunk_data["usage"]
+                                        choices = chunk_data.get("choices", [])
+                                        if choices:
+                                            delta = choices[0].get("delta", {})
+                                            if "reasoning_content" in delta and delta["reasoning_content"]:
+                                                accumulated_reasoning.append(delta["reasoning_content"])
+                                            if "content" in delta and delta["content"]:
+                                                accumulated_content.append(delta["content"])
+                                    except Exception:
+                                        pass
                         
-                        # Stream ended without [DONE] - yield final result anyway
-                        # This can happen with some API implementations
-                        logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
-                        # ...but say so. Without a marker we cannot tell a
-                        # complete answer from one cut off mid-generation, and
-                        # accepting the latter as final is silent truncation.
-                        if not _last_finish_reason:
-                            _last_finish_reason = "incomplete_stream"
-                        assistant: dict[str, Any] = {
-                            "role": "assistant",
-                            "content": "".join(accumulated_content) if accumulated_content else ""
-                        }
-                        if accumulated_reasoning:
-                            assistant["reasoning_content"] = "".join(accumulated_reasoning)
-                        if accumulated_tool_calls:
-                            tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
-                            assistant["tool_calls"] = tool_calls_list
-                        if accumulated_reasoning_details:
-                            assistant["reasoning_details"] = [
-                                accumulated_reasoning_details[idx]
-                                for idx in sorted(accumulated_reasoning_details.keys())
-                            ]
-                        final_result = {"assistant": assistant}
-                        if accumulated_usage:
-                            final_result["usage"] = accumulated_usage
-                        if _last_finish_reason:
-                            final_result["finish_reason"] = _last_finish_reason
-                        _s_duration = (_time.time() - _streaming_request_start) * 1000
-                        await self._notify_post_response({
-                            "provider": "openai_httpx", "model": self.model,
-                            "url": url, "is_streaming": True,
-                            "duration_ms": _s_duration, "usage": accumulated_usage,
-                            "finish_reason": _last_finish_reason,
-                            "timestamp_ms": _time.time() * 1000,
-                        })
-                        yield {"type": "final", **final_result}
-                        return  # Success - exit retry loop
+                            # Stream ended without [DONE] - yield final result anyway
+                            # This can happen with some API implementations
+                            logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
+                            # ...but say so. Without a marker we cannot tell a
+                            # complete answer from one cut off mid-generation, and
+                            # accepting the latter as final is silent truncation.
+                            if not _last_finish_reason:
+                                _last_finish_reason = "incomplete_stream"
+                            assistant: dict[str, Any] = {
+                                "role": "assistant",
+                                "content": "".join(accumulated_content) if accumulated_content else ""
+                            }
+                            if accumulated_reasoning:
+                                assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                            if accumulated_tool_calls:
+                                tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                assistant["tool_calls"] = tool_calls_list
+                            if accumulated_reasoning_details:
+                                assistant["reasoning_details"] = [
+                                    accumulated_reasoning_details[idx]
+                                    for idx in sorted(accumulated_reasoning_details.keys())
+                                ]
+                            final_result = {"assistant": assistant}
+                            if accumulated_usage:
+                                final_result["usage"] = accumulated_usage
+                            if _last_finish_reason:
+                                final_result["finish_reason"] = _last_finish_reason
+                            _s_duration = (_time.time() - _streaming_request_start) * 1000
+                            await self._notify_post_response({
+                                "provider": "openai_httpx", "model": self.model,
+                                "url": url, "is_streaming": True,
+                                "duration_ms": _s_duration, "usage": accumulated_usage,
+                                "finish_reason": _last_finish_reason,
+                                "timestamp_ms": _time.time() * 1000,
+                            })
+                            yield {"type": "final", **final_result}
+                            return  # Success - exit retry loop
                 finally:
                     # Safely close client with timeout to avoid SSL shutdown segfaults
                     # This is critical on Linux with OpenSSL 3.x where SSL_shutdown can hang
@@ -2020,6 +2031,19 @@ class HTTPXOpenAIClient(LLMClient):
                     )
                     await self._cancellable_sleep(backoff_time, cancellation_token)
                     continue
+
+                # Retries exhausted (or one-shot recovery already spent):
+                # raise instead of silently starting another attempt.
+                if _body_429_retry_msg:
+                    raise LLMRateLimitError(
+                        f"Upstream 429 body-error after retries: {_body_429_retry_msg[:200]}",
+                        provider="openai_httpx", model=self.model,
+                    )
+                if _body_400_sig_retry_msg or _body_400_enc_retry_msg:
+                    _msg = _body_400_sig_retry_msg or _body_400_enc_retry_msg
+                    raise Exception(
+                        f"Unrecoverable body-400 in stream: {_msg[:300]}"
+                    )
 
             except asyncio.CancelledError:
                 # Re-raise cancellation without wrapping
@@ -2194,11 +2218,17 @@ class HTTPXOpenAIClient(LLMClient):
             return None
         code = str(err.get("code", ""))
         msg = str(err.get("message", ""))
+        lowered = msg.lower()
         is_429 = (
             code == "429"
             or "429" in code
-            or "rate" in msg.lower()
-            or "too many requests" in msg.lower()
+            # Concrete rate-limit markers only. A bare "rate" substring also
+            # matched "generate"/"moderate" and sent deterministic upstream
+            # errors into minutes of pointless 429 backoff.
+            or "rate limit" in lowered
+            or "rate_limit" in lowered
+            or "rate-limit" in lowered
+            or "too many requests" in lowered
         )
         return msg if is_429 else None
 

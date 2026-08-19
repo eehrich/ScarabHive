@@ -376,7 +376,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 # Use the actual agent name that was requested (from parameter or config.default_agent)
                 # instead of agent.agent_name which may not exist or be "default"
                 agent_name_used = agent_name  # Already determined from args or config.default_agent at line 172-174
-                llm_profile_used = llm_profile or "normal"
+                llm_profile_used = llm_profile or agent.agent_config.default_llm_profile
 
                 # Save the session
                 success = await session_service.save_session(
@@ -385,7 +385,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     session_id=actual_session_id,
                     agent_name=agent_name_used,
                     llm_profile=llm_profile_used,
-                    was_new_session=was_new_session
+                    was_new_session=was_new_session,
+                    title=session_title
                 )
 
                 if success:
@@ -477,7 +478,9 @@ Examples:
     parser.add_argument(
         "--color",
         choices=["auto", "always", "never", "ansi", "html", "text"],
-        default="always",
+        # Default "auto", not "always": "always" emitted escape sequences into
+        # redirected output (agent_cli.py fixed this first).
+        default="auto",
         help="Output format: auto=ANSI if TTY, always/ansi=ANSI colors, html=HTML, never/text=plain text"
     )
 

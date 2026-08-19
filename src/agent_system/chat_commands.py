@@ -167,4 +167,9 @@ def looks_like_command(text: str) -> bool:
     They are not part of the conversation and would only add noise.
     """
     stripped = text.strip()
+    if "\n" in stripped:
+        # parse_chat_command treats anything multiline as a MESSAGE, never a
+        # command. Mirror that rule -- otherwise a multiline turn whose first
+        # line looks like "/word ..." is hidden by /history and /last.
+        return False
     return bool(stripped) and bool(_COMMAND_WORD.match(stripped.split(" ")[0]))

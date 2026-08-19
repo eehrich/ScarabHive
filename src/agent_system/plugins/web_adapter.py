@@ -331,7 +331,9 @@ class PluginEndpointSecurityEnforcer:
         entries = self._audit_log
         if plugin_name:
             entries = [e for e in entries if e["plugin_name"] == plugin_name]
-        return entries[-limit:]
+        # limit<=0 must mean "nothing", not "everything":
+        # entries[-0:] is the full buffer.
+        return entries[-limit:] if limit > 0 else []
 
 
 # Global plugin endpoint security enforcer

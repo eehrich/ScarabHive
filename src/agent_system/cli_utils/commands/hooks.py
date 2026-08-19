@@ -112,17 +112,19 @@ def _hooks_stats(args: Any) -> None:
                 print(json.dumps(all_stats, indent=2, ensure_ascii=False))
                 return
             
-            # Table output
+            # Table output. Direct key access on purpose: these are the keys
+            # HookRegistry._update_stats writes -- .get() with defaults hid a
+            # long-standing mismatch (the table showed zeros for every hook).
             table_data = []
             for name, stats in all_stats.items():
-                avg_time = f"{stats.get('average_execution_time', 0):.3f}s" if stats.get('execution_count', 0) > 0 else "-"
+                avg_time = f"{stats['avg_time']:.3f}s" if stats['executions'] > 0 else "-"
                 table_data.append([
                     name,
-                    stats.get('execution_count', 0),
-                    stats.get('success_count', 0),
-                    stats.get('error_count', 0),
+                    stats['executions'],
+                    stats['successes'],
+                    stats['failures'],
                     avg_time,
-                    f"{stats.get('total_execution_time', 0):.3f}s"
+                    f"{stats['total_time']:.3f}s"
                 ])
             
             if table_data:
@@ -143,10 +145,10 @@ def _hooks_clear_stats(args: Any) -> None:
         if not info:
             print(json.dumps({"error": f"Hook '{hook_name}' not found"}, ensure_ascii=False))
             return
-        # Note: Registry doesn't have a clear_stats method yet, would need to add it
+        registry.clear_stats(hook_name)
         print(json.dumps({"message": f"Stats cleared for hook: {hook_name}"}, ensure_ascii=False))
     else:
-        # Clear all stats
+        registry.clear_stats()
         print(json.dumps({"message": "All hook statistics cleared"}, ensure_ascii=False))
 
 

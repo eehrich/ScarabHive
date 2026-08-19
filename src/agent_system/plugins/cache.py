@@ -14,6 +14,25 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def default_cache_root() -> Path:
+    """The shared plugin cache root: ``<project>/data/cache``.
+
+    Single source of truth -- cache_manager.py used to re-derive this path
+    (differently: ``.cache``, from cwd) and never found the real cache.
+    Anchored at this file, not cwd, so CLI results don't depend on where
+    the command was started.
+    """
+    project_root = Path(__file__).resolve()
+    while project_root.parent != project_root:
+        if (project_root / "pyproject.toml").exists():
+            break
+        project_root = project_root.parent
+    else:
+        # Fallback to current working directory
+        project_root = Path.cwd()
+    return project_root / "data" / "cache"
+
+
 class PluginCache:
     """File-based cache with TTL support for plugins."""
     
@@ -31,19 +50,8 @@ class PluginCache:
         
         # Set up cache directory
         if cache_dir is None:
-            # Find project root by looking for pyproject.toml
-            current_path = Path(__file__).resolve()
-            project_root = current_path
-            while project_root.parent != project_root:
-                if (project_root / "pyproject.toml").exists():
-                    break
-                project_root = project_root.parent
-            else:
-                # Fallback to current working directory
-                project_root = Path.cwd()
-            
-            cache_dir = project_root / "data" / "cache"
-        
+            cache_dir = default_cache_root()
+
         self.cache_dir = cache_dir / plugin_name
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         

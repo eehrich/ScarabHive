@@ -535,6 +535,10 @@ class HookRegistry:
             agent=context.agent,  # Reference copy
             agent_name=context.agent_name,
             messages=copy.deepcopy(context.messages) if context.messages else None,
+            # Reference copy on purpose (read-only for hooks). Omitting it
+            # dropped the per-request schema for EVERY hook, which silently
+            # pushed consumers onto the shared, racy agent._current_tools_schema.
+            tools_schema=context.tools_schema,
             llm_response=copy.deepcopy(context.llm_response) if context.llm_response else None,
             tool_call=copy.deepcopy(context.tool_call) if context.tool_call else None,
             tool_result=copy.deepcopy(context.tool_result) if context.tool_result else None,
@@ -714,7 +718,7 @@ class HookRegistry:
         stats["total_time"] += exec_time
         stats["avg_time"] = stats["total_time"] / stats["executions"]
 
-    def get_stats(self, hook_name: Optional[str] = None) -> Dict[str, Any]:
+    def get_stats(self, hook_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Get execution statistics.
 
@@ -722,11 +726,27 @@ class HookRegistry:
             hook_name: Optional hook name to get stats for (None = all hooks)
 
         Returns:
-            Statistics dictionary
+            Statistics dictionary; for a named hook ``{}`` if it is registered
+            but never ran, ``None`` if no such hook exists (callers in app.py
+            and cli_utils check ``is None`` -- an unconditional ``{}`` made
+            their not-found branches dead code).
         """
         if hook_name:
-            return dict(self._stats.get(hook_name, {}))
+            if hook_name in self._stats:
+                return dict(self._stats[hook_name])
+            if any(hook_name == name
+                   for hooks in self._hooks.values()
+                   for name, _, _, _ in hooks):
+                return {}
+            return None
         return {name: dict(stats) for name, stats in self._stats.items()}
+
+    def clear_stats(self, hook_name: Optional[str] = None) -> None:
+        """Drop execution statistics (all hooks, or a single named one)."""
+        if hook_name is None:
+            self._stats.clear()
+        else:
+            self._stats.pop(hook_name, None)
 
     def list_hooks(self, hook_type: Optional[HookType] = None) -> Dict[str, List[str]]:
         """

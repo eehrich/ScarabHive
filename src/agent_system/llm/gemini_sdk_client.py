@@ -80,6 +80,7 @@ class GeminiSDKClient(LLMClient):
         thinking_budget: int | None = None,
         thinking_level: str | None = None,
         safety_settings: dict[str, str] | None = None,
+        capabilities=None,
         **extra_params
     ):
         """Initialize Gemini SDK client.
@@ -102,6 +103,9 @@ class GeminiSDKClient(LLMClient):
         """
         self.model = model
         self.model_name = model  # For token tracking compatibility
+        # Explicit named param on purpose: **extra_params feeds the generation
+        # config, a capabilities kwarg must never end up there.
+        self.capabilities = capabilities
         self.api_key = api_key
         self.context_window = context_window
         self.request_timeout = request_timeout
@@ -624,6 +628,11 @@ class GeminiSDKClient(LLMClient):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
             
+            # Per-attempt flag: a stale True from an earlier attempt made the
+            # MAX_TOKENS check throw away good follow-up answers and re-request.
+            # (got_malformed_function_call stays sticky on purpose -- mode=ANY.)
+            hit_max_tokens = False
+
             # On retry after MALFORMED_FUNCTION_CALL, force function calling with mode=ANY
             # This helps the model generate proper JSON instead of Python code
             force_any_mode = attempt > 0 and got_malformed_function_call
@@ -1472,7 +1481,12 @@ class GeminiSDKClient(LLMClient):
         return result["assistant"]["content"]
 
     def supports_streaming(self) -> bool:
-        """GeminiSDKClient supports true streaming."""
+        """Streaming unless the model's capabilities explicitly disable it."""
+        if self.capabilities is not None:
+            if isinstance(self.capabilities, dict):
+                return self.capabilities.get("streaming", True)
+            if hasattr(self.capabilities, "streaming"):
+                return self.capabilities.streaming
         return True
 
 

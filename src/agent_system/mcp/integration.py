@@ -216,6 +216,10 @@ class MCPIntegration:
         """
         logging.getLogger(__name__).debug("MCPIntegration.shutdown() called")
         await self.plugin_registry.shutdown_all()
+        # A shut-down integration must not claim to be initialized -- the
+        # agent-side setup uses this flag to decide whether a (re-)initialize
+        # is needed.
+        self.initialized = False
         logging.getLogger(__name__).debug("MCPIntegration.shutdown() completed")
         logger.info("MCP integration shut down")
 
@@ -349,7 +353,11 @@ class MCPIntegration:
 
     async def register_plugin(self, name: str, config: Optional[AgentSystemConfig] = None) -> None:
         """Register a plugin as an MCP server"""
-        await self.plugin_registry.register_plugin(name, config)
+        # The AgentSystemConfig is the PARENT config; the second positional
+        # slot of the registry is the plugin's own config dict. Passing the
+        # system config there scattered its top-level fields into the
+        # MCPConfig as extras and left the real system_config empty.
+        await self.plugin_registry.register_plugin(name, None, parent_config=config)
 
 
     async def unregister_plugin(self, name: str) -> None:

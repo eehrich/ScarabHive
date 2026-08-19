@@ -935,15 +935,29 @@ class SessionManager:
                                 raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
                             actual_owner_found = True
                             break
-                        except (FileNotFoundError, json.JSONDecodeError):
+                        except (SessionNotFoundError, ValueError, OSError):
+                            # _read_session_file converts JSONDecodeError to
+                            # ValueError and missing files to
+                            # SessionNotFoundError -- the old clause caught
+                            # exactly the two types that never arrive here.
                             continue
             
             if not actual_owner_found:
                 if not path.exists():
                     raise SessionNotFoundError(f"Session {session_id} not found")
             
-            # At this point, path exists and user owns it
-            session_data = await self._read_session_file_async(path)
+            # At this point, path exists and user owns it. Best-effort read:
+            # the content is only needed for the index partition and the
+            # backup -- a corrupt file must still be DELETABLE, otherwise the
+            # API can never get rid of it.
+            try:
+                session_data = await self._read_session_file_async(path)
+            except (SessionNotFoundError, ValueError, OSError) as e:
+                logger.warning(
+                    "Deleting session %s despite unreadable file (%s)",
+                    session_id, e,
+                )
+                session_data = {}
             
             # Create backup if requested
             if create_backup:

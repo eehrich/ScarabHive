@@ -4,23 +4,19 @@ import uuid
 # typing imports omitted - keep this module tiny
 
 
-def short_id(length: int = 12) -> str:
-    """Return a short unique id.
+def short_id(length: int = 10) -> str:
+    """Return a short unique base36 id of the requested length (default 10).
 
-    Defaults to 12 hex characters (48 bits). This is compact and still reasonably collision-resistant
-    for typical local development and debugging use-cases.
+    The length argument used to be ignored for every value <= 12 -- all
+    callers got 10 chars regardless (json_store sized its collision loop
+    against an 8-char space that never existed; sub_agent_manager asked for
+    6 and got 10). Default stays at 10 chars, the shape every default caller
+    has always received.
     """
-    # Default to base36 representation for shorter readable ids
-    # Map the requested hex-length to a base36 length approximately
-    # If caller provided a length <= 12, use base36 with proportionally smaller length
-    # Convert requested length (hex chars) to approximate base36 chars
-    # 1 hex char ~ 4 bits, 1 base36 char ~ log2(36)=~5.17 bits -> base36 shorter
-    # We'll default to 10 base36 chars for reasonable compactness unless overridden
     if length <= 12:
-        return short_id_base36(10)
-    # Fallback: return hex slice
-    h = uuid.uuid4().hex
-    return h[:length]
+        return short_id_base36(length)
+    # Long ids: hex slice keeps the full requested length
+    return uuid.uuid4().hex[:length]
 
 
 def short_id_base36(length: int = 10) -> str:

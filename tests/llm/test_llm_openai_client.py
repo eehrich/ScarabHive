@@ -442,21 +442,24 @@ class TestOpenAIClientRetryExhaustion:
     """Test retry exhaustion handling."""
 
     @pytest.mark.asyncio
-    async def test_chat_retry_exhaustion_none_response(self, openai_client):
-        """Test that exhausted retries return error payload instead of AttributeError."""
+    async def test_chat_retry_exhaustion_raises_typed_error(self, openai_client):
+        """Exhausted 429 retries raise LLMRateLimitError (mirrors
+        _chat_tools_chat_completions). The old contract returned an error
+        string AS the answer, so callers could never trigger a fallback
+        profile -- and the loop even slept a full backoff after the LAST
+        attempt with no request following it."""
         client, mock_instance = openai_client
-        
-        # Configure client with limited retries
-        client.max_attempts = 2
-        
+
         from openai import RateLimitError
-        
+
+        from agent_system.llm.models import LLMRateLimitError
+
         # Mock asyncio.sleep to avoid delays
         with patch('asyncio.sleep', new_callable=AsyncMock):
             # Mock error response
             error_response = MagicMock()
             error_response.status_code = 429
-            
+
             # All attempts fail
             mock_chat = MagicMock()
             mock_chat.completions = MagicMock()
@@ -464,20 +467,11 @@ class TestOpenAIClientRetryExhaustion:
                 side_effect=RateLimitError("Rate limit", response=error_response, body=None)
             )
             mock_instance.chat = mock_chat
-            
+
             messages = [ChatMessage(role="user", content="Test")]
-            
-            # Should return error payload JSON, not raise AttributeError
-            result = await client.chat(messages)
-            
-            # Verify result is error JSON
-            import json
-            error_data = json.loads(result)
-            assert "_llm_error" in error_data
-            assert error_data["_llm_error"]["error"] is True
-            # The test verifies that we get a proper error message, not AttributeError
-            assert "failed after" in error_data["_llm_error"]["message"]
-            assert "attempts" in error_data["_llm_error"]["message"]
+
+            with pytest.raises(LLMRateLimitError):
+                await client.chat(messages)
 
     @pytest.mark.asyncio
     async def test_chat_tools_retry_exhaustion_none_response(self, openai_client):

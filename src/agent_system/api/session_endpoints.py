@@ -195,9 +195,11 @@ async def list_sessions(
     try:
         sessions = await session_manager.list_sessions(user_id)
 
-        # Filter out sub-agent sessions (they have parent_session field)
-        # Sub-agent sessions should only be visible under their parent, not in the main list
-        top_level_sessions = [s for s in sessions if "parent_session" not in s]
+        # Filter out sub-agent sessions (parent_session holds a truthy value).
+        # Every index entry carries the KEY (None for top-level sessions), so
+        # checking key existence filtered out everything -- the endpoint
+        # returned a constant [].
+        top_level_sessions = [s for s in sessions if not s.get("parent_session")]
 
         # Transform to response models
         return [

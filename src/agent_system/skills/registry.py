@@ -249,6 +249,15 @@ def _parse_frontmatter(skill_dir: Path) -> Optional[Skill]:
 
     front, body = split_frontmatter(text)
     if front is None:
+        if _FRONTMATTER_RE.match(text):
+            # A fence is there but the YAML is broken or not a mapping --
+            # without this warning the skill would vanish without a trace.
+            logger.warning(
+                "Skipping skill at %s: %s has a frontmatter fence but its "
+                "YAML does not parse to a mapping - fix the header to make "
+                "it discoverable",
+                skill_dir, DEFAULT_ENTRY,
+            )
         return None
 
     name = _clean_name(str(front.get("name") or ""), skill_dir)

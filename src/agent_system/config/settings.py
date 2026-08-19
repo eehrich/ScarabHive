@@ -235,9 +235,6 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                         # mcp_servers.yaml uses "external_servers" key
                         data["external_servers"] = part["external_servers"]
                     
-                    if "agents" in part:
-                        data["agents"] = part["agents"]
-                        
                 except yaml.YAMLError as e:
                     # Log YAML syntax errors and continue (allows other configs to load)
                     logger.error(f"YAML syntax error in included config '{inc_path}': {e}")

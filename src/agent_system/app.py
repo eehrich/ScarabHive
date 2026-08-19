@@ -57,7 +57,8 @@ _session_service: Optional[Any] = None  # SessionService, imported at runtime to
 # Owner is core.request_context (usable from agent layer without upward import);
 # re-exported here under the historical name for existing importers.
 from .core.request_context import (  # noqa: E402
-    request_user_map as _request_user_map,
+    register_request_user,
+    request_user_map as _request_user_map,  # noqa: F401 - re-export for tests/importers
     release_request_user_tree,
 )
 
@@ -360,7 +361,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Must be done AFTER bootstrap_servers() in initialize_mcp() created agents
             _initialization_service.initialize_for_api(
                 plugin_registry=mcp_integration.plugin_registry,
-                skip_bootstrap=True  # Already done by initialize_mcp
             )
 
             # Store session manager in app state for dependency injection (after initialization)
@@ -940,16 +940,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             except Exception as e:
                 logger.error(f"Failed to create default admin user: {e}")
 
-        # Configure CORS if enabled
-        if config.auth.cors_enabled:
-            configure_cors(
-                app,
-                allow_origins=config.auth.cors_origins,
-                allow_credentials=config.auth.cors_credentials,
-                allow_methods=config.auth.cors_methods,
-                allow_headers=config.auth.cors_headers,
-            )
-
         # Configure security middleware
         configure_security_middleware(
             app,
@@ -960,6 +950,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             trusted_hosts=config.auth.trusted_hosts,
             audit_enabled=config.auth.endpoint_security.audit_enabled,
         )
+
+        # Configure CORS if enabled. Registered AFTER the security middleware
+        # on purpose: add_middleware prepends, so the last registration is the
+        # OUTERMOST layer. CORS must wrap the security stack — otherwise
+        # browser preflights (OPTIONS without Authorization) die with a 401
+        # inside EndpointSecurityMiddleware and 401/403 responses carry no
+        # CORS headers, which browsers report as an opaque "CORS error".
+        if config.auth.cors_enabled:
+            configure_cors(
+                app,
+                allow_origins=config.auth.cors_origins,
+                allow_credentials=config.auth.cors_credentials,
+                allow_methods=config.auth.cors_methods,
+                allow_headers=config.auth.cors_headers,
+            )
 
         # Include auth and admin routers
         from .api.auth_endpoints import router as auth_router
@@ -1146,6 +1151,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         "the agent yaml filename) and that the plugin is loaded."
                     ),
                 )
+            except HTTPException:
+                # The deliberate 400 ("'x' is not an agent") must keep its
+                # status — the generic handler below turned it into a 500.
+                raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
 
@@ -1532,9 +1541,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                    task, len(upload_files), request_id, session_id, agent_name or "default", 
                    llm_profile or "default", user_id)
 
-        # Register request ownership for status stream security
-        _request_user_map[request_id] = user_id
-
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
@@ -1579,6 +1585,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not upload_files:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
+
+            # Register request ownership for status stream security -- AFTER
+            # all validations and right before the try whose finally releases
+            # it. Registered earlier, every 4xx above leaked the entry.
+            register_request_user(request_id, user_id)
 
             try:
                 # Pass LLM override to collect_final_result
@@ -1640,7 +1651,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         audio_paths = []
         text_paths = []
         temp_files = []
-        
+        temp_dir = None
+        # Once the SSE generator is returned, ITS finally owns the cleanup.
+        # Until then every error path (400 capability check, write failure,
+        # processing error) must clean up here — see the outer finally.
+        stream_owns_cleanup = False
+
+        # Ownership registration inside the try/finally pairing (see the
+        # text-only branch for the rationale).
+        register_request_user(request_id, user_id)
+
         try:
             temp_dir = Path(tempfile.mkdtemp())
 
@@ -1785,12 +1805,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             temp_file.unlink()
                         except Exception as e:
                             logger.warning("Failed to delete temp file %s: %s", temp_file, e)
-                    if temp_files:
-                        try:
-                            temp_dir.rmdir()
-                        except Exception as e:
-                            logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
+                    try:
+                        temp_dir.rmdir()
+                    except Exception as e:
+                        logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
+            stream_owns_cleanup = True
             return StreamingResponse(event_stream(), media_type="text/event-stream")
 
         except HTTPException:
@@ -1798,6 +1818,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.exception("Unexpected error in /run: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            if not stream_owns_cleanup:
+                # The generator was never handed to the client — uploads and
+                # the ownership entry would leak on this error path.
+                release_request_user_tree(request_id)
+                for temp_file in temp_files:
+                    try:
+                        temp_file.unlink()
+                    except Exception as e:
+                        logger.warning("Failed to delete temp file %s: %s", temp_file, e)
+                if temp_dir is not None:
+                    try:
+                        temp_dir.rmdir()
+                    except Exception as e:
+                        logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
     async def _handle_events(
         request: Request,
@@ -1842,7 +1877,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             request_id = short_id()
             
         # Register request ownership for status stream security
-        _request_user_map[request_id] = user_id
+        # (register_request_user, not a raw dict write -- keeps the FIFO cap)
+        register_request_user(request_id, user_id)
 
         logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s, reconnect=%s",
                    task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id, existing_job is not None)
@@ -2047,7 +2083,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                         selected_agent._session_tracker.set_session_metadata(actual_session_id, {
                             "user_id": user_id,
-                            "agent_name": agent_name or "default",
+                            # The real agent name, never the literal "default" —
+                            # a later append persists this field to disk and the
+                            # session UI resolves it against the registry.
+                            "agent_name": selected_agent.name,
                             "llm_profile": effective_llm_profile
                         })
 
@@ -2501,9 +2540,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             actions['summarizer'] = False  # Not applicable with hook-based management
 
             return {"status": "ok", "session_id": session_id, "actions": actions}
+        except HTTPException:
+            # Client errors (404 unknown session) must keep their status —
+            # the generic handler below turned them into 500s.
+            raise
         except Exception as e:
             logger.exception("force_optimize_session failed for %s: %s", session_id, e)
-            from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/sessions/force_optimize")

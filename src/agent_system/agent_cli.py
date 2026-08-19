@@ -395,7 +395,7 @@ def main() -> None:
         pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
-    known = ("plugins", "mcp", "hooks", "run", "chat", "status", "users", "reload", "-h", "--help")
+    known = ("plugins", "mcp", "hooks", "run", "chat", "users", "reload", "-h", "--help")
     if rest:
         if not rest[0].startswith("-") and rest[0] not in known:
             rest.insert(0, "run")
@@ -569,7 +569,9 @@ def main() -> None:
     hooks_parser = subparsers.add_parser("hooks", help="Hook introspection and debugging")
     hooks_parser.add_argument("action", choices=["list", "inspect", "stats", "clear-stats"], nargs="?", default="list", help="Action to perform")
     hooks_parser.add_argument("name", nargs="?", help="Hook name for 'inspect' action")
-    hooks_parser.add_argument("--type", dest="hook_type", help="Filter by hook type (e.g., PRE_LLM_CALL, POST_LLM_CALL)")
+    from agent_system.hooks import HookType as _HookType
+    hooks_parser.add_argument("--type", dest="hook_type", choices=[t.value for t in _HookType],
+                              help="Filter by hook type (e.g., pre_llm_call, post_llm_call)")
     hooks_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format")
 
     # users subcommand for user management
@@ -1684,8 +1686,12 @@ def main() -> None:
                         except Exception as e:
                             logger.debug(f"Failed to get status event from queue: {e}")
                             break
-                        # Reuse the same display logic as _status_subscriber
+                        # Reuse the same display logic as _status_subscriber —
+                        # including the enum normalization: the raw StatusPhase
+                        # enum printed as "[StatusPhase.END]" and never matched
+                        # the color map.
                         phase = getattr(event, "phase", "progress")
+                        phase = phase.value if hasattr(phase, "value") else str(phase)
                         phase_disp = phase
                         if _supports_color():
                             phase_color_map = {
@@ -1842,7 +1848,7 @@ def main() -> None:
                 # Use the actual agent name that was requested (entry_name from args)
                 # instead of agent.agent_name which may not exist or be "default"
                 agent_name_used = entry_name  # The agent name determined from args.agent_override or config.default_agent
-                llm_profile_used = getattr(args, "llm_profile_override", None) or "normal"
+                llm_profile_used = getattr(args, "llm_profile_override", None) or agent.agent_config.default_llm_profile
 
                 # Save the session
                 success = await session_service.save_session(
@@ -1851,7 +1857,8 @@ def main() -> None:
                     session_id=actual_session_id,
                     agent_name=agent_name_used,
                     llm_profile=llm_profile_used,
-                    was_new_session=was_new_session
+                    was_new_session=was_new_session,
+                    title=getattr(args, "session_title", None)
                 )
 
                 if success:

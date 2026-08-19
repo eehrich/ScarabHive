@@ -551,3 +551,62 @@ class TestListMergeSyntax:
         
         # llm_profile should be overridden
         assert result["agent_config"]["llm_profile"] == "gemini-pro-batch"
+
+
+class TestToolListInheritance:
+    """Regression: absent tools keys in a child must not wipe parent lists.
+
+    ToolConfig.__init__ used to inject allowed/blocked into the pydantic
+    field set even when the YAML never mentioned them; exclude_unset in
+    _resolve_server_inheritance then exported phantom empty lists which
+    _merge_lists_with_syntax treats as a full replacement of the parent list.
+    """
+
+    def _config(self) -> AgentSystemConfig:
+        # model_validate on plain dicts mirrors the YAML production path --
+        # building ToolConfig objects by hand would sidestep the bug.
+        return AgentSystemConfig.model_validate({
+            "plugins": {
+                "plugin_dirs": ["src/plugins"],
+                "default_config": {"type": "basic_agent", "enabled": False},
+                "servers": {
+                    "parent_x": {
+                        "type": "basic_agent",
+                        "enabled": True,
+                        "agent_config": {
+                            "tools": {"allowed": ["tool_a/*"], "blocked": ["danger/*"]},
+                        },
+                    },
+                    "child_x": {
+                        "type": "parent_x",
+                        "enabled": True,
+                        "agent_config": {"tools": {"allowed": ["+tool_b/*"]}},
+                    },
+                    "child_y": {
+                        "type": "parent_x",
+                        "enabled": True,
+                        "agent_config": {"tools": {"blocked": ["+more/*"]}},
+                    },
+                },
+            },
+        })
+
+    def test_child_setting_only_allowed_keeps_parent_blocked(self):
+        result = get_mcp_config_by_name("child_x", self._config())
+        tools = result.agent_config.tools
+        assert tools.allowed == ["tool_a/*", "tool_b/*"]
+        assert tools.blocked == ["danger/*"], "parent blocked list was wiped"
+
+    def test_child_setting_only_blocked_keeps_parent_allowed(self):
+        result = get_mcp_config_by_name("child_y", self._config())
+        tools = result.agent_config.tools
+        assert tools.allowed == ["tool_a/*"], "parent allowed list was wiped"
+        assert tools.blocked == ["danger/*", "more/*"]
+
+    def test_explicit_none_is_still_normalized_to_empty_list(self):
+        from agent_system.config.models import ToolConfig
+
+        tc = ToolConfig.model_validate({"allowed": None})
+        assert tc.allowed == []
+        tc2 = ToolConfig(allowed=None, blocked=None)
+        assert tc2.allowed == [] and tc2.blocked == []

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, Any
 import asyncio
+import json
 import time as _time
 from ..utils.id import short_id
 
@@ -321,13 +322,9 @@ class OllamaNativeAsyncClient(LLMClient):
                                 continue
 
                             try:
-                                chunk_data = response.json() if hasattr(line, 'json') else self._httpx.json.loads(line)
-                            except Exception:
-                                import json
-                                try:
-                                    chunk_data = json.loads(line)
-                                except Exception:
-                                    continue
+                                chunk_data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
 
                             # Check if stream is done - final chunk may contain usage info
                             if chunk_data.get("done"):
@@ -371,14 +368,17 @@ class OllamaNativeAsyncClient(LLMClient):
                                             "id": tc_id,
                                             "type": "function",
                                             "function": {"name": name, "arguments": func.get("arguments", {})}
-                                    }
+                                        }
 
-                                yield {
-                                    "type": "tool_call_delta",
-                                    "index": index,
-                                    "delta": tc,
-                                    "accumulated": accumulated_tool_calls[index]
-                                }
+                                    # Inside the for loop: one delta PER tool
+                                    # call -- outside it, only the last of a
+                                    # multi-call chunk was ever emitted.
+                                    yield {
+                                        "type": "tool_call_delta",
+                                        "index": index,
+                                        "delta": tc,
+                                        "accumulated": accumulated_tool_calls[index]
+                                    }
 
                 # Build final assistant message (after async with block)
                 assistant = {

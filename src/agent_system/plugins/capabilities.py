@@ -105,6 +105,13 @@ def on_tool_catalog_changed(callback: Callable[[], Any]) -> None:
         _invalidation_callbacks.append(callback)
 
 
+#: Strong references to in-flight invalidation tasks. The event loop only
+#: keeps a weak reference to tasks -- without this set a scheduled
+#: invalidation could be garbage-collected before it ran, leaving the tool
+#: cache stale (exactly the bug this module exists to prevent).
+_pending_invalidations: set = set()
+
+
 def notify_tool_catalog_changed() -> None:
     """Tell every listener that the tool catalog changed.
 
@@ -113,15 +120,37 @@ def notify_tool_catalog_changed() -> None:
     on the running loop; with no loop running it is run to completion. A failing
     listener is logged, never raised -- this is a notification, not a
     transaction.
+
+    Note: from async code the invalidation runs at least one loop iteration
+    LATER -- a read immediately after this call may still see the old cache.
+    Async callers that need the invalidation to have happened use
+    :func:`anotify_tool_catalog_changed`.
     """
     for callback in list(_invalidation_callbacks):
         try:
             result = callback()
             if inspect.isawaitable(result):
                 try:
-                    asyncio.get_running_loop().create_task(_await_quietly(result))
+                    task = asyncio.get_running_loop().create_task(_await_quietly(result))
+                    _pending_invalidations.add(task)
+                    task.add_done_callback(_pending_invalidations.discard)
                 except RuntimeError:
                     asyncio.run(_await_quietly(result))
+        except Exception as e:
+            logger.debug("Tool-catalog invalidation callback failed: %s", e)
+
+
+async def anotify_tool_catalog_changed() -> None:
+    """Async variant: awaits every listener before returning.
+
+    Use from async code when the caller must observe the invalidated state
+    right after the call (e.g. connect() followed by list_all_tools()).
+    """
+    for callback in list(_invalidation_callbacks):
+        try:
+            result = callback()
+            if inspect.isawaitable(result):
+                await _await_quietly(result)
         except Exception as e:
             logger.debug("Tool-catalog invalidation callback failed: %s", e)
 

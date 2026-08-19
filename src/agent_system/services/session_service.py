@@ -217,7 +217,8 @@ class SessionService:
         session_id: str,
         agent_name: str,
         llm_profile: str,
-        was_new_session: bool
+        was_new_session: bool,
+        title: Optional[str] = None
     ) -> bool:
         """
         Save or update a session to storage.
@@ -229,6 +230,7 @@ class SessionService:
             agent_name: Name of the agent used
             llm_profile: LLM profile used
             was_new_session: True if this is a new session (create), False for update
+            title: Explicit session title (overrides the auto-extracted one)
 
         Returns:
             True if save was successful, False otherwise
@@ -262,8 +264,9 @@ class SessionService:
                 
                 messages_dicts.append(msg_dict)
 
-            # Determine title from first user message
-            title = self._extract_session_title(messages_dicts)
+            # Explicit title wins; otherwise derive it from the first user message
+            explicit_title = title
+            title = explicit_title or self._extract_session_title(messages_dicts)
 
             # Check if session already exists and find its owner
             # This is critical for sub-agent sessions which may have different user_ids
@@ -304,10 +307,13 @@ class SessionService:
                 # Load existing session, preserving parent_session, depth, context_vars, etc.
                 session_data = await self.session_manager.load_session(actual_user_id, session_id)
                 session_data["messages"] = messages_dicts
-                # Only update title if it's still the default auto-generated title
-                extracted_title = self._extract_session_title(messages_dicts)
-                if session_data.get("title") == extracted_title or not session_data.get("title"):
-                    session_data["title"] = extracted_title
+                if explicit_title:
+                    session_data["title"] = explicit_title
+                else:
+                    # Only update title if it's still the default auto-generated title
+                    extracted_title = self._extract_session_title(messages_dicts)
+                    if session_data.get("title") == extracted_title or not session_data.get("title"):
+                        session_data["title"] = extracted_title
                 # CRITICAL: Always update agent_name and llm_profile from current request
                 session_data["agent_name"] = agent_name
                 session_data["llm_profile"] = llm_profile

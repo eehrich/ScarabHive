@@ -355,7 +355,8 @@ class ToolExecutionManager:
                     tool_specific_request_id = None
 
                 task = asyncio.create_task(
-                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id, session_id, user_id)
+                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id, session_id, user_id,
+                                              main_request_id=original_request_id)
                 )
                 tasks.append(task)
                 task_tool_info[task] = (tc, tool_name, openai_tool_name)
@@ -472,11 +473,13 @@ class ToolExecutionManager:
 
     async def _execute_single_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None,
-                                 session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 session_id: str | None = None, user_id: str | None = None,
+                                 main_request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a single tool and return the result message, events, and results."""
         # Use cancellation system if request_id is available
         if request_id:
-            return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
+            return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id,
+                                                         main_request_id=main_request_id)
         else:
             # Legacy execution without cancellation - wrap in try/except for robustness
             try:
@@ -503,17 +506,22 @@ class ToolExecutionManager:
 
     async def _execute_with_cancellation(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                        params: Dict[str, Any], step: int, request_id: str,
-                                       session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                       session_id: str | None = None, user_id: str | None = None,
+                                       main_request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute tool with cancellation support."""
         cancellation_manager = get_cancellation_manager()
 
-        # Check if already cancelled (main request token)
-        main_token = cancellation_manager.get_token(request_id)
+        # Check if already cancelled. The MAIN request token lives under the
+        # ROOT request id -- `request_id` here is the per-tool suffix id
+        # ('abc123_007'), under which no token exists. Looking it up there
+        # made this guard (and the propagation below) dead code: a request
+        # cancelled during the LLM call still started every tool of the step.
+        main_token = cancellation_manager.get_token(main_request_id or request_id)
         if main_token and main_token.is_cancelled:
-            logger.info("Tool %s cancelled before execution (main request %s already cancelled)", tool_name, request_id)
+            logger.info("Tool %s cancelled before execution (main request %s already cancelled)", tool_name, main_request_id or request_id)
             return self._create_cancelled_response(tc, tool_name, openai_tool_name, request_id, forced=main_token.is_forced)
         elif not main_token:
-            logger.debug("No main token found for request %s when starting tool %s", request_id, tool_name)
+            logger.debug("No main token found for request %s when starting tool %s", main_request_id or request_id, tool_name)
 
         # Create tool-specific request ID for tool-level cancellation
         tool_request_id = f"{request_id}_{step:03d}"
@@ -604,13 +612,11 @@ class ToolExecutionManager:
         """Execute an external MCP tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
 
-        # Inject session context into params for external tools
-        if session_id or user_id:
-            params = params.copy()
-            if session_id:
-                params["_session_id"] = session_id
-            if user_id:
-                params["_user_id"] = user_id
+        # NOTE: no session-context injection here. External servers are
+        # foreign processes -- internal runtime keys (_session_id/_user_id)
+        # must not leave the process. The old injection block was dead code
+        # anyway: _make_params_serializable strips every "_"-prefixed key
+        # before the call, so the values never reached the server.
 
         # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
