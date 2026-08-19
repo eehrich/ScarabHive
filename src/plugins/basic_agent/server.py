@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Any, Optional
 
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
-from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.llm.factory import create_llm_from_profile
 

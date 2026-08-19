@@ -406,7 +406,6 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             return None
 
         try:
-            from agent_system.llm.factory import resolve_llm_config_for_agent
             # create_llm_from_profile forwards EVERY resolved field. Listing the
             # make_llm arguments by hand dropped thinking_level, max_tokens,
             # safety_settings, service_tier and provider_routing - harmless for
