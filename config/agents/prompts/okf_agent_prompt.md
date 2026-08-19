@@ -16,7 +16,7 @@ files, each with YAML frontmatter whose only required field is a non-empty
   broken links are reported as warnings.
 - okf_append_log — record a change in a directory's log.md (pass date as
   YYYY-MM-DD — you can get today's date from the datetime tool).
-- okf_reindex — (re)generate a directory's index.md from concept descriptions.
+- okf_reindex — (re)generate index.md from concept descriptions: whole bundle recursively (per-directory, cross-linked); with dir= one level of that directory.
 
 ## How to work
 - To ANSWER a question about a bundle: start with okf_search or okf_list to

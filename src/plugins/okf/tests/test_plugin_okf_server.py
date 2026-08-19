@@ -265,6 +265,68 @@ class TestLogAndIndex:
         assert "**Creation**: Added orders." in log
 
     @pytest.mark.asyncio
+    async def test_root_reindex_recurses_and_cross_links(self, server, bundle):
+        """Ohne dir: JEDES Verzeichnis bekommt sein index.md, und die Wurzel
+        verlinkt die Kind-Indizes mit Teilbaum-Zahl — vorher las sich ein in
+        Ordner organisiertes Bundle an der Wurzel wie eine leere Bibliothek."""
+        res = await server.reindex({"bundle": str(bundle)})
+        assert res["status"] == "ok"
+        assert res["entries"] == 2
+        assert res["indexes"] == 2
+
+        root_idx = (bundle / "index.md").read_text(encoding="utf-8")
+        assert "[tables](/tables/index.md) - 2 concept(s)" in root_idx
+
+        sub_idx = (bundle / "tables" / "index.md").read_text(encoding="utf-8")
+        assert "[orders](/tables/orders.md)" in sub_idx
+        assert "One row per completed order." in sub_idx
+
+    @pytest.mark.asyncio
+    async def test_root_reindex_handles_deep_nesting(self, server, tmp_path):
+        """a/b/c.md: auch die Zwischenebene (a) ohne direkte Konzepte bekommt
+        ein index.md, das auf a/b weiterverlinkt — die Kette reisst nicht."""
+        root = tmp_path / "deep"
+        (root / "a" / "b").mkdir(parents=True)
+        (root / "a" / "b" / "c.md").write_text(
+            "---\ntype: note\ndescription: deep leaf\n---\n\nx\n",
+            encoding="utf-8")
+        (root / "top.md").write_text(
+            "---\ntype: note\ndescription: top leaf\n---\n\ny\n",
+            encoding="utf-8")
+
+        res = await server.reindex({"bundle": str(root)})
+        assert res["entries"] == 2
+        assert res["indexes"] == 3  # "", "a", "a/b"
+
+        root_idx = (root / "index.md").read_text(encoding="utf-8")
+        assert "[top](/top.md)" in root_idx
+        assert "[a](/a/index.md) - 1 concept(s)" in root_idx
+        mid_idx = (root / "a" / "index.md").read_text(encoding="utf-8")
+        assert "[b](/a/b/index.md) - 1 concept(s)" in mid_idx
+        leaf_idx = (root / "a" / "b" / "index.md").read_text(encoding="utf-8")
+        assert "[c](/a/b/c.md) - deep leaf" in leaf_idx
+
+    @pytest.mark.asyncio
+    async def test_dir_reindex_keeps_single_level_semantics(self, server, tmp_path):
+        """Mit dir bleibt das historische Verhalten: eine Ebene, KEINE
+        Kind-Index-Links, keine Indizes in Untertiefen."""
+        root = tmp_path / "single"
+        (root / "t" / "deep").mkdir(parents=True)
+        (root / "t" / "x.md").write_text(
+            "---\ntype: note\ndescription: shallow\n---\n\nx\n",
+            encoding="utf-8")
+        (root / "t" / "deep" / "y.md").write_text(
+            "---\ntype: note\ndescription: hidden\n---\n\ny\n",
+            encoding="utf-8")
+
+        res = await server.reindex({"bundle": str(root), "dir": "/t"})
+        assert res["entries"] == 1
+        idx = (root / "t" / "index.md").read_text(encoding="utf-8")
+        assert "[x](/t/x.md)" in idx
+        assert "index.md" not in idx.replace("(/t/x.md)", "")
+        assert not (root / "t" / "deep" / "index.md").exists()
+
+    @pytest.mark.asyncio
     async def test_reindex(self, server, bundle):
         res = await server.reindex({"bundle": str(bundle), "dir": "/tables"})
         assert res["status"] == "ok"

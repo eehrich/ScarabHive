@@ -417,6 +417,10 @@ def render_index(entries: List[Tuple[str, Optional[str]]],
     lines = [f"# {heading}", ""]
     for target, desc in entries:
         name = PurePosixPath(target).stem
+        if name == "index":
+            # A link to a child directory's index.md reads by the directory
+            # name ("buecher"), not as a wall of identical "index" links.
+            name = PurePosixPath(target).parent.name or "index"
         if desc:
             lines.append(f"* [{name}]({target}) - {desc}")
         else:

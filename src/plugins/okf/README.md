@@ -35,7 +35,7 @@ any other consumer (verified: this plugin validates & traverses Google's real
 | `okf_subgraph` | BFS concepts reachable from seed(s) within N hops |
 | `okf_search` | Lexical relevance ranking over a bundle |
 | `okf_append_log` | `log.md` entry (ISO date heading, time-stamped, newest first) |
-| `okf_reindex` | Regenerate `index.md` from concept descriptions |
+| `okf_reindex` | Regenerate `index.md` from concept descriptions — whole bundle recursively (per-directory indexes, cross-linked); with `dir` one level of that directory |
 
 Paths are **bundle-relative with a leading slash** (`/tables/orders.md`).
 

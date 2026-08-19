@@ -20,7 +20,7 @@ import os
 import re
 import threading
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from filelock import FileLock, Timeout
@@ -725,8 +725,19 @@ class OkfServer(SchemaBasedMCPServer):
         return now["current_time"] if now["current_date"] == date_iso else ""
 
     async def reindex(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """(Re)generate ``index.md`` for a bundle directory from the concepts it
-        contains (one level), using each concept's frontmatter description."""
+        """(Re)generate ``index.md`` from concept frontmatter descriptions.
+
+        With ``dir``: that directory only, one level (unchanged historic
+        behaviour — deeper concepts belong to their own subdir index).
+
+        Without ``dir``: the WHOLE bundle, recursively — one ``index.md``
+        per directory that holds concepts (spec form, one level each), and
+        every index links its child-directory indexes with the subtree
+        concept count. Before 2026-08-19 the root call indexed one level
+        and silently dropped everything deeper: a bundle organised into
+        subdirectories (writer_library: /buecher, /achsen, …) produced a
+        near-empty root index that read like an empty library.
+        """
         status = _status_of(params)
         if self._read_only:
             await status.error("OKF server is read-only")
@@ -745,26 +756,72 @@ class OkfServer(SchemaBasedMCPServer):
         heading = params.get("heading") or (subdir.split("/")[-1].title() if subdir else "Contents")
         index_path = index_dir / core.INDEX_FILENAME
 
-        def _reindex() -> int:
+        def _reindex() -> Tuple[int, int]:
             # The bundle scan belongs inside the lock too: an index built from a
             # listing taken before a concurrent write would be published as
             # current while already missing that concept.
             bundle = self._load_bundle(root)
-            entries: List[Tuple[str, Optional[str]]] = []
+
+            if subdir:
+                # Historic single-directory mode: one level of `dir`.
+                entries: List[Tuple[str, Optional[str]]] = []
+                for p, c in sorted(bundle.concepts.items()):
+                    if not p.startswith(prefix):
+                        continue
+                    rest = p[len(prefix):]
+                    if "/" in rest:  # deeper — belongs to a subdir index
+                        continue
+                    entries.append((p, c.description))
+                text = core.render_index(entries, heading=heading)
+                index_dir.mkdir(parents=True, exist_ok=True)
+                _atomic_write(index_path, text)
+                return len(entries), 1
+
+            # Root mode: recursive. One index.md per directory with concepts;
+            # each index links its child-directory indexes with the subtree
+            # concept count.
+            by_dir: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+            subtree: Dict[str, int] = {"": 0}
             for p, c in sorted(bundle.concepts.items()):
-                if not p.startswith(prefix):
-                    continue
-                rest = p[len(prefix):]
-                if "/" in rest:  # deeper than one level — belongs to a subdir index
-                    continue
-                entries.append((p, c.description))
-            text = core.render_index(entries, heading=heading)
-            index_dir.mkdir(parents=True, exist_ok=True)
-            _atomic_write(index_path, text)
-            return len(entries)
+                d = str(PurePosixPath(p.lstrip("/")).parent)
+                d = "" if d == "." else d
+                by_dir.setdefault(d, []).append((p, c.description))
+                cur = d
+                while True:
+                    subtree[cur] = subtree.get(cur, 0) + 1
+                    if not cur:
+                        break
+                    parent = str(PurePosixPath(cur).parent)
+                    cur = "" if parent == "." else parent
+            children: Dict[str, List[str]] = {}
+            for d in subtree:
+                if d:
+                    parent = str(PurePosixPath(d).parent)
+                    parent = "" if parent == "." else parent
+                    children.setdefault(parent, []).append(d)
+
+            written = 0
+            for d in sorted(subtree):
+                entries = list(by_dir.get(d, []))
+                for child in sorted(children.get(d, [])):
+                    n = subtree[child]
+                    entries.append((
+                        f"/{child}/{core.INDEX_FILENAME}",
+                        f"{n} concept(s)",
+                    ))
+                d_heading = (
+                    d.split("/")[-1].title() if d
+                    else (params.get("heading") or "Contents")
+                )
+                text = core.render_index(entries, heading=d_heading)
+                target_dir = (root / d) if d else root
+                target_dir.mkdir(parents=True, exist_ok=True)
+                _atomic_write(target_dir / core.INDEX_FILENAME, text)
+                written += 1
+            return subtree.get("", 0), written
 
         try:
-            count = await _exclusive(root, _reindex)
+            count, written = await _exclusive(root, _reindex)
         except Timeout:
             msg = (f"another writer is holding the OKF bundle lock "
                    f"(> {LOCK_TIMEOUT_S:.0f}s) — try again")
@@ -772,8 +829,10 @@ class OkfServer(SchemaBasedMCPServer):
             return {"status": "error", "error": msg}
 
         rel = self._bundle_rel(root, index_path)
-        await status.end(f"regenerated {rel} — {count} entr(ies)")
-        return {"status": "ok", "path": rel, "entries": count}
+        await status.end(
+            f"regenerated {written} index file(s) — {count} concept(s)"
+        )
+        return {"status": "ok", "path": rel, "entries": count, "indexes": written}
 
     # ------------------------------------------------------------------
     # Consumer hook — fold a bundle into agent context (opt-in per agent)

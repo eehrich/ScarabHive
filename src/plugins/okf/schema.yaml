@@ -205,8 +205,10 @@ tools:
     function:
       name: "{{ name }}_reindex"
       description: |
-        (Re)generate index.md for a bundle directory from the concepts directly
-        under it, using each concept's frontmatter description.
+        (Re)generate index.md from concept frontmatter descriptions. Without
+        'dir': the whole bundle recursively — one index.md per directory,
+        each linking its child-directory indexes. With 'dir': that directory
+        only, one level.
       parameters:
         type: object
         properties:
