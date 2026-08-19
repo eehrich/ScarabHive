@@ -351,18 +351,11 @@ class MCPIntegration:
         else:
             raise Exception(f"Invalid server type: {server_type}")
 
-    async def register_plugin(self, name: str, config: Optional[AgentSystemConfig] = None) -> None:
-        """Register a plugin as an MCP server"""
-        # The AgentSystemConfig is the PARENT config; the second positional
-        # slot of the registry is the plugin's own config dict. Passing the
-        # system config there scattered its top-level fields into the
-        # MCPConfig as extras and left the real system_config empty.
-        await self.plugin_registry.register_plugin(name, None, parent_config=config)
-
-
-    async def unregister_plugin(self, name: str) -> None:
-        """Unregister a plugin MCP server"""
-        await self.plugin_registry.unregister_plugin(name)
+    # NOTE: the former register_plugin()/unregister_plugin() wrappers were
+    # removed: no caller repo-wide, and the register wrapper handed a
+    # Pydantic model to the registry's dict-typed parent_config ("key in
+    # model" is always False), silently dropping the parent LLM config.
+    # The live path is register_plugin_simple() / plugin_registry directly.
 
     def _require_pool(self) -> Any:
         provider = self.external_provider

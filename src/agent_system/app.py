@@ -596,19 +596,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Mount static files
     if static_path.exists():
         static_files = StaticFiles(directory=str(static_path))
-        app.mount("/static", static_files, name="static")
 
-        # Add no-cache headers for static files when cache is disabled
-        # NOTE: We add headers in StaticFiles response hook instead of middleware
-        # to avoid BaseHTTPMiddleware overhead (100ms+ per request)
+        # Add no-cache headers for static files when cache is disabled.
+        # Mounted as a wrapping ASGI app on purpose: assigning
+        # static_files.__call__ on the INSTANCE never took effect (Python
+        # looks dunders up on the type), so browsers kept caching stale
+        # assets although disable_cache was on. Kept out of middleware to
+        # avoid BaseHTTPMiddleware overhead (100ms+ per request).
         if config.network.disable_cache:
-            original_static_call = static_files.__call__
-            
             async def static_with_no_cache(scope, receive, send):
                 if scope["type"] != "http":
-                    await original_static_call(scope, receive, send)
+                    await static_files(scope, receive, send)
                     return
-                
+
                 async def send_with_no_cache(message):
                     if message["type"] == "http.response.start":
                         headers = list(message.get("headers", []))
@@ -619,10 +619,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         ])
                         message = {**message, "headers": headers}
                     await send(message)
-                
-                await original_static_call(scope, receive, send_with_no_cache)
-            
-            static_files.__call__ = static_with_no_cache
+
+                await static_files(scope, receive, send_with_no_cache)
+
+            app.mount("/static", static_with_no_cache, name="static")
+        else:
+            app.mount("/static", static_files, name="static")
 
     # Initialize logging with role-specific logfile
     def _role_logfile(base: str, role: str) -> str:
@@ -2507,87 +2509,36 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/sessions/{session_id}/force_optimize")
     async def force_optimize_session(session_id: str, request: Request):
-        """Trigger the token optimizer / summarizer for a persisted session immediately."""
-        logger = logging.getLogger(__name__)
-        from fastapi import HTTPException
-        # This endpoint had NO auth and rewrote the session's message list.
-        # Enforce authentication + ownership.
-        current_user = await _enforce_endpoint_security(request)
-        await _verify_session_owner(session_id, current_user)
-        try:
-            # Ensure session exists
-            if not agent._session_tracker.has_session(session_id):
-                raise HTTPException(status_code=404, detail="Session not found")
+        """Gone: context optimization runs automatically via hook plugins.
 
-            # Run optimizer and summarizer
-            actions = {"optimizer": False, "summarizer": False}
-
-            if getattr(agent, 'token_optimizer', None):
-                try:
-                    # token_optimizer.optimize_messages expects messages list; retrieve session messages
-                    msgs = agent._session_tracker.get_session_messages(session_id)
-                    # Run optimizer
-                    new_msgs = await agent.token_optimizer.optimize_messages(msgs)
-                    # Persist optimized messages
-                    agent._session_tracker.set_session_messages(session_id, new_msgs)
-                    actions['optimizer'] = True
-                except Exception as e:
-                    logger.exception("Failed to run token optimizer for session %s: %s", session_id, e)
-
-            # Context management and summarization are now handled by hook plugins
-            # (context_optimizer and context_summarizer) automatically during LLM calls
-            # No manual summarization endpoint needed
-            actions['summarizer'] = False  # Not applicable with hook-based management
-
-            return {"status": "ok", "session_id": session_id, "actions": actions}
-        except HTTPException:
-            # Client errors (404 unknown session) must keep their status —
-            # the generic handler below turned them into 500s.
-            raise
-        except Exception as e:
-            logger.exception("force_optimize_session failed for %s: %s", session_id, e)
-            raise HTTPException(status_code=500, detail=str(e))
+        The manual path died with the hook migration -- no Agent carries a
+        ``token_optimizer`` anymore, so this endpoint answered "ok" for a
+        long time without doing anything. 410 tells the caller the truth
+        instead of pretending success. No shipped consumer (UI or repo
+        code) calls it.
+        """
+        await _enforce_endpoint_security(request)
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Manual optimization was removed: context optimization and "
+                "summarization run automatically via the context_optimizer/"
+                "context_summarizer hook plugins during LLM calls."
+            ),
+        )
 
     @app.post("/sessions/force_optimize")
     async def force_optimize_all_sessions(request: Request):
-        """Trigger optimizer/summarizer for all persisted sessions (admin only)."""
-        logger = logging.getLogger(__name__)
-        from fastapi import HTTPException
-        from .auth.models import UserRole
-        # This endpoint rewrites the message list of EVERY user's session, so it
-        # must be admin-only. Previously it required no auth at all.
-        current_user = await _enforce_endpoint_security(request)
-        if current_user is not None and getattr(current_user, "role", None) != UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Admin role required")
-        try:
-            results = {}
-            sids = agent._session_tracker.get_all_session_ids()
-
-            for sid in sids:
-                actions = {"optimizer": False, "summarizer": False}
-                try:
-                    if getattr(agent, 'token_optimizer', None):
-                        msgs = agent._session_tracker.get_session_messages(sid)
-                        new_msgs = await agent.token_optimizer.optimize_messages(msgs)
-                        agent._session_tracker.set_session_messages(sid, new_msgs)
-                        actions['optimizer'] = True
-                except Exception as e:
-                    logger.debug("Optimizer failed for session %s: %s", sid, e)
-
-                try:
-                    # Context management and summarization are now handled by hook plugins automatically
-                    # No manual summarization needed
-                    actions['summarizer'] = False
-                except Exception as e:
-                    logger.debug("Summarizer failed for session %s: %s", sid, e)
-
-                results[sid] = actions
-
-            return {"status": "ok", "results": results}
-        except Exception as e:
-            logger.exception("force_optimize_all_sessions failed: %s", e)
-            from fastapi import HTTPException
-            raise HTTPException(status_code=500, detail=str(e))
+        """Gone -- see force_optimize_session."""
+        await _enforce_endpoint_security(request)
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Manual optimization was removed: context optimization and "
+                "summarization run automatically via the context_optimizer/"
+                "context_summarizer hook plugins during LLM calls."
+            ),
+        )
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):

@@ -389,16 +389,14 @@ class ToolExecutionManager:
                 for task in done:
                     original_index = task_indices.get(task, 999)  # Default high index if not found
                     try:
-                        result = task.result()
-                        if isinstance(result, BaseException):
-                            # Handle error (same as execute_tools)
-                            logger.exception("Tool execution failed: %s", result)
-                        else:
-                            tool_message, events, tool_results = result
-                            # Store with original index for later sorting
-                            indexed_results.append((original_index, tool_message, events, tool_results))
-                            events_to_yield.extend(events)
-                            results_to_add.extend(tool_results)
+                        # task.result() RAISES on failure (asyncio.wait, not
+                        # gather(return_exceptions=True)) -- errors land in the
+                        # except blocks below, which build the error ChatMessage.
+                        tool_message, events, tool_results = task.result()
+                        # Store with original index for later sorting
+                        indexed_results.append((original_index, tool_message, events, tool_results))
+                        events_to_yield.extend(events)
+                        results_to_add.extend(tool_results)
                     except asyncio.CancelledError:
                         logger.debug("Tool task was cancelled")
                         # Task was cancelled, this is expected during request cancellation

@@ -361,20 +361,26 @@ List all users with pagination.
 - `skip`: Number of users to skip (default: 0)
 - `limit`: Maximum number of users to return (default: 100)
 
-**Response:**
+**Response** (`UserListResponse` — `total` ist die Gesamtzahl aller Benutzer,
+nicht die Seitengröße; Clients paginieren mit `skip + limit >= total`):
 ```json
-[
-  {
-    "id": 1,
-    "username": "admin",
-    "email": "admin@example.com",
-    "full_name": "Administrator",
-    "is_active": true,
-    "role": "ADMIN",
-    "created_at": "2025-10-10T20:00:00.000000",
-    "last_login": "2025-10-10T20:30:00.000000"
-  }
-]
+{
+  "users": [
+    {
+      "id": 1,
+      "username": "admin",
+      "email": "admin@example.com",
+      "full_name": "Administrator",
+      "is_active": true,
+      "role": "ADMIN",
+      "created_at": "2025-10-10T20:00:00.000000",
+      "last_login": "2025-10-10T20:30:00.000000"
+    }
+  ],
+  "total": 1,
+  "skip": 0,
+  "limit": 100
+}
 ```
 
 #### GET /admin/users/{user_id}

@@ -750,9 +750,13 @@ class PluginWebRegistry:
                 if audit_middleware:
                     audit_log = audit_middleware.get_audit_log(category, limit, status_filter)
                 else:
-                    # Fallback to plugin enforcer (legacy)
+                    # Fallback to plugin enforcer (legacy). No category filter
+                    # here: its first parameter is a PLUGIN-NAME filter, and
+                    # passing a category ("api", "auth", ...) silently matched
+                    # nothing. Unfiltered is honest; the legacy entries carry
+                    # no category field to filter on.
                     enforcer = get_plugin_security_enforcer()
-                    audit_log = enforcer.get_audit_log(category, limit)
+                    audit_log = enforcer.get_audit_log(limit=limit)
                 
                 # Get available categories
                 categories = ["plugin", "api", "agent", "auth", "mcp", "debug", "health", "other"]

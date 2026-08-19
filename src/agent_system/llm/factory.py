@@ -15,7 +15,7 @@ from ..config.models import (
     AgentSystemConfig, AgentConfig, LLMModelConfig, LLMSystemConfig,
     resolve_llm_params,
 )
-from .clients import make_llm, LLMClient
+from .clients import LLMClient  # make_llm: local import in _build_llm (late binding)
 
 if TYPE_CHECKING:
     from .batch.queue_manager import BatchQueueManager
@@ -151,6 +151,9 @@ def _build_client(
     Everything after profile resolution is identical for every caller, so it
     lives exactly once.
     """
+    # Imported HERE, not at module level: late binding is what lets
+    # conftest/tests swap clients.make_llm for a fake (a module-level
+    # `from .clients import make_llm` would freeze the original).
     from .clients import make_llm
 
     llm_kwargs = resolve_llm_config_for_agent(config, agent_config)

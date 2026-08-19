@@ -64,5 +64,3 @@ def load_schema_from_dir(
         except Exception as json_err:
             logger.error(f"Failed to parse {schema_file} as YAML or JSON: YAML error: {e}, JSON error: {json_err}")
             raise RuntimeError(f"Failed to parse schema {schema_file}: {e}") from e
-
-    return None
