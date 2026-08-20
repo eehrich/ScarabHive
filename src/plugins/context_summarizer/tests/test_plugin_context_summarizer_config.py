@@ -115,8 +115,14 @@ def test_the_configured_profile_exists():
     assert hook.llm_profile in allowed, (
         f"llm_profile={hook.llm_profile!r} steht nicht im Enum {allowed}")
 
-    profiles = yaml.safe_load(Path("config/llm.yaml").read_text(encoding="utf-8"))
-    known = (profiles.get("llm_system", {}) or {}).get("profiles", {}) or {}
+    # Ueber load_settings, nicht config/llm.yaml direkt: die Profile leben in
+    # MEHREREN Dateien (llm.yaml + llm_openrouter.yaml), und genau die
+    # zusammengefuehrte Sicht entscheidet, ob die Client-Erzeugung gelingt.
+    # Der Direktlese-Weg wurde rot, als das Profil auf or-deepseek-flash
+    # wechselte — ein Fehlalarm des Tests, kein Fehler der Config.
+    from agent_system.config.settings import load_settings
+    known = set(load_settings().llm_system.profiles)
+    assert len(known) >= 20, "Config kam nicht an — Test waere gegenstandslos"
     assert hook.llm_profile in known, (
-        f"llm_profile={hook.llm_profile!r} existiert in config/llm.yaml nicht "
+        f"llm_profile={hook.llm_profile!r} existiert in keiner Profil-Datei "
         f"— die Client-Erzeugung faellt still auf die Agenten-LLM zurueck")

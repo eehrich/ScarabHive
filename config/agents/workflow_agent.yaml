@@ -30,7 +30,7 @@ plugins:
       description: "Data workflow agent - chains JSON/document operations via scripted tool calls (tool_script reference agent)"
 
       agent_config:
-        llm_profile: [deepseek-chat, normal]
+        llm_profile: [or-deepseek-flash, deepseek-chat, normal]
         llm_profile_advanced: []
         max_steps: 40
         system_template: "./prompts/workflow_agent_prompt.md"

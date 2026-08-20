@@ -31,19 +31,19 @@ deepseek-reasoner:
   output: 0.42
   cached_input: 0.028
 
+# ⚠️ Direct-Preise DEUTLICH erhoeht (2026-08). Werte = DeepSeeks eigener
+# Endpunkt (identisch auf OpenRouter sichtbar, Stand 2026-08-20). Der
+# Direct-Account ist fast leer; Primaernutzung laeuft seit 2026-08-20 ueber
+# OpenRouter (or-deepseek-flash/-pro), Direct ist nur noch Fallback.
 deepseek-v4-flash:
-  input: 0.14
-  output: 0.28
-  cached_input: 0.0028 # yes cached is 10 times chapeter than on OR
+  input: 0.22
+  output: 0.66
+  cached_input: 0.007
 
 deepseek-v4-pro:
-#  input: 1.74
-#  output: 3.48
-#  cached_input: 0.0145
-# price July 2026
-   input: 0.435
-   output: 0.87
-   cached_input: 0.003625
+  input: 0.66
+  output: 1.98
+  cached_input: 0.022
 
 # =============================================================================
 # Google Gemini — Direct SDK (generativelanguage.googleapis.com)
@@ -253,6 +253,23 @@ deepseek/deepseek-v4-flash:
   input: 0.14
   output: 0.28
   cached_input: 0.028
+
+# DeepSeek V4 Flash via OpenRouter, latest-Alias. DURCHSCHNITT ueber alle
+# 30 Anbieter-Endpunkte (2026-08-20): je nach Routing streut der echte Preis
+# von 0.065/0.14 (open-inference, fp4) bis 0.44/1.32 (cloudflare). Unser
+# provider_routing pinnt die guenstigsten fp8 (streamlake/baidu/deepinfra),
+# real liegt der Preis also UNTER diesem Schnitt.
+"~deepseek/deepseek-v4-flash-latest":
+  input: 0.149
+  output: 0.349
+  cached_input: 0.032
+
+# DeepSeek V4 Pro 0813 via OpenRouter (kein latest-Alias). Durchschnitt der
+# 12 Endpunkte; order pinnt deepseek/alibaba (0.66-0.73 in, 1.98-2.18 out).
+deepseek/deepseek-v4-pro-0813:
+  input: 1.205
+  output: 3.614
+  cached_input: 0.099
 
 # DeepSeek V4 Pro via OpenRouter — flagship variant
 deepseek/deepseek-v4-pro:

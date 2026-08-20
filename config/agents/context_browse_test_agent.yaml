@@ -19,7 +19,7 @@ plugins:
       description: "Test agent: browsing its own archived context"
 
       agent_config:
-        llm_profile: [chat-nostream, gemini-flash]
+        llm_profile: [or-deepseek-flash, chat-nostream, gemini-flash]
         llm_profile_advanced: []
         max_steps: 12
 

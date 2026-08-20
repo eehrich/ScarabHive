@@ -116,7 +116,7 @@ config:
     type: string
     default: "turbo"
     description: "LLM profile for summarization. config/plugins.yaml picks the effective one; this default only applies when it does not."
-    enum: ["turbo", "normal", "chat", "chat-nostream", "think"]
+    enum: ["turbo", "normal", "chat", "chat-nostream", "or-deepseek-flash", "think"]
 
   max_tracked_sessions:
     type: integer

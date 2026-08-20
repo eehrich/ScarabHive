@@ -971,7 +971,11 @@ llm_system:
       description: "Local model for privacy and offline usage"
       max_steps: 500
 
-  default_profile: chat
+  # or-deepseek-flash statt chat (2026-08-20): gleiche Modellfamilie, aber
+  # ueber OpenRouter — `chat` zeigte auf die Direct-API, deren Konto fast
+  # leer ist. Greift nur als letzte Rueckfallebene, wenn kein Profil
+  # aufloesbar ist.
+  default_profile: or-deepseek-flash
 
   # =============================================================================
   # TTS (TEXT-TO-SPEECH) MODEL DEFINITIONS

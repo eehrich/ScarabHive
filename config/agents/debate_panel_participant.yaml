@@ -47,5 +47,5 @@ plugins:
       type: debate_panel_participant_flash
       enabled: true
       agent_config:
-        llm_profile: [chat]
+        llm_profile: [or-deepseek-flash, chat]
         llm_profile_advanced: []

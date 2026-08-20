@@ -700,12 +700,102 @@ llm_system:
       # - Use for very long scene generation or full chapter rewrites
 
     # ---------------------------------------------------------------------------
-    # DEEPSEEK MODELS via OpenRouter
+    # DEEPSEEK MODELS via OpenRouter (V4 aktuell; darunter Legacy chat/reasoner)
     # ---------------------------------------------------------------------------
     # DeepSeek V4 Flash and V4 Pro routed through OpenRouter for higher rate
     # limits and unified billing. The same V4-Flash model serves both
     # "chat" (non-thinking) and "reasoner" (thinking) modes — toggled via
     # thinking_level. V4-Pro is the larger flagship variant.
+
+    # ------------------------------------------------------------------------
+    # DEEPSEEK V4 via OpenRouter — Wechsel weg von der direkten API (DeepSeek
+    # hat die Direktpreise deutlich erhoeht; Direct entspricht jetzt dem
+    # "deepseek"-Endpunkt unten). Flash ueber den LATEST-Alias, Pro gepinnt
+    # auf 0813 — einen latest-Alias gibt es fuer Pro nicht.
+    #
+    # Anbieterliste Flash (Stand 2026-08-20, $/1M Token, guenstigste zuerst):
+    #   Anbieter        input   output  cached   Quant
+    #   open-inference  0.065   0.14    0.014    fp4
+    #   relace          0.07    0.14    0.014    fp4
+    #   decart          0.0765  0.153   0.0153   fp4
+    #   streamlake      0.0784  0.1568  0.0157   fp8   <- order[0]
+    #   baidu           0.0798  0.1596  0.0160   fp8   <- order[1]
+    #   deepinfra       0.08    0.18    0.0160   fp8   <- order[2]
+    #   deepseek        0.22    0.66    0.007    (Direct-Preis; billigster CACHE,
+    #                                             aber 3x input / 4x output)
+    # Die drei billigsten sind fp4-QUANTISIERT. Fuer Prosa ist das ein
+    # Qualitaetsrisiko, das ~15% Ersparnis nicht wert ist — deshalb beginnt
+    # `order` beim guenstigsten fp8. Wer fp4 probieren will: open-inference
+    # an Position 0 setzen und am Buch messen, nicht an der Rechnung.
+    #
+    # Anbieterliste Pro (12 Endpunkte):
+    #   deepseek        0.66    1.98    0.022    <- order[0], billigster in ALLEN
+    #   alibaba         0.726   2.178   0.0726   <- order[1]
+    #   gmicloud        1.188   3.564   0.0396
+    #   (Rest: 1.32 / 3.96)
+    openrouter-deepseek-flash-latest:
+      provider: openai_httpx
+      model: "~deepseek/deepseek-v4-flash-latest"
+      api_key: "${OPENROUTER_API_KEY}"
+      base_url: https://openrouter.ai/api/v1
+      # Matches the DIRECT deepseek entries in llm.yaml: this model is the
+      # fallback behind them, and a fallback with a smaller window would
+      # reject exactly the long conversations that need rescuing.
+      # Gemessen an den gepinnten Endpunkten (2026-08-20): streamlake 1.024M,
+      # baidu/deepinfra 1.048M Kontext. Die aelteren or-deepseek-Eintraege
+      # deklarieren 100k — DIE sind die Untertreibung, nicht dieser Wert; ein
+      # zu kleines Fenster wuerde den Summarizer 10x zu frueh feuern lassen.
+      context_window: 1000000
+      request_timeout: 600
+      provider_routing:
+        # Cheapest fp8 first; sticky order keeps the backend-local prompt
+        # cache warm, same rationale as #515.
+        # baidu LAST: it caps output at 131072 while streamlake/deepinfra
+        # allow 384000 — three v4 scorers request 262144 via llm_params and
+        # would 400 on baidu (review finding B4).
+        order: ["streamlake", "deepinfra", "baidu"]
+        # ENFORCED, not preferred: without this a saturated pin re-routes
+        # price-sorted — straight onto the fp4 endpoints the table above
+        # rules out for prose. Review finding; order alone is a soft bias.
+        quantizations: ["fp8"]
+      # Deliberately NO max_tokens: the direct profiles this entry replaces
+      # ran without a cap (provider default). A hard 16384 here silently
+      # truncated long scenes/JSON — and reasoning would share that budget.
+      # NOTE baidu caps output at 131072 and is therefore LAST in order;
+      # requests beyond that 400 there and rely on the chain fallback.
+      capabilities:
+        tools: true
+        function_calling: true
+        # streaming: live-verifiziert 2026-08-20 gegen die gepinnten fp8-
+        # Endpunkte (20 Delta-Chunks, sauberer Text). Ohne dieses Flag
+        # verloren 12 interaktive Ketten (chat_agent, slowak_tutor, der
+        # plugins.yaml-Default fuer 93 Server) ihr Token-Streaming, solange
+        # OR gesund ist — also im Normalfall.
+        streaming: true
+        json_mode: true
+
+    openrouter-deepseek-pro-0813:
+      provider: openai_httpx
+      model: deepseek/deepseek-v4-pro-0813
+      api_key: "${OPENROUTER_API_KEY}"
+      base_url: https://openrouter.ai/api/v1
+      context_window: 1000000
+      request_timeout: 600
+      thinking_level: high
+      provider_routing:
+        # DeepSeek's own endpoint is the cheapest on ALL three axes here.
+        order: ["deepseek", "alibaba"]
+        # Hard pin: the next-cheapest endpoint costs 2x (1.32/3.96). If both
+        # pins are down, the AGENT chain falls back (direct deepseek-pro),
+        # which is the designed rescue path — not a silent 2x price jump.
+        allow_fallbacks: false
+      # No max_tokens for the same reason as the flash entry above — and
+      # thinking_level=high shares whatever budget a cap would set.
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: false
+        json_mode: true
 
     openrouter-deepseek-chat:
       provider: openai_httpx
@@ -787,51 +877,9 @@ llm_system:
         streaming: false
         json_mode: true
 
-    openrouter-deepseek-pro:
-      provider: openai_httpx
-      model: deepseek/deepseek-v4-pro
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 100000
-      request_timeout: 600
-      thinking_level: high
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
-        order: ["deepinfra", "baidu", "gmicloud"]
-      max_tokens: 16384
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-
-      # Notes:
-      # - DeepSeek V4 Pro, flagship variant with thinking enabled
-      # - More capable than V4 Flash, higher cost
-      # - See https://openrouter.ai/deepseek/deepseek-v4-pro
-
-    openrouter-deepseek-pro-unlimited:
-      provider: openai_httpx
-      model: deepseek/deepseek-v4-pro
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 100000
-      request_timeout: 600
-      thinking_level: high
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
-        order: ["deepinfra", "baidu", "gmicloud"]
-      max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-
     # ---------------------------------------------------------------------------
     # ZHIPU GLM MODELS via OpenRouter
     # ---------------------------------------------------------------------------
-
     openrouter-glm-5.2:
       provider: openai_httpx
       model: z-ai/glm-5.2
@@ -1007,6 +1055,11 @@ llm_system:
       description: "OpenRouter gpt-oss-120b - No output token limit"
       max_steps: 500
 
+    or-deepseek-flash:
+      model_ref: openrouter-deepseek-flash-latest
+      description: "OpenRouter DeepSeek V4 Flash via latest-alias - standard fallback behind every direct deepseek profile"
+      max_steps: 500
+
     or-deepseek-chat:
       model_ref: openrouter-deepseek-chat
       description: "OpenRouter DeepSeek V4 Flash - Cheap, fast, non-thinking mode"
@@ -1028,12 +1081,20 @@ llm_system:
       max_steps: 500
 
     or-deepseek-pro:
-      model_ref: openrouter-deepseek-pro
-      description: "OpenRouter DeepSeek V4 Pro - Flagship variant, thinking mode"
+      # Repointed 2026-08-20 from the undated deepseek/deepseek-v4-pro to the
+      # PINNED 0813 slug: newer generation AND cheaper (undated floor 1.60/3.20,
+      # 0813 floor 0.66/1.98 at DeepSeek's own endpoint). No chain used this
+      # profile before the switch, so nothing changed silently.
+      model_ref: openrouter-deepseek-pro-0813
+      description: "OpenRouter DeepSeek V4 Pro (0813, no latest alias exists) - fallback behind deepseek-pro*"
       max_steps: 500
 
     or-deepseek-pro-unlimited:
-      model_ref: openrouter-deepseek-pro-unlimited
+      # 2026-08-20 auf den 0813-Eintrag umgehaengt (wie or-deepseek-pro):
+      # vorher zeigte -unlimited auf den UNDATIERTEN Slug — 2,6x teurer
+      # und aeltere Generation. Der 0813-Eintrag setzt ohnehin kein
+      # max_tokens, "unlimited" ist dort der Normalzustand.
+      model_ref: openrouter-deepseek-pro-0813
       description: "OpenRouter DeepSeek V4 Pro - Flagship, no output token limit"
       max_steps: 500
 

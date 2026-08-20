@@ -18,7 +18,7 @@ plugins:
     enabled: false
 
     agent_config:
-      llm_profile: [chat, normal-stream]
+      llm_profile: [or-deepseek-flash, chat, normal-stream]
       llm_profile_advanced: []
       max_steps: 20
       system_template: "config/prompts/system_prompt.md"
@@ -61,7 +61,7 @@ plugins:
         # (Union mit llm_profile_advanced) bleiben als llm_profile-Parameter
         # im Tool-Schema wählbar. Advanced leer: "think" ist bereits das
         # stärkste Profil — use_advanced_model wäre hier ein Downgrade.
-        llm_profile: [think, normal, turbo, chat]
+        llm_profile: [think, normal, turbo, or-deepseek-flash, chat]
         llm_profile_advanced: []
         
         timeouts:
@@ -156,8 +156,10 @@ plugins:
       max_lessons_per_agent: 500
       dedup_similarity_threshold: 0.82
       exact_duplicate_threshold: 0.95
-      llm_profile: "chat-nostream"
-      consolidation_llm_profile: "chat-nostream"  # LLM for consolidation (merge decisions) - use think/normal for better quality
+      # Direct -> OpenRouter (2026-08-20): gleiches Modell, das Direct-Konto
+      # ist fast leer. Extraktion und Konsolidierung laufen ueber OR.
+      llm_profile: "or-deepseek-flash"
+      consolidation_llm_profile: "or-deepseek-flash"  # LLM for consolidation (merge decisions) - use think/normal for better quality
 
     http_server:
       type: http_server
@@ -910,7 +912,15 @@ plugins:
         # greift, wird das Modell hier bewusst gewaehlt: deepseek-v4-flash
         # ist guenstiger und besser als gpt-5.4-nano, nicht-streamend (der
         # Summarizer ruft .chat()) und hat 1M Kontext fuer lange Verlaeufe.
-        llm_profile: chat-nostream
+        # or-deepseek-flash statt chat-nostream (2026-08-20): gleicher
+        # deepseek-v4-flash, aber ueber OpenRouter — das Direct-Konto ist
+        # fast leer. Plugin-Ebene kennt keine Kette. ACHTUNG: der
+        # context.llm-Rueckfall des Hooks greift nur, wenn die CLIENT-
+        # ERZEUGUNG scheitert (Tippfehler im Profilnamen). Ein LAUFZEIT-
+        # Ausfall von OpenRouter laesst die Zusammenfassung still
+        # ausfallen — der Kontext schrumpft dann nicht mehr. Galt genauso
+        # fuer die Direct-API davor; kein neues Risiko, aber ein offenes.
+        llm_profile: or-deepseek-flash
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)

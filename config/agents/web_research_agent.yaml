@@ -17,7 +17,7 @@ plugins:
       max_steps: 20
 
       agent_config:
-        llm_profile: [chat]
+        llm_profile: [or-deepseek-flash, chat]
         llm_profile_advanced: []
         system_template: ""  # Use plugin's own system prompt template (empty string to override default)
         tools:
