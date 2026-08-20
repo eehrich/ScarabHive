@@ -18,4 +18,11 @@ requires = { agent_system = ">=0.6.0" }
 # with "cannot import desired renderPM backend rlPyCairo" AFTER the two
 # imports above succeed. Its pycairo build needs system headers on hosts
 # without a wheel (Python 3.13: apt install libcairo2-dev pkg-config).
-dependencies = ["svglib>=1.5", "reportlab>=4.0", "rlPyCairo>=0.3", "numpy>=1.26"]
+# freetype-py: dritte Schicht derselben Zwiebel — Text->Pfad (text2Path in
+# svglib) braucht reportlabs PYCAIRO-Extra. Der Fehler kam erst zur
+# Laufzeit mit einem SVG, das TEXT enthaelt; ein Kreis rendert auch ohne.
+# Verifiziert auf dem Server mit einem Text-SVG, nicht nur Importen.
+# Das [pycairo]-Extra traegt BEIDE Backends selbst (rlPyCairo>=0.2,<1 und
+# freetype-py>=2.3,<2.4) — eigene Pins daneben kollidierten prompt: mein
+# freetype-py>=2.4 stand gegen reportlabs <2.4. Das Extra ist die Quelle.
+dependencies = ["svglib>=1.5", "reportlab[pycairo]>=4.0", "numpy>=1.26"]
