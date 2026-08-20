@@ -553,8 +553,14 @@ class OkfServer(SchemaBasedMCPServer):
         subdir = (params.get("dir") or "").strip("/")
         bundle = self._load_bundle(root)
         prefix = "/" + subdir + "/" if subdir else "/"
+        # ``lifecycle`` (spec §5.4) gehoert in die Uebersicht: OKF loescht
+        # nicht, es setzt ``deprecated`` ("kept for links and history").
+        # Ohne diese Spalte muesste ein Leser jedes Konzept einzeln oeffnen,
+        # um zurueckgezogenes Wissen von aktuellem zu unterscheiden — und
+        # zitiert es bis dahin als gaeltig.
         items = [
-            {"path": p, "type": c.type, "title": c.title, "description": c.description}
+            {"path": p, "type": c.type, "title": c.title,
+             "description": c.description, "lifecycle": c.lifecycle_status}
             for p, c in sorted(bundle.concepts.items())
             if p.startswith(prefix)
         ]

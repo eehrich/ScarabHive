@@ -188,6 +188,24 @@ class Concept:
         d = self.frontmatter.get("description")
         return d if isinstance(d, str) else None
 
+    @property
+    def lifecycle_status(self) -> str:
+        """Spec §5.4: ``draft`` | ``stable`` | ``deprecated``; absent means
+        ``stable``.
+
+        Deliberately NOT named ``status`` — that word means the MCP
+        envelope's ok/error everywhere else in this server, and a concept
+        whose lifecycle says "deprecated" is not an errored concept.
+
+        This is how OKF retires knowledge: ``deprecated`` keeps a concept
+        "for links and history" instead of deleting it, so the graph keeps
+        its edges. A consumer that treats every concept as current will
+        happily quote retired knowledge — hence this is surfaced in
+        ``list``, not hidden behind a full read of every file.
+        """
+        s = self.frontmatter.get("status")
+        return s.strip() if isinstance(s, str) and s.strip() else "stable"
+
     def links(self) -> List[str]:
         """Bundle-relative targets of every outbound markdown link in the body,
         resolved against this concept's path. External URLs (``http:``, etc.)

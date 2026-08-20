@@ -30,7 +30,7 @@ any other consumer (verified: this plugin validates & traverses Google's real
 | `okf_validate` | Conformance gate (every concept has a non-empty `type`); broken links → warnings |
 | `okf_read_concept` | Frontmatter (all keys preserved) + body |
 | `okf_write_concept` | Create/overwrite; requires `type`; preserves existing extra keys; atomic |
-| `okf_list` | Concepts with type/title/description (progressive disclosure) |
+| `okf_list` | Concepts with type/title/description + `lifecycle` (spec §5.4: draft/stable/deprecated) |
 | `okf_neighbors` | A concept's graph neighbors + broken links |
 | `okf_subgraph` | BFS concepts reachable from seed(s) within N hops |
 | `okf_search` | Lexical relevance ranking over a bundle |

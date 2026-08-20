@@ -216,6 +216,58 @@ class TestGraphTools:
         assert paths == {"/tables/orders.md", "/tables/customers.md"}
 
     @pytest.mark.asyncio
+    async def test_list_reports_the_lifecycle_status(self, server, bundle):
+        """Spec §5.4: OKF loescht nicht, es setzt ``deprecated`` ("kept for
+        links and history"). Steht das nicht in der Uebersicht, muesste ein
+        Leser jedes Konzept einzeln oeffnen, um zurueckgezogenes Wissen zu
+        erkennen — und zitiert es bis dahin als gueltig."""
+        (bundle / "tables" / "legacy.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Legacy\n"
+            "description: Superseded by orders.\nstatus: deprecated\n---\n\n"
+            "# Schema\nOld.\n",
+            encoding="utf-8")
+
+        res = await server.list({"bundle": str(bundle)})
+        by_path = {c["path"]: c for c in res["concepts"]}
+        assert by_path["/tables/legacy.md"]["lifecycle"] == "deprecated"
+        # Fehlendes Feld heisst laut Spec ``stable`` — NICHT leer/None, sonst
+        # muesste jeder Konsument den Default selbst kennen.
+        assert by_path["/tables/orders.md"]["lifecycle"] == "stable"
+
+    @pytest.mark.asyncio
+    async def test_deprecation_round_trips_through_the_real_tools(
+        self, server, bundle,
+    ):
+        """Die Naht, an der die ganze Kette haengt: ein Kurator SETZT
+        ``status`` per ``write_concept``, ein Leser sieht es in ``list``,
+        und ein spaeteres Zuruecknehmen macht es rueckgaengig. Ohne diesen
+        Weg waere „deprecated statt loeschen" eine Absichtserklaerung —
+        die Felder sind nicht in ``RESERVED_FIELDS``, sie ueberleben nur,
+        weil das Format Extra-Keys durchreicht."""
+        res = await server.write_concept({
+            "bundle": str(bundle), "path": "/tables/orders.md",
+            "frontmatter": {"type": "BigQuery Table", "status": "deprecated"},
+            "body": "Superseded.",
+        })
+        assert res["status"] == "ok", res
+
+        lst = await server.list({"bundle": str(bundle)})
+        entry = next(c for c in lst["concepts"] if c["path"] == "/tables/orders.md")
+        assert entry["lifecycle"] == "deprecated"
+        assert entry["title"] == "Orders", "Merge hat bestehende Keys verloren"
+
+        # Zuruecknehmen: ``status`` raus -> wieder Default ``stable``.
+        res = await server.write_concept({
+            "bundle": str(bundle), "path": "/tables/orders.md",
+            "frontmatter": {"type": "BigQuery Table", "status": None},
+            "body": "Back in service.",
+        })
+        assert res["status"] == "ok", res
+        lst = await server.list({"bundle": str(bundle)})
+        entry = next(c for c in lst["concepts"] if c["path"] == "/tables/orders.md")
+        assert entry["lifecycle"] == "stable"
+
+    @pytest.mark.asyncio
     async def test_list_subdir(self, server, bundle):
         res = await server.list({"bundle": str(bundle), "dir": "/tables"})
         assert res["count"] == 2

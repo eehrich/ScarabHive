@@ -83,7 +83,11 @@ tools:
       name: "{{ name }}_list"
       description: |
         List concepts in a bundle (optionally under a subdirectory) with their
-        type, title and description — the progressive-disclosure overview.
+        type, title, description and lifecycle — the progressive-disclosure
+        overview. 'lifecycle' is the spec's status field (draft | stable |
+        deprecated; absent means stable). OKF retires knowledge by marking it
+        'deprecated' — kept for links and history — instead of deleting it, so
+        treat a deprecated concept as no longer current.
       parameters:
         type: object
         properties:

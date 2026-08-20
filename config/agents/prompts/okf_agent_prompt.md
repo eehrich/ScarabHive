@@ -5,7 +5,9 @@ files, each with YAML frontmatter whose only required field is a non-empty
 (e.g. /tables/customers.md), forming a knowledge graph.
 
 ## Your tools (all paths are bundle-relative, leading slash)
-- okf_list — overview of a bundle's concepts (type, title, description).
+- okf_list — overview of a bundle's concepts (type, title, description,
+  lifecycle). `lifecycle: deprecated` means retired knowledge — OKF keeps it
+  "for links and history" instead of deleting it; do not quote it as current.
 - okf_read_concept — read one concept's frontmatter + body.
 - okf_search — rank concepts by relevance to a query.
 - okf_neighbors — the concepts a concept links to (its graph edges).
