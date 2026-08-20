@@ -550,14 +550,29 @@ class _TransportErrorLLM:
     LLMConnectionError("HTTP request failed after 2 attempts (ConnectTimeout)",
                        provider="openai_httpx", model="deepseek-v4-flash"),
     httpx.ConnectTimeout("timed out"),
-], ids=["typed_llm_connection_error", "raw_httpx_transport_error"])
+    # 400 = request-shaped, the one 4xx class that stays NON-persistent.
+    # 401/402/404 stick and are covered by
+    # test_4xx_persistence_follows_the_status below.
+    httpx.HTTPStatusError(
+        "Client error '400 Bad Request' for url "
+        "'https://openrouter.ai/api/v1/chat/completions'",
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        response=httpx.Response(400, text="max_tokens above provider cap")),
+], ids=["typed_llm_connection_error", "raw_httpx_transport_error",
+        "http_400_request_shaped"])
 async def test_transport_error_switches_to_fallback_profile(system_config_with_profiles, exc):
     """Job-532-Regression: Ein ConnectTimeout nach allen Client-Retries toetete
     den Sub-Agent, obwohl die llm_profile-Kette einen cross-provider-Fallback
     definierte — Transportfehler hatten keine Fehlerklasse, die der Retry-Loop
     im Agent-Server matcht (nur RateLimit/Quota/ServerError). Jetzt wechseln
     LLMConnectionError UND rohe httpx-Transportfehler (Clients, die ungetypt
-    re-raisen) NON-persistent auf das naechste Profil der Kette."""
+    re-raisen) NON-persistent auf das naechste Profil der Kette.
+
+    Seit 2026-08-20 auch httpx.HTTPStatusError (4xx): der Primaer von 186
+    Ketten ist ein OpenRouter-Profil mit Direct-Fallback dahinter. Ein
+    unbekannter Slug, ein Output-Cap unterm angefragten max_tokens (baidu:
+    131k) oder ein Kontext-Ueberlauf kam als 4xx und toetete den Run, ohne
+    den Fallback je zu versuchen, fuer den die Kette existiert."""
     agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=3)
     agent_config.tools.allowed = ["*"]
     mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
@@ -625,3 +640,41 @@ async def test_transport_error_final_call_after_max_steps_uses_fallback(
     # nach dem Switch nie wieder angefasst.
     assert primary.call_count == 1
     assert fallback.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,expect_persistent", [
+    (400, False),   # request-shaped: a different request may pass
+    (401, True),    # expired key: holds for every request on this endpoint
+    (402, True),    # credit exhausted: same
+    (404, True),    # model withdrawn: same
+], ids=["400_request_shaped", "401_auth", "402_credit", "404_model_gone"])
+async def test_4xx_persistence_follows_the_status(
+        system_config_with_profiles, status, expect_persistent):
+    """Review finding: lumping all 4xx as non-persistent re-probed an expired
+    key on EVERY step (max_steps up to 500) and logged it as a network error.
+    Key-, credit- and model-level refusals hold for every request on the
+    endpoint, so the fallback must stick; request-shaped refusals must not."""
+    exc = httpx.HTTPStatusError(
+        f"HTTP {status}",
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        response=httpx.Response(status, text="refused"))
+    agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=3)
+    agent_config.tools.allowed = ["*"]
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+
+    primary = _TransportErrorLLM(exc)
+    fallback = _ScriptedLLM("fallback")
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=primary)
+    agent._create_fallback_llm = lambda profile: fallback
+
+    async for event in agent.run_events("test task"):
+        if event.get("type") == "end":
+            break
+
+    assert fallback.call_count >= 1, "fallback chain was never consulted"
+    if expect_persistent:
+        assert agent._active_fallback_llm is fallback,             f"HTTP {status} must stick — otherwise the dead endpoint is "             f"re-probed on every step"
+    else:
+        assert agent._active_fallback_llm is None,             f"HTTP {status} is request-shaped and must not stick"

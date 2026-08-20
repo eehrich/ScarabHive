@@ -2260,17 +2260,40 @@ class Agent(MCPServer):
                         logger.error(f"[{self.name}] No fallback profiles available, server error unrecoverable")
                         raise
 
-                except (LLMConnectionError, httpx.TransportError) as e:
+                except (LLMConnectionError, httpx.TransportError,
+                        httpx.HTTPStatusError) as e:
                     # Transport errors (connect/read timeout, network failure) — the
                     # endpoint is unreachable, there is no HTTP response. Try the next
                     # profile, NOT persistent (same reasoning as LLMServerError above).
                     # Raw httpx.TransportError covers clients that re-raise transport
                     # failures untyped (e.g. the OpenAI responses client).
+                    #
+                    # httpx.HTTPStatusError is the 4xx case (429/5xx arrive as typed
+                    # errors before this). For a CHAIN it means: this provider refuses
+                    # this request. Since 2026-08-20 the primary of 186 chains is an
+                    # OpenRouter profile with a direct-API fallback behind it; without
+                    # this clause a 4xx killed the run without ever trying the
+                    # fallback the chain exists for.
+                    #
+                    # The status decides HOW to fall back (review finding: lumping
+                    # them made an expired key look like a network error and re-probed
+                    # it on every step):
+                    #   400/413/422  request-shaped (too long, cap exceeded) — a
+                    #                different request may pass: NON-persistent.
+                    #   401/402/403/404  key-, credit- or model-level; holds for every
+                    #                request on this endpoint. PERSISTENT, so the dead
+                    #                endpoint is not re-probed max_steps times. A
+                    #                cross-provider chain member has its own key and
+                    #                still rescues the run.
+                    status_code = getattr(getattr(e, "response", None), "status_code", None)
+                    endpoint_level = status_code in (401, 402, 403, 404)
                     if fallback_index < len(fallback_profiles):
                         fallback_profile = fallback_profiles[fallback_index]
                         fallback_index += 1
+                        kind = (f"HTTP {status_code}" if status_code
+                                else "Connection/transport error")
                         logger.warning(
-                            f"[{self.name}] Connection/transport error from LLM: {e}. "
+                            f"[{self.name}] {kind} from LLM: {e}. "
                             f"Switching to fallback profile: {fallback_profile}"
                         )
                         await status_worker.progress(
@@ -2280,7 +2303,7 @@ class Agent(MCPServer):
                         # NON-persistent: unreachable endpoints are transient — the
                         # next request should retry the original model directly.
                         fallback_llm = self._switch_to_fallback_llm(
-                            fallback_profile, persistent=False,
+                            fallback_profile, persistent=endpoint_level,
                             messages=messages)
                         if fallback_llm:
                             display_profile_info = f"{fallback_profile}:fallback"
