@@ -40,7 +40,7 @@ class AgentStub:
         self.registry = registry
         self._session_service = session_service
         # Mock _session_tracker for session saving
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
         self._session_tracker = MagicMock()
         self._session_tracker.get_session_messages.return_value = []
         # Mock agent_config with llm_profile
@@ -82,13 +82,21 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
     monkeypatch.setattr('agent_system.agent_cli.Agent', AgentStub)
 
     # Provide a fake initialization service that returns empty registry/session service
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     mock_registry = MagicMock()
     mock_registry.list.return_value = []
     mock_registry.get.return_value = None
 
+    # AsyncMock for the awaited half: a plain MagicMock's save_session
+    # returns something un-awaitable — the CLI catches the TypeError and
+    # writes 'Failed to save session: object MagicMock can't be used in
+    # await expression' as an ERROR into the real logs/cli.log on every
+    # run of this test, while the test itself stays green. A double that
+    # violates the async contract of the thing it doubles tests a CLI
+    # that does not exist.
     mock_session_service = MagicMock()
+    mock_session_service.save_session = AsyncMock(return_value=True)
     fake_session_manager = MagicMock()
 
     class FakeInitService:
@@ -136,6 +144,11 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
     parsed = json_objects[-1]  # Use the last JSON object (the actual CLI output)
     assert parsed["task"] == "do it"
     assert parsed["summary"] == "done"
+    # The double honours the async contract AND the CLI really persisted:
+    # without this, reverting save_session to a plain MagicMock stays green
+    # while every test run writes an ERROR into the real logs/cli.log.
+    assert mock_session_service.save_session.await_count >= 1, (
+        "the CLI never saved the session - the run ended in the catch block")
 
 
 def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
@@ -150,13 +163,21 @@ def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
     monkeypatch.setattr('agent_system.servers.agent.server.Agent', AgentStub)
     monkeypatch.setattr('agent_system.agent_cli.Agent', AgentStub)
 
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     mock_registry = MagicMock()
     mock_registry.list.return_value = []
     mock_registry.get.return_value = None
 
+    # AsyncMock for the awaited half: a plain MagicMock's save_session
+    # returns something un-awaitable — the CLI catches the TypeError and
+    # writes 'Failed to save session: object MagicMock can't be used in
+    # await expression' as an ERROR into the real logs/cli.log on every
+    # run of this test, while the test itself stays green. A double that
+    # violates the async contract of the thing it doubles tests a CLI
+    # that does not exist.
     mock_session_service = MagicMock()
+    mock_session_service.save_session = AsyncMock(return_value=True)
     fake_session_manager = MagicMock()
 
     class FakeInitService:
@@ -175,3 +196,8 @@ def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
     assert "MCP CALL" in out
     assert "MCP RESULT" in out
     assert "done" in out  # The summary content
+    # The double honours the async contract AND the CLI really persisted:
+    # without this, reverting save_session to a plain MagicMock stays green
+    # while every test run writes an ERROR into the real logs/cli.log.
+    assert mock_session_service.save_session.await_count >= 1, (
+        "the CLI never saved the session - the run ended in the catch block")
