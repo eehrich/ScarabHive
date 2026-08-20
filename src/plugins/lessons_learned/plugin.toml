@@ -11,3 +11,6 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["mcp-server", "web"]
 category = "productivity"
 requires = { agent_system = ">=0.6.0" }
+# starlette is imported directly (web endpoints); it arrives transitively
+# via fastapi today, but a direct import earns a direct declaration.
+dependencies = ["starlette>=0.40"]

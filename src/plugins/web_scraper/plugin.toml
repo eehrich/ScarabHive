@@ -11,3 +11,4 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["mcp-server"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }
+dependencies = ["beautifulsoup4>=4.12", "lxml>=5.0"]

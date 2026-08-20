@@ -11,3 +11,11 @@ entrypoint = "server:PLUGIN_FACTORY"
 type = ["mcp-server"]
 category = "media"
 requires = { agent_system = ">=0.6.0" }
+# svglib/reportlab: the SVG layer renderer (compositor.py, lazy import) —
+# undeclared, they were only ever installed transitively; a fresh server
+# venv lacked them and every SVG layer failed at render time (2026-08-20).
+# rlPyCairo: reportlab 4 rasterises through it — without it renderPM fails
+# with "cannot import desired renderPM backend rlPyCairo" AFTER the two
+# imports above succeed. Its pycairo build needs system headers on hosts
+# without a wheel (Python 3.13: apt install libcairo2-dev pkg-config).
+dependencies = ["svglib>=1.5", "reportlab>=4.0", "rlPyCairo>=0.3", "numpy>=1.26"]
