@@ -62,6 +62,79 @@ class TestValidate:
         assert res["errors"] == 0
 
     @pytest.mark.asyncio
+    async def test_foreign_status_value_is_warned_about(self, server, bundle):
+        """``status`` gehoert dem Format (§5.4), nicht dem Produzenten.
+
+        Gemessen am 20.08.2026: ein Bundle hatte sein Publish-Urteil dort
+        abgelegt (``status: publishable``) — jeder Leser bekam damit einen
+        Lebenszustand, den das Vokabular nicht kennt, und niemand merkte
+        es. Warnung, kein Fehler: Extra-Keys sind erlaubt, dieser ist nur
+        belegt."""
+        (bundle / "tables" / "occupied.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Occupied\n"
+            "description: d\nstatus: publishable\n---\n\n# S\n",
+            encoding="utf-8")
+
+        res = await server.validate({"bundle": str(bundle)})
+        assert res["conformant"] is True, "Extra-Keys sind erlaubt — kein Fehler"
+        assert res["errors"] == 0
+        hits = [f for f in res["findings"]
+                if f["rule"] == "status-vocabulary"]
+        assert len(hits) == 1, res["findings"]
+        assert "publishable" in hits[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_non_string_status_is_warned_about_too(self, server, bundle):
+        """YAML typisiert den Wert, nicht der Produzent: ``status: true``
+        wird bool, ``status: 2026-01-01`` ein Datum. Pruefte die Regel den
+        normalisierten Wert, saehe sie ueberall "stable" und schwiege
+        ausgerechnet bei den Faellen, fuer die sie existiert."""
+        for i, raw in enumerate(("true", "1", "2026-01-01", "[draft]")):
+            (bundle / "tables" / f"odd_{i}.md").write_text(
+                f"---\ntype: BigQuery Table\ntitle: Odd{i}\n"
+                f"description: d\nstatus: {raw}\n---\n\n# S\n",
+                encoding="utf-8")
+
+        res = await server.validate({"bundle": str(bundle)})
+        warned = {f["path"] for f in res["findings"]
+                  if f["rule"] == "status-vocabulary"}
+        assert len(warned) == 4, res["findings"]
+
+    @pytest.mark.asyncio
+    async def test_blank_status_counts_as_absent(self, server, bundle):
+        """Ein geleertes Feld sagt nichts Unbekanntes — es sagt nichts.
+        Warnte es, waere das Aufraeumen (`status` leeren) selbst ein
+        Verstoss."""
+        (bundle / "tables" / "blank.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Blank\n"
+            "description: d\nstatus: '   '\n---\n\n# S\n",
+            encoding="utf-8")
+
+        res = await server.validate({"bundle": str(bundle)})
+        assert [f for f in res["findings"]
+                if f["rule"] == "status-vocabulary"] == []
+        lst = await server.list({"bundle": str(bundle)})
+        entry = next(c for c in lst["concepts"] if c["path"] == "/tables/blank.md")
+        assert entry["lifecycle"] == "stable"
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_vocabulary_passes_without_warning(self, server, bundle):
+        """Die drei erlaubten Werte duerfen NICHT warnen — sonst waere die
+        Warnung Rauschen und der Kurator gewoehnte sich ab hinzusehen."""
+        for i, value in enumerate(("draft", "stable", "deprecated")):
+            (bundle / "tables" / f"ok_{i}.md").write_text(
+                f"---\ntype: BigQuery Table\ntitle: T{i}\n"
+                f"description: d\nstatus: {value}\n---\n\n# S\n",
+                encoding="utf-8")
+
+        res = await server.validate({"bundle": str(bundle)})
+        # Ohne diese Zusicherung bestuende der Test auch, wenn die Fixture
+        # nie angekommen waere — eine leere Findings-Liste ist dann kein
+        # Beleg, sondern eine Abwesenheit.
+        assert res["concepts"] == 5, res
+        assert [f for f in res["findings"] if f["rule"] == "status-vocabulary"] == []
+
+    @pytest.mark.asyncio
     async def test_missing_type_is_error(self, server, bundle):
         (bundle / "bad.md").write_text("---\ntitle: No Type\n---\n\nbody\n",
                                        encoding="utf-8")
@@ -189,6 +262,15 @@ class TestReadWrite:
         rules = {f["rule"] for f in res["findings"]}
         assert "frontmatter-parseable" in rules  # true failure, not 'type-required'
 
+        # Unlesbares Frontmatter meldet ``lifecycle: stable`` — ein Default,
+        # kein Urteil. Vertretbar ist das nur, WEIL dieselbe Datei sich
+        # nebenan als kaputt zu erkennen gibt (type=None + dieser Fehler).
+        # Faellt eines der beiden weg, behauptet das Bundle Aktualitaet
+        # ueber eine Datei, die niemand lesen konnte.
+        entry = next(c for c in (await server.list({"bundle": str(bundle)}))["concepts"]
+                     if c["path"] == "/broken.md")
+        assert (entry["lifecycle"], entry["type"]) == ("stable", None)
+
     @pytest.mark.asyncio
     async def test_crlf_body_round_trips(self, server, bundle):
         (bundle / "w.md").write_bytes(
@@ -235,6 +317,31 @@ class TestGraphTools:
         assert by_path["/tables/orders.md"]["lifecycle"] == "stable"
 
     @pytest.mark.asyncio
+    async def test_lifecycle_is_always_one_of_the_three(self, server, bundle):
+        """Die Tool-Beschreibung sagt dem Modell drei Werte zu — dann darf
+        hier kein vierter herauskommen. Im Repo liegen echte Bundles, deren
+        Produzent seinen eigenen Zustand in ``status`` abgelegt hat; das
+        Modell kann damit nichts anfangen und raet. Der Rohwert geht nicht
+        verloren: ``validate`` warnt darueber."""
+        (bundle / "tables" / "foreign.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Foreign\n"
+            "description: d\nstatus: blockiert\n---\n\n# S\n",
+            encoding="utf-8")
+        # Gross-/Kleinschreibung darf nicht durchrutschen: der
+        # Injection-Hook vergleicht auf das exakte Wort.
+        (bundle / "tables" / "shouty.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Shouty\n"
+            "description: d\nstatus: Deprecated\n---\n\n# S\n",
+            encoding="utf-8")
+
+        res = await server.list({"bundle": str(bundle)})
+        by_path = {c["path"]: c for c in res["concepts"]}
+        assert by_path["/tables/foreign.md"]["lifecycle"] == "stable"
+        assert by_path["/tables/shouty.md"]["lifecycle"] == "deprecated"
+        assert {c["lifecycle"] for c in res["concepts"]} <= {
+            "draft", "stable", "deprecated"}
+
+    @pytest.mark.asyncio
     async def test_deprecation_round_trips_through_the_real_tools(
         self, server, bundle,
     ):
@@ -266,6 +373,56 @@ class TestGraphTools:
         lst = await server.list({"bundle": str(bundle)})
         entry = next(c for c in lst["concepts"] if c["path"] == "/tables/orders.md")
         assert entry["lifecycle"] == "stable"
+
+        # Neuanlage statt Overwrite: dort gibt es kein bestehendes
+        # Frontmatter zum Mergen — der Zweig muss ``status`` genauso
+        # uebernehmen, sonst laesst sich ein Konzept nur zurueckziehen,
+        # wenn es vorher schon existierte.
+        res = await server.write_concept({
+            "bundle": str(bundle), "path": "/tables/fresh.md",
+            "frontmatter": {"type": "BigQuery Table", "status": "deprecated"},
+            "body": "New but already retired.",
+        })
+        assert res["status"] == "ok", res
+        lst = await server.list({"bundle": str(bundle)})
+        fresh = next(c for c in lst["concepts"] if c["path"] == "/tables/fresh.md")
+        assert fresh["lifecycle"] == "deprecated"
+
+    @pytest.mark.asyncio
+    async def test_index_marks_retired_concepts_too(self, server, bundle):
+        """index.md ist der Einstieg, den ein Leser zuerst oeffnet. Bliebe
+        die Markierung `list`/`search` vorbehalten, fehlte sie genau dort,
+        wo der Ueberblick entsteht."""
+        (bundle / "tables" / "old.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Old\n"
+            "description: Superseded table.\nstatus: deprecated\n---\n\n# S\n",
+            encoding="utf-8")
+
+        await server.reindex({"bundle": str(bundle)})
+        idx = (bundle / "tables" / "index.md").read_text(encoding="utf-8")
+        assert "[old](/tables/old.md) - [deprecated] Superseded table." in idx, idx
+        # Aktuelle Konzepte bleiben unmarkiert — sonst waere die Markierung
+        # wertlos, weil sie nichts unterscheidet.
+        assert idx.count("[deprecated]") == 1, idx
+
+    @pytest.mark.asyncio
+    async def test_search_marks_retired_concepts_too(self, server, bundle):
+        """Die Suche ist fuer die meisten Leser der EINSTIEG ins Bundle —
+        der book_launcher wird fuer Details ausdruecklich hierher
+        geschickt. Ohne Kennzeichnung zitierte er zurueckgezogenes Wissen
+        als gueltig; ``deprecated`` waere genau dort unsichtbar, wo es
+        zaehlt."""
+        (bundle / "tables" / "retired.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Retired Orders\n"
+            "description: Superseded order table.\nstatus: deprecated\n---\n\n"
+            "# Schema\nOrders, old.\n",
+            encoding="utf-8")
+
+        res = await server.search({"bundle": str(bundle), "query": "orders"})
+        hits = {r["path"]: r for r in res["results"]}
+        assert "/tables/retired.md" in hits, res
+        assert hits["/tables/retired.md"]["lifecycle"] == "deprecated"
+        assert hits["/tables/orders.md"]["lifecycle"] == "stable"
 
     @pytest.mark.asyncio
     async def test_list_subdir(self, server, bundle):
@@ -455,6 +612,37 @@ class TestContextHook:
         injected = self._injected(ctx)
         assert injected is not None and "OKF knowledge context" in injected
         assert "Customers" in injected  # relevant concept folded in
+
+    @pytest.mark.asyncio
+    async def test_injected_context_marks_retired_knowledge(
+        self, mock_system_config, tmp_path, bundle,
+    ):
+        """Der gefaehrlichste Lesepfad: dieser Text landet ungefragt im
+        System-Prompt. Zurueckgezogenes Wissen (spec §5.4) bleibt im
+        Bundle „for links and history" — unmarkiert injiziert liest es ein
+        Modell aber als geltend."""
+        (bundle / "tables" / "customers.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Customers\n"
+            "description: One row per customer.\nstatus: deprecated\n---\n\n"
+            "# Schema\nid, name.\n",
+            encoding="utf-8")
+        srv = self._server_with_hook(mock_system_config, tmp_path, bundle)
+        ctx = SimpleNamespace(
+            messages=[SimpleNamespace(role="user", content="tell me about customers")],
+            session_id="s1", hook_config={})
+
+        result = await srv.on_pre_llm_call(ctx)
+        assert result.success
+        injected = self._injected(ctx)
+        assert injected and "Customers" in injected, "Fixture hat nichts injiziert"
+        assert "Orders" in injected, (
+            "Fixture braucht BEIDE Konzepte — sonst ist der Vergleich leer"
+        )
+        # Genau EINS: „Marker vorhanden" wuerde auch gruen bleiben, wenn der
+        # Marker unbedingt an JEDEN Header ginge — dann waere jedes Konzept
+        # im System-Prompt als zurueckgezogen markiert, der umgekehrte
+        # Schaden. Gemessen wird der Unterschied, nicht die Anwesenheit.
+        assert injected.count("DEPRECATED") == 1, injected
 
     @pytest.mark.asyncio
     async def test_hook_config_per_agent_overrides(self, mock_system_config, tmp_path, bundle):

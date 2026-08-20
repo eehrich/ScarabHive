@@ -635,10 +635,17 @@ class OkfServer(SchemaBasedMCPServer):
         await status.progress(f"Searching {params.get('bundle')} for '{query}'")
         bundle = self._load_bundle(root)
         ranked = self._rank_lexical(bundle, query, limit)
+        # ``lifecycle`` gehoert auch hierher, nicht nur in ``list``: eine
+        # Suche ist fuer die meisten Leser der EINSTIEG ins Bundle (der
+        # book_launcher wird fuer Details ausdruecklich hierher geschickt).
+        # Faende er zurueckgezogenes Wissen ohne Kennzeichnung, zitierte er
+        # es als gueltig — dann waere ``deprecated`` genau dort unsichtbar,
+        # wo es zaehlt.
         results = [
             {"path": p, "score": round(s, 4),
              "type": bundle.concepts[p].type,
-             "description": bundle.concepts[p].description}
+             "description": bundle.concepts[p].description,
+             "lifecycle": bundle.concepts[p].lifecycle_status}
             for p, s in ranked
         ]
         await status.end(
@@ -730,6 +737,20 @@ class OkfServer(SchemaBasedMCPServer):
                                    location if isinstance(location, str) else "")
         return now["current_time"] if now["current_date"] == date_iso else ""
 
+    @staticmethod
+    def _index_description(concept: "core.Concept") -> Optional[str]:
+        """Description as it appears in index.md, retirement made visible.
+
+        index.md is the entry point a reader opens first — leaving the
+        marker to list/search would hide it exactly where the overview is
+        formed. Prefixed rather than appended so it survives a truncated
+        line.
+        """
+        desc = concept.description
+        if concept.lifecycle_status != "deprecated":
+            return desc
+        return f"[deprecated] {desc}" if desc else "[deprecated]"
+
     async def reindex(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """(Re)generate ``index.md`` from concept frontmatter descriptions.
 
@@ -777,7 +798,7 @@ class OkfServer(SchemaBasedMCPServer):
                     rest = p[len(prefix):]
                     if "/" in rest:  # deeper — belongs to a subdir index
                         continue
-                    entries.append((p, c.description))
+                    entries.append((p, self._index_description(c)))
                 text = core.render_index(entries, heading=heading)
                 index_dir.mkdir(parents=True, exist_ok=True)
                 _atomic_write(index_path, text)
@@ -791,7 +812,7 @@ class OkfServer(SchemaBasedMCPServer):
             for p, c in sorted(bundle.concepts.items()):
                 d = str(PurePosixPath(p.lstrip("/")).parent)
                 d = "" if d == "." else d
-                by_dir.setdefault(d, []).append((p, c.description))
+                by_dir.setdefault(d, []).append((p, self._index_description(c)))
                 cur = d
                 while True:
                     subtree[cur] = subtree.get(cur, 0) + 1
@@ -941,6 +962,14 @@ class OkfServer(SchemaBasedMCPServer):
             if not c:
                 continue
             header = f"## {c.title or p} ({c.type or 'concept'}) — {p}"
+            # Der gefaehrlichste Lesepfad ueberhaupt: dieser Text landet
+            # ungefragt im System-Prompt und wird als geltendes Wissen
+            # gelesen. Zurueckgezogenes Wissen (spec §5.4) MUSS deshalb
+            # hier stehen — es bleibt im Bundle "for links and history",
+            # aber ein Modell, das es unmarkiert bekommt, zitiert es als
+            # aktuell.
+            if c.lifecycle_status == "deprecated":
+                header += "  [DEPRECATED — retired, do not treat as current]"
             body = c.body.strip()
             if len(body) > 1500:
                 body = body[:1500].rstrip() + "\n…[truncated]"

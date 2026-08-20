@@ -10,7 +10,9 @@ tools:
       description: |
         Check an OKF bundle for conformance: every concept document MUST have
         a non-empty 'type' frontmatter field. Reports type errors (breaking)
-        and broken intra-bundle links (warnings) as a structured list.
+        plus warnings for broken intra-bundle links and for a 'status' that is
+        not a lifecycle value. This is the only way to find concepts whose
+        'status' holds something foreign — list/search report those as stable.
       parameters:
         type: object
         properties:
@@ -59,7 +61,9 @@ tools:
         Create or overwrite a concept document. A non-empty 'type' in
         'frontmatter' is REQUIRED (the write is rejected otherwise). On
         overwrite, existing extra frontmatter keys are preserved and merged
-        under the supplied ones. Writes atomically.
+        under the supplied ones; setting a key to null removes it. The BODY
+        is not merged — it is replaced by what you send, so always send the
+        full body, even when you only change frontmatter. Writes atomically.
       parameters:
         type: object
         properties:
@@ -84,10 +88,8 @@ tools:
       description: |
         List concepts in a bundle (optionally under a subdirectory) with their
         type, title, description and lifecycle — the progressive-disclosure
-        overview. 'lifecycle' is the spec's status field (draft | stable |
-        deprecated; absent means stable). OKF retires knowledge by marking it
-        'deprecated' — kept for links and history — instead of deleting it, so
-        treat a deprecated concept as no longer current.
+        overview. lifecycle is draft | stable | deprecated (default stable);
+        deprecated means retired — do not treat it as current.
       parameters:
         type: object
         properties:
@@ -154,7 +156,8 @@ tools:
       name: "{{ name }}_search"
       description: |
         Rank a bundle's concepts by lexical relevance to a query (over title,
-        description, type, tags and body). Returns the best matches with scores.
+        description, type, tags and body). Returns the best matches with scores
+        and lifecycle; deprecated hits are retired, not current.
       parameters:
         type: object
         properties:

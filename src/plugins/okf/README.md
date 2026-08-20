@@ -27,13 +27,13 @@ any other consumer (verified: this plugin validates & traverses Google's real
 
 | Tool | Purpose |
 |---|---|
-| `okf_validate` | Conformance gate (every concept has a non-empty `type`); broken links → warnings |
+| `okf_validate` | Conformance gate (every concept has a non-empty `type`); broken links and a `status` outside the spec's lifecycle vocabulary → warnings |
 | `okf_read_concept` | Frontmatter (all keys preserved) + body |
 | `okf_write_concept` | Create/overwrite; requires `type`; preserves existing extra keys; atomic |
 | `okf_list` | Concepts with type/title/description + `lifecycle` (spec §5.4: draft/stable/deprecated) |
 | `okf_neighbors` | A concept's graph neighbors + broken links |
 | `okf_subgraph` | BFS concepts reachable from seed(s) within N hops |
-| `okf_search` | Lexical relevance ranking over a bundle |
+| `okf_search` | Lexical relevance ranking over a bundle (+ `lifecycle`) |
 | `okf_append_log` | `log.md` entry (ISO date heading, time-stamped, newest first) |
 | `okf_reindex` | Regenerate `index.md` from concept descriptions — whole bundle recursively (per-directory indexes, cross-linked); with `dir` one level of that directory |
 

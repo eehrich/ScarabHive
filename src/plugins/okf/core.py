@@ -40,6 +40,29 @@ RESERVED_FILENAMES = frozenset({INDEX_FILENAME, LOG_FILENAME})
 # rejected.
 RESERVED_FIELDS = ("type", "title", "description", "resource", "tags", "timestamp")
 
+# Lifecycle vocabulary (spec §5.4). Absent ``status`` means ``stable``;
+# ``deprecated`` is how OKF retires a concept — kept for links and history
+# instead of deleted.
+LIFECYCLE_VALUES = frozenset({"draft", "stable", "deprecated"})
+
+
+def _lifecycle_of(value: Any) -> Optional[str]:
+    """Normalize a raw ``status`` value, or ``None`` if it is not a lifecycle.
+
+    Empty/blank counts as absent (``stable``) — a producer that cleared the
+    field did not thereby say something unknown. Everything else that is not
+    one of the three values (including numbers, booleans, dates and lists —
+    YAML turns ``status: true`` and ``status: 2026-01-01`` into non-strings)
+    returns ``None`` so callers can tell "occupied by something foreign"
+    apart from "absent".
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return "stable"
+    return normalized if normalized in LIFECYCLE_VALUES else None
+
 OKF_VERSION = "0.1"
 
 # Frontmatter fence: a leading ``---`` line, the YAML block, then a closing
@@ -202,9 +225,21 @@ class Concept:
         its edges. A consumer that treats every concept as current will
         happily quote retired knowledge — hence this is surfaced in
         ``list``, not hidden behind a full read of every file.
+
+        Always one of the three: a foreign value (a producer that put its
+        own state in ``status``) reads as ``stable`` here, because the tool
+        descriptions promise this vocabulary to the model and a value it
+        cannot interpret is worse than the documented default. The RAW
+        value is not lost — ``validate_bundle`` warns about it, which is
+        where a wrong ``status`` gets fixed. Case and surrounding space are
+        forgiven: ``Deprecated`` must not slip past the consumer that only
+        checks for the exact word (the context-injection hook does).
+
+        On unparseable frontmatter this reports ``stable`` too. That is a
+        default, not a finding — such a file already announces itself with
+        ``type is None`` and a validate error.
         """
-        s = self.frontmatter.get("status")
-        return s.strip() if isinstance(s, str) and s.strip() else "stable"
+        return _lifecycle_of(self.frontmatter.get("status")) or "stable"
 
     def links(self) -> List[str]:
         """Bundle-relative targets of every outbound markdown link in the body,
@@ -410,6 +445,25 @@ def validate_bundle(bundle: Bundle) -> ConformanceReport:
         elif not concept.type:
             report.add(path, "type-required", "error",
                        "frontmatter is missing a non-empty 'type' field")
+        # ``status`` belongs to the format (spec §5.4), not to the producer:
+        # a foreign value there is not a free extra key, it silently answers
+        # "is this knowledge current?" with something no consumer understands.
+        # Measured 2026-08-20: a bundle had put its publish verdict there
+        # ("publishable", "in Arbeit"), so every reader got an unknown
+        # lifecycle. A warning, not an error — the spec permits extra keys,
+        # and this one is merely occupied, not malformed.
+        # Against the RAW value, not the normalized one: the property maps
+        # anything foreign to "stable", so comparing it would make this check
+        # blind to exactly the case it exists for (``status: true`` and
+        # friends — YAML types the value, not the producer).
+        raw_status = concept.frontmatter.get("status")
+        if raw_status is not None and _lifecycle_of(raw_status) is None:
+            report.add(
+                path, "status-vocabulary", "warning",
+                f"'status' is the lifecycle field "
+                f"({' | '.join(sorted(LIFECYCLE_VALUES))}) but reads "
+                f"{raw_status!r} — put producer state in its own key",
+            )
         for broken in bundle.broken_links(path):
             report.add(path, "link-resolves", "warning",
                        f"link target not found in bundle: {broken}")
