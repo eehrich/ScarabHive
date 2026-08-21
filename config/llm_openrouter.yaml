@@ -367,6 +367,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.4
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -389,6 +392,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.4
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -411,6 +417,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.4-mini
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -433,6 +442,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.4-mini
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -456,6 +468,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.6-sol
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -479,6 +494,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.6-sol
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -503,6 +521,9 @@ llm_system:
       # of the bridge. Not referenced by any agent yet; live-testing only.
       provider: openai_responses
       model: openai/gpt-5.6-terra
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:
         order: ["openai"]        # terra has no azure endpoints anyway (404); single-org pin.
         allow_fallbacks: false
@@ -526,6 +547,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.6-terra
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -550,6 +574,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.6-luna
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
@@ -573,6 +600,9 @@ llm_system:
       # "encrypted content could not be verified" 400s. Testing on cover_artist.
       provider: openai_responses
       model: openai/gpt-5.6-luna
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:
         order: ["openai"]
         allow_fallbacks: false
@@ -596,6 +626,9 @@ llm_system:
       # not be verified" 400s. Migrated 2026-07-16.
       provider: openai_responses
       model: openai/gpt-5.6-luna
+      # Required from GPT-5.6 on for cache matching. Belongs to the
+      # model, not to 31 agent files (moved here 2026-08-22).
+      prompt_cache_key: "auto"
       provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
         order: ["openai"]
         allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
