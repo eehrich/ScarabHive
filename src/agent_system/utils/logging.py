@@ -253,4 +253,14 @@ def setup_logging(
     access_logger.setLevel(lvl)
     access_logger.propagate = False  # Prevent propagation to root to avoid duplicates
 
+    # Config errors raised before this point had nowhere to go: every entry
+    # point loads the config first and configures logging afterwards. Replay
+    # them now, so the logfile carries them too. Local import: config.settings
+    # is a heavier module and nothing here needs it at import time.
+    try:
+        from ..config.settings import flush_deferred_config_errors
+        flush_deferred_config_errors()
+    except Exception:  # pragma: no cover - logging must never break the start
+        pass
+
     return file_path

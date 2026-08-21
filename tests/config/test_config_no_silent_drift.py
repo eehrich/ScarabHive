@@ -22,6 +22,7 @@ funktionierenden nicht zu unterscheiden.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -164,3 +165,135 @@ def test_the_duplicate_detector_actually_detects(bad_yaml, expected):
     """Der Detektor selbst — sonst gruent der Scanner, weil er nichts sieht."""
     with pytest.raises(ValueError, match=expected):
         yaml.load(bad_yaml, Loader=_DuplicateKeyLoader)
+
+
+class TestStaleLlmParamKeysAreDroppedLoudly:
+    """A key whose profile is in none of the agent's chains configures nothing.
+    It must not become silently ineffective — and it must not cost EVERY server
+    its start either, which is what it did until 2026-08-22: one role rename in
+    one file, and no service came up."""
+
+    STALE = {"llm_profile": ["a", "b"],
+             "llm_params": {"*": {"max_tokens": 100},
+                            "gone": {"thinking_level": "high"}}}
+
+    def test_direct_construction_still_raises(self):
+        from pydantic import ValidationError
+
+        from agent_system.config.models import AgentConfig
+        with pytest.raises(ValidationError, match="profile keys"):
+            AgentConfig.model_validate(self.STALE)
+
+    def test_the_config_load_drops_it_and_keeps_the_rest(self):
+        from agent_system.config.models import AgentConfig
+
+        cfg = AgentConfig.model_validate(
+            self.STALE, context={"drop_stale_llm_params": True})
+        assert "gone" not in cfg.llm_params, "stale key survived"
+        assert cfg.llm_params["*"] == {"max_tokens": 100}, "valid params taken down with it"
+
+    def test_load_settings_survives_it_and_names_the_agent(self, tmp_path, caplog):
+        """The wiring: without the context in the real load path, the same key
+        would abort the whole start again."""
+        from agent_system.config.settings import load_settings
+
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  servers:\n"
+            "    kaputt_agent:\n"
+            "      type: agent\n"
+            "      enabled: true\n"
+            "      agent_config:\n"
+            "        llm_profile: [a, b]\n"
+            "        llm_params:\n"
+            "          \"weg\":\n"
+            "            thinking_level: high\n",
+            encoding="utf-8")
+
+        with caplog.at_level(logging.ERROR):
+            cfg = load_settings(str(tmp_path / "config.yaml"))
+
+        assert cfg.plugins.servers["kaputt_agent"].agent_config.llm_params == {}
+        assert any("kaputt_agent" in r.getMessage() for r in caplog.records), \
+            "the loss went unreported — which is exactly what makes it silent"
+
+    def test_inheritance_does_not_move_the_abort_to_agent_creation(self, tmp_path, caplog):
+        """The second validation. A child that overrides the chains inherits
+        the parent's keyed params, so the key only turns stale AFTER the merge
+        — in get_mcp_config_by_name, not at load time. Tolerating it only at
+        load would move the abort from startup to the first spawn."""
+        from agent_system.config.settings import (
+            _reported_stale_llm_params,
+            get_mcp_config_by_name,
+            load_settings,
+        )
+
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  servers:\n"
+            "    parent_agent:\n"
+            "      type: agent\n"
+            "      enabled: true\n"
+            "      agent_config:\n"
+            "        llm_profile: [a, b]\n"
+            "        llm_params:\n"
+            "          \"b\":\n"
+            "            thinking_level: high\n"
+            "    child_agent:\n"
+            "      type: parent_agent\n"
+            "      enabled: true\n"
+            "      agent_config:\n"
+            "        llm_profile: [c, d]\n",
+            encoding="utf-8")
+
+        cfg = load_settings(str(tmp_path / "config.yaml"))
+        _reported_stale_llm_params.clear()   # the load pass may have reported already
+        with caplog.at_level(logging.ERROR):
+            merged = get_mcp_config_by_name("child_agent", cfg)
+
+        assert merged is not None, "agent creation died on an inherited stale key"
+        assert merged.agent_config.llm_params == {}
+        assert any("child_agent" in r.getMessage() for r in caplog.records), \
+            "dropped without a word at the very place the message warns about"
+
+    def test_it_reaches_the_logfile_even_though_the_config_loads_first(self, tmp_path):
+        """Every entry point loads the config BEFORE configuring logging, so an
+        error raised during the load has no handler to go to and never reaches
+        the file the operator reads. setup_logging replays it."""
+        import agent_system.config.settings as settings_mod
+        from agent_system.utils.logging import setup_logging
+
+        root = logging.getLogger()
+        saved = root.handlers[:]
+        for handler in saved:
+            root.removeHandler(handler)
+        settings_mod._deferred_config_errors.clear()
+        settings_mod._reported_stale_llm_params.clear()
+        log_file = tmp_path / "agent.log"
+        try:
+            (tmp_path / "config.yaml").write_text(
+                "plugins:\n"
+                "  servers:\n"
+                "    late_agent:\n"
+                "      type: agent\n"
+                "      enabled: true\n"
+                "      agent_config:\n"
+                "        llm_profile: [a, b]\n"
+                "        llm_params:\n"
+                "          \"gone\":\n"
+                "            thinking_level: high\n",
+                encoding="utf-8")
+            settings_mod.load_settings(str(tmp_path / "config.yaml"))
+            assert settings_mod._deferred_config_errors, \
+                "nothing was kept for replay — the error is lost with the handlers"
+            setup_logging(enabled=True, level="INFO", file_path=str(log_file),
+                          rotation_enabled=False)
+        finally:
+            for handler in root.handlers[:]:
+                handler.close()
+                root.removeHandler(handler)
+            for handler in saved:
+                root.addHandler(handler)
+
+        assert "late_agent" in log_file.read_text(encoding="utf-8"), \
+            "the error never made it into the logfile"

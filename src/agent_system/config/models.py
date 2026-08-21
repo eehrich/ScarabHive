@@ -8,7 +8,7 @@ for LLM and MCP configurations.
 from __future__ import annotations
 
 import re
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo, model_validator
 from typing import Literal, Optional, Dict, List, Any, Union
 
 
@@ -494,7 +494,7 @@ class AgentConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_llm_params_profile_keys(self) -> "AgentConfig":
+    def _validate_llm_params_profile_keys(self, info: ValidationInfo) -> "AgentConfig":
         # Profil-gekeyte llm_params: gueltige Keys sind "*" plus ALLE
         # Mitglieder beider Ketten (Primaer + Fallbacks) — die Params wirken
         # einheitlich auf jedes Ketten-Mitglied ("*"/flat ueberall, exakter
@@ -509,15 +509,22 @@ class AgentConfig(BaseModel):
             valid.update(self.llm_profile_advanced or [])
             unknown = set(p) - valid
             if unknown:
-                raise ValueError(
-                    f"llm_params: Profil-Keys {sorted(unknown)} kommen in "
-                    f"keiner LLM-Kette dieses Agents vor — gueltig: "
-                    f"{sorted(valid)}. "
-                    f"Entsteht auch durch Typ-Vererbung, wenn das Kind die "
-                    f"Ketten des Parents ueberschreibt: dann die gekeyten "
-                    f"llm_params im Parent auf '*' umstellen oder mit den "
-                    f"Ketten ins Kind verschieben."
+                msg = (
+                    f"llm_params: profile keys {sorted(unknown)} appear in no "
+                    f"LLM chain of this agent — valid: {sorted(valid)}. "
+                    f"Also caused by type inheritance when the child overrides "
+                    f"the parent's chains: move the keyed llm_params in the "
+                    f"parent to '*', or move them into the child together "
+                    f"with the chains."
                 )
+                # The caller decides whether a stale key costs the start. The
+                # real config load drops it and says so loudly instead — one
+                # key in ONE agent used to keep every server down. Everywhere
+                # else it stays an error: same rule, different consequence.
+                if not (info.context or {}).get("drop_stale_llm_params"):
+                    raise ValueError(msg)
+                for key in unknown:
+                    p.pop(key, None)
         return self
 
     @property

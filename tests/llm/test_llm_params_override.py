@@ -205,9 +205,10 @@ class TestKeyedLlmParamsValidation:
             )
 
     def test_unknown_profile_key_rejected(self):
-        # Keys, die in KEINER Kette vorkommen (Tippfehler, verwaiste
-        # Einträge nach Ketten-Umbau), knallen beim Config-Load.
-        with pytest.raises(ValidationError, match="keiner LLM-Kette"):
+        # Keys that appear in NO chain (typo, stale entry after a chain
+        # rewrite) raise here. The real config load drops them and logs
+        # instead — see TestStaleLlmParamKeysAreDroppedLoudly.
+        with pytest.raises(ValidationError, match="no.*LLM chain"):
             AgentConfig(
                 llm_profile=["test-profile", "fallback-profile"],
                 llm_profile_advanced=["advanced-profile"],

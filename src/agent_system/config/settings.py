@@ -8,7 +8,7 @@ behavior explicit and testable.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 from pathlib import Path
 import os
 import yaml
@@ -131,6 +131,9 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     global _plugins_cache, _inheritance_cache
     _plugins_cache = None
     _inheritance_cache.clear()
+    # A reload is a fresh verdict: what the operator just fixed must be able to
+    # report again if it is still broken.
+    _reported_stale_llm_params.clear()
     
     # Allow overriding default config file via env var
     env_cfg = os.environ.get("AGENT_CONFIG_PATH")
@@ -359,12 +362,69 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
     # Validate configuration with Pydantic
     try:
-        return AgentSystemConfig.model_validate(data)
+        cfg = AgentSystemConfig.model_validate(
+            data, context={"drop_stale_llm_params": True})
     except Exception as e:
         logger.error(f"Configuration validation failed: {e}")
         # Log the data structure that failed validation for debugging
         logger.debug(f"Failed configuration data: {data}")
         raise
+    _report_dropped_llm_params(data, cfg)
+    return cfg
+
+
+#: Already-reported (agent, keys) pairs. get_mcp_config_by_name re-validates on
+#: every agent creation; the operator needs the line once, not per spawn.
+_reported_stale_llm_params: set = set()
+
+#: Errors raised before any log handler existed. Every entry point loads the
+#: config FIRST and configures logging after, so these would only ever reach
+#: stderr — not the logfile the operator actually reads. setup_logging replays
+#: them once a handler is there.
+_deferred_config_errors: list = []
+
+
+def flush_deferred_config_errors() -> int:
+    """Re-emit config errors that were raised before logging was configured."""
+    pending, _deferred_config_errors[:] = list(_deferred_config_errors), []
+    for fmt, args in pending:
+        logger.error(fmt, *args)
+    return len(pending)
+
+
+def _warn_stale_llm_params(name: str, raw: Any, agent_cfg: Any) -> None:
+    """Name the agent whose profile-keyed llm_params were dropped.
+
+    The validator sees the params but not which agent they belong to, so the
+    comparison happens at the call sites, where both are at hand. Loud on
+    purpose: the values silently stop applying, which is exactly what the
+    strict check was built to prevent. It just must not cost the start.
+    """
+    if agent_cfg is None or not isinstance(raw, dict):
+        return
+    dropped = set(raw) - set(getattr(agent_cfg, "llm_params", None) or {})
+    if not dropped:
+        return
+    marker = (name, frozenset(dropped))
+    if marker in _reported_stale_llm_params:
+        return
+    _reported_stale_llm_params.add(marker)
+    chain = list(getattr(agent_cfg, "llm_profile", None) or []) + \
+        list(getattr(agent_cfg, "llm_profile_advanced", None) or [])
+    fmt = ("Agent '%s': llm_params for %s have NO effect — those profiles are in "
+           "none of its LLM chains %s. Values: %s")
+    args = (name, sorted(dropped), chain, {k: raw[k] for k in sorted(dropped)})
+    logger.error(fmt, *args)
+    if not logging.getLogger().handlers:
+        _deferred_config_errors.append((fmt, args))
+
+
+def _report_dropped_llm_params(data: dict, cfg: AgentSystemConfig) -> None:
+    """Whole-config pass over the raw server dicts (load_settings)."""
+    raw_servers = ((data.get("plugins") or {}).get("servers") or {})
+    for name, server in (getattr(cfg.plugins, "servers", None) or {}).items():
+        raw = ((raw_servers.get(name) or {}).get("agent_config") or {}).get("llm_params")
+        _warn_stale_llm_params(name, raw, getattr(server, "agent_config", None))
 
 
 # Cache for plugin discovery (avoid repeated calls)
@@ -531,8 +591,16 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     merged_config = default_config_dict.copy()
     merged_config = _deep_merge_dict(merged_config, resolved_config_dict, server_name)
     
-    # Create and return final MCPConfig instance
-    return MCPConfig.model_validate(merged_config)
+    # Create and return final MCPConfig instance. Same tolerance as the config
+    # load: a stale profile key that only appears AFTER inheritance (child
+    # overrides the chains, inherits the keyed params) would otherwise raise
+    # here — moving the abort from startup to agent creation, not removing it.
+    final = MCPConfig.model_validate(
+        merged_config, context={"drop_stale_llm_params": True})
+    _warn_stale_llm_params(
+        server_name, (merged_config.get("agent_config") or {}).get("llm_params"),
+        getattr(final, "agent_config", None))
+    return final
 
 
 def _deep_merge_dict(base: dict, override: dict, _path: str = "") -> dict:
