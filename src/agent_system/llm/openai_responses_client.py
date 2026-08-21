@@ -95,6 +95,10 @@ from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
 logger = logging.getLogger(__name__)
 
+#: Body-level error codes that are the 5xx class in an HTTP 200 envelope:
+#: retried here instead of escalating to a model switch.
+_TRANSIENT_BODY_ERROR_CODES = frozenset({"server_error"})
+
 #: format tag of the verbatim-items block this client writes/reads.
 RESPONSES_ITEMS_FORMAT = "openai-responses-items-v1"
 RESPONSES_ITEMS_TYPE = "reasoning.responses_items"
@@ -330,12 +334,23 @@ class OpenAIResponsesClient(LLMClient):
                 parts.append({"type": "input_text", "text": json.dumps(part, ensure_ascii=False)[:2000]})
         return parts
 
-    @classmethod
-    def _extract_verbatim_items(cls, msg: Any) -> Optional[list]:
+    def _extract_verbatim_items(self, msg: Any) -> Optional[list]:
         """Return the verbatim output items stored on an assistant message,
-        or None if the message carries none (foreign/legacy history)."""
+        or None if the message carries none (foreign/legacy history).
+
+        The format tag is not enough to decide that: every model on this route
+        writes the same tag, while the encrypted payload inside is bound to the
+        model that produced it. A block from a DIFFERENT model is therefore
+        foreign — replaying it gets the turn rejected (the gateway answers
+        "produced under a different model"), which is how a mid-run model
+        switch used to poison the whole session. Blocks written before the
+        model was recorded count as foreign too: a fresh chain start is the
+        cheap side of that bet.
+        """
         for block in (_get(msg, "reasoning_details") or []):
             if isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT:
+                if block.get("model") != self.model:
+                    continue
                 items = block.get("items")
                 if isinstance(items, list) and items:
                     return items
@@ -690,6 +705,9 @@ class OpenAIResponsesClient(LLMClient):
                 "type": RESPONSES_ITEMS_TYPE,
                 "format": RESPONSES_ITEMS_FORMAT,
                 "index": 0,
+                # Who produced these items. The encrypted payload only verifies
+                # against this model, so the replay side checks it.
+                "model": self.model,
                 "items": output,
             }]
 
@@ -712,14 +730,33 @@ class OpenAIResponsesClient(LLMClient):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_encrypted_reasoning_400(body_text: str) -> bool:
-        """Reasoning-artifact rejection — OpenAI encrypted items OR Gemini
-        thought signatures (both heal the same way on this route: drop the
-        artifacts, retry with a fresh chain)."""
+    def _is_reasoning_artifact_rejection(body_text: str) -> bool:
+        """Reasoning-artifact rejection — OpenAI encrypted items, Gemini
+        thought signatures, or a cross-model replay refused by the gateway.
+        All heal the same way: drop the artifacts, retry on the SAME model.
+
+        The last two clauses catch the gateway's cross-model wording
+        ("encrypted REASONING ... produced under a different model"), which
+        the "encrypted content" clause misses.
+        """
         lowered = body_text.lower()
         return ("encrypted content" in body_text and "rs_" in body_text) or \
                "invalid_encrypted_content" in body_text or \
-               "thought signature" in lowered
+               "thought signature" in lowered or \
+               "encrypted reasoning" in lowered or \
+               "produced under a different model" in lowered
+
+    @staticmethod
+    def _is_transient_body_error(body_err: Any) -> bool:
+        """A body-level error that is worth one more call on the SAME model.
+
+        Only the gateway's 5xx-equivalent qualifies. Everything else (content
+        filter, malformed request, unknown model) is deterministic: repeating
+        it would burn calls and delay the fallback chain that exists for it.
+        """
+        if not isinstance(body_err, dict):
+            return False
+        return str(body_err.get("code", "")).lower() in _TRANSIENT_BODY_ERROR_CODES
 
     async def _notify_error(self, url: str, duration_ms: float, error_msg: str) -> None:
         """Post-response notification for terminal failures — keeps the
@@ -848,20 +885,24 @@ class OpenAIResponsesClient(LLMClient):
                     # from the provider), heal exactly like the httpx client:
                     # drop the artifacts (session AND next payload) and retry
                     # once with a fresh chain. Does NOT consume a retry slot.
-                    if (response.status_code == 400 and not _enc_retried
-                            and self._is_encrypted_reasoning_400(body_text)):
+                    # 404 is included because the gateway answers a cross-model
+                    # replay with it — but ONLY via the body test, since 404 is
+                    # also "no such model", which must keep reaching the chain.
+                    if (response.status_code in (400, 404) and not _enc_retried
+                            and self._is_reasoning_artifact_rejection(body_text)):
                         _enc_retried = True
                         n = strip_all_reasoning_artifacts(messages)
                         payload = self._build_payload(messages, tools)
                         if _tier_dropped:
                             payload.pop("service_tier", None)
                         logger.warning(
-                            "Responses-400 retry: stripped reasoning artifacts from "
+                            "Responses-%d retry: stripped reasoning artifacts from "
                             "%d message(s) (defective reasoning item). model=%s detail=%r",
-                            n, self.model, body_text[:500])
+                            response.status_code, n, self.model, body_text[:500])
                         await self._notify_retry(
                             "openai_responses", self.model, url, False,
-                            "http-400 reasoning-items strip", attempt, self.max_retries + 1)
+                            f"http-{response.status_code} reasoning-items strip",
+                            attempt, self.max_retries + 1)
                         continue
                     error_msg = f"HTTP {response.status_code}: {body_text[:300]}"
                     logger.error(f"Responses request failed: {error_msg}")
@@ -923,7 +964,7 @@ class OpenAIResponsesClient(LLMClient):
 
                 # 2) Defective encrypted reasoning item reported body-level.
                 if body_err and not _enc_retried and \
-                        self._is_encrypted_reasoning_400(json.dumps(body_err, ensure_ascii=False)):
+                        self._is_reasoning_artifact_rejection(json.dumps(body_err, ensure_ascii=False)):
                     _enc_retried = True
                     n = strip_all_reasoning_artifacts(messages)
                     payload = self._build_payload(messages, tools)
@@ -936,6 +977,25 @@ class OpenAIResponsesClient(LLMClient):
                     await self._notify_retry(
                         "openai_responses", self.model, url, False,
                         "body-error reasoning-items strip", attempt, self.max_retries + 1)
+                    continue
+
+                # 3) Transient upstream failure reported body-level: the 5xx
+                #    class in a 200 envelope. Retried here because the agent
+                #    server's only lever on assistant.error is a model switch.
+                #    Code-gated, not blanket: a deterministic refusal (content
+                #    filter) must keep reaching the fallback chain at once.
+                if (body_err and attempt < self.max_retries
+                        and self._is_transient_body_error(body_err)):
+                    backoff = self.retry_backoff * (2 ** attempt)
+                    logger.warning(
+                        "Responses body server-error, retry %d/%d in %.0fs: %s (%s)",
+                        attempt + 1, self.max_retries, backoff, self.model,
+                        str(body_err)[:200])
+                    await self._notify_retry(
+                        "openai_responses", self.model, url, False,
+                        "body server-error", attempt, self.max_retries + 1)
+                    await self._cancellable_sleep(backoff, cancellation_token)
+                    attempt += 1
                     continue
 
                 await self._notify_post_response({

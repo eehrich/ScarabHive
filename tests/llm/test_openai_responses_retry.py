@@ -290,3 +290,156 @@ class TestRateLimitInsideAnHttp200:
                       service_tier=None).chat_tools(MESSAGES, [])
 
         assert slept == [3.0, 6.0], "body-429 must back off exponentially too"
+
+
+#: What the gateway answers when a history carries another model's reasoning
+#: items. Verbatim from production (2026-08-21) — including the status code,
+#: which is 404, not 400.
+CROSS_MODEL_BODY = (
+    '{"error":{"message":"Your request contains encrypted reasoning or '
+    'compaction content that was produced under a different model. Encrypted '
+    'payloads can only be replayed to the endpoint that created them."}}')
+
+SAMPLE_OUTPUT = [
+    {"type": "reasoning", "id": "rs_abc", "status": "completed",
+     "encrypted_content": "BLOB", "format": "openai-responses-api",
+     "summary": [{"type": "summary_text", "text": "thinking"}]},
+    {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+     "name": "get_value", "arguments": "{}"},
+]
+
+
+def _poisoned_messages():
+    """A history carrying a foreign model's reasoning item — the shape the
+    gateway rejects. Built through the client's own formatter so the block is
+    the real thing, not a hand-drawn imitation."""
+    assistant = ChatMessage(**_client()._format_response({"output": SAMPLE_OUTPUT})["assistant"])
+    return [ChatMessage(role="user", content="hi"), assistant,
+            ChatMessage(role="tool", content="r", tool_call_id="call_1")]
+
+
+def _rejection(status: int, body: str) -> httpx.Response:
+    """A 4xx needs its request attached — the client builds an HTTPStatusError
+    from `response.request`, and a bare Response has none."""
+    return httpx.Response(status, text=body,
+                          request=httpx.Request("POST", "https://openrouter.ai/api/v1/responses"))
+
+
+class TestCrossModelReasoningRejection:
+    """The rejection that cost the most: a healable content problem wearing
+    the status code of a dead endpoint.
+
+    Measured over five days of production logs: ten of these, every one turned
+    into a persistent fallback onto a 4x-priced model, because the heal below
+    was gated on status 400 and on wording this body does not use.
+    """
+
+    async def test_it_heals_on_the_same_model_instead_of_raising(self, transport):
+        msgs = _poisoned_messages()
+        assert any(getattr(m, "reasoning_details", None) for m in msgs), \
+            "fixture is not poisoned — the test would prove nothing"
+        t = transport([_rejection(404, CROSS_MODEL_BODY), httpx.Response(200, json=OK_BODY)])
+
+        result = await _client().chat_tools(msgs, [])
+
+        assert result["assistant"]["content"] == "done"
+        assert t.calls == 2, "the healed request was never sent"
+        assert not any(i["type"] == "reasoning" for i in t.payloads[1]["input"]), \
+            "the retry replayed the very artifact that was rejected"
+        assert not any(getattr(m, "reasoning_details", None) for m in msgs), \
+            "session still poisoned — the next turn would be rejected again"
+
+    async def test_a_real_missing_model_404_still_reaches_the_fallback_chain(self, transport):
+        """The heal is gated on the BODY, not the status: 404 is also how the
+        gateway says 'no such model', and that one must keep raising so the
+        chain moves on."""
+        t = transport([_rejection(404, '{"error":{"message":"No endpoints found for model x"}}')])
+        with pytest.raises(httpx.HTTPStatusError):
+            await _client().chat_tools(MESSAGES, [])
+        assert t.calls == 1
+
+    async def test_the_heal_fires_once_per_request(self, transport):
+        """A second rejection means stripping did not help. Raise instead of
+        circling on the same body."""
+        t = transport([_rejection(404, CROSS_MODEL_BODY), _rejection(404, CROSS_MODEL_BODY)])
+        with pytest.raises(httpx.HTTPStatusError):
+            await _client().chat_tools(_poisoned_messages(), [])
+        assert t.calls == 2
+
+
+class TestBodyLevelServerError:
+    """The gateway proxies its own 5xx as HTTP 200 with an error body — same
+    class as a status-code 5xx, delivered in a different envelope. It gets the
+    same treatment: retry here, instead of handing the caller an error whose
+    only lever is switching the model.
+
+    Production, five days: every body-level error carried code=server_error
+    ("stream closed with reason: error", "Upstream idle timeout exceeded",
+    "The operation was aborted") — all transient, none of them about the model.
+    """
+
+    BODY_SERVER_ERROR = {"error": {"code": "server_error",
+                                   "message": "stream closed with reason: error"}}
+
+    async def test_it_is_retried_on_the_same_model(self, transport):
+        t = transport([httpx.Response(200, json=self.BODY_SERVER_ERROR),
+                       httpx.Response(200, json=OK_BODY)])
+        result = await _client().chat_tools(MESSAGES, [])
+        assert t.calls == 2
+        assert result["assistant"]["content"] == "done"
+        assert "error" not in result["assistant"]
+
+    async def test_a_deterministic_refusal_is_not_retried(self, transport):
+        """A content filter answers the same way every time — repeating it
+        only delays the fallback chain that exists for exactly this case."""
+        t = transport([httpx.Response(200, json={"error": {"code": "content_filter",
+                                                           "message": "blocked"}}),
+                       httpx.Response(200, json=OK_BODY)])
+        result = await _client().chat_tools(MESSAGES, [])
+        assert t.calls == 1, "the refusal was repeated instead of handed to the chain"
+        assert result["assistant"]["error"]["type"] == "upstream_error_content_filter"
+
+    async def test_it_gives_up_after_the_retry_budget(self, transport):
+        """Exhausted retries surface as an upstream error — the model switch
+        is then the right answer, just not the first one."""
+        t = transport([httpx.Response(200, json=self.BODY_SERVER_ERROR)] * 3)
+        result = await _client(max_retries=2).chat_tools(MESSAGES, [])
+        assert t.calls == 3
+        assert result["assistant"]["error"]["type"] == "upstream_error_server_error"
+
+    async def test_it_backs_off_between_attempts(self, transport, monkeypatch):
+        slept: list[float] = []
+
+        async def fake_sleep(self, seconds, token=None):
+            slept.append(seconds)
+
+        monkeypatch.setattr(OpenAIResponsesClient, "_cancellable_sleep", fake_sleep)
+        transport([httpx.Response(200, json=self.BODY_SERVER_ERROR),
+                   httpx.Response(200, json=self.BODY_SERVER_ERROR),
+                   httpx.Response(200, json=OK_BODY)])
+        await _client(max_retries=2, retry_backoff=3.0).chat_tools(MESSAGES, [])
+        assert slept == [3.0, 6.0]
+
+
+class TestReasoningRejectionDetection:
+    """The detector's tolerance. Too narrow and a healable rejection escapes
+    as a dead endpoint (what happened); too wide and an unrelated 404 gets
+    stripped and repeated instead of moving down the chain."""
+
+    @pytest.mark.parametrize("body", [
+        "The encrypted content for item rs_x could not be verified",
+        '"code": "invalid_encrypted_content"',
+        "Corrupted thought signature.",
+        "Your request contains encrypted reasoning or compaction content",
+        "content that was produced under a different model",
+    ])
+    def test_known_rejections_are_recognised(self, body):
+        assert OpenAIResponsesClient._is_reasoning_artifact_rejection(body)
+
+    @pytest.mark.parametrize("body", [
+        "Invalid request: missing field input",
+        "No endpoints found for model foo/bar",
+        "Insufficient credits",
+    ])
+    def test_unrelated_errors_are_not(self, body):
+        assert not OpenAIResponsesClient._is_reasoning_artifact_rejection(body)

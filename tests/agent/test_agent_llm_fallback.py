@@ -678,3 +678,158 @@ async def test_4xx_persistence_follows_the_status(
         assert agent._active_fallback_llm is fallback,             f"HTTP {status} must stick — otherwise the dead endpoint is "             f"re-probed on every step"
     else:
         assert agent._active_fallback_llm is None,             f"HTTP {status} is request-shaped and must not stick"
+
+
+class _UpstreamErrorLLM:
+    """Answers HTTP 200 with an error body — how a gateway proxies its own
+    5xx. First call fails, later calls succeed."""
+
+    def __init__(self):
+        self.call_count = 0
+
+    def supports_streaming(self):
+        return False
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        self.call_count += 1
+        if self.call_count == 1:
+            return {"assistant": {"role": "assistant", "content": "", "error": {
+                "message": "stream closed with reason: error",
+                "type": "upstream_error_server_error"}}}
+        return {"assistant": {"role": "assistant", "content": "FINAL", "tool_calls": None}}
+
+
+@pytest.mark.asyncio
+async def test_an_upstream_error_does_not_pin_the_agent_to_the_fallback(
+        system_config_with_profiles):
+    """A gateway hiccup says nothing about the model's availability. Pinning it
+    routed whole hours onto the next chain member — for the writer chains that
+    is a 4x-priced model."""
+    agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=3)
+    agent_config.tools.allowed = ["*"]
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+
+    primary = _UpstreamErrorLLM()
+    fallback = _ScriptedLLM("fallback")
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=primary)
+    agent._create_fallback_llm = lambda profile: fallback
+
+    async for event in agent.run_events("test task"):
+        if event.get("type") == "end":
+            break
+
+    assert fallback.call_count >= 1, "this request was not rescued"
+    assert agent._active_fallback_llm is None, (
+        "the upstream error stuck — every later request of this agent would "
+        "run on the fallback until the recovery window expires")
+
+
+def test_switching_back_after_recovery_strips_the_fallbacks_reasoning(
+        system_config_with_profiles, agent_config_with_fallbacks):
+    """The other half of the model switch. Without it the first call after
+    recovery replays the fallback's reasoning items to the original model,
+    which rejects them — straight back into the fallback."""
+    from agent_system.llm.models import ChatMessage
+
+    mcp_config = MCPConfig(type="agent", enabled=True,
+                           agent_config=agent_config_with_fallbacks)
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=MagicMock())
+    agent._active_fallback_llm = MagicMock()
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time() - 99999  # recovery is due
+
+    messages = [ChatMessage(role="user", content="hi"),
+                ChatMessage(role="assistant", content="x",
+                            reasoning_details=[{"format": "openai-responses-items-v1",
+                                                "type": "reasoning.responses_items",
+                                                "items": [{"type": "reasoning", "id": "rs_1"}]}])]
+
+    assert agent._check_fallback_recovery(messages) is True
+    assert agent._active_fallback_llm is None
+    assert not messages[1].reasoning_details, (
+        "the fallback model's reasoning survived the switch back — the next "
+        "call hands the original model an artifact it cannot verify")
+
+
+class _ArtifactLLM:
+    """Answers with a reasoning_details block and records, per call, whether the
+    history it was handed still carried one."""
+
+    def __init__(self, name, before_answer=None):
+        self.name = name
+        self.call_count = 0
+        self.saw_artifacts = []
+        self._before_answer = before_answer
+
+    def supports_streaming(self):
+        return False
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        self.call_count += 1
+        self.saw_artifacts.append(
+            any(getattr(m, "reasoning_details", None) for m in messages))
+        if self._before_answer:
+            self._before_answer()
+        if self.call_count == 1:
+            return {"assistant": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "c1", "function": {
+                    "name": "some_tool", "arguments": "{}"}}],
+                "reasoning_details": [{"format": "openai-responses-items-v1",
+                                       "type": "reasoning.responses_items",
+                                       "items": [{"type": "reasoning", "id": "rs_1"}]}]}}
+        return {"assistant": {"role": "assistant",
+                              "content": f"FINAL-{self.name}", "tool_calls": None}}
+
+
+@pytest.mark.asyncio
+async def test_the_step_loop_hands_the_history_to_the_recovery_switch(
+        system_config_with_profiles):
+    """Wiring, not just the method: the strip only happens if the step loop
+    actually passes its messages. Dropping the argument left every other test
+    in this file green, so this one drives the real loop.
+
+    Step 1 runs on the persistent fallback and produces a reasoning block, then
+    the recovery clock is aged. Step 2 must reach the original model with a
+    clean history."""
+    agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=3)
+    agent_config.tools.allowed = ["*"]
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+
+    original = _ArtifactLLM("original")
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=original)
+
+    def age_the_clock():
+        agent._fallback_activated_at = time.time() - 99999
+
+    fallback = _ArtifactLLM("fallback", before_answer=age_the_clock)
+    agent._active_fallback_llm = fallback
+    agent._active_fallback_profile = "openai"
+    agent._fallback_activated_at = time.time()
+
+    async for event in agent.run_events("test task"):
+        if event.get("type") == "end":
+            break
+
+    assert fallback.call_count == 1, "step 1 did not run on the persistent fallback"
+    assert original.call_count >= 1, "recovery never handed the run back"
+    assert original.saw_artifacts[0] is False, (
+        "the fallback's reasoning reached the original model — the gateway "
+        "rejects that and the agent falls straight back")
+
+
+def test_recovery_without_messages_still_resets(
+        system_config_with_profiles, agent_config_with_fallbacks):
+    """reset_fallback stays callable as a bare public API (no history at hand)."""
+    mcp_config = MCPConfig(type="agent", enabled=True,
+                           agent_config=agent_config_with_fallbacks)
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=MagicMock())
+    agent._active_fallback_llm = MagicMock()
+    agent._fallback_activated_at = time.time() - 99999
+
+    assert agent._check_fallback_recovery() is True
+    assert agent._active_fallback_llm is None

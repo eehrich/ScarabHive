@@ -470,14 +470,38 @@ class TestHookPayloadKeys:
         assert '"response": response_data' not in src
 
 
-class TestEncrypted400Detection:
-    def test_detects_verification_error(self):
-        assert OpenAIResponsesClient._is_encrypted_reasoning_400(
-            'The encrypted content for item rs_x could not be verified')
-        assert OpenAIResponsesClient._is_encrypted_reasoning_400(
-            '"code": "invalid_encrypted_content"')
-        assert not OpenAIResponsesClient._is_encrypted_reasoning_400(
-            'Invalid request: missing field input')
+class TestVerbatimReplayIsModelBound:
+    """Every model on this route writes the same format tag, but the encrypted
+    payload only verifies against the model that produced it. So the block
+    records its model and the replay checks it — otherwise a mid-run switch
+    (escalation, fallback, continued session) replays foreign items and the
+    gateway rejects the turn."""
+
+    def test_the_producing_model_is_recorded(self):
+        assistant = _client(model="A")._format_response({"output": SAMPLE_OUTPUT})["assistant"]
+        assert assistant["reasoning_details"][0]["model"] == "A"
+
+    def test_the_same_model_replays_verbatim(self):
+        c = _client(model="A")
+        msg = ChatMessage(**c._format_response({"output": SAMPLE_OUTPUT})["assistant"])
+        assert [i["type"] for i in c._messages_to_input([msg])][0] == "reasoning"
+
+    def test_another_model_does_not(self):
+        producer = _client(model="A")
+        msg = ChatMessage(**producer._format_response({"output": SAMPLE_OUTPUT})["assistant"])
+        items = _client(model="B")._messages_to_input([msg])
+        assert all(i["type"] != "reasoning" for i in items), \
+            "foreign reasoning replayed — this is the payload the gateway rejects"
+        assert [i["call_id"] for i in items] == ["call_1", "call_2"], \
+            "the turn itself must survive; only the artifacts are foreign"
+
+    def test_a_block_without_a_model_counts_as_foreign(self):
+        """Legacy sessions (written before the model was recorded) restart the
+        chain instead of gambling on the payload matching."""
+        c = _client(model="A")
+        msg = ChatMessage(**c._format_response({"output": SAMPLE_OUTPUT})["assistant"])
+        msg.reasoning_details[0].pop("model")
+        assert all(i["type"] != "reasoning" for i in c._messages_to_input([msg]))
 
 
 def _iter_all_parts(payload):

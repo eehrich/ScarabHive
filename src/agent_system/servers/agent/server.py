@@ -882,11 +882,15 @@ class Agent(MCPServer):
         """
         return self._request_manager.is_cancelled(request_id)
     
-    def reset_fallback(self) -> None:
+    def reset_fallback(self, messages: Optional[List[ChatMessage]] = None) -> None:
         """Reset persistent fallback LLM to use original LLM again.
-        
+
         Call this when you want to try the original (e.g., batch) LLM again
         after rate limit/quota was exhausted and fallback was activated.
+
+        *messages* is stripped of reasoning artifacts for the same reason
+        :meth:`_switch_to_fallback_llm` strips them: going back is a model
+        switch too, and the history now carries the FALLBACK model's items.
         """
         if self._active_fallback_llm is not None:
             logger.info(
@@ -897,6 +901,13 @@ class Agent(MCPServer):
             self._active_fallback_profile = None
             self._fallback_activated_at = None
             self._jittered_recovery_seconds = None  # Reset jitter for next fallback
+            if messages:
+                stripped = strip_all_reasoning_artifacts(messages)
+                if stripped:
+                    logger.info(
+                        f"[{self.name}] Stripped reasoning artifacts from {stripped} "
+                        f"message(s) on switch back to the original LLM"
+                    )
             # Restore the ORIGINAL profile info saved at switch time --
             # stripping the ":fallback" suffix only kept the fallback name.
             if self._original_llm_profile_info is not None:
@@ -905,7 +916,7 @@ class Agent(MCPServer):
             elif self.llm_profile_info and ":fallback" in self.llm_profile_info:
                 self.llm_profile_info = self.llm_profile_info.replace(":fallback", "")
     
-    def _check_fallback_recovery(self) -> bool:
+    def _check_fallback_recovery(self, messages: Optional[List[ChatMessage]] = None) -> bool:
         """Check if fallback recovery period has elapsed and reset if so.
         
         Uses a per-instance jittered recovery time to prevent "thundering herd"
@@ -943,7 +954,7 @@ class Agent(MCPServer):
                 f"[{self.name}] Fallback recovery period ({self._jittered_recovery_seconds:.0f}s) elapsed. "
                 f"Trying original LLM again after {int(elapsed)}s in fallback mode."
             )
-            self.reset_fallback()
+            self.reset_fallback(messages)
             return True
         
         remaining = int(self._jittered_recovery_seconds - elapsed)
@@ -2036,9 +2047,13 @@ class Agent(MCPServer):
             # LLM call with streaming support and fallback handling
             llm_out = None
             
-            # Check if fallback recovery period has elapsed - try original LLM again
-            self._check_fallback_recovery()
-            
+            # Check if fallback recovery period has elapsed - try original LLM again.
+            # Coming BACK is a model switch too, so it needs the same strip as the
+            # switch away: the history now carries the FALLBACK model's reasoning
+            # items, and the original's gateway rejects them — straight back into
+            # the fallback that was just left.
+            self._check_fallback_recovery(messages)
+
             # Check if we have an active persistent fallback (from previous rate limit/quota exhaustion)
             if self._active_fallback_llm is not None:
                 logger.info(f"[{self.name}] Using persistent fallback LLM: {self._active_fallback_profile}")
@@ -2150,8 +2165,13 @@ class Agent(MCPServer):
                                 f"LLM error ({error_type}), switching to {fallback_profile}",
                                 meta={"step": step + 1, "fallback": fallback_profile}
                             )
+                            # NON-persistent, like the 5xx path it is the twin
+                            # of: an upstream error says the gateway stumbled,
+                            # not that this model is gone for the next hour.
+                            # Rescues THIS request; the next starts on the
+                            # original again.
                             fallback_llm = self._switch_to_fallback_llm(
-                                fallback_profile, persistent=True,
+                                fallback_profile, persistent=False,
                                 messages=messages)
                             if fallback_llm:
                                 display_profile_info = f"{fallback_profile}:fallback"
