@@ -29,7 +29,7 @@ class TestAgentSanitizationIntegration:
         system_config = AgentSystemConfig(
             llm_system=LLMSystemConfig(
                 models={
-                    "gpt-4": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="fake-key")
+                    "gpt-4": LLMModelConfig(provider="openai", model="gpt-4", api_key="fake-key")
                 },
                 profiles={
                     "normal": LLMProfile(model_ref="gpt-4")

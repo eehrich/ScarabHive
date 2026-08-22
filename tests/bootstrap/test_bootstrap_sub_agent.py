@@ -12,7 +12,7 @@ def create_test_config(**overrides):
     base_config = {
         "llm_system": LLMSystemConfig(
             models={
-                "test-model": LLMModelConfig(provider="openai", model="test-model", openai_api_key="fake-key")
+                "test-model": LLMModelConfig(provider="openai", model="test-model", api_key="fake-key")
             },
             profiles={
                 "normal": LLMProfile(model_ref="test-model")

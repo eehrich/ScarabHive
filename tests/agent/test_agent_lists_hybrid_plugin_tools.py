@@ -56,7 +56,7 @@ class _LegacyServer:
 
 def _llm_system():
     return LLMSystemConfig(
-        models={"m": LLMModelConfig(provider="openai", model="m", openai_api_key="k")},
+        models={"m": LLMModelConfig(provider="openai", model="m", api_key="k")},
         profiles={"normal": LLMProfile(model_ref="m")},
         default_profile="normal",
     )

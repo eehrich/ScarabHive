@@ -10,7 +10,7 @@ def test_server_llm_override():
     config = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
-                "base-model": LLMModelConfig(provider="openai", model="gpt-3.5-turbo", openai_api_key="base-key")
+                "base-model": LLMModelConfig(provider="openai", model="gpt-3.5-turbo", api_key="base-key")
             },
             profiles={
                 "normal": LLMProfile(model_ref="base-model")
@@ -53,7 +53,7 @@ def test_server_no_override():
     config = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
-                "base-model": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="base-key")
+                "base-model": LLMModelConfig(provider="openai", model="gpt-4", api_key="base-key")
             },
             profiles={
                 "normal": LLMProfile(model_ref="base-model")

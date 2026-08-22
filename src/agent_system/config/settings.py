@@ -7,6 +7,7 @@ behavior explicit and testable.
 """
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Optional
 from pathlib import Path
@@ -360,6 +361,8 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             # Conservative: if resolution fails for any reason, keep original values
             pass
 
+    _resolve_model_inheritance(data)
+
     # Validate configuration with Pydantic
     try:
         cfg = AgentSystemConfig.model_validate(
@@ -371,6 +374,51 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         raise
     _report_dropped_llm_params(data, cfg)
     return cfg
+
+
+def _resolve_model_inheritance(data: dict) -> None:
+    """Resolve ``extends`` on llm_system.models, in place.
+
+    A model entry inherits from another model entry — variants (``-unlimited``,
+    ``-nostream``) from theirs, family members from the one that carries the
+    shared knobs. Same idea as the agent ``type:`` chains, and the same merge:
+    field-wise deep, lists via +item/!pattern.
+
+    Runs before validation: LLMModelConfig has no ``extends`` field, and with
+    extra="forbid" an unresolved one is a loud error instead of a silent
+    fallback to the defaults.
+    """
+    llm_system = data.get("llm_system")
+    if not isinstance(llm_system, dict):
+        return
+    models = llm_system.get("models")
+    if not isinstance(models, dict) or not models:
+        return
+
+    sources = {k: v for k, v in models.items() if isinstance(v, dict)}
+    resolved: dict = {}
+
+    def resolve(name: str, chain: tuple) -> dict:
+        if name in resolved:
+            return resolved[name]
+        if name in chain:
+            raise ValueError(
+                f"llm_system.models: extends cycle {' -> '.join(chain + (name,))}")
+        src = sources.get(name)
+        if src is None:
+            raise ValueError(
+                f"llm_system.models: '{chain[-1] if chain else name}' extends "
+                f"'{name}', which is not a model entry")
+        own = {k: v for k, v in src.items() if k != "extends"}
+        parent = src.get("extends")
+        out = (_deep_merge_dict(copy.deepcopy(resolve(parent, chain + (name,))),
+                                own, name)
+               if parent else copy.deepcopy(own))
+        resolved[name] = out
+        return out
+
+    for name in list(sources):
+        models[name] = copy.deepcopy(resolve(name, ()))
 
 
 #: Already-reported (agent, keys) pairs. get_mcp_config_by_name re-validates on

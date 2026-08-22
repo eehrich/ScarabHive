@@ -15,7 +15,6 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 from enum import Enum
 import logging
-import yaml
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -131,22 +130,25 @@ class ModelCapabilities(BaseModel):
 def load_capabilities_from_config(config_path: Optional[str | Path] = None) -> dict[str, ModelCapabilities]:
     """Load model capabilities from configuration file(s).
     
-    Loads capabilities from all included config files (llm.yaml, llm_openrouter.yaml, etc.)
-    by using the merged configuration system.
+    Loads capabilities from all included config files (llm.yaml,
+    llm_openrouter.yaml, ...) through the merged configuration system.
     
     Args:
-        config_path: Optional explicit path to a single config file. If None, 
-                     loads from the global merged configuration.
+        config_path: Optional path to a MASTER config (config.yaml). Its
+                     includes are followed. If None, the global merged
+                     configuration is used.
     
     Returns:
         Dictionary mapping model names to their capabilities
     """
     capabilities_map = {}
     
-    # First, try to get from global merged config (preferred method)
+    # Always through the merged configuration: config.yaml is the only file
+    # read directly, its includes bring llm.yaml, llm_openrouter.yaml and the
+    # per-plugin model tables — resolved, with `extends` already folded in.
     try:
         from agent_system.config import load_settings
-        config = load_settings()
+        config = load_settings(str(config_path)) if config_path else load_settings()
         
         if config and hasattr(config, 'llm_system') and config.llm_system:
             models = config.llm_system.models or {}
@@ -185,68 +187,21 @@ def load_capabilities_from_config(config_path: Optional[str | Path] = None) -> d
     except Exception as e:
         logger.debug("Could not load from merged config (%s), falling back to file loading", e)
     
-    # Fallback: Load directly from YAML files
-    if config_path is None:
-        # Try default locations
-        possible_paths = [
-            Path("config/llm.yaml"),
-            Path(__file__).parent.parent.parent.parent / "config" / "llm.yaml",
-        ]
-        config_path = None
-        for path in possible_paths:
-            if path.exists():
-                config_path = path
-                break
-        
-        if config_path is None:
-            logger.warning("No llm.yaml config file found, using empty capabilities registry")
-            return {}
-    
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        
-        if not config or 'llm_system' not in config:
-            logger.warning("Invalid config structure in %s", config_path)
-            return {}
-        
-        llm_system = config['llm_system']
-        models = llm_system.get('models', {})
-        
-        capabilities_map = {}
-        for model_name, model_config in models.items():
-            # Extract capabilities from model config
-            caps_data = model_config.get('capabilities', {})
-            
-            # Handle 'multimodal' shorthand
-            if caps_data.get('multimodal'):
-                caps_data['image_input'] = True
-                caps_data['audio_input'] = True
-                caps_data['video_input'] = True
-                del caps_data['multimodal']  # Remove before passing to ModelCapabilities
-            
-            # Convert to ModelCapabilities instance
-            capabilities = ModelCapabilities(**caps_data)
-            capabilities_map[model_name] = capabilities
-            
-            # Also register by the actual model string (e.g., "gpt-5" from model: gpt-5)
-            actual_model = model_config.get('model')
-            if actual_model and actual_model != model_name:
-                capabilities_map[actual_model] = capabilities
-        
-        logger.info("Loaded capabilities for %d models from %s", len(capabilities_map), config_path)
-        return capabilities_map
-    
-    except Exception as e:
-        logger.error("Error loading capabilities from %s: %s", config_path, e)
-        return {}
+    # No second reader: config.yaml is the only file read directly, everything
+    # else arrives through its includes. A single llm.yaml would miss the 36
+    # models in llm_openrouter.yaml and every unresolved `extends` — a registry
+    # that is quietly half full is worse than an empty one.
+    logger.error("Capabilities registry stays empty: the merged configuration "
+                 "could not be loaded")
+    return capabilities_map
 
 
 def init_capabilities_registry(config_path: Optional[str | Path] = None) -> None:
     """Initialize the global capabilities registry from configuration.
     
     Args:
-        config_path: Path to llm.yaml config file. If None, uses defaults.
+        config_path: Optional master config (config.yaml). If None, the
+                     global merged configuration is used.
     """
     global _capabilities_registry
     _capabilities_registry = load_capabilities_from_config(config_path)

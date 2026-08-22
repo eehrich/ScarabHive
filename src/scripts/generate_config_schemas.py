@@ -90,6 +90,28 @@ def _allow_bare_skills_list(defs: dict) -> None:
             0, {"type": "array", "items": {"type": "string"}})
 
 
+def _add_model_inheritance(inner: dict, defs: dict) -> None:
+    """Teach the schema about ``extends``.
+
+    It lives ONLY in the YAML: settings._resolve_model_inheritance folds it
+    away before validation, so LLMModelConfig deliberately has no ``extends``
+    field — with extra="forbid" a leftover one has to be an error, not a
+    silently ignored key. The editor still needs to know it, hence here.
+    """
+    model = defs.get("LLMModelConfig")
+    if model is not None:
+        model.setdefault("properties", {})["extends"] = {
+            "type": "string",
+            "title": "Extends",
+            "description": "Name of another model entry to inherit from. Merged "
+                           "field-wise; lists follow the +item/!pattern syntax of "
+                           "the agent type: chains.",
+        }
+        # An inheriting entry need not repeat `model` — it comes from the parent.
+        if isinstance(model.get("required"), list) and "model" in model["required"]:
+            model["required"] = [r for r in model["required"] if r != "model"]
+
+
 def build_llm_schema() -> dict:
     """Schema for config/llm.yaml, derived from LLMSystemConfig."""
     from agent_system.config.models import LLMSystemConfig
@@ -97,6 +119,7 @@ def build_llm_schema() -> dict:
     inner = LLMSystemConfig.model_json_schema()
     _forbid_unknown_keys(inner)
     defs = _hoist_defs(inner)
+    _add_model_inheritance(inner, defs)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "LLM Configuration Schema",

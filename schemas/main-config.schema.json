@@ -801,6 +801,7 @@
       "additionalProperties": false
     },
     "LLMModelConfig": {
+      "additionalProperties": false,
       "description": "Individual LLM model configuration",
       "properties": {
         "provider": {
@@ -1115,8 +1116,7 @@
         "model"
       ],
       "title": "LLMModelConfig",
-      "type": "object",
-      "additionalProperties": false
+      "type": "object"
     },
     "LLMProfile": {
       "description": "LLM usage profile that references a model",

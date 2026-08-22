@@ -106,6 +106,11 @@ class BatchSystemConfig(BaseModel):
 
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
+    # Same reason as AgentConfig: an unknown key here is silently dropped, and
+    # since `extends` is resolved BEFORE validation, a leftover one would mean
+    # the entry quietly runs on defaults instead of on its base.
+    model_config = ConfigDict(extra="forbid")
+
     provider: Literal["ollama", "openai", "openai_httpx", "openai_responses", "anthropic", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
     model: str
     api_key: Optional[str] = None

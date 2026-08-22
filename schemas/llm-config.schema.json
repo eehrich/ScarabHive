@@ -219,6 +219,7 @@
       "additionalProperties": false
     },
     "LLMModelConfig": {
+      "additionalProperties": false,
       "description": "Individual LLM model configuration",
       "properties": {
         "provider": {
@@ -527,14 +528,16 @@
           ],
           "default": null,
           "title": "Batch Provider"
+        },
+        "extends": {
+          "type": "string",
+          "title": "Extends",
+          "description": "Name of another model entry to inherit from. Merged field-wise; lists follow the +item/!pattern syntax of the agent type: chains."
         }
       },
-      "required": [
-        "model"
-      ],
+      "required": [],
       "title": "LLMModelConfig",
-      "type": "object",
-      "additionalProperties": false
+      "type": "object"
     },
     "LLMProfile": {
       "description": "LLM usage profile that references a model",

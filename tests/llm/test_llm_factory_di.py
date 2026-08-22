@@ -21,7 +21,7 @@ def make_config():
                 "gpt-test": LLMModelConfig(
                     provider="openai", 
                     model="gpt-test", 
-                    openai_api_key="test-key"
+                    api_key="test-key"
                 )
             },
             profiles={
@@ -76,7 +76,7 @@ def test_llmfactory_respects_agent_profile():
     config.llm_system.models["gpt-turbo"] = LLMModelConfig(
         provider="openai",
         model="gpt-turbo",
-        openai_api_key="test-key"
+        api_key="test-key"
     )
     config.llm_system.profiles["turbo"] = LLMProfile(model_ref="gpt-turbo")
     

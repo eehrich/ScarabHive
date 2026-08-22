@@ -23,7 +23,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 REPO_ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -202,9 +201,13 @@ class TestAgainstTheShippedModels:
 
     @staticmethod
     def _shipped() -> dict[str, LLMModelConfig]:
-        data = yaml.safe_load(OPENROUTER_YAML.read_text(encoding="utf-8"))
-        return {name: LLMModelConfig.model_validate(entry)
-                for name, entry in data["llm_system"]["models"].items()}
+        """Der Katalog kommt aus der gemergten Config, nicht aus einer einzelnen
+        Datei: seit Modelle voneinander erben (``extends``, aufgeloest in
+        settings) ist ein roher YAML-Eintrag unvollstaendig — er traegt nur
+        noch, was er gegenueber seinem Elternteil aendert."""
+        from agent_system.config.settings import load_settings
+
+        return dict(load_settings().llm_system.models or {})
 
     def test_every_shipped_openrouter_model_gets_the_default(self):
         shipped = self._shipped()

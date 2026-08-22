@@ -466,7 +466,7 @@ async def test_sensitive_data_not_logged(
                     provider="openai",  # Use valid provider
                     model="test",
                     context_window=4096,
-                    openai_api_key="sk-test-api-key-12345"  # Sensitive
+                    api_key="sk-test-api-key-12345"  # Sensitive
                 )
             },
             profiles={
