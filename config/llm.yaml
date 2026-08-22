@@ -1,51 +1,36 @@
 llm_system:
-  # Default HTTPX timeout configuration for all models
   httpx_timeouts:
-    connect: 10.0      # Connection establishment timeout (seconds)
-    read: 180.0        # Read timeout - waiting for response data (seconds)
-    write: 10.0        # Write timeout - sending request data (seconds)
-    pool: 5.0          # Pool timeout - getting connection from pool (seconds)
+    connect: 10.0
+    read: 180.0
+    write: 10.0
+    pool: 5.0
 
-  # OpenRouter provider selection for EVERY model that talks to OpenRouter.
-  # Off while the block stays commented out. Per key, the model entry
-  # (provider_routing in llm_openrouter.yaml) overrides this default —
-  # overriding yes, switching off no: an empty provider_routing on a model
-  # means "nothing of its own", not "no routing". To exempt a single model
-  # herausnehmen will, setzt dort einen Gegenwert (z.B. sort: throughput).
-  #
+  # System-wide OpenRouter provider selection, OFF. Why it stays off:
+  # docs/llm_catalog.md
   # openrouter_routing:
-  #   sort: price        # guenstigster Anbieter zuerst ("price"|"throughput"|"latency")
-  #
-  # ⚠️ sort disables OpenRouter's load balancing. 26 of the models set
-  # provider_routing.order to stay on the same backend — that is where the
-  # implicit prompt cache lives. Sorting by price dilutes it, and on long
-  # context one cache miss easily costs more than the cheaper provider saves.
-  # Caps without that side effect (price in $/1M tokens):
-  #   max_price: {prompt: 1, completion: 2}
+  #   sort: price
 
   # =============================================================================
-  # BATCH PROCESSING CONFIGURATION
+  # BATCH PROCESSING
   # =============================================================================
-  # Global batch settings with per-provider overrides.
-  # Models with provider: "batch" use these settings.
   batch:
-    storage_path: "data/batch_jobs"   # Where to store batch job data
+    storage_path: "data/batch_jobs"
     
     providers:
       gemini:
         enabled: true
-        collection_window_seconds: 10   # Time to collect requests before submitting
-        max_requests_per_batch: 100     # Max requests per batch
-        poll_interval_seconds: 10       # How often to check batch status
-        max_wait_hours: 4               # Max time to wait for completion
-        max_retries: 3                  # Retries for server-side cancellations
-        cancel_on_startup: true         # Cancel orphaned batches on startup
-        fallback_to_sync: true          # Don't fall back to sync API
+        collection_window_seconds: 10
+        max_requests_per_batch: 100
+        poll_interval_seconds: 10
+        max_wait_hours: 4
+        max_retries: 3
+        cancel_on_startup: true
+        fallback_to_sync: true
         
       openai:
         enabled: true
         collection_window_seconds: 10
-        max_requests_per_batch: 100     # OpenAI supports up to 50k
+        max_requests_per_batch: 100
         poll_interval_seconds: 10
         max_wait_hours: 4
         max_retries: 3
@@ -55,9 +40,9 @@ llm_system:
       anthropic:
         enabled: true
         collection_window_seconds: 10
-        max_requests_per_batch: 100     # Anthropic supports up to 10k
-        poll_interval_seconds: 30       # Anthropic batches take longer
-        max_wait_hours: 24              # Anthropic allows up to 24h
+        max_requests_per_batch: 100
+        poll_interval_seconds: 30
+        max_wait_hours: 24
         max_retries: 3
         cancel_on_startup: true
         fallback_to_sync: false
@@ -66,70 +51,20 @@ llm_system:
   # MODEL DEFINITIONS
   # =============================================================================
   models:
-    # ---------------------------------------------------------------------------
-    # GEMINI MODELS (Sync/Streaming)
-    # ---------------------------------------------------------------------------
+
     gemini-3-flash:
-      provider: gemini_sdk
+      extends: gemini-3-pro
       model: gemini-3-flash-preview
-      api_key: "${GOOGLE_API_KEY}"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 240
-      include_thoughts: true
-      thinking_level: high  # Gemini 3 uses thinking_level: minimal, low, medium, high
-      max_tokens: 16384
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: true
-        streaming: true
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     gemini-3-flash-nostream:
       extends: gemini-3-flash
       include_thoughts: false
       capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: true
         streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     gemini-3-flash-nostream-unlimited:
-      provider: gemini_sdk
-      model: gemini-3-flash-preview
-      api_key: "${GOOGLE_API_KEY}"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 240
-      include_thoughts: false
-      thinking_level: high  # Gemini 3 uses thinking_level: minimal, low, medium, high
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: true
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
+      extends: gemini-3-flash-nostream
+      max_tokens: null
 
     gemini-3-flash-nostream-minimal:
       extends: gemini-3-flash-nostream
@@ -138,13 +73,13 @@ llm_system:
     gemini-3-pro:
       provider: gemini_sdk
       model: gemini-3.1-pro-preview
-      api_key: "${GOOGLE_API_KEY}"
+      api_key: ${GOOGLE_API_KEY}
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # 1M token context, but limited here for performance
+      context_window: 200000
       request_timeout: 240
-      include_thoughts: true
-      thinking_level: high  # Gemini 3 uses thinking_level: low, high
       max_tokens: 16384
+      thinking_level: high
+      include_thoughts: true
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
         HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
@@ -157,75 +92,34 @@ llm_system:
         audio_input: true
         streaming: true
         json_mode: true
-        supported_api_types: [chat_completions]
+        supported_api_types:
+        - chat_completions
         default_api_type: chat_completions
 
     gemini-3-pro-nostream:
       extends: gemini-3-pro
       include_thoughts: false
       capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: true
         streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     gemini-3-pro-nostream-unlimited:
-      provider: gemini_sdk
-      model: gemini-3.1-pro-preview
-      api_key: "${GOOGLE_API_KEY}"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 240
-      include_thoughts: false
-      thinking_level: high  # Gemini 3 uses thinking_level: low, high
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: true
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions        
+      extends: gemini-3-pro-nostream
+      max_tokens: null
 
-    # ---------------------------------------------------------------------------
-    # GEMINI BATCH MODELS (provider: batch)
-    # ---------------------------------------------------------------------------
     gemini-3-flash-batch:
-      provider: batch                   
-      batch_provider: gemini            # Which batch API to use
+      extends: gemini-3-pro-batch
       model: gemini-3-flash-preview
-      api_key: "${GOOGLE_API_KEY}"
-      context_window: 200000  # 1M token context, but limited here for performance
-      include_thoughts: false
-      thinking_level: high
-      #max_tokens: 16384
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: true
-        streaming: false
-        json_mode: true
+      max_tokens: null
 
     gemini-3-pro-batch:
       provider: batch
-      batch_provider: gemini
       model: gemini-3.1-pro-preview
-      api_key: "${GOOGLE_API_KEY}"
-      context_window: 200000  # 1M token context, but limited here for performance
-      include_thoughts: false      
-      thinking_level: high
+      api_key: ${GOOGLE_API_KEY}
+      batch_provider: gemini
+      context_window: 200000
       max_tokens: 16384
+      thinking_level: high
+      include_thoughts: false
       capabilities:
         tools: true
         function_calling: true
@@ -234,44 +128,35 @@ llm_system:
         streaming: false
         json_mode: true
 
-    # ---------------------------------------------------------------------------
-    # ANTHROPIC CLAUDE MODELS (Sync/Streaming)
-    # ---------------------------------------------------------------------------
-    # Claude Sonnet 5 - Best speed/intelligence balance in Sonnet tier;
-    # near-Opus quality on coding & agentic work. Adaptive thinking on by
-    # default (manual budget_tokens removed). New tokenizer (~30% more tokens
-    # for the same text vs 4.5). 1M context, 128K max output.
-    # Pricing: $3/$15 per MTok (intro $2/$10 through 2026-08-31).
     claude-sonnet-5:
-      extends: claude-opus-5
+      extends: claude-opus-5-thinking
       model: claude-sonnet-5
       request_timeout: 180
-      max_tokens: 32768
+      thinking_budget: null
+      include_thoughts: false
 
-    # Claude Sonnet 5 with Extended (Adaptive) Thinking
-    # NOTE: on Sonnet 5, thinking={type:enabled, budget_tokens:N} returns 400.
-    # Adaptive thinking is the only "on" mode — the app layer must send
-    # thinking={type:"adaptive"} instead of a fixed budget. `thinking_budget`
-    # kept here for backward compat / soft cap indicator; not used as an API
-    # budget on Sonnet 5.
     claude-sonnet-5-thinking:
       extends: claude-sonnet-5
       request_timeout: 300
-      include_thoughts: true
       thinking_budget: 8192
+      include_thoughts: true
 
-    # Claude Opus 5 - For complex agentic coding and enterprise work;
-    # most capable Opus-tier. Same API surface as 4.7/4.8 (adaptive thinking
-    # only; sampling params & budget_tokens removed); effort defaults to high.
-    # 1M context, 128K max output at standard pricing. $5/$25 per MTok.
     claude-opus-5:
-      provider: anthropic
-      model: claude-opus-5
-      api_key: "${ANTHROPIC_API_KEY}"
-      context_window: 1000000
+      extends: claude-opus-5-thinking
       request_timeout: 300
       max_tokens: 16384
+      thinking_budget: null
       include_thoughts: false
+
+    claude-opus-5-thinking:
+      provider: anthropic
+      model: claude-opus-5
+      api_key: ${ANTHROPIC_API_KEY}
+      context_window: 1000000
+      request_timeout: 600
+      max_tokens: 32768
+      thinking_budget: 16384
+      include_thoughts: true
       enable_prompt_caching: true
       capabilities:
         tools: true
@@ -279,48 +164,25 @@ llm_system:
         image_input: true
         streaming: true
         json_mode: true
-        supported_api_types: [chat_completions]
+        supported_api_types:
+        - chat_completions
         default_api_type: chat_completions
 
-    # Claude Opus 5 with Extended (Adaptive) Thinking
-    # NOTE: on Opus 5, thinking={type:enabled, budget_tokens:N} returns 400.
-    # Adaptive thinking is the only "on" mode — app layer must send
-    # thinking={type:"adaptive"} instead of a fixed budget. `thinking_budget`
-    # kept for backward compatibility / soft cap; NOT used as an API budget.
-    claude-opus-5-thinking:
-      extends: claude-opus-5
-      request_timeout: 600
-      max_tokens: 32768
-      include_thoughts: true
-      thinking_budget: 16384
-
-    # Claude Fable 5 - Anthropic's most capable model: next-generation
-    # intelligence for long-running agents. 1M context, 128K max output.
-    # $10/$50 per MTok. Thinking is ALWAYS on server-side (adaptive).
-    # include_thoughts: false because the param adds nothing here: for
-    # claude-fable-*, on true the client sends {type: adaptive} (no
-    # budget_tokens — anthropic_client._ADAPTIVE_ONLY_THINKING), was dem
-    # matches the server default; raw CoT is never returned anyway.
-    # Einzelne Turns können viele Minuten laufen → request_timeout großzügig.
     claude-fable-5:
-      extends: claude-opus-5
+      extends: claude-opus-5-thinking
       model: claude-fable-5
-      request_timeout: 600
-      max_tokens: 32768
+      thinking_budget: null
+      include_thoughts: false
 
-    # Claude Haiku 4.5 - Fastest model with near-frontier intelligence
     claude-haiku-4-5:
-      extends: claude-opus-5
+      extends: claude-opus-5-thinking
       model: claude-haiku-4-5-20251001
       context_window: 200000
       request_timeout: 120
       max_tokens: 8192
+      thinking_budget: null
+      include_thoughts: false
 
-    # ---------------------------------------------------------------------------
-    # ANTHROPIC BATCH MODELS (provider: batch)
-    # ---------------------------------------------------------------------------
-    # ANTHROPIC BATCH MODELS (provider: batch)
-    # ---------------------------------------------------------------------------
     claude-sonnet-5-batch:
       extends: claude-opus-5-batch
       model: claude-sonnet-5
@@ -328,9 +190,9 @@ llm_system:
 
     claude-opus-5-batch:
       provider: batch
-      batch_provider: anthropic
       model: claude-opus-5
-      api_key: "${ANTHROPIC_API_KEY}"
+      api_key: ${ANTHROPIC_API_KEY}
+      batch_provider: anthropic
       context_window: 1000000
       max_tokens: 16384
       capabilities:
@@ -346,29 +208,23 @@ llm_system:
       context_window: 200000
       max_tokens: 8192
 
-    # ---------------------------------------------------------------------------
-    # OPENAI MODELS (Sync/Streaming)
-    # ---------------------------------------------------------------------------
-
     gpt-5-nano:
-      provider: openai_httpx
+      extends: gpt-5
       model: gpt-5.4-nano
-      api_key: "${OPENAI_API_KEY}"
-      context_window: 272000
-      request_timeout: 240
       capabilities:
-        tools: true
-        function_calling: true
         image_input: false
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
+        supported_api_types:
+        - chat_completions
+        audio_input: false
+        video_input: false
+        max_image_size: null
+        supported_image_formats: []
+        image_detail_control: false
 
     gpt-5-mini:
       provider: openai_httpx
       model: gpt-5.4-mini
-      api_key: "${OPENAI_API_KEY}"
+      api_key: ${OPENAI_API_KEY}
       context_window: 272000
       request_timeout: 240
       httpx_timeouts:
@@ -382,110 +238,81 @@ llm_system:
         image_input: true
         streaming: false
         json_mode: true
-        supported_api_types: [chat_completions, assistants]
+        supported_api_types:
+        - chat_completions
+        - assistants
         default_api_type: chat_completions
         max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
+        supported_image_formats:
+        - jpeg
+        - png
+        - gif
+        - webp
         image_detail_control: true
 
     gpt-5:
-      provider: openai_httpx
+      extends: gpt-5-mini
       model: gpt-5.4
-      api_key: "${OPENAI_API_KEY}"
-      context_window: 272000 # >272K it is getting expensive
-      request_timeout: 240
+      httpx_timeouts: null
       capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
         audio_input: false
         video_input: false
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions, assistants]
-        default_api_type: chat_completions
-        max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
-        image_detail_control: true
 
     gpt-5-codex:
       extends: gpt-5
       model: gpt-5.4-codex
 
     gpt-5-codex-mini:
-      provider: openai_httpx
+      extends: gpt-5-codex
       model: gpt-5.4-codex-mini
-      api_key: "${OPENAI_API_KEY}"
-      context_window: 272000
-      request_timeout: 240
       httpx_timeouts:
         connect: 10.0
         read: 240.0
         write: 10.0
         pool: 5.0
       capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions, assistants]
-        default_api_type: chat_completions
-        max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
-        image_detail_control: true
+        audio_input: false
+        video_input: false
 
-    # ---------------------------------------------------------------------------
-    # OPENAI BATCH MODELS (provider: batch)
-    # ---------------------------------------------------------------------------
     gpt-5-nano-batch:
-      provider: batch
-      batch_provider: openai            
+      extends: gpt-5-batch
       model: gpt-5.4-nano
-      api_key: "${OPENAI_API_KEY}"
+      capabilities:
+        image_input: false
+        json_mode: false
+        max_image_size: null
+        supported_image_formats: []
+        image_detail_control: false
+
+    gpt-5-mini-batch:
+      extends: gpt-5-batch
+      model: gpt-5.4-mini
+
+    gpt-5-batch:
+      provider: batch
+      model: gpt-5.4
+      api_key: ${OPENAI_API_KEY}
+      batch_provider: openai
       context_window: 272000
       request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
-        image_input: false
-        streaming: false
-        json_mode: false
-
-    gpt-5-mini-batch:
-      extends: gpt-5-nano-batch
-      model: gpt-5.4-mini
-      capabilities:
-        tools: true
-        function_calling: true
         image_input: true
         streaming: false
         json_mode: true
         max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
+        supported_image_formats:
+        - jpeg
+        - png
+        - gif
+        - webp
         image_detail_control: true
 
-    gpt-5-batch:
-      extends: gpt-5-nano-batch
-      model: gpt-5.4
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: false
-        json_mode: true
-        max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
-        image_detail_control: true
-
-
-    # ---------------------------------------------------------------------------
-    # REALTIME / AUDIO MODELS
-    # ---------------------------------------------------------------------------
     gpt-realtime:
       provider: openai
       model: gpt-realtime
-      api_key: "${OPENAI_API_KEY}"
+      api_key: ${OPENAI_API_KEY}
       context_window: 27900
       request_timeout: 240
       capabilities:
@@ -494,7 +321,8 @@ llm_system:
         audio_input: true
         image_input: true
         streaming: true
-        supported_api_types: [realtime]
+        supported_api_types:
+        - realtime
         default_api_type: realtime
 
     gpt-realtime-mini:
@@ -502,51 +330,43 @@ llm_system:
       model: gpt-realtime-mini
 
     gpt-audio:
-      provider: openai
+      extends: gpt-realtime
       model: gpt-audio
-      api_key: "${OPENAI_API_KEY}"
       context_window: 128000
-      request_timeout: 240
-      # Audio models require modalities - must include "audio" if input has no audio
-      modalities: ["text", "audio"]
+      modalities:
+      - text
+      - audio
       capabilities:
-        tools: true
-        function_calling: true
-        audio_input: true
         streaming: false
+        image_input: false
+        supported_api_types: null
+        default_api_type: null
 
-    # ---------------------------------------------------------------------------
-    # LOCAL / OLLAMA MODELS
-    # ---------------------------------------------------------------------------
     ollama-gpt-oss-20b:
       provider: ollama
       model: gpt-oss:20b
       base_url: http://192.0.2.64:11434
       ollama_mode: native
-      request_timeout: 240
       context_window: 65535
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
         streaming: true
 
-    # Ollama Gemma 4 — Google's open model via local Ollama.
     ollama-gemma-4:
       provider: ollama
-      model: gemma4:12b #gemma4:latest
+      model: gemma4:12b
       base_url: http://192.0.2.64:11434
       ollama_mode: native
-      request_timeout: 240
       context_window: 262144
+      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
         streaming: true
         image_input: true
 
-    # ---------------------------------------------------------------------------
-    # DEEPSEEK MODELS
-    # ---------------------------------------------------------------------------
     deepseek-chat:
       extends: deepseek-pro
       model: deepseek-v4-flash
@@ -555,15 +375,12 @@ llm_system:
     deepseek-chat-nostream:
       extends: deepseek-chat
       capabilities:
-        tools: true
-        function_calling: true
         streaming: false
-        json_mode: true
 
     deepseek-pro:
       provider: openai_httpx
       model: deepseek-v4-pro
-      api_key: "${DEEPSEEK_API_KEY}"
+      api_key: ${DEEPSEEK_API_KEY}
       base_url: https://api.deepseek.com/v1
       context_window: 1000000
       request_timeout: 480
@@ -576,13 +393,7 @@ llm_system:
     deepseek-pro-nostream:
       extends: deepseek-pro
       capabilities:
-        tools: true
-        function_calling: true
         streaming: false
-        json_mode: true
-
-
-
   # =============================================================================
   # PROFILES
   # =============================================================================
@@ -592,19 +403,12 @@ llm_system:
       description: "Fast, lightweight profile — gemini 3.5 flash-lite via OpenRouter"
       max_steps: 500
 
-    # CAREFUL, no longer a twin of `turbo`: since 2026-08-18 turbo points at
-    # gemini-3.5-flash-lite via OpenRouter, and there is no OpenRouter batch
-    # path (the factory only knows gemini/openai/anthropic as batch_provider).
-    # Switching here to save money switches the model family: gpt-5.4-nano
-    # instead of gemini-flash-lite, 272k instead of 400k context, without
-    # safety_settings and provider_routing.
     turbo-batch:
       model_ref: gpt-5-nano-batch
       description: "Model for high-speed responses and cheap, but less powerful (batch)"
       max_steps: 500
 
     normal:
-      #model_ref: gemini-3-flash-nostream
       model_ref: gpt-5-mini
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
@@ -615,7 +419,6 @@ llm_system:
       max_steps: 500
       
     think:
-      #model_ref: gemini-3-pro-nostream
       model_ref: gpt-5
       description: "Advanced model for complex reasoning (batch)"
       max_steps: 500
@@ -769,7 +572,6 @@ llm_system:
       description: "Cheap and fast model for medium tasks (no streaming)"
       max_steps: 500  
 
-    # now same as chat = flash model
     deepseek-reasoner:
        model_ref: deepseek-chat
        description: "Powerful model optimized for reasoning tasks"
@@ -796,9 +598,6 @@ llm_system:
       description: "Local model for privacy and offline usage"
       max_steps: 500
 
-  # or-deepseek-flash instead of chat (2026-08-20): same model family, but
-  # via OpenRouter — `chat` pointed at the direct API, whose account is nearly
-  # empty. Only kicks in as the last resort when no profile resolves.
   default_profile: or-deepseek-flash
 
   # =============================================================================
@@ -808,7 +607,6 @@ llm_system:
     gemini-tts-flash:
       provider: gemini_tts
       model: gemini-3.1-flash-tts-preview
-      #model: gemini-2.5-flash-preview-tts
       api_key: "${GOOGLE_API_KEY}"
       request_timeout: 300
       max_retries: 3

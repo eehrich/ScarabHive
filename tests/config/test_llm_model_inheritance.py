@@ -97,6 +97,37 @@ class TestDeepMerge:
         assert out["add"]["provider_routing"]["order"] == ["a", "b", "c", "d"]
 
 
+class TestAnInheritedFieldCanBeSwitchedOff:
+    """``key: null`` means different things in the two inheritance worlds.
+
+    For an agent yaml an empty key is "nothing said" — the inherited value has
+    to survive. A model entry has no other way to say "I want the provider
+    default": leaving ``max_tokens`` out means inheriting the parent's cap,
+    which is exactly what the -unlimited entries must not do.
+    """
+
+    def test_a_model_child_removes_it(self):
+        out = _resolve({
+            "head": {"model": "a", "max_tokens": 16384, "thinking_level": "high"},
+            "child": {"extends": "head", "model": "b", "max_tokens": None},
+        })
+        assert out["child"]["max_tokens"] is None, "the cap was inherited anyway"
+        assert out["child"]["thinking_level"] == "high", "sibling field lost"
+
+    def test_the_agent_chains_keep_their_meaning(self):
+        from agent_system.config.settings import _deep_merge_dict
+
+        assert _deep_merge_dict({"a": 1}, {"a": None}) == {"a": 1}
+        assert _deep_merge_dict({"a": 1}, {"a": None}, explicit_none=True) == {"a": None}
+
+    def test_it_reaches_into_nested_blocks(self):
+        out = _resolve({
+            "head": {"model": "a", "capabilities": {"tools": True, "json_mode": True}},
+            "child": {"extends": "head", "capabilities": {"json_mode": None}},
+        })
+        assert out["child"]["capabilities"] == {"tools": True, "json_mode": None}
+
+
 class TestFamilyMembers:
     """No separate base section: a family member carries the shared knobs and
     the others extend it — exactly like the agent chains, where beat_writer

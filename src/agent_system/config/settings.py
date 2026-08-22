@@ -412,7 +412,7 @@ def _resolve_model_inheritance(data: dict) -> None:
         own = {k: v for k, v in src.items() if k != "extends"}
         parent = src.get("extends")
         out = (_deep_merge_dict(copy.deepcopy(resolve(parent, chain + (name,))),
-                                own, name)
+                                own, name, explicit_none=True)
                if parent else copy.deepcopy(own))
         resolved[name] = out
         return out
@@ -651,7 +651,8 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     return final
 
 
-def _deep_merge_dict(base: dict, override: dict, _path: str = "") -> dict:
+def _deep_merge_dict(base: dict, override: dict, _path: str = "",
+                     *, explicit_none: bool = False) -> dict:
     """Deep merge two dictionaries, with override values taking precedence.
 
     A list is either MERGED into the inherited one or REPLACES it, never both:
@@ -677,6 +678,11 @@ def _deep_merge_dict(base: dict, override: dict, _path: str = "") -> dict:
         base: Base dictionary (default values)
         override: Override dictionary (specific values that override base)
         _path: Dotted key path, used only to make error messages locatable.
+        explicit_none: What ``key: null`` in the override means. Default False —
+            "nothing said", the inherited value stays; that is what an agent
+            yaml with an empty key needs. True means "no value", the inherited
+            one is removed: a model entry that inherits ``max_tokens: 16384``
+            has no other way to say it wants the provider default.
 
     Returns:
         New dictionary with merged values
@@ -689,17 +695,16 @@ def _deep_merge_dict(base: dict, override: dict, _path: str = "") -> dict:
             isinstance(result[key], dict) and
             isinstance(value, dict)):
             # Recursively merge nested dictionaries
-            result[key] = _deep_merge_dict(result[key], value, path)
+            result[key] = _deep_merge_dict(result[key], value, path,
+                                           explicit_none=explicit_none)
         elif isinstance(value, list):
             # Also for a key the parent does not have: without this, a "+x"
             # would survive into the value as a literal and match nothing.
             parent = result.get(key)
             base_list = parent if isinstance(parent, list) else []
             result[key] = _merge_lists_with_syntax(base_list, value, path)
-        elif value is not None:
-            # Override with non-None values
+        elif value is not None or explicit_none:
             result[key] = value
-        # Skip None values to preserve defaults
 
     return result
 
