@@ -6,21 +6,21 @@ llm_system:
     write: 10.0        # Write timeout - sending request data (seconds)
     pool: 5.0          # Pool timeout - getting connection from pool (seconds)
 
-  # OpenRouter-Anbieterwahl fuer ALLE Modelle, die mit OpenRouter reden.
-  # Aus, solange der Block auskommentiert ist. Pro Schluessel ueberstimmt der
-  # Modell-Eintrag (provider_routing in llm_openrouter.yaml) diesen Default —
-  # ueberstimmen ja, abschalten nein: ein leeres provider_routing am Modell
-  # heisst "nichts eigenes", nicht "kein Routing". Wer ein einzelnes Modell
+  # OpenRouter provider selection for EVERY model that talks to OpenRouter.
+  # Off while the block stays commented out. Per key, the model entry
+  # (provider_routing in llm_openrouter.yaml) overrides this default —
+  # overriding yes, switching off no: an empty provider_routing on a model
+  # means "nothing of its own", not "no routing". To exempt a single model
   # herausnehmen will, setzt dort einen Gegenwert (z.B. sort: throughput).
   #
   # openrouter_routing:
   #   sort: price        # guenstigster Anbieter zuerst ("price"|"throughput"|"latency")
   #
-  # ⚠️ sort schaltet OpenRouters Load-Balancing ab. 26 der Modelle setzen
-  # provider_routing.order, um beim selben Backend zu bleiben — dort liegt der
-  # implizite Prompt-Cache. Preis-Sortierung verwaessert das, und ein Cache-Miss
-  # kostet bei Langkontext leicht mehr als der guenstigere Anbieter spart.
-  # Deckel ohne diese Nebenwirkung (Preis in $/1M Token):
+  # ⚠️ sort disables OpenRouter's load balancing. 26 of the models set
+  # provider_routing.order to stay on the same backend — that is where the
+  # implicit prompt cache lives. Sorting by price dilutes it, and on long
+  # context one cache miss easily costs more than the cheaper provider saves.
+  # Caps without that side effect (price in $/1M tokens):
   #   max_price: {prompt: 1, completion: 2}
 
   # =============================================================================
@@ -95,20 +95,8 @@ llm_system:
         default_api_type: chat_completions
 
     gemini-3-flash-nostream:
-      provider: gemini_sdk
-      model: gemini-3-flash-preview
-      api_key: "${GOOGLE_API_KEY}"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 240
+      extends: gemini-3-flash
       include_thoughts: false
-      thinking_level: high  # Gemini 3 uses thinking_level: minimal, low, medium, high
-      max_tokens: 16384
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
       capabilities:
         tools: true
         function_calling: true
@@ -144,29 +132,8 @@ llm_system:
         default_api_type: chat_completions
 
     gemini-3-flash-nostream-minimal:
-      provider: gemini_sdk
-      model: gemini-3-flash-preview
-      api_key: "${GOOGLE_API_KEY}"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000
-      request_timeout: 240
-      include_thoughts: false
+      extends: gemini-3-flash-nostream
       thinking_level: minimal
-      max_tokens: 16384
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: true
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     gemini-3-pro:
       provider: gemini_sdk
@@ -194,20 +161,8 @@ llm_system:
         default_api_type: chat_completions
 
     gemini-3-pro-nostream:
-      provider: gemini_sdk
-      model: gemini-3.1-pro-preview
-      api_key: "${GOOGLE_API_KEY}"
-      base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 240
+      extends: gemini-3-pro
       include_thoughts: false
-      thinking_level: high  # Gemini 3 uses thinking_level: low, high
-      max_tokens: 16384
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
       capabilities:
         tools: true
         function_calling: true
@@ -288,22 +243,10 @@ llm_system:
     # for the same text vs 4.5). 1M context, 128K max output.
     # Pricing: $3/$15 per MTok (intro $2/$10 through 2026-08-31).
     claude-sonnet-5:
-      provider: anthropic
+      extends: claude-opus-5
       model: claude-sonnet-5
-      api_key: "${ANTHROPIC_API_KEY}"
-      context_window: 1000000
       request_timeout: 180
       max_tokens: 32768
-      include_thoughts: false
-      enable_prompt_caching: true
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: true
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     # Claude Sonnet 5 with Extended (Adaptive) Thinking
     # NOTE: on Sonnet 5, thinking={type:enabled, budget_tokens:N} returns 400.
@@ -312,23 +255,10 @@ llm_system:
     # kept here for backward compat / soft cap indicator; not used as an API
     # budget on Sonnet 5.
     claude-sonnet-5-thinking:
-      provider: anthropic
-      model: claude-sonnet-5
-      api_key: "${ANTHROPIC_API_KEY}"
-      context_window: 1000000
+      extends: claude-sonnet-5
       request_timeout: 300
-      max_tokens: 32768
       include_thoughts: true
       thinking_budget: 8192
-      enable_prompt_caching: true
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: true
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     # Claude Opus 5 - For complex agentic coding and enterprise work;
     # most capable Opus-tier. Same API surface as 4.7/4.8 (adaptive thinking
@@ -356,70 +286,35 @@ llm_system:
     # NOTE: on Opus 5, thinking={type:enabled, budget_tokens:N} returns 400.
     # Adaptive thinking is the only "on" mode — app layer must send
     # thinking={type:"adaptive"} instead of a fixed budget. `thinking_budget`
-    # bleibt für Backward-Compat / Soft-Cap; NICHT als API-Budget genutzt.
+    # kept for backward compatibility / soft cap; NOT used as an API budget.
     claude-opus-5-thinking:
-      provider: anthropic
-      model: claude-opus-5
-      api_key: "${ANTHROPIC_API_KEY}"
-      context_window: 1000000
+      extends: claude-opus-5
       request_timeout: 600
       max_tokens: 32768
       include_thoughts: true
       thinking_budget: 16384
-      enable_prompt_caching: true
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: true
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     # Claude Fable 5 - Anthropic's most capable model: next-generation
     # intelligence for long-running agents. 1M context, 128K max output.
-    # $10/$50 per MTok. Thinking ist serverseitig IMMER an (adaptive).
-    # include_thoughts: false, weil der Param hier nichts hinzufügt: für
-    # claude-fable-* sendet der Client bei true {type: adaptive} (kein
+    # $10/$50 per MTok. Thinking is ALWAYS on server-side (adaptive).
+    # include_thoughts: false because the param adds nothing here: for
+    # claude-fable-*, on true the client sends {type: adaptive} (no
     # budget_tokens — anthropic_client._ADAPTIVE_ONLY_THINKING), was dem
-    # Server-Default entspricht; Raw-CoT wird ohnehin nie zurückgegeben.
+    # matches the server default; raw CoT is never returned anyway.
     # Einzelne Turns können viele Minuten laufen → request_timeout großzügig.
     claude-fable-5:
-      provider: anthropic
+      extends: claude-opus-5
       model: claude-fable-5
-      api_key: "${ANTHROPIC_API_KEY}"
-      context_window: 1000000
       request_timeout: 600
       max_tokens: 32768
-      include_thoughts: false
-      enable_prompt_caching: true
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: true
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     # Claude Haiku 4.5 - Fastest model with near-frontier intelligence
     claude-haiku-4-5:
-      provider: anthropic
+      extends: claude-opus-5
       model: claude-haiku-4-5-20251001
-      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 200000
       request_timeout: 120
       max_tokens: 8192
-      include_thoughts: false
-      enable_prompt_caching: true
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: true
-        json_mode: true
-        supported_api_types: [chat_completions]
-        default_api_type: chat_completions
 
     # ---------------------------------------------------------------------------
     # ANTHROPIC BATCH MODELS (provider: batch)
@@ -427,18 +322,9 @@ llm_system:
     # ANTHROPIC BATCH MODELS (provider: batch)
     # ---------------------------------------------------------------------------
     claude-sonnet-5-batch:
-      provider: batch
-      batch_provider: anthropic
+      extends: claude-opus-5-batch
       model: claude-sonnet-5
-      api_key: "${ANTHROPIC_API_KEY}"
-      context_window: 1000000
       max_tokens: 8192
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: false
-        json_mode: true
 
     claude-opus-5-batch:
       provider: batch
@@ -455,18 +341,10 @@ llm_system:
         json_mode: true
 
     claude-haiku-4-5-batch:
-      provider: batch
-      batch_provider: anthropic
+      extends: claude-opus-5-batch
       model: claude-haiku-4-5-20251001
-      api_key: "${ANTHROPIC_API_KEY}"
       context_window: 200000
       max_tokens: 8192
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        streaming: false
-        json_mode: true
 
     # ---------------------------------------------------------------------------
     # OPENAI MODELS (Sync/Streaming)
@@ -531,24 +409,8 @@ llm_system:
         image_detail_control: true
 
     gpt-5-codex:
-      provider: openai_httpx
+      extends: gpt-5
       model: gpt-5.4-codex
-      api_key: "${OPENAI_API_KEY}"
-      context_window: 272000
-      request_timeout: 240
-      capabilities:
-        tools: true
-        function_calling: true
-        image_input: true
-        audio_input: false
-        video_input: false
-        streaming: false
-        json_mode: true
-        supported_api_types: [chat_completions, assistants]
-        default_api_type: chat_completions
-        max_image_size: 20971520
-        supported_image_formats: [jpeg, png, gif, webp]
-        image_detail_control: true
 
     gpt-5-codex-mini:
       provider: openai_httpx
@@ -591,12 +453,8 @@ llm_system:
         json_mode: false
 
     gpt-5-mini-batch:
-      provider: batch
-      batch_provider: openai            
+      extends: gpt-5-nano-batch
       model: gpt-5.4-mini
-      api_key: "${OPENAI_API_KEY}"
-      context_window: 272000
-      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -608,12 +466,8 @@ llm_system:
         image_detail_control: true
 
     gpt-5-batch:
-      provider: batch
-      batch_provider: openai            
+      extends: gpt-5-nano-batch
       model: gpt-5.4
-      api_key: "${OPENAI_API_KEY}"
-      context_window: 272000
-      request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
@@ -644,19 +498,8 @@ llm_system:
         default_api_type: realtime
 
     gpt-realtime-mini:
-      provider: openai
+      extends: gpt-realtime
       model: gpt-realtime-mini
-      api_key: "${OPENAI_API_KEY}"
-      context_window: 27900
-      request_timeout: 240
-      capabilities:
-        tools: true
-        function_calling: true
-        audio_input: true
-        image_input: true
-        streaming: true
-        supported_api_types: [realtime]
-        default_api_type: realtime
 
     gpt-audio:
       provider: openai
@@ -705,25 +548,12 @@ llm_system:
     # DEEPSEEK MODELS
     # ---------------------------------------------------------------------------
     deepseek-chat:
-      provider: openai_httpx
+      extends: deepseek-pro
       model: deepseek-v4-flash
-      api_key: "${DEEPSEEK_API_KEY}"
-      base_url: https://api.deepseek.com/v1
-      context_window: 1000000
       request_timeout: 240
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
 
     deepseek-chat-nostream:
-      provider: openai_httpx
-      model: deepseek-v4-flash
-      api_key: "${DEEPSEEK_API_KEY}"
-      base_url: https://api.deepseek.com/v1
-      context_window: 1000000
-      request_timeout: 240
+      extends: deepseek-chat
       capabilities:
         tools: true
         function_calling: true
@@ -744,12 +574,7 @@ llm_system:
         json_mode: true
 
     deepseek-pro-nostream:
-      provider: openai_httpx
-      model: deepseek-v4-pro
-      api_key: "${DEEPSEEK_API_KEY}"
-      base_url: https://api.deepseek.com/v1
-      context_window: 1000000
-      request_timeout: 480
+      extends: deepseek-pro
       capabilities:
         tools: true
         function_calling: true
@@ -767,12 +592,12 @@ llm_system:
       description: "Fast, lightweight profile — gemini 3.5 flash-lite via OpenRouter"
       max_steps: 500
 
-    # ACHTUNG, kein Zwilling von `turbo` mehr: turbo zeigt seit 2026-08-18 auf
-    # gemini-3.5-flash-lite ueber OpenRouter, und einen OpenRouter-Batch-Pfad
-    # gibt es nicht (factory kennt nur gemini/openai/anthropic als
-    # batch_provider). Wer hierher wechselt, um zu sparen, wechselt die
-    # Modellfamilie: gpt-5.4-nano statt gemini-flash-lite, 272k statt 400k
-    # Kontext, ohne safety_settings und provider_routing.
+    # CAREFUL, no longer a twin of `turbo`: since 2026-08-18 turbo points at
+    # gemini-3.5-flash-lite via OpenRouter, and there is no OpenRouter batch
+    # path (the factory only knows gemini/openai/anthropic as batch_provider).
+    # Switching here to save money switches the model family: gpt-5.4-nano
+    # instead of gemini-flash-lite, 272k instead of 400k context, without
+    # safety_settings and provider_routing.
     turbo-batch:
       model_ref: gpt-5-nano-batch
       description: "Model for high-speed responses and cheap, but less powerful (batch)"
@@ -971,10 +796,9 @@ llm_system:
       description: "Local model for privacy and offline usage"
       max_steps: 500
 
-  # or-deepseek-flash statt chat (2026-08-20): gleiche Modellfamilie, aber
-  # ueber OpenRouter — `chat` zeigte auf die Direct-API, deren Konto fast
-  # leer ist. Greift nur als letzte Rueckfallebene, wenn kein Profil
-  # aufloesbar ist.
+  # or-deepseek-flash instead of chat (2026-08-20): same model family, but
+  # via OpenRouter — `chat` pointed at the direct API, whose account is nearly
+  # empty. Only kicks in as the last resort when no profile resolves.
   default_profile: or-deepseek-flash
 
   # =============================================================================

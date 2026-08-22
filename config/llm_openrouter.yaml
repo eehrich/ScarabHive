@@ -25,39 +25,18 @@ llm_system:
     # GOOGLE GEMINI MODELS via OpenRouter
     # ---------------------------------------------------------------------------
     
-    # Das einfache Flash-Profil (or-gemini-flash) zeigt auf
-    # openrouter-gemini-3.7-flash weiter unten — 3.7 kostet nicht mehr als
-    # 3-flash-preview, deshalb gibt es hier nur noch EIN Flash-Modell.
-    # Die beiden Varianten unterscheiden sich davon nur in einem Knopf.
+    # The plain flash profile (or-gemini-flash) points at
+    # openrouter-gemini-3.7-flash further down — 3.7 costs no more than
+    # 3-flash-preview, so there is only ONE flash model left here.
+    # The two variants differ from it in a single knob.
 
     openrouter-gemini-3.7-flash-minimal:
-      # Native Responses-API route: thought signatures ride as verbatim items
-      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
-      # safety_settings pass through. Migrated 2026-07-24.
-      # Unterschied zur Basis: thinking_level minimal. Fenster/max_tokens
-      # bewusst wie gehabt — der Modellwechsel soll die Knoepfe nicht mitziehen.
-      provider: openai_responses
-      model: google/gemini-3.7-flash
-      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
+      # Difference from the parent: thinking_level minimal. Window/max_tokens
+      # deliberately unchanged — a model swap must not drag the knobs along.
+      extends: openrouter-gemini-3.7-flash
       context_window: 200000  # 1M token context, but limited here for performance
-      request_timeout: 600
       thinking_level: minimal
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
-        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 16384
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true  # Native image/audio/video processing
 
       # Notes:
       # - Fast and cost-effective thinking model
@@ -67,32 +46,11 @@ llm_system:
       # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
 
     openrouter-gemini-3.7-flash-unlimited:
-      # Native Responses-API route: thought signatures ride as verbatim items
-      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
-      # safety_settings pass through. Migrated 2026-07-24.
-      # Unterschied zur Basis: max_tokens 0 (unbegrenzt).
-      provider: openai_responses
-      model: google/gemini-3.7-flash
-      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
+      # Difference from the parent: max_tokens 0 (unlimited).
+      extends: openrouter-gemini-3.7-flash
       context_window: 200000
-      request_timeout: 600
       thinking_level: high
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
-        order: ["google-vertex", "google-ai-studio"]
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
 
 
@@ -193,31 +151,8 @@ llm_system:
       # - Pricing: ~$2 input / ~$12 output per 1M tokens
 
     openrouter-gemini-3-pro-unlimited:
-      # Native Responses-API route: thought signatures ride as verbatim items
-      # (no Chat-Completions bridging => no "Corrupted thought signature" 400s).
-      # safety_settings pass through. Migrated 2026-07-24.
-      provider: openai_responses
-      model: google/gemini-3.1-pro-preview
-      api_key: "${OPENROUTER_API_KEY}"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 600
-      thinking_level: high
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      provider_routing:           # Bias OpenRouter toward a sticky backend — keeps implicit prompt cache warm (cache is backend-local). Soft preference; falls back to other providers if listed ones are unavailable.
-        order: ["google-vertex", "google-ai-studio"]
+      extends: openrouter-gemini-3-pro
       max_tokens: 0  # No limit - let provider decide (for large structured outputs)
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
       # Notes:
       # - Same as openrouter-gemini-3-pro but WITHOUT output token limit
@@ -250,19 +185,8 @@ llm_system:
       # - Pricing: $0.20 input / $0.50 output / $0.05 cached per 1M tokens
 
     openrouter-grok-4.1-fast-unlimited:
-      provider: openai_httpx
-      model: x-ai/grok-4.1-fast
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      extends: openrouter-grok-4.1-fast
       max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
 
     # ---------------------------------------------------------------------------
     # QWEN MODELS via OpenRouter
@@ -314,22 +238,8 @@ llm_system:
       # - https://openrouter.ai/minimax/minimax-m3
 
     openrouter-minimax-m3-unlimited:
-      provider: openai_httpx
-      model: minimax/minimax-m3
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000
-      request_timeout: 600
-      service_tier: flex
-      provider_routing:           # Sticky backend — see openrouter-minimax-m3: pinning keeps the backend-local implicit cache warm (~99% on repeated prefix vs ~6% free-balanced). Soft preference; falls back on outage.
-        order: ["minimax"]
+      extends: openrouter-minimax-m3
       max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
     # ---------------------------------------------------------------------------
     # META LLAMA MODELS via OpenRouter
@@ -387,79 +297,17 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.4-unlimited:
-      # Native Responses-API route (openai_responses_client.py): verbatim item
-      # round-trip, no Chat-Completions bridging => no "encrypted content could
-      # not be verified" 400s. Migrated 2026-07-16.
-      provider: openai_responses
-      model: openai/gpt-5.4
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
-        order: ["openai"]
-        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      extends: openrouter-gpt-5.4
       max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
     openrouter-gpt-5.4-mini:
-      # Native Responses-API route (openai_responses_client.py): verbatim item
-      # round-trip, no Chat-Completions bridging => no "encrypted content could
-      # not be verified" 400s. Migrated 2026-07-16.
-      provider: openai_responses
+      extends: openrouter-gpt-5.4
       model: openai/gpt-5.4-mini
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
-        order: ["openai"]
-        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
       context_window: 400000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      max_tokens: 16384
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
     openrouter-gpt-5.4-mini-unlimited:
-      # Native Responses-API route (openai_responses_client.py): verbatim item
-      # round-trip, no Chat-Completions bridging => no "encrypted content could
-      # not be verified" 400s. Migrated 2026-07-16.
-      provider: openai_responses
-      model: openai/gpt-5.4-mini
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
-        order: ["openai"]
-        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 400000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      extends: openrouter-gpt-5.4-mini
       max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
 
     openrouter-gpt-5.6-sol:
@@ -489,162 +337,40 @@ llm_system:
         multimodal: true
 
     openrouter-gpt-5.6-sol-unlimited:
-      # Native Responses-API route (openai_responses_client.py): verbatim item
-      # round-trip, no Chat-Completions bridging => no "encrypted content could
-      # not be verified" 400s. Migrated 2026-07-16.
-      provider: openai_responses
-      model: openai/gpt-5.6-sol
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
-        order: ["openai"]
-        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      service_tier: flex 
+      extends: openrouter-gpt-5.6-sol
       max_tokens: 0
       thinking_level: max
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
     openrouter-gpt-5.6-terra:
-      # TEST ENTRY for the native Responses-API client (openai_responses_client.py):
-      # no Chat-Completions bridging — model output items round-trip VERBATIM, which
-      # structurally removes the "encrypted content ... could not be verified" 400s
-      # of the bridge. Not referenced by any agent yet; live-testing only.
-      provider: openai_responses
+      # Native Responses-API route (openai_responses_client.py): model output
+      # items round-trip VERBATIM, no Chat-Completions bridging — which
+      # structurally removes the bridge's "encrypted content ... could not be
+      # verified" 400s.
+      extends: openrouter-gpt-5.6-sol
       model: openai/gpt-5.6-terra
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:
-        order: ["openai"]        # terra has no azure endpoints anyway (404); single-org pin.
-        allow_fallbacks: false
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      service_tier: flex
       max_tokens: 32768
-      thinking_level: medium
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false         # client is non-streaming by design; server takes the chat_tools path
-        json_mode: true
-        multimodal: true
 
     openrouter-gpt-5.6-terra-unlimited:
-      # Native Responses-API route (openai_responses_client.py): verbatim item
-      # round-trip, no Chat-Completions bridging => no "encrypted content could
-      # not be verified" 400s. Migrated 2026-07-16.
-      provider: openai_responses
-      model: openai/gpt-5.6-terra
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
-        order: ["openai"]
-        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      service_tier: flex   
+      extends: openrouter-gpt-5.6-terra
       max_tokens: 0
       thinking_level: max
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true        
 
 
     openrouter-gpt-5.6-luna:
-      # Native Responses-API route (openai_responses_client.py): verbatim item
-      # round-trip, no Chat-Completions bridging => no "encrypted content could
-      # not be verified" 400s. Migrated 2026-07-16.
-      provider: openai_responses
+      extends: openrouter-gpt-5.6-sol
       model: openai/gpt-5.6-luna
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
-        order: ["openai"]
-        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      service_tier: flex         
-      max_tokens: 16384
-      thinking_level: medium
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
     openrouter-gpt-5.6-luna-responses:
-      # Luna via the native Responses-API client (openai_responses_client.py):
-      # verbatim item round-trip, no Chat-Completions bridging — structurally no
-      # "encrypted content could not be verified" 400s. Testing on cover_artist.
-      provider: openai_responses
-      model: openai/gpt-5.6-luna
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:
-        order: ["openai"]
-        allow_fallbacks: false
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      service_tier: flex
-      max_tokens: 16384
+      # Luna on the native Responses-API route: verbatim item round-trip, no
+      # Chat-Completions bridging — structurally no "encrypted content could
+      # not be verified" 400s. Testing on cover_artist.
+      extends: openrouter-gpt-5.6-luna
       thinking_level: max
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false         # client is non-streaming by design; server takes the chat_tools path
-        json_mode: true
-        multimodal: true
 
     openrouter-gpt-5.6-luna-unlimited:
-      # Native Responses-API route (openai_responses_client.py): verbatim item
-      # round-trip, no Chat-Completions bridging => no "encrypted content could
-      # not be verified" 400s. Migrated 2026-07-16.
-      provider: openai_responses
-      model: openai/gpt-5.6-luna
-      # Required from GPT-5.6 on for cache matching. Belongs to the
-      # model, not to 31 agent files (moved here 2026-08-22).
-      prompt_cache_key: "auto"
-      provider_routing:           # Single-org pin: reasoning items are org-bound; azure would not verify them.
-        order: ["openai"]
-        allow_fallbacks: false   # On openai outage the agent-level fallback chain takes over.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      service_tier: flex        
+      extends: openrouter-gpt-5.6-luna
       max_tokens: 0
       thinking_level: max
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
 
 
 
@@ -673,21 +399,8 @@ llm_system:
       # - Pricing: $0.039 input / $0.19 output per 1M tokens — extremely cheap
 
     openrouter-gpt-oss-120b-unlimited:
-      provider: openai_httpx
-      model: openai/gpt-oss-120b
-      reasoning_details_mode: keep_all   # OpenAI reasoning items form an encrypted chain — keep every turn's reasoning_details so the latest rs_* item stays verifiable (else HTTP 400). Also cheaper: cached input vs re-reasoning.
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 131072
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      extends: openrouter-gpt-oss-120b
       max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: false
 
     # ---------------------------------------------------------------------------
     # ANTHROPIC CLAUDE MODELS via OpenRouter
@@ -714,19 +427,8 @@ llm_system:
       # - Pricing: ~$3 input / ~$15 output per 1M tokens via OpenRouter
 
     openrouter-claude-sonnet-unlimited:
-      provider: openai_httpx
-      model: anthropic/claude-sonnet-5
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      extends: openrouter-claude-sonnet
       max_tokens: 0  # No limit - let provider decide
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
 
       # Notes:
       # - Same as openrouter-claude-sonnet but WITHOUT output token limit
@@ -741,10 +443,10 @@ llm_system:
     # thinking_level. V4-Pro is the larger flagship variant.
 
     # ------------------------------------------------------------------------
-    # DEEPSEEK V4 via OpenRouter — Wechsel weg von der direkten API (DeepSeek
-    # hat die Direktpreise deutlich erhoeht; Direct entspricht jetzt dem
+    # DEEPSEEK V4 via OpenRouter — moved off the direct API (DeepSeek raised
+    # its direct prices substantially; direct now matches the
     # "deepseek"-Endpunkt unten). Flash ueber den LATEST-Alias, Pro gepinnt
-    # auf 0813 — einen latest-Alias gibt es fuer Pro nicht.
+    # pinned to 0813 — there is no latest alias for Pro.
     #
     # Anbieterliste Flash (Stand 2026-08-20, $/1M Token, guenstigste zuerst):
     #   Anbieter        input   output  cached   Quant
@@ -756,10 +458,10 @@ llm_system:
     #   deepinfra       0.08    0.18    0.0160   fp8   <- order[2]
     #   deepseek        0.22    0.66    0.007    (Direct-Preis; billigster CACHE,
     #                                             aber 3x input / 4x output)
-    # Die drei billigsten sind fp4-QUANTISIERT. Fuer Prosa ist das ein
-    # Qualitaetsrisiko, das ~15% Ersparnis nicht wert ist — deshalb beginnt
-    # `order` beim guenstigsten fp8. Wer fp4 probieren will: open-inference
-    # an Position 0 setzen und am Buch messen, nicht an der Rechnung.
+    # The three cheapest are fp4-QUANTISED. For prose that is a quality risk
+    # not worth ~15% savings — which is why `order` starts at the cheapest
+    # fp8 endpoint. To try fp4: put open-inference at position 0 and measure
+    # on the book, not on the invoice.
     #
     # Anbieterliste Pro (12 Endpunkte):
     #   deepseek        0.66    1.98    0.022    <- order[0], billigster in ALLEN
@@ -774,10 +476,10 @@ llm_system:
       # Matches the DIRECT deepseek entries in llm.yaml: this model is the
       # fallback behind them, and a fallback with a smaller window would
       # reject exactly the long conversations that need rescuing.
-      # Gemessen an den gepinnten Endpunkten (2026-08-20): streamlake 1.024M,
-      # baidu/deepinfra 1.048M Kontext. Die aelteren or-deepseek-Eintraege
-      # deklarieren 100k — DIE sind die Untertreibung, nicht dieser Wert; ein
-      # zu kleines Fenster wuerde den Summarizer 10x zu frueh feuern lassen.
+      # Measured against the pinned endpoints (2026-08-20): streamlake 1.024M,
+      # baidu/deepinfra 1.048M context. The older or-deepseek entries declare
+      # 100k — THOSE are the understatement, not this value; too small a
+      # window would fire the summarizer 10x too early.
       context_window: 1000000
       request_timeout: 600
       provider_routing:
@@ -799,11 +501,11 @@ llm_system:
       capabilities:
         tools: true
         function_calling: true
-        # streaming: live-verifiziert 2026-08-20 gegen die gepinnten fp8-
-        # Endpunkte (20 Delta-Chunks, sauberer Text). Ohne dieses Flag
-        # verloren 12 interaktive Ketten (chat_agent, slowak_tutor, der
-        # plugins.yaml-Default fuer 93 Server) ihr Token-Streaming, solange
-        # OR gesund ist — also im Normalfall.
+        # streaming: verified live 2026-08-20 against the pinned fp8
+        # endpoints (20 delta chunks, clean text). Without this flag 12
+        # interactive chains (chat_agent, slowak_tutor, the plugins.yaml
+        # default for 93 servers) lost their token streaming whenever OR is
+        # healthy — that is, in the normal case.
         streaming: true
         json_mode: true
 
@@ -853,21 +555,8 @@ llm_system:
       # - See https://openrouter.ai/deepseek/deepseek-v4-flash
 
     openrouter-deepseek-chat-unlimited:
-      provider: openai_httpx
-      model: deepseek/deepseek-v4-flash
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 100000
-      request_timeout: 600
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
-        order: ["deepinfra", "baidu", "gmicloud"]
+      extends: openrouter-deepseek-chat
       max_tokens: 0  # No limit - let provider decide
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
 
     openrouter-deepseek-reasoner:
       provider: openai_httpx
@@ -893,22 +582,8 @@ llm_system:
       # - Use for tasks that benefit from extended chain-of-thought
 
     openrouter-deepseek-reasoner-unlimited:
-      provider: openai_httpx
-      model: deepseek/deepseek-v4-flash
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 100000
-      request_timeout: 600
-      thinking_level: high
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
-      provider_routing:           # Fix #515: sticky-backend für DeepSeek-Cache.
-        order: ["deepinfra", "baidu", "gmicloud"]
+      extends: openrouter-deepseek-reasoner
       max_tokens: 0
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
 
     # ---------------------------------------------------------------------------
     # ZHIPU GLM MODELS via OpenRouter
@@ -937,21 +612,8 @@ llm_system:
       # - https://openrouter.ai/z-ai/glm-5.2
 
     openrouter-glm-5.2-unlimited:
-      provider: openai_httpx
-      model: z-ai/glm-5.2
-      api_key: "${OPENROUTER_API_KEY}"
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000
-      request_timeout: 600
-      thinking_level: high
-      service_tier: flex          # Google "Flex Processing" — cheaper, slower (longer queue). Remove or set to "standard" for normal-speed billing.
+      extends: openrouter-glm-5.2
       max_tokens: 0  # No limit - let provider decide
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: false
 
     # ---------------------------------------------------------------------------
     # MOONSHOT KIMI MODELS via OpenRouter
@@ -1123,10 +785,10 @@ llm_system:
       max_steps: 500
 
     or-deepseek-pro-unlimited:
-      # 2026-08-20 auf den 0813-Eintrag umgehaengt (wie or-deepseek-pro):
-      # vorher zeigte -unlimited auf den UNDATIERTEN Slug — 2,6x teurer
-      # und aeltere Generation. Der 0813-Eintrag setzt ohnehin kein
-      # max_tokens, "unlimited" ist dort der Normalzustand.
+      # Repointed to the 0813 entry on 2026-08-20 (like or-deepseek-pro):
+      # -unlimited used to point at the UNDATED slug — 2.6x more expensive and
+      # an older generation. The 0813 entry sets no max_tokens anyway, so
+      # "unlimited" is its normal state.
       model_ref: openrouter-deepseek-pro-0813
       description: "OpenRouter DeepSeek V4 Pro - Flagship, no output token limit"
       max_steps: 500
