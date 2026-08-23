@@ -207,14 +207,17 @@ class TestAgainstTheShippedModels:
         noch, was er gegenueber seinem Elternteil aendert."""
         from agent_system.config.settings import load_settings
 
-        return dict(load_settings().llm_system.models or {})
+        # Ohne `model:` ist ein Eintrag eine Basisklasse zum Erben — kein
+        # Profil zeigt darauf, er erreicht nie einen Client.
+        return {n: m for n, m in (load_settings().llm_system.models or {}).items()
+                if m.model}
 
     def test_every_shipped_openrouter_model_gets_the_default(self):
         shipped = self._shipped()
         via_openrouter = {
             name: model for name, model in shipped.items()
             if "openrouter.ai" in (model.base_url or "").lower()}
-        assert len(via_openrouter) >= 30, (
+        assert len(via_openrouter) >= 20, (
             f"nur {len(via_openrouter)} OpenRouter-Modelle im Katalog gefunden "
             f"(von {len(shipped)}) — der Test misst nicht mehr, was er soll")
 
@@ -229,7 +232,7 @@ class TestAgainstTheShippedModels:
         shipped = self._shipped()
         with_order = {name: model for name, model in shipped.items()
                       if (model.provider_routing or {}).get("order")}
-        assert len(with_order) >= 20, (
+        assert len(with_order) >= 12, (
             f"nur {len(with_order)} Eintraege mit provider_routing.order — "
             f"der Test misst nicht mehr, was er soll")
 

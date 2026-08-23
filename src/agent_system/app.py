@@ -199,6 +199,14 @@ async def lifespan(app: FastAPI):
         logger.info("FastAPI application shutdown complete")
 
 
+def capability_model_name(llm_override: Any, selected_agent: Any) -> Optional[str]:
+    """The model the attachments will actually reach: the per-request override
+    wins over the agent's default."""
+    if llm_override is not None and getattr(llm_override, "model", None):
+        return llm_override.model
+    return getattr(getattr(selected_agent, "llm", None), "model", None)
+
+
 # Module level templates and static path setup
 # For installed packages, templates/static must be in package root
 # Check multiple locations: package data > development paths
@@ -1637,7 +1645,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 release_request_user_tree(request_id)
 
         # Process uploaded files for multimodal input
-        from .llm.capabilities import get_model_capabilities
         from .utils.multimodal_processor import (
             create_multimodal_message_extended,
             ImageProcessingError, 
@@ -1700,29 +1707,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.debug("Saved uploaded file %s (%d bytes) -> %s [%s]", 
                            upload_file.filename, len(content), temp_path, file_type)
 
-            # Get model name for capability checks (use override if provided)
-            if llm_override and hasattr(llm_override, 'model'):
-                model_name = llm_override.model
-            else:
-                model_name = selected_agent.llm.model if hasattr(selected_agent.llm, 'model') else None
-
-            # Validate model supports images if we have any
-            if image_paths and model_name:
-                caps = get_model_capabilities(model_name)
-                if not caps.image_input:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Model {model_name} does not support image input"
-                    )
-
-            # Validate model supports audio if we have any
-            if audio_paths and model_name:
-                caps = get_model_capabilities(model_name)
-                if not caps.audio_input:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Model {model_name} does not support audio input"
-                    )
+            # One check for every entry point that attaches media — the CLI and
+            # agent_run ask the same function.
+            from .llm.capabilities import ensure_model_supports
+            problem = ensure_model_supports(
+                capability_model_name(llm_override, selected_agent),
+                images=len(image_paths or []),
+                audio=len(audio_paths or []))
+            if problem:
+                raise HTTPException(status_code=400, detail=problem)
 
             # Create multimodal message with all file types
             try:

@@ -25,13 +25,20 @@ class HTTPXTimeoutConfig(BaseModel):
 
 
 class ModelCapabilitiesConfig(BaseModel):
-    """Model capabilities configuration"""
+    """What a model can take and produce.
+
+    THE definition — llm.capabilities.ModelCapabilities derives from this
+    class instead of repeating it. It used to be a second copy, field for
+    field, and a new capability had to be added twice.
+    """
+    # An unknown key here is a claim about the model that never arrives.
+    model_config = ConfigDict(extra="forbid")
+
     tools: bool = True
     function_calling: bool = True
     image_input: bool = False
     audio_input: bool = False
     video_input: bool = False
-    multimodal: bool = False  # Shorthand: sets image_input, audio_input, video_input
     streaming: bool = True
     json_mode: bool = False
 
@@ -60,14 +67,21 @@ class ModelCapabilitiesConfig(BaseModel):
     supports_files_api: bool = False
     supports_file_uploads: bool = False
 
-    @model_validator(mode='after')
-    def expand_multimodal(self) -> 'ModelCapabilitiesConfig':
-        """If multimodal=True, set image/audio/video_input to True."""
-        if self.multimodal:
-            self.image_input = True
-            self.audio_input = True
-            self.video_input = True
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_multimodal_shorthand(cls, data):
+        """``multimodal:`` was a shorthand that only worked in one direction.
+
+        True set all three input flags — overriding an explicit
+        ``video_input: false`` — and False did nothing at all, while reading
+        like a statement. Say which modality you mean.
+        """
+        if isinstance(data, dict) and "multimodal" in data:
+            raise ValueError(
+                "capabilities.multimodal was removed: set image_input / "
+                "audio_input / video_input explicitly. `multimodal: true` "
+                "meant all three, `multimodal: false` meant nothing.")
+        return data
 
 
 class BatchProviderConfig(BaseModel):
@@ -112,7 +126,11 @@ class LLMModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: Literal["ollama", "openai", "openai_httpx", "openai_responses", "anthropic", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
-    model: str
+    # Optional, damit ein Eintrag reine Basisklasse sein kann: er sammelt
+    # provider, base_url, Limits und capabilities, und die Kinder setzen nur
+    # noch den Modellnamen. Wer keinen hat, darf nicht benutzt werden — das
+    # prueft LLMSystemConfig._profiles_must_point_at_usable_models.
+    model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # Custom base URL for API endpoint (e.g. Gemini, Ollama, OpenAI-compatible)
     context_window: int = 32768  # default num_ctx for Ollama-compatible models
@@ -198,6 +216,27 @@ class LLMSystemConfig(BaseModel):
                 f"bitte umbenennen"
             )
         return v
+
+    @model_validator(mode="after")
+    def _profiles_must_point_at_usable_models(self) -> "LLMSystemConfig":
+        """Eine Basisklasse ohne `model:` ist zum Erben da, nicht zum Fahren.
+
+        Ohne diesen Riegel landet ihr None im Client und der Aufruf scheitert
+        erst beim Provider — mit einer Meldung, die nichts mit der Config zu
+        tun hat.
+        """
+        broken = sorted(
+            f"{name} -> {profile.model_ref}"
+            for name, profile in self.profiles.items()
+            if profile.model_ref in self.models
+            and not self.models[profile.model_ref].model
+        )
+        if broken:
+            raise ValueError(
+                "llm_system.profiles: diese Profile zeigen auf Eintraege ohne "
+                f"`model:` — das sind Basisklassen zum Erben: {broken}")
+        return self
+
     # TTS (Text-to-Speech) configuration
     tts_models: Dict[str, TTSModelConfig] = {}
     tts_profiles: Dict[str, TTSProfile] = {}

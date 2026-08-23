@@ -294,7 +294,16 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             if text_file_paths:
                 attachment_counts.append(f"{len(text_file_paths)} text file(s)")
             logger.info(f"Processing attachments: {', '.join(attachment_counts)}")
-            
+
+            # Same check the HTTP API and the CLI do — one function, three
+            # entry points, so a text-only model is refused before the call.
+            from .llm.capabilities import ensure_model_supports
+            problem = ensure_model_supports(
+                getattr(getattr(agent, "llm", None), "model", None),
+                images=len(image_paths or []), audio=len(audio_paths or []))
+            if problem:
+                raise ValueError(problem)
+
             try:
                 from pathlib import Path as PathLib
                 from .utils.multimodal_processor import (

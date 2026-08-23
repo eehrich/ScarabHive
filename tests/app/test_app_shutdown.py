@@ -137,8 +137,11 @@ async def test_server_with_connection():
         # We don't attempt to read stdout/stderr because we launched the
         # process with DEVNULL to avoid threads and leftover handles.
         logger.info(f"Server exit code: {server_process.returncode}")
+        exit_code = server_process.returncode
 
-        return server_process.returncode == 0
+    # `return` inside `finally` is a SyntaxError since Python 3.14 — and it
+    # used to swallow the early `return False` above.
+    return exit_code == 0
 
 
 if __name__ == "__main__":

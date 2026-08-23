@@ -821,8 +821,16 @@
           "type": "string"
         },
         "model": {
-          "title": "Model",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
         },
         "api_key": {
           "anyOf": [
@@ -1112,9 +1120,6 @@
           "title": "Batch Provider"
         }
       },
-      "required": [
-        "model"
-      ],
       "title": "LLMModelConfig",
       "type": "object"
     },
@@ -1578,7 +1583,8 @@
       "additionalProperties": false
     },
     "ModelCapabilitiesConfig": {
-      "description": "Model capabilities configuration",
+      "additionalProperties": false,
+      "description": "What a model can take and produce.\n\nTHE definition — llm.capabilities.ModelCapabilities derives from this\nclass instead of repeating it. It used to be a second copy, field for\nfield, and a new capability had to be added twice.",
       "properties": {
         "tools": {
           "default": true,
@@ -1603,11 +1609,6 @@
         "video_input": {
           "default": false,
           "title": "Video Input",
-          "type": "boolean"
-        },
-        "multimodal": {
-          "default": false,
-          "title": "Multimodal",
           "type": "boolean"
         },
         "streaming": {
@@ -1775,8 +1776,7 @@
         }
       },
       "title": "ModelCapabilitiesConfig",
-      "type": "object",
-      "additionalProperties": false
+      "type": "object"
     },
     "NetworkConfig": {
       "description": "Network configuration for the application",

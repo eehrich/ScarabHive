@@ -399,7 +399,7 @@ llm_system:
   # =============================================================================
   profiles:
     turbo:
-      model_ref: openrouter-gemini-3.5-flash-lite
+      model_ref: openrouter-gemini-flash-lite
       description: "Fast, lightweight profile — gemini 3.5 flash-lite via OpenRouter"
       max_steps: 500
 

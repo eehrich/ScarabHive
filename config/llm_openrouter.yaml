@@ -9,250 +9,165 @@
 llm_system:
   models:
 
-    openrouter-gemini-3.7-flash-minimal:
-      extends: openrouter-gemini-3.7-flash
-      context_window: 200000
-      max_tokens: 16384
-      thinking_level: minimal
-
-    openrouter-gemini-3.7-flash-unlimited:
-      extends: openrouter-gemini-3.7-flash
-      context_window: 200000
-      max_tokens: 0
-      thinking_level: high
-
-    openrouter-gemini-3.5-flash-lite:
-      extends: openrouter-gemini-3-pro
-      model: google/gemini-3.5-flash-lite
-      context_window: 400000
-      max_tokens: 32768
-      thinking_level: low
-
-    openrouter-gemini-3.7-flash:
-      extends: openrouter-gemini-3-pro
-      model: google/gemini-3.7-flash
-      context_window: 400000
-      max_tokens: 32768
-      thinking_level: medium
-
-    openrouter-gemini-3-pro:
+    # base class for all open router models
+    openrouter-base:
       provider: openai_responses
-      model: google/gemini-3.1-pro-preview
       api_key: ${OPENROUTER_API_KEY}
       base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 600
-      max_tokens: 16384
-      thinking_level: high
-      service_tier: flex
-      provider_routing:
-        order:
-        - google-vertex
-        - google-ai-studio
+      context_window: 272000    # independend of more conext size limit by default to 272K to avoid long context costs
+      request_timeout: 600      # some models are really slow
+      max_tokens: 16384         # default limit to 16k
+      include_thoughts: true    
+      thinking_level: medium
+      service_tier: flex        # use flex as std to save money
+      
+      # personal or appication specific prefferences
       safety_settings:
         HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
         HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
         HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
         HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
+
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
+        tools: true               # most models can handle tool calls nowadays
+        function_calling: true    
+        streaming: true           # enable streaming by default for better timeout handling
+        json_mode: true           # not used atm
+        image_input: false        # text only unless a child says otherwise
+        audio_input: false
+        video_input: false
 
-    openrouter-gemini-3-pro-unlimited:
-      extends: openrouter-gemini-3-pro
-      max_tokens: 0
 
-    openrouter-grok-4.1-fast:
-      provider: openai_httpx
-      model: x-ai/grok-4.1-fast
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 600
-      max_tokens: 16384
-      service_tier: flex
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
+    #
+    # Gemini Models
+    #
 
-    openrouter-grok-4.1-fast-unlimited:
-      extends: openrouter-grok-4.1-fast
-      max_tokens: 0
-
-    openrouter-qwen3.7-flash:
-      provider: openai_httpx
-      model: qwen/qwen3.7-flash
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000
-      request_timeout: 600
-      max_tokens: 16384
-      service_tier: flex
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-
-    openrouter-minimax-m3:
-      provider: openai_httpx
-      model: minimax/minimax-m3
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000
-      request_timeout: 600
-      max_tokens: 16384
-      service_tier: flex
-      provider_routing:
+    openrouter-gemini:
+      extends: openrouter-base
+      provider_routing: # make a defined order to avoid reasoning breaks
         order:
-        - minimax
+        - google-vertex
+        - google-ai-studio
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
         json_mode: true
-        multimodal: true
+        image_input: true
+        audio_input: true
+ 
 
-    openrouter-minimax-m3-unlimited:
-      extends: openrouter-minimax-m3
+    openrouter-gemini-pro:
+      extends: openrouter-gemini
+      model: google/gemini-3.1-pro-preview
+ 
+    openrouter-gemini-pro-unlimited:
+      extends: openrouter-gemini-pro
       max_tokens: 0
 
-    openrouter-llama-4-maverick:
-      provider: openai_httpx
-      model: meta-llama/llama-4-maverick
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 600
-      max_tokens: 16384
-      service_tier: flex
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
-
-    openrouter-gpt-5.4:
-      extends: openrouter-gpt-5.6-sol
-      model: openai/gpt-5.4
-      thinking_level: null
-
-    openrouter-gpt-5.4-unlimited:
-      extends: openrouter-gpt-5.4
-      max_tokens: 0
-
-    openrouter-gpt-5.4-mini:
-      extends: openrouter-gpt-5.4
-      model: openai/gpt-5.4-mini
-      context_window: 400000
-
-    openrouter-gpt-5.4-mini-unlimited:
-      extends: openrouter-gpt-5.4-mini
-      max_tokens: 0
-
-    openrouter-gpt-5.6-sol:
-      provider: openai_responses
-      model: openai/gpt-5.6-sol
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 272000
-      request_timeout: 600
-      max_tokens: 16384
+    openrouter-gemini-flash:
+      extends: openrouter-gemini
+      model: google/gemini-3.7-flash
       thinking_level: medium
-      service_tier: flex
+
+    openrouter-gemini-flash-minimal:
+      extends: openrouter-gemini-flash
+      max_tokens: 16384
+      thinking_level: minimal
+
+    openrouter-gemini-flash-unlimited:
+      extends: openrouter-gemini-flash
+      max_tokens: 0
+
+    openrouter-gemini-flash-lite:
+      extends: openrouter-gemini
+      model: google/gemini-3.5-flash-lite
+      context_window: 400000
+      max_tokens: 0
+      thinking_level: low
+
+
+    #
+    # OpenAI Models
+    #
+    openrouter-gpt:
+      extends: openrouter-base
       provider_routing:
         order:
         - openai
         allow_fallbacks: false
       prompt_cache_key: auto
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: true
+        image_input: true
 
-    openrouter-gpt-5.6-sol-unlimited:
-      extends: openrouter-gpt-5.6-sol
+    openrouter-gpt-sol:
+      extends: openrouter-gpt
+      model: openai/gpt-5.6-sol
+
+    openrouter-gpt-sol-unlimited:
+      extends: openrouter-gpt-sol
       max_tokens: 0
-      thinking_level: max
 
-    openrouter-gpt-5.6-terra:
-      extends: openrouter-gpt-5.6-sol
+    openrouter-gpt-terra:
+      extends: openrouter-gpt
       model: openai/gpt-5.6-terra
       max_tokens: 32768
 
-    openrouter-gpt-5.6-terra-unlimited:
-      extends: openrouter-gpt-5.6-terra
+    openrouter-gpt-terra-unlimited:
+      extends: openrouter-gpt-terra
       max_tokens: 0
-      thinking_level: max
 
-    openrouter-gpt-5.6-luna:
-      extends: openrouter-gpt-5.6-sol
+    openrouter-gpt-luna:
+      extends: openrouter-gpt
       model: openai/gpt-5.6-luna
 
-    openrouter-gpt-5.6-luna-responses:
-      extends: openrouter-gpt-5.6-luna
-      thinking_level: max
-
-    openrouter-gpt-5.6-luna-unlimited:
-      extends: openrouter-gpt-5.6-luna
+    openrouter-gpt-luna-unlimited:
+      extends: openrouter-gpt-luna
       max_tokens: 0
-      thinking_level: max
 
-    openrouter-gpt-oss-120b:
-      provider: openai_httpx
-      model: openai/gpt-oss-120b
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 131072
-      request_timeout: 600
-      max_tokens: 16384
-      service_tier: flex
-      reasoning_details_mode: keep_all
+
+    #
+    # Anthropic models
+    #
+
+    openrouter-claude:
+      extends: openrouter-base
       capabilities:
-        tools: true
-        function_calling: true
         streaming: false
-        json_mode: true
-        multimodal: false
-
-    openrouter-gpt-oss-120b-unlimited:
-      extends: openrouter-gpt-oss-120b
-      max_tokens: 0
+        image_input: true
 
     openrouter-claude-sonnet:
-      provider: openai_httpx
-      model: anthropic/claude-sonnet-5
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 200000
-      request_timeout: 600
-      max_tokens: 16384
-      service_tier: flex
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
+      extends: openrouter-claude
+      model: ~anthropic/claude-sonnet-latest
 
     openrouter-claude-sonnet-unlimited:
       extends: openrouter-claude-sonnet
       max_tokens: 0
 
-    openrouter-deepseek-flash-latest:
-      extends: openrouter-deepseek-reasoner
-      model: ~deepseek/deepseek-v4-flash-latest
+
+
+    #
+    # Deepseek Models
+    #
+
+    openrouter-deepseek:
+      extends: openrouter-base
       context_window: 1000000
+      provider_routing:
+        order:
+        - deepinfra
+        - baidu
+
       max_tokens: null
       thinking_level: null
       service_tier: null
+ 
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
+
+    openrouter-deepseek-flash:
+      extends: openrouter-deepseek
+      model: ~deepseek/deepseek-v4-flash-latest
       provider_routing:
         order:
         - streamlake
@@ -260,153 +175,128 @@ llm_system:
         - baidu
         quantizations:
         - fp8
-      capabilities:
-        streaming: true
 
-    openrouter-deepseek-pro-0813:
-      extends: openrouter-deepseek-reasoner
+    openrouter-deepseek-pro:
+      extends: openrouter-deepseek
       model: deepseek/deepseek-v4-pro-0813
-      context_window: 1000000
-      max_tokens: null
-      service_tier: null
       provider_routing:
         order:
         - deepseek
         - alibaba
         allow_fallbacks: false
 
-    openrouter-deepseek-chat:
-      extends: openrouter-deepseek-reasoner
-      thinking_level: null
 
-    openrouter-deepseek-chat-unlimited:
-      extends: openrouter-deepseek-chat
+    #
+    # Misc models
+    #
+
+    openrouter-grok:
+      extends: openrouter-base
+      model: ~x-ai/grok-latest
+
+    openrouter-grok-unlimited:
+      extends: openrouter-grok
       max_tokens: 0
 
-    openrouter-deepseek-reasoner:
-      provider: openai_httpx
-      model: deepseek/deepseek-v4-flash
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 100000
-      request_timeout: 600
+
+    openrouter-qwen3.7-flash:
+      extends: openrouter-base
+      model: qwen/qwen3.7-flash
+      context_window: 1000000
       max_tokens: 16384
-      thinking_level: high
-      service_tier: flex
+
+    openrouter-minimax-m3:
+      extends: openrouter-base
+      model: minimax/minimax-m3
+      context_window: 1000000
       provider_routing:
         order:
-        - deepinfra
-        - baidu
-        - gmicloud
+        - minimax
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
+        image_input: true
 
-    openrouter-deepseek-reasoner-unlimited:
-      extends: openrouter-deepseek-reasoner
+    openrouter-minimax-m3-unlimited:
+      extends: openrouter-minimax-m3
       max_tokens: 0
 
-    openrouter-glm-5.2:
-      provider: openai_httpx
-      model: z-ai/glm-5.2
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000
-      request_timeout: 600
-      max_tokens: 16384
-      thinking_level: high
-      service_tier: flex
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: false
-        json_mode: true
-        multimodal: false
+    openrouter-glm:
+      extends: openrouter-base
+      model: z-ai/glm-5.3
 
-    openrouter-glm-5.2-unlimited:
-      extends: openrouter-glm-5.2
+    openrouter-glm-unlimited:
+      extends: openrouter-glm
       max_tokens: 0
 
     openrouter-kimi-k3:
-      provider: openai_httpx
+      extends: openrouter-base
       model: moonshotai/kimi-k3
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000
-      request_timeout: 600
-      max_tokens: 16384
-      thinking_level: high
-      service_tier: flex
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-        multimodal: true
+        image_input: true
+
+
+
   # =============================================================================
   # PROFILES for easy access
   # =============================================================================
   profiles:
     or-gemini-flash-lite:
-      model_ref: openrouter-gemini-3.5-flash-lite
-      description: "OpenRouter Gemini 3.5 Flash Lite - Lightweight with audio/video support"
+      model_ref: openrouter-gemini-flash-lite
+      description: "OpenRouter Gemini Flash Lite"
       max_steps: 500
 
     or-gemini-flash:
-      model_ref: openrouter-gemini-3.7-flash
-      description: "OpenRouter Gemini 3.7 Flash - Fast with audio/video support; uses Flex tier (cheaper, slower)"
+      model_ref: openrouter-gemini-flash
+      description: "OpenRouter Gemini Flash"
       max_steps: 500
 
     or-gemini-flash-minimal:
-      model_ref: openrouter-gemini-3.7-flash-minimal
-      description: "OpenRouter Gemini 3.7 Flash - Minimal thinking level"
+      model_ref: openrouter-gemini-flash-minimal
+      description: "OpenRouter Gemini Flash - Minimal thinking level"
       max_steps: 500      
 
     or-gemini-flash-unlimited:
-      model_ref: openrouter-gemini-3.7-flash-unlimited
-      description: "OpenRouter Gemini 3.7 Flash - No output token limit (budget-friendly testing)"
+      model_ref: openrouter-gemini-flash-unlimited
+      description: "OpenRouter Gemini Flash - No output token limit"
       max_steps: 500
 
     or-gemini-pro:
-      model_ref: openrouter-gemini-3-pro
-      description: "OpenRouter Gemini 3 Pro - Best quality with audio/video support"
+      model_ref: openrouter-gemini-pro
+      description: "OpenRouter Gemini Pro"
       max_steps: 500
 
     or-gemini-pro-unlimited:
-      model_ref: openrouter-gemini-3-pro-unlimited
-      description: "OpenRouter Gemini 3 Pro - No output token limit (for large structured outputs)"
+      model_ref: openrouter-gemini-pro-unlimited
+      description: "OpenRouter Gemini Pro - No output token limit"
       max_steps: 500
 
     or-claude-sonnet:
       model_ref: openrouter-claude-sonnet
-      description: "OpenRouter Claude Sonnet 4.5 - Best for creative writing and scene generation"
+      description: "OpenRouter Claude Sonnet"
       max_steps: 500
 
     or-claude-sonnet-unlimited:
       model_ref: openrouter-claude-sonnet-unlimited
-      description: "OpenRouter Claude Sonnet 4.5 - No output token limit (for long scenes/rewrites)"
+      description: "OpenRouter Claude Sonnet - No output token limit"
       max_steps: 500
 
-    or-grok-fast:
-      model_ref: openrouter-grok-4.1-fast
-      description: "OpenRouter Grok 4.1 Fast - Best tool calling, 2M context, very fast"
+    or-grok:
+      model_ref: openrouter-grok
+      description: "OpenRouter Grok"
       max_steps: 500
 
-    or-grok-fast-unlimited:
-      model_ref: openrouter-grok-4.1-fast-unlimited
-      description: "OpenRouter Grok 4.1 Fast - No output token limit"
+    or-grok-unlimited:
+      model_ref: openrouter-grok-unlimited
+      description: "OpenRouter Grok - No output token limit"
       max_steps: 500
 
     or-qwen-flash:
       model_ref: openrouter-qwen3.7-flash
-      description: "OpenRouter Qwen3.7 Flash - Ultra cheap, 1M context, good multilingual"
+      description: "OpenRouter Qwen3.7 Flash"
       max_steps: 500
 
     or-minimax-m3:
       model_ref: openrouter-minimax-m3
-      description: "OpenRouter MiniMax M3 - 1M context MoE with sparse attention, agentic / coding focus"
+      description: "OpenRouter MiniMax M3"
       max_steps: 500
 
     or-minimax-m3-unlimited:
@@ -414,98 +304,58 @@ llm_system:
       description: "OpenRouter MiniMax M3 - No output token limit"
       max_steps: 500
 
-    or-llama-maverick:
-      model_ref: openrouter-llama-4-maverick
-      description: "OpenRouter Llama 4 Maverick - 400B MoE, good for creative writing"
-      max_steps: 500
-
     or-gpt-pro:
-      model_ref: openrouter-gpt-5.6-sol
-      description: "OpenRouter GPT-5.6 Sol - Flagship model, best allrounder for prose + coding"
+      model_ref: openrouter-gpt-sol
+      description: "OpenRouter GPT Sol - Flagship model"
       max_steps: 500
 
     or-gpt-pro-unlimited:
-      model_ref: openrouter-gpt-5.6-sol-unlimited
-      description: "OpenRouter GPT-5.6 Sol - No output token limit"
+      model_ref: openrouter-gpt-sol-unlimited
+      description: "OpenRouter GPT-Sol - No output token limit"
       max_steps: 500
 
     or-gpt-full:
-      model_ref: openrouter-gpt-5.6-terra
-      description: "OpenRouter GPT-5.6 Terra - Flagship model, best allrounder for prose + coding"
+      model_ref: openrouter-gpt-terra
+      description: "OpenRouter GPT Terra"
       max_steps: 500
 
     or-gpt-full-unlimited:
-      model_ref: openrouter-gpt-5.6-terra-unlimited
-      description: "OpenRouter GPT-5.6 Terra - No output token limit"
+      model_ref: openrouter-gpt-terra-unlimited
+      description: "OpenRouter GPT Terra - No output token limit"
       max_steps: 500
 
     or-gpt-mini:
-      model_ref: openrouter-gpt-5.6-luna
-      description: "OpenRouter GPT-5.6 Luna - Fast, cheap, near-full quality"
+      model_ref: openrouter-gpt-luna
+      description: "OpenRouter GPT Luna - Fast, cheap"
       max_steps: 500
 
     or-gpt-mini-unlimited:
-      model_ref: openrouter-gpt-5.6-luna-unlimited
-      description: "OpenRouter GPT-5.6 Luna - No output token limit"
-      max_steps: 500
-
-    or-gpt-oss-120b:
-      model_ref: openrouter-gpt-oss-120b
-      description: "OpenRouter gpt-oss-120b - OpenAI open-weight MoE, ultra cheap"
-      max_steps: 500
-
-    or-gpt-oss-120b-unlimited:
-      model_ref: openrouter-gpt-oss-120b-unlimited
-      description: "OpenRouter gpt-oss-120b - No output token limit"
+      model_ref: openrouter-gpt-luna-unlimited
+      description: "OpenRouter GPT Luna - No output token limit"
       max_steps: 500
 
     or-deepseek-flash:
-      model_ref: openrouter-deepseek-flash-latest
-      description: "OpenRouter DeepSeek V4 Flash via latest-alias - standard fallback behind every direct deepseek profile"
-      max_steps: 500
-
-    or-deepseek-chat:
-      model_ref: openrouter-deepseek-chat
-      description: "OpenRouter DeepSeek V4 Flash - Cheap, fast, non-thinking mode"
-      max_steps: 500
-
-    or-deepseek-chat-unlimited:
-      model_ref: openrouter-deepseek-chat-unlimited
-      description: "OpenRouter DeepSeek V4 Flash - No output token limit"
-      max_steps: 500
-
-    or-deepseek-reasoner:
-      model_ref: openrouter-deepseek-reasoner
-      description: "OpenRouter DeepSeek V4 Flash - Thinking mode for reasoning tasks"
-      max_steps: 500
-
-    or-deepseek-reasoner-unlimited:
-      model_ref: openrouter-deepseek-reasoner-unlimited
-      description: "OpenRouter DeepSeek V4 Flash - Thinking mode, no output token limit"
+      model_ref: openrouter-deepseek-flash
+      description: "OpenRouter DeepSeek V4 Flash"
       max_steps: 500
 
     or-deepseek-pro:
-      model_ref: openrouter-deepseek-pro-0813
-      description: "OpenRouter DeepSeek V4 Pro (0813, no latest alias exists) - fallback behind deepseek-pro*"
-      max_steps: 500
-
-    or-deepseek-pro-unlimited:
-      model_ref: openrouter-deepseek-pro-0813
-      description: "OpenRouter DeepSeek V4 Pro - Flagship, no output token limit"
+      model_ref: openrouter-deepseek-pro
+      description: "OpenRouter DeepSeek V4 Pro*"
       max_steps: 500
 
     or-glm:
-      model_ref: openrouter-glm-5.2
-      description: "OpenRouter GLM 5.2 - 1M context, strong at coding/tool use, reasoning high/xhigh"
+      model_ref: openrouter-glm
+      description: "OpenRouter GLM"
       max_steps: 500
 
     or-glm-unlimited:
-      model_ref: openrouter-glm-5.2-unlimited
-      description: "OpenRouter GLM 5.2 - No output token limit"
+      model_ref: openrouter-glm-unlimited
+      description: "OpenRouter GLM - No output token limit"
       max_steps: 500
 
     or-kimi-k3:
       model_ref: openrouter-kimi-k3
-      description: "OpenRouter Kimi K3 - 2.8T multimodal reasoning, 1M context, strong coding/tool use"
+      description: "OpenRouter Kimi K3"
       max_steps: 500
 

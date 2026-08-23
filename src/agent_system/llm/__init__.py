@@ -15,13 +15,9 @@ from .tts import (
 from .capabilities import (
     ModelCapability,
     ModelCapabilities,
-    ImageFormat,
-    get_model_capabilities,
-    validate_capability_request,
-    get_compatible_models,
+    ensure_model_supports,
     init_capabilities_registry,
-    register_model_capabilities,
-    load_capabilities_from_config
+    load_capabilities_from_config,
 )
 
 __all__ = [
@@ -40,11 +36,7 @@ __all__ = [
     # Capabilities
     "ModelCapability",
     "ModelCapabilities",
-    "ImageFormat",
-    "get_model_capabilities",
-    "validate_capability_request",
-    "get_compatible_models",
+    "ensure_model_supports",
     "init_capabilities_registry",
-    "register_model_capabilities",
     "load_capabilities_from_config"
 ]

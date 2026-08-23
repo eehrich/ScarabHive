@@ -209,9 +209,15 @@ class TestTheRealConfigStillResolves:
     def test_every_model_entry_is_complete_after_resolution(self):
         """Grounds the suite: a resolver that produced nothing would leave every
         test above true and this one empty."""
-        models = load_settings().llm_system.models
+        cfg = load_settings()
+        models = cfg.llm_system.models
         assert len(models) >= 50, f"only {len(models)} models — config did not arrive"
-        assert all(m.model for m in models.values())
+        # Eintraege ohne `model:` sind Basisklassen. Erlaubt, solange kein
+        # Profil auf sie zeigt — sonst faehrt ein None in den Client.
+        abstract = {n for n, m in models.items() if not m.model}
+        referenced = {p.model_ref for p in cfg.llm_system.profiles.values()}
+        assert not (abstract & referenced),             f"Profile zeigen auf Basisklassen: {sorted(abstract & referenced)}"
+        assert len(models) - len(abstract) >= 50
 
     def test_no_model_entry_carries_extends(self):
         raw = {}
@@ -222,3 +228,27 @@ class TestTheRealConfigStillResolves:
         resolved = load_settings().llm_system.models
         for name in raw:
             assert name in resolved
+
+
+class TestABaseClassMayNotBeDriven:
+    """Ein Eintrag ohne `model:` ist zum Erben da. Ohne Riegel landet sein
+    None im Client und der Aufruf scheitert erst beim Provider."""
+
+    def _cfg(self, models, profiles):
+        from agent_system.config.models import LLMSystemConfig
+        return LLMSystemConfig.model_validate(
+            {"models": models, "profiles": profiles})
+
+    def test_a_profile_pointing_at_one_is_refused(self):
+        import pytest
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="Basisklassen"):
+            self._cfg({"base": {"provider": "openai"}},
+                      {"p": {"model_ref": "base"}})
+
+    def test_the_base_class_itself_is_fine(self):
+        cfg = self._cfg({"base": {"provider": "openai"},
+                         "child": {"provider": "openai", "model": "gpt-5"}},
+                        {"p": {"model_ref": "child"}})
+        assert cfg.models["base"].model is None
+        assert cfg.models["child"].model == "gpt-5"

@@ -23,8 +23,7 @@ class TestOpenAIMultimodalInjection:
             )
         # Mock vision capabilities for multimodal injection
         client.capabilities = ModelCapabilities(
-            image_input=True,
-            capabilities=["image_input", "text_output"]
+            image_input=True
         )
         return client
     
@@ -41,8 +40,7 @@ class TestOpenAIMultimodalInjection:
             )
         # Mock non-vision capabilities
         client.capabilities = ModelCapabilities(
-            image_input=False,
-            capabilities=["text_output"]
+            image_input=False
         )
         return client
     
@@ -196,8 +194,7 @@ class TestOpenAISerializeMessages:
             )
         # Mock vision capabilities
         client.capabilities = ModelCapabilities(
-            image_input=True,
-            capabilities=["image_input", "text_output"]
+            image_input=True
         )
         return client
     

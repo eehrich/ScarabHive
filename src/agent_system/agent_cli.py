@@ -1239,7 +1239,17 @@ def main() -> None:
         if has_text_files:
             attachment_counts.append(f"{len(has_text_files)} text file(s)")
         vprint(f"[cli] processing attachments: {', '.join(attachment_counts)}")
-        
+
+        # Same check the HTTP API does. Without it the picture went to whatever
+        # model the chain picked, and the complaint came back from the provider.
+        from .llm.capabilities import ensure_model_supports
+        model_name = getattr(getattr(agent, "llm", None), "model", None)
+        problem = ensure_model_supports(
+            model_name, images=len(has_images or []), audio=len(has_audio or []))
+        if problem:
+            print(f"Error: {problem}", file=sys.stderr)
+            sys.exit(1)
+
         try:
             from .utils.multimodal_processor import (
                 create_multimodal_message_extended,
