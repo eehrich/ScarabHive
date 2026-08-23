@@ -21,13 +21,6 @@ llm_system:
       thinking_level: medium
       service_tier: flex        # use flex as std to save money
       
-      # personal or appication specific prefferences
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
-
       capabilities:
         tools: true               # most models can handle tool calls nowadays
         function_calling: true    
@@ -48,6 +41,14 @@ llm_system:
         order:
         - google-vertex
         - google-ai-studio
+
+      # personal or appication specific prefferences
+      safety_settings:
+        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
+
       capabilities:
         json_mode: true
         image_input: true
