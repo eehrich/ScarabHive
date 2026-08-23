@@ -157,6 +157,44 @@ def test_every_profile_reference_resolves():
         + "\n  ".join(f"{name!r} <- {where}" for name, where in dangling))
 
 
+def test_every_allowed_sub_agent_exists():
+    """A sub-agent manager may only hand out names that resolve.
+
+    Same failure mode as a dangling profile reference, one layer up: the
+    allowlist is not validated at load time, so a deleted or renamed agent
+    stays in the list and only fails when something tries to spawn it —
+    which, for a rarely used agent, may be never. Found this way:
+    `v4_beat_writer_v2`, deleted 2026-08-23 but still listed, and
+    `parallel_thinking_agent`, which never existed.
+    """
+    from agent_system.config.settings import load_settings
+
+    servers = load_settings().plugins.servers
+    known = set(servers)
+    assert len(known) >= 100, (
+        f"only {len(known)} plugin entries — the real configuration did not "
+        f"arrive, the test would be vacuous")
+
+    references: list[tuple[str, str]] = []
+    for name, server in servers.items():
+        dumped = server.model_dump()
+        allowed = (dumped.get("allowed_agents")
+                   or (dumped.get("config") or {}).get("allowed_agents") or [])
+        if isinstance(allowed, list):
+            references += [(str(a), name) for a in allowed if isinstance(a, str)]
+
+    assert len(references) >= 20, (
+        f"only {len(references)} allowlist entries collected — the collector "
+        f"no longer reaches them, the test would be vacuous")
+
+    dangling = sorted({(agent, where) for agent, where in references
+                       if agent not in known})
+    assert not dangling, (
+        "these sub-agents are allowed but not registered — a spawn fails at "
+        "runtime, and nothing says so before:\n  "
+        + "\n  ".join(f"{agent!r} <- {where}" for agent, where in dangling))
+
+
 @pytest.mark.parametrize("bad_yaml,expected", [
     ("a: 1\na: 2\n", "doppelter Schluessel"),
     ("top:\n  x: 1\n  x: 2\n", "doppelter Schluessel"),

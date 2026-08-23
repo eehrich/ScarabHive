@@ -195,8 +195,6 @@ config:
     - financial_analyst_agent
     - code_reviewer_agent
     - meta_web_research_agent
-    - parallel_thinking_agent
-    - thinking_agent
   blocked_agents:
   hook_config:
     enabled: true
