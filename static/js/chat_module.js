@@ -2,6 +2,45 @@
 (function (global) {
   const chatModule = {};
 
+  // Object URLs behind the attachment previews in the transcript.
+  //
+  // They used to be revoked the moment the image finished loading. The
+  // picture survives that — it is decoded by then — but the click did not:
+  // window.open() got a blob: address the browser no longer resolved. They
+  // now live as long as the message they belong to.
+  const previewObjectUrls = new Set();
+
+  function trackedObjectUrl(file) {
+    const url = URL.createObjectURL(file);
+    previewObjectUrls.add(url);
+    return url;
+  }
+
+  function releasePreviewObjectUrls() {
+    previewObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+    previewObjectUrls.clear();
+  }
+
+  /**
+   * Open an attachment full size in a new tab.
+   *
+   * Neither address a preview carries survives window.open() directly: a
+   * data: URL — what the restored history uses — is refused as a top level
+   * navigation, and a blob: URL only resolves while it is alive. Both turn
+   * into a fresh blob first, which the browser does allow.
+   */
+  async function openAttachmentInNewTab(url) {
+    try {
+      const response = await fetch(url);
+      const objectUrl = URL.createObjectURL(await response.blob());
+      previewObjectUrls.add(objectUrl);
+      window.open(objectUrl, '_blank');
+    } catch (e) {
+      console.warn('[chat] could not open attachment, trying the raw address', e);
+      window.open(url, '_blank');
+    }
+  }
+
   // Backend now handles all formatting via plugins
   // Frontend displays content as-is
 
@@ -148,17 +187,12 @@
       
       images.forEach(file => {
         const img = document.createElement('img');
-        img.src = URL.createObjectURL(file);
+        img.src = trackedObjectUrl(file);
         img.alt = file.name;
         img.title = file.name;
-        
-        // Revoke object URL after image loads to free memory
-        img.onload = () => URL.revokeObjectURL(img.src);
-        
-        // Optional: click to view full size
-        img.onclick = () => {
-          window.open(img.src, '_blank');
-        };
+
+        // Click to view full size
+        img.onclick = () => openAttachmentInNewTab(img.src);
         
         previewContainer.appendChild(img);
       });
@@ -177,7 +211,7 @@
         audioWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px;';
         
         // Create object URL for the audio file
-        const audioUrl = URL.createObjectURL(file);
+        const audioUrl = trackedObjectUrl(file);
         
         // Create play button
         const playBtn = document.createElement('button');
@@ -2022,6 +2056,7 @@
       const chatEl = document.getElementById('chat');
       if (chatEl) {
         chatEl.innerHTML = '';
+        releasePreviewObjectUrls();
       }
       
       // Restore messages
@@ -2088,10 +2123,8 @@
               img.alt = 'Uploaded image';
               img.title = 'Click to view full size';
               
-              // Optional: click to view full size
-              img.onclick = () => {
-                window.open(imageUrl, '_blank');
-              };
+              // Click to view full size
+              img.onclick = () => openAttachmentInNewTab(imageUrl);
               
               previewContainer.appendChild(img);
             });
