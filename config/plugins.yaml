@@ -219,8 +219,12 @@ plugins:
       strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"
       timeout_seconds: 1200
       servers:  # 4 ComfyUI-Instanzen auf einem Server (2 GPUs), load-balanced
-        - host: "192.0.2.64" # PC
-          port: 8188
+        # Der lokale PC ist meist aus. Die Auswahl ist zwar health-aware und
+        # weicht aus, aber erst NACH dem Verbindungsversuch: gemessen 3,07 s
+        # Timeout je Job gegen 0,006 s auf gpuhost1. Wieder aufmachen, sobald
+        # der PC dauerhaft laeuft.
+        #- host: "192.0.2.64" # PC
+        #  port: 8188
 
         # gpuhost1
         - host: "192.0.2.5"  # 5090
