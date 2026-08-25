@@ -141,7 +141,7 @@ dynamicColor = close > open ? color.green : color.red
 indicator("x")
 p1 = plot(close)
 p2 = plot(open)
-""" + "\n".join(f'fill(p1, p2, color = color.green)' for _ in range(80))
+""" + "\n".join('fill(p1, p2, color = color.green)' for _ in range(80))
         diagnostics = self.validator.validate_text(code)
         self.assertFalse(any("Estimated plot count is" in diagnostic.message for diagnostic in diagnostics))
 

@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from .diagnostics import Diagnostic, Severity
+from .diagnostics import Severity
 from .agent_report import build_agent_report
 from .sarif import build_sarif_run
 from .validator import PineScriptValidator

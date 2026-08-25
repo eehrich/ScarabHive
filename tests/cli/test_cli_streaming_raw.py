@@ -40,7 +40,7 @@ class AgentStub:
         self.registry = registry
         self._session_service = session_service
         # Mock _session_tracker for session saving
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
         self._session_tracker = MagicMock()
         self._session_tracker.get_session_messages.return_value = []
         # Mock agent_config with llm_profile

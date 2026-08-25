@@ -229,7 +229,6 @@ class TestThePluginsThemselvesBuildTheRightModel:
     @pytest.fixture
     def router(self, real_clients):
         """llm_router builds one client per profile."""
-        from types import SimpleNamespace
 
         from agent_system.config.models import MCPConfig
         from plugins.llm_router.server import LLMRouterServer
@@ -301,7 +300,6 @@ class TestTheShippedConfigurationReachesTheSummarizer:
 
         import yaml
 
-        from agent_system.config.models import MCPConfig
         from plugins.context_summarizer.server import ContextSummarizerServer
 
         shipped = yaml.safe_load(
