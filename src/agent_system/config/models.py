@@ -142,7 +142,7 @@ class LLMModelConfig(BaseModel):
     include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
     enable_prompt_caching: Optional[bool] = None  # Anthropic prompt caching (client default: True). Was a dead key in llm.yaml before this field existed.
     thinking_budget: Optional[int] = None  # Token budget for thinking (Gemini 2.5: 1-24576, default 8192)
-    thinking_level: Optional[Literal["minimal", "low", "medium", "high", "max", "ultra"]] = None  # Thinking level. Gemini 3: minimal-high; OpenAI/OpenRouter reasoning.effort (gpt-5.6-Familie): zusätzlich max/ultra
+    thinking_level: Optional[Literal["none", "minimal", "low", "medium", "high", "max", "ultra"]] = None  # Thinking level. Gemini 3: minimal-high; OpenAI/OpenRouter reasoning.effort (gpt-5.6-Familie): zusätzlich max/ultra; "none" schaltet Thinking bei Hybrid-Modellen ab (OpenRouter: DeepSeek V4 & Co.)
     modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
     max_tokens: Optional[int] = None  # Maximum output tokens (limits response length, reduces costs)
     temperature: Optional[float] = None  # Sampling-Temperatur. None = Provider-Default (bei DeepSeek/OpenAI ~1,0!). Für mechanische Aufgaben (Struktur, Zuordnung, Extraktion) niedrig setzen: gemessen 2026-07-25 liefen alle Prosa-Konverter-Calls mit Provider-Default, also voller Sampling-Varianz für eine Kopier-Aufgabe. ⚠️ NICHT für Reasoning-Modelle setzen (gpt-5.x/o-Serie akzeptieren nur temperature=1 bzw. lehnen den Param ab) — dort steuert thinking_level. Wird als Top-Level-Feld an OpenAI-kompatible/Anthropic/Gemini-APIs gesendet.
