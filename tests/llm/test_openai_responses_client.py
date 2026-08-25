@@ -62,6 +62,42 @@ SAMPLE_OUTPUT = [
 ]
 
 
+class TestExtractVerbatimItems:
+    """The message validator merges consecutive assistant messages by
+    concatenating reasoning_details — a merged message carries TWO
+    responses_items blocks. Returning only the first dropped the second
+    turn's items (reasoning, text AND function_calls); a tool result
+    answering a dropped call is a 400."""
+
+    def test_collects_items_from_all_matching_blocks_in_order(self):
+        c = _client()
+        msg = {"role": "assistant", "reasoning_details": [
+            {"format": RESPONSES_ITEMS_FORMAT, "model": c.model,
+             "items": [{"type": "reasoning", "id": "rs_1"}]},
+            {"format": RESPONSES_ITEMS_FORMAT, "model": c.model,
+             "items": [{"type": "function_call", "id": "fc_2",
+                        "call_id": "call_2", "name": "f", "arguments": "{}"}]},
+        ]}
+        items = c._extract_verbatim_items(msg)
+        assert [i["id"] for i in items] == ["rs_1", "fc_2"]
+
+    def test_foreign_model_blocks_are_skipped(self):
+        c = _client()
+        msg = {"role": "assistant", "reasoning_details": [
+            {"format": RESPONSES_ITEMS_FORMAT, "model": "other/model",
+             "items": [{"type": "reasoning", "id": "rs_foreign"}]},
+            {"format": RESPONSES_ITEMS_FORMAT, "model": c.model,
+             "items": [{"type": "reasoning", "id": "rs_ours"}]},
+        ]}
+        items = c._extract_verbatim_items(msg)
+        assert [i["id"] for i in items] == ["rs_ours"]
+
+    def test_no_matching_block_returns_none(self):
+        c = _client()
+        assert c._extract_verbatim_items(
+            {"role": "assistant", "reasoning_details": []}) is None
+
+
 class TestFormatResponse:
     def test_tool_calls_and_verbatim_block(self):
         c = _client()

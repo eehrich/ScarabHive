@@ -82,8 +82,14 @@ Cache-Matching — ohne Key cacht das Modell praktisch nie (belegt 2026-07-21:
 byte-identischer 10k-Prefix, `cached_tokens=0`). Der Key gehört zum Modell, nicht
 in die Agent-Dateien; dort stand er bis zum 2026-08-22 34-mal.
 
-`reasoning_details_mode: keep_all` bei den Reasoning-Modellen: deren Items
-bilden eine verschlüsselte Kette, die jeder Turn vollständig zurückgeben muss.
+Reasoning-Round-Trip: Die Items der Reasoning-Modelle bilden eine
+verschlüsselte Kette, die jeder Turn vollständig zurückgeben muss. Auf der
+`openai_responses`-Route erledigt das der Client selbst (verbatim-Replay der
+Items, de facto keep_all). Das Config-Feld `reasoning_details_mode` existiert
+im Schema weiterhin, ist aber seit dem Umzug auf die Responses-API in keiner
+YAML mehr gesetzt — ausgewertet wird es nur noch vom `openai_httpx`-Client
+(Default `keep_last`); andere Provider verwerfen es (anthropic nimmt es an,
+liest es nie).
 
 ## Profile
 

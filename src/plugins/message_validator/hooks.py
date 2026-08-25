@@ -557,18 +557,47 @@ class InternalMessageValidator:
                     merged_multimodal.extend(first_msg.multimodal_content)
                 if getattr(second_msg, 'multimodal_content', None):
                     merged_multimodal.extend(second_msg.multimodal_content)
-                
-                # Create merged message preserving all fields
-                repaired[first_idx] = ChatMessage(
-                    role="assistant",
-                    content=merged_content if merged_content else None,
-                    tool_calls=merged_tool_calls if merged_tool_calls else None,
-                    name=first_msg.name if hasattr(first_msg, 'name') else None,
-                    timestamp=first_msg.timestamp if hasattr(first_msg, 'timestamp') else None,
-                    reasoning_content=merged_reasoning if merged_reasoning else None,
-                    multimodal_content=merged_multimodal if merged_multimodal else None,
-                    content_format=first_msg.content_format or second_msg.content_format
-                )
+
+                # Merge reasoning_details in original order (provider-side
+                # thinking blocks that must round-trip, e.g. Gemini
+                # thought_signature — dropping them causes
+                # MALFORMED_FUNCTION_CALL on the next turn).
+                merged_rd = (list(getattr(first_msg, 'reasoning_details', None) or [])
+                             + list(getattr(second_msg, 'reasoning_details', None) or []))
+
+                # Anthropic thinking blocks: keep only the NEWER turn's
+                # blocks. Anthropic validates the block SEQUENCE of the last
+                # assistant turn verbatim ("never filter, dedupe or reorder",
+                # see llm/models.py) — concatenating two turns' blocks would
+                # send a sequence the model never produced in one turn, which
+                # is exactly the 400 this preservation is meant to avoid.
+                # Model-bound signatures make cross-model concatenation wrong
+                # for the same reason.
+                first_tb = getattr(first_msg, 'thinking_blocks', None)
+                second_tb = getattr(second_msg, 'thinking_blocks', None)
+                first_tm = getattr(first_msg, 'thinking_model', None)
+                second_tm = getattr(second_msg, 'thinking_model', None)
+                if second_tb:
+                    merged_tb, merged_tm = second_tb, second_tm
+                else:
+                    merged_tb, merged_tm = first_tb or None, first_tm
+
+                # model_copy keeps every remaining field (name, timestamp,
+                # injected_by, ...) — the previous full reconstruction here
+                # silently dropped reasoning_details/thinking_blocks.
+                repaired[first_idx] = first_msg.model_copy(update={
+                    "content": merged_content if merged_content else None,
+                    "tool_calls": merged_tool_calls if merged_tool_calls else None,
+                    "reasoning_content": merged_reasoning if merged_reasoning else None,
+                    "multimodal_content": merged_multimodal if merged_multimodal else None,
+                    "content_format": first_msg.content_format or second_msg.content_format,
+                    "reasoning_details": merged_rd if merged_rd else None,
+                    # A broken chain on either side stays broken in the merge.
+                    "rd_orphaned": (getattr(first_msg, 'rd_orphaned', None)
+                                    or getattr(second_msg, 'rd_orphaned', None)),
+                    "thinking_blocks": merged_tb,
+                    "thinking_model": merged_tm if merged_tb else None,
+                })
                 
                 # Mark second message for removal
                 remove_indices.add(second_idx)
@@ -639,16 +668,23 @@ class InternalMessageValidator:
             if 0 <= adjusted_idx < len(repaired):
                 msg = repaired[adjusted_idx]
                 if msg.role == "assistant" and msg.tool_calls:
-                    # Create a new message without tool_calls
                     # Preserve content if it exists
                     new_content = msg.content if msg.content else "Tool execution was interrupted"
 
-                    # Create new ChatMessage without tool_calls
-                    repaired[adjusted_idx] = ChatMessage(
-                        role="assistant",
-                        content=new_content,
-                        name=msg.name if hasattr(msg, 'name') else None
-                    )
+                    # Drop ONLY tool_calls; model_copy keeps the remaining
+                    # fields (reasoning_content, reasoning_details,
+                    # thinking_blocks, timestamp, ...) — the previous full
+                    # reconstruction silently dropped them all.
+                    # rd_orphaned: the kept reasoning_details signed the very
+                    # tool_calls we just removed — chain-verified providers
+                    # (reasoning_details_mode=keep_all) must reset instead of
+                    # replaying a signature over mutated content; Gemini
+                    # (keep_last) ignores the flag and keeps its signature.
+                    repaired[adjusted_idx] = msg.model_copy(update={
+                        "content": new_content,
+                        "tool_calls": None,
+                        "rd_orphaned": True,
+                    })
 
         return repaired
 

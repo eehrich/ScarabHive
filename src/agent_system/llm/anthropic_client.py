@@ -571,11 +571,22 @@ class AnthropicAsyncClient(LLMClient):
         if anthropic_tools:
             request_kwargs["tools"] = anthropic_tools
         
-        # Add extra params
+        # Add extra params. With extended/adaptive thinking active, Anthropic
+        # rejects sampling modifications (temperature/top_p/top_k) with 400 —
+        # drop them instead of forwarding. NOTE: gated on include_thinking,
+        # so an adaptive-only model configured with include_thoughts=false
+        # (thinks server-side anyway) and the no-tools chat() path are NOT
+        # covered — both pre-existing, no such config exists today.
         for key in ("temperature", "top_p", "top_k", "stop_sequences"):
             if key in self.extra_params:
+                if self.include_thinking and key != "stop_sequences":
+                    logger.debug(
+                        "%s=%s dropped (extended thinking active, model=%s)",
+                        key, self.extra_params[key], self.model,
+                    )
+                    continue
                 request_kwargs[key] = self.extra_params[key]
-        
+
         # Handle extended thinking
         if self.include_thinking:
             request_kwargs["thinking"] = self._build_thinking_param()

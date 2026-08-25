@@ -1310,8 +1310,10 @@ def adjust_thinking_for_retry(
     # Adjust thinking_level for Gemini 3
     adjusted_level = thinking_level
     if thinking_level is not None:
-        # Reduce to "low" unless already "minimal"
-        if thinking_level.lower() != "minimal":
+        # Reduce to "low" unless already at (or below) the floor: "minimal",
+        # or "none" (clamped to minimal by build_thinking_config) — raising
+        # a none-model to "low" on retry would INCREASE thinking.
+        if thinking_level.lower() not in ("minimal", "none"):
             adjusted_level = "low"
     
     # Adjust thinking_budget for Gemini 2.5
@@ -1338,32 +1340,75 @@ def build_thinking_config(
     
     IMPORTANT: Gemini 3 models ALWAYS think - thinking cannot be disabled!
     - include_thoughts: Controls whether thoughts are RETURNED in response
-    - thinking_budget: Token budget for thinking (Gemini 2.5 only: 1-24576)
-    - thinking_level: Thinking level (Gemini 3 only: minimal, low, medium, high)
-    
+    - thinking_budget: Token budget for thinking (Gemini 2.5 only: 1-24576).
+      0 is sent EXPLICITLY (disables thinking on 2.5 models) — the retry
+      reducer relies on this; silently dropping 0 re-enabled the Google
+      default budget instead.
+    - thinking_level: Thinking level (Gemini 3 only: minimal, low, medium, high).
+      The config Literal also allows OpenRouter-effort values (xhigh, max);
+      those are clamped to "high" here instead of reaching the API as an
+      unknown enum value.
+
     Only sends parameters that are explicitly configured - if not set, uses Google defaults.
-        
+
     Returns:
         Dict with thinkingConfig for HTTP API, or None if no config needed
     """
     # Only set thinking_config if we have explicit settings
     if include_thoughts is None and thinking_budget is None and thinking_level is None:
         return None
-    
+
     thinking_config: Dict[str, Any] = {}
-    
+
     # include_thoughts: whether to return thoughts in response (model still thinks!)
     if include_thoughts is not None:
         thinking_config["includeThoughts"] = include_thoughts
-    
-    # thinking_budget: token budget for Gemini 2.5 models (don't set = use default 8192)
-    if thinking_budget is not None and thinking_budget > 0:
+
+    # thinking_budget: token budget for Gemini 2.5 models (don't set = use
+    # default 8192; 0 = disable thinking; negative values are invalid → drop)
+    if thinking_budget is not None and thinking_budget >= 0:
         thinking_config["thinkingBudget"] = thinking_budget
-    
+
     # thinking_level: for Gemini 3 models (minimal, low, medium, high)
     # Keep lowercase - HTTP client will map to THINKING_LEVEL_X format if needed
     if thinking_level is not None:
-        thinking_config["thinkingLevel"] = thinking_level.lower()
-    
+        level = thinking_level.lower()
+        if level not in ("minimal", "low", "medium", "high"):
+            # Clamp foreign effort values to the nearest Gemini level:
+            # "none" (disable) → minimal (Gemini 3 always thinks),
+            # xhigh/max/anything above → high.
+            clamped = "minimal" if level == "none" else "high"
+            logger.debug(
+                "thinking_level=%s not supported by Gemini — clamped to '%s'",
+                thinking_level, clamped,
+            )
+            level = clamped
+        thinking_config["thinkingLevel"] = level
+
     return thinking_config if thinking_config else None
+
+
+def apply_retry_thinking_config(
+    payload: Dict[str, Any],
+    thinking_config: Optional[Dict[str, Any]],
+) -> None:
+    """Write a retry-reduced thinkingConfig into an HTTP-API payload.
+
+    ALWAYS replaces the first attempt's thinkingConfig — keeping it when the
+    reduction resolves to None silently undid the whole retry reduction.
+    Maps thinkingLevel to the THINKING_LEVEL_X wire format of the HTTP API.
+    Shared by the streaming and non-streaming retry loops in GeminiClient;
+    the two hand-rolled copies of this block had already diverged once.
+    """
+    gen_cfg = payload.get("generationConfig")
+    if not isinstance(gen_cfg, dict):
+        gen_cfg = {}
+        payload["generationConfig"] = gen_cfg
+    if thinking_config:
+        if "thinkingLevel" in thinking_config:
+            level = thinking_config["thinkingLevel"]
+            thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+        gen_cfg["thinkingConfig"] = thinking_config
+    else:
+        gen_cfg.pop("thinkingConfig", None)
 

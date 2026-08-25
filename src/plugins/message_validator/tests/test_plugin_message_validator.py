@@ -437,6 +437,135 @@ class TestMessageSequence:
         # content_format should be preserved from first message
         assert merged_msg.content_format == "markdown"
 
+    def test_merge_preserves_reasoning_details_and_thinking_blocks(self):
+        """Audit 2026-08-25: the merge rebuilt ChatMessage from scratch and
+        silently dropped reasoning_details (Gemini thought_signature →
+        MALFORMED_FUNCTION_CALL next turn) and thinking_blocks (Anthropic →
+        400 on the next tool turn).
+
+        reasoning_details are CONCATENATED (the Responses client collects
+        all matching blocks in order); thinking_blocks keep only the NEWER
+        turn's blocks — Anthropic validates the last turn's block sequence
+        verbatim, a concatenated sequence was never produced by the model."""
+        messages = [
+            ChatMessage(role="user", content="Think"),
+            ChatMessage(
+                role="assistant", content="A",
+                reasoning_details=[{"type": "reasoning.encrypted",
+                                    "data": "sig-1", "index": 0}],
+                thinking_blocks=[{"type": "thinking", "thinking": "t1",
+                                  "signature": "s1"}],
+                thinking_model="claude-opus-5",
+            ),
+            ChatMessage(
+                role="assistant", content="B",
+                reasoning_details=[{"type": "reasoning.encrypted",
+                                    "data": "sig-2", "index": 1}],
+                thinking_blocks=[{"type": "thinking", "thinking": "t2",
+                                  "signature": "s2"}],
+                thinking_model="claude-opus-5",
+            ),
+        ]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        assert len(result.repaired_messages) == 2
+        merged = result.repaired_messages[1]
+        assert merged.role == "assistant"
+        assert [rd["data"] for rd in merged.reasoning_details] == ["sig-1", "sig-2"]
+        assert [tb["signature"] for tb in merged.thinking_blocks] == ["s2"]
+        assert merged.thinking_model == "claude-opus-5"
+
+    def test_merge_thinking_blocks_from_different_models_keeps_newer(self):
+        """Signatures are model-bound: merging blocks from two different
+        models would replay foreign signatures under one thinking_model."""
+        messages = [
+            ChatMessage(role="user", content="Think"),
+            ChatMessage(
+                role="assistant", content="A",
+                thinking_blocks=[{"type": "thinking", "thinking": "t1",
+                                  "signature": "s1"}],
+                thinking_model="claude-sonnet-5",
+            ),
+            ChatMessage(
+                role="assistant", content="B",
+                thinking_blocks=[{"type": "thinking", "thinking": "t2",
+                                  "signature": "s2"}],
+                thinking_model="claude-opus-5",
+            ),
+        ]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        merged = result.repaired_messages[1]
+        assert [tb["signature"] for tb in merged.thinking_blocks] == ["s2"]
+        assert merged.thinking_model == "claude-opus-5"
+
+    def test_merge_keeps_first_turn_blocks_when_second_has_none(self):
+        """Only the first message carries thinking blocks — they survive."""
+        messages = [
+            ChatMessage(role="user", content="Think"),
+            ChatMessage(
+                role="assistant", content="A",
+                thinking_blocks=[{"type": "thinking", "thinking": "t1",
+                                  "signature": "s1"}],
+                thinking_model="claude-opus-5",
+            ),
+            ChatMessage(role="assistant", content="B"),
+        ]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        merged = result.repaired_messages[1]
+        assert [tb["signature"] for tb in merged.thinking_blocks] == ["s1"]
+        assert merged.thinking_model == "claude-opus-5"
+
+    def test_merge_marks_orphaned_when_either_side_is(self):
+        """A broken reasoning chain on either side stays broken in the merge."""
+        messages = [
+            ChatMessage(role="user", content="Think"),
+            ChatMessage(role="assistant", content="A", rd_orphaned=True,
+                        reasoning_details=[{"data": "sig-1", "index": 0}]),
+            ChatMessage(role="assistant", content="B"),
+        ]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        assert result.repaired_messages[1].rd_orphaned is True
+
+    def test_strip_orphaned_tool_calls_preserves_reasoning_fields(self):
+        """Audit 2026-08-25: stripping orphaned tool_calls rebuilt the
+        message with role/content/name only — reasoning_content,
+        reasoning_details and thinking_blocks were silently dropped."""
+        messages = [
+            ChatMessage(role="user", content="Weather?"),
+            ChatMessage(
+                role="assistant", content=None,
+                tool_calls=[{"id": "call_1",
+                             "function": {"name": "weather_forecast"}}],
+                reasoning_content="thought about it",
+                reasoning_details=[{"data": "sig-1", "index": 0}],
+                thinking_blocks=[{"type": "thinking", "thinking": "t1",
+                                  "signature": "s1"}],
+                thinking_model="claude-opus-5",
+            ),
+            ChatMessage(role="user", content="Any update?"),
+        ]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        stripped = result.repaired_messages[1]
+        assert stripped.role == "assistant"
+        assert stripped.tool_calls is None
+        assert stripped.content  # fallback text present
+        assert stripped.reasoning_content == "thought about it"
+        assert [rd["data"] for rd in stripped.reasoning_details] == ["sig-1"]
+        assert [tb["signature"] for tb in stripped.thinking_blocks] == ["s1"]
+        assert stripped.thinking_model == "claude-opus-5"
+        # The kept reasoning_details signed the removed tool_calls: the chain
+        # is mutated, so chain-verified providers (keep_all) must reset.
+        assert stripped.rd_orphaned is True
+
     def test_valid_alternating_sequence(self):
         """Test valid alternating user/assistant sequence."""
         messages = [

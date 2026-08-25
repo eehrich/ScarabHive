@@ -365,8 +365,8 @@
                 "low",
                 "medium",
                 "high",
-                "max",
-                "ultra"
+                "xhigh",
+                "max"
               ],
               "type": "string"
             },

@@ -72,10 +72,10 @@ class TestResolveAppliesLlmParams:
         cfg = _system_config()
         agent = AgentConfig(
             llm_profile="advanced-profile",
-            llm_params={"thinking_level": "ultra"},
+            llm_params={"thinking_level": "xhigh"},
         )
         kwargs = resolve_llm_config_for_agent(cfg, agent)
-        assert kwargs["thinking_level"] == "ultra"
+        assert kwargs["thinking_level"] == "xhigh"
 
     def test_no_params_is_noop(self):
         cfg = _system_config()
@@ -146,19 +146,19 @@ class TestKeyedLlmParams:
 
     KEYED = {
         "*": {"max_tokens": 8000, "thinking_level": "low"},
-        "advanced-profile": {"thinking_level": "ultra"},
+        "advanced-profile": {"thinking_level": "xhigh"},
     }
 
     def test_resolve_star_merges_specific_wins(self):
         assert resolve_llm_params(self.KEYED, "advanced-profile") == {
-            "max_tokens": 8000, "thinking_level": "ultra",
+            "max_tokens": 8000, "thinking_level": "xhigh",
         }
         assert resolve_llm_params(self.KEYED, "test-profile") == {
             "max_tokens": 8000, "thinking_level": "low",
         }
 
     def test_resolve_no_entry_no_star_is_none(self):
-        params = {"advanced-profile": {"thinking_level": "ultra"}}
+        params = {"advanced-profile": {"thinking_level": "xhigh"}}
         assert resolve_llm_params(params, "test-profile") is None
 
     def test_resolve_flat_form_passthrough(self):
@@ -171,7 +171,7 @@ class TestKeyedLlmParams:
         agent = AgentConfig(
             llm_profile=["test-profile"],
             llm_profile_advanced=["advanced-profile"],
-            llm_params={"advanced-profile": {"thinking_level": "ultra"}},
+            llm_params={"advanced-profile": {"thinking_level": "xhigh"}},
         )
         # resolve löst das Default-Profil auf → Advanced-Params greifen NICHT
         kwargs = resolve_llm_config_for_agent(cfg, agent)
@@ -193,7 +193,7 @@ class TestKeyedLlmParams:
         # AgentConfig — das Ergebnis muss als Flat-Form validieren.
         flat = resolve_llm_params(self.KEYED, "advanced-profile")
         a = AgentConfig(llm_profile="advanced-profile", llm_params=flat)
-        assert a.llm_params["thinking_level"] == "ultra"
+        assert a.llm_params["thinking_level"] == "xhigh"
 
 
 class TestKeyedLlmParamsValidation:
@@ -249,7 +249,7 @@ class TestKeyedLlmParamsValidation:
             llm_params={
                 "*": {"max_tokens": 8000},
                 "test-profile": {"thinking_level": "low"},
-                "advanced-profile": {"thinking_level": "ultra"},
+                "advanced-profile": {"thinking_level": "xhigh"},
             },
         )
         assert set(a.llm_params) == {"*", "test-profile", "advanced-profile"}

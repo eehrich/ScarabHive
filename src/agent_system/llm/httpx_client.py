@@ -615,12 +615,15 @@ class HTTPXOpenAIClient(LLMClient):
             "reasoning": {"effort": "high"}
 
         Maps ``thinking_level`` (from config) → ``effort`` value.
-        ``thinking_budget`` is passed as ``max_tokens`` inside ``reasoning``
-        when set (provider support varies).
+        ``thinking_budget`` maps to ``max_tokens`` inside ``reasoning``.
+        OpenRouter treats ``effort`` and ``max_tokens`` as mutually exclusive
+        ("one of the following, not both"), so when both are configured only
+        ``effort`` is sent.
 
         Returns:
             Dict suitable for ``payload["reasoning"]``, or *None* if no
-            thinking parameters are configured.
+            thinking parameters are configured (then NO reasoning field is
+            sent and the provider default applies).
         """
         if not self.thinking_level and not self.thinking_budget:
             return None
@@ -628,9 +631,61 @@ class HTTPXOpenAIClient(LLMClient):
         reasoning: dict[str, Any] = {}
         if self.thinking_level:
             reasoning["effort"] = self.thinking_level
-        if self.thinking_budget:
+            if self.thinking_budget:
+                logger.debug(
+                    "thinking_budget=%s dropped: effort and max_tokens are "
+                    "mutually exclusive in the reasoning param (model=%s)",
+                    self.thinking_budget, self.model,
+                )
+        elif self.thinking_budget:
             reasoning["max_tokens"] = self.thinking_budget
         return reasoning
+
+    @staticmethod
+    def _accumulate_reasoning_detail(accumulated: dict[int, dict], rd: dict) -> None:
+        """Merge one streamed ``reasoning_details`` fragment into the accumulator.
+
+        Keyed by the fragment's ``index``; later fragments for the same index
+        append ``data`` and overwrite the remaining keys. Shared by the main
+        chunk loop and the tail-buffer parser so a fragment arriving only in
+        the unterminated rest buffer is not lost (a dropped Gemini signature
+        means MALFORMED_FUNCTION_CALL on the next turn).
+        """
+        rd_index = rd.get("index", 0)
+        if rd_index in accumulated:
+            existing = accumulated[rd_index]
+            for k, v in rd.items():
+                if k == "data" and existing.get("data"):
+                    existing["data"] += v
+                else:
+                    existing[k] = v
+        else:
+            accumulated[rd_index] = dict(rd)
+
+    @staticmethod
+    def _accumulate_tool_call_delta(accumulated: dict[int, dict], tc_delta: dict) -> int:
+        """Merge one streamed tool-call delta into the accumulator (by index).
+
+        Returns the tool-call index the delta belongs to. Shared by the main
+        chunk loop and the tail-buffer parser — an argument fragment arriving
+        only in the rest buffer would otherwise leave truncated JSON args.
+        """
+        index = tc_delta.get("index", 0)
+        if index not in accumulated:
+            accumulated[index] = {
+                "id": "",
+                "type": "function",
+                "function": {"name": "", "arguments": ""}
+            }
+        if "id" in tc_delta:
+            accumulated[index]["id"] = tc_delta["id"]
+        if "function" in tc_delta:
+            func_delta = tc_delta["function"]
+            if "name" in func_delta:
+                accumulated[index]["function"]["name"] += func_delta["name"]
+            if "arguments" in func_delta:
+                accumulated[index]["function"]["arguments"] += func_delta["arguments"]
+        return index
 
     def _filter_audio_from_content(self, content: Any) -> Any:
         """Filter and normalize content for OpenAI API.
@@ -840,10 +895,15 @@ class HTTPXOpenAIClient(LLMClient):
 
         # Sampling-Temperatur, nur wenn explizit konfiguriert (0.0 ist ein
         # gültiger Wert → auf None prüfen, nicht auf Falsy). Reasoning-
-        # Modelle akzeptieren den Param nicht: wenn thinking_level/-budget
-        # gesetzt ist, NICHT senden — sonst 400er.
+        # Modelle akzeptieren den Param nicht: genau dann, wenn ein
+        # reasoning-Feld gesendet wird, NICHT senden — sonst 400er.
+        # (Dasselbe Prädikat wie der Payload-Bau — vorher divergierten die
+        # Guards und thinking_budget=0 unterdrückte temperature, obwohl gar
+        # kein reasoning-Feld gesendet wurde. Gilt BEWUSST auch für
+        # effort="none": OpenAI-Hybride lehnen temperature≠1 auch bei
+        # abgeschaltetem Thinking ab — konservativ unterdrücken.)
         if self.temperature is not None:
-            if self.thinking_level is not None or self.thinking_budget is not None:
+            if reasoning is not None:
                 logger.debug(
                     "temperature=%s ignoriert (Reasoning-Modell, model=%s)",
                     self.temperature, self.model,
@@ -1391,10 +1451,15 @@ class HTTPXOpenAIClient(LLMClient):
 
         # Sampling-Temperatur, nur wenn explizit konfiguriert (0.0 ist ein
         # gültiger Wert → auf None prüfen, nicht auf Falsy). Reasoning-
-        # Modelle akzeptieren den Param nicht: wenn thinking_level/-budget
-        # gesetzt ist, NICHT senden — sonst 400er.
+        # Modelle akzeptieren den Param nicht: genau dann, wenn ein
+        # reasoning-Feld gesendet wird, NICHT senden — sonst 400er.
+        # (Dasselbe Prädikat wie der Payload-Bau — vorher divergierten die
+        # Guards und thinking_budget=0 unterdrückte temperature, obwohl gar
+        # kein reasoning-Feld gesendet wurde. Gilt BEWUSST auch für
+        # effort="none": OpenAI-Hybride lehnen temperature≠1 auch bei
+        # abgeschaltetem Thinking ab — konservativ unterdrücken.)
         if self.temperature is not None:
-            if self.thinking_level is not None or self.thinking_budget is not None:
+            if reasoning is not None:
                 logger.debug(
                     "temperature=%s ignoriert (Reasoning-Modell, model=%s)",
                     self.temperature, self.model,
@@ -1771,17 +1836,8 @@ class HTTPXOpenAIClient(LLMClient):
                                 # required on round-trip or upstream returns MALFORMED_FUNCTION_CALL.
                                 if "reasoning_details" in delta and delta["reasoning_details"]:
                                     for rd in delta["reasoning_details"]:
-                                        rd_index = rd.get("index", 0)
-                                        if rd_index in accumulated_reasoning_details:
-                                            # Merge subsequent fragments — append `data` if both have it
-                                            existing = accumulated_reasoning_details[rd_index]
-                                            for k, v in rd.items():
-                                                if k == "data" and existing.get("data"):
-                                                    existing["data"] += v
-                                                else:
-                                                    existing[k] = v
-                                        else:
-                                            accumulated_reasoning_details[rd_index] = dict(rd)
+                                        self._accumulate_reasoning_detail(
+                                            accumulated_reasoning_details, rd)
 
                                 # Handle content delta
                                 if "content" in delta and delta["content"]:
@@ -1795,26 +1851,8 @@ class HTTPXOpenAIClient(LLMClient):
                                 # Handle tool call deltas
                                 if "tool_calls" in delta:
                                     for tc_delta in delta["tool_calls"]:
-                                        index = tc_delta.get("index", 0)
-
-                                        # Initialize tool call buffer if needed
-                                        if index not in accumulated_tool_calls:
-                                            accumulated_tool_calls[index] = {
-                                                "id": "",
-                                                "type": "function",
-                                                "function": {"name": "", "arguments": ""}
-                                            }
-
-                                        # Accumulate deltas
-                                        if "id" in tc_delta:
-                                            accumulated_tool_calls[index]["id"] = tc_delta["id"]
-
-                                        if "function" in tc_delta:
-                                            func_delta = tc_delta["function"]
-                                            if "name" in func_delta:
-                                                accumulated_tool_calls[index]["function"]["name"] += func_delta["name"]
-                                            if "arguments" in func_delta:
-                                                accumulated_tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
+                                        index = self._accumulate_tool_call_delta(
+                                            accumulated_tool_calls, tc_delta)
 
                                         # Yield delta with accumulated state
                                         yield {
@@ -1896,6 +1934,19 @@ class HTTPXOpenAIClient(LLMClient):
                                                 accumulated_reasoning.append(delta["reasoning_content"])
                                             if "content" in delta and delta["content"]:
                                                 accumulated_content.append(delta["content"])
+                                            # Same accumulation as the main loop —
+                                            # fragments that only arrive in the
+                                            # unterminated rest buffer must not
+                                            # be dropped (lost signature / broken
+                                            # tool-call args otherwise).
+                                            if "reasoning_details" in delta and delta["reasoning_details"]:
+                                                for rd in delta["reasoning_details"]:
+                                                    self._accumulate_reasoning_detail(
+                                                        accumulated_reasoning_details, rd)
+                                            if "tool_calls" in delta:
+                                                for tc_delta in delta["tool_calls"]:
+                                                    self._accumulate_tool_call_delta(
+                                                        accumulated_tool_calls, tc_delta)
                                     except Exception:
                                         pass
                         

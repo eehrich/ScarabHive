@@ -346,15 +346,23 @@ class OpenAIResponsesClient(LLMClient):
         switch used to poison the whole session. Blocks written before the
         model was recorded count as foreign too: a fresh chain start is the
         cheap side of that bet.
+
+        A message can carry MORE than one matching block: the message
+        validator merges consecutive assistant messages by concatenating
+        their reasoning_details. Collect ALL matching blocks in order —
+        returning only the first silently dropped the second turn's items
+        (reasoning, text AND function_calls), and a tool result answering a
+        dropped call is a 400.
         """
+        collected: list = []
         for block in (_get(msg, "reasoning_details") or []):
             if isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT:
                 if block.get("model") != self.model:
                     continue
                 items = block.get("items")
                 if isinstance(items, list) and items:
-                    return items
-        return None
+                    collected.extend(items)
+        return collected or None
 
     def _messages_to_input(self, messages: list) -> list:
         """Build the Responses `input` item list from a ChatMessage history.
@@ -574,6 +582,8 @@ class OpenAIResponsesClient(LLMClient):
         # Sampling-Temperatur nur ohne Reasoning: die o-/gpt-5.x-Serie
         # akzeptiert den Param nicht (400 "temperature is not supported"),
         # dort steuert reasoning.effort. 0.0 ist gültig → auf None prüfen.
+        # BEWUSST auch bei thinking_level="none" unterdrückt: OpenAI-Hybride
+        # lehnen temperature≠1 auch mit abgeschaltetem Thinking ab.
         if self.temperature is not None and not self.thinking_level:
             payload["temperature"] = self.temperature
         if self.max_tokens:

@@ -18,6 +18,7 @@ from .clients import LLMClient
 from .retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
     adjust_thinking_for_retry,
+    apply_retry_thinking_config,
     build_thinking_config,
     convert_openai_tools_to_gemini,
     extract_usage_from_metadata,
@@ -233,19 +234,12 @@ class GeminiClient(LLMClient):
                     thinking_budget=retry_thinking_budget,
                     thinking_level=retry_thinking_level,
                 )
-                if thinking_config:
-                    # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
-                    if "thinkingLevel" in thinking_config:
-                        level = thinking_config["thinkingLevel"]
-                        thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
-                    if "generationConfig" not in payload:
-                        payload["generationConfig"] = {}
-                    payload["generationConfig"]["thinkingConfig"] = thinking_config
-                    logger.info(
-                        f"[Gemini] Retry #{attempt}: reducing thinking "
-                        f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
-                        f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
-                    )
+                apply_retry_thinking_config(payload, thinking_config)
+                logger.info(
+                    f"[Gemini] Retry #{attempt}: reducing thinking "
+                    f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
+                    f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
+                )
 
             try:
                 logger.debug(f"Gemini streaming: Starting request to {self.model}")
@@ -741,19 +735,15 @@ class GeminiClient(LLMClient):
                     thinking_budget=retry_thinking_budget,
                     thinking_level=retry_thinking_level,
                 )
-                if thinking_config:
-                    # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
-                    if "thinkingLevel" in thinking_config:
-                        level = thinking_config["thinkingLevel"]
-                        thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
-                    if "generationConfig" not in payload:
-                        payload["generationConfig"] = {}
-                    payload["generationConfig"]["thinkingConfig"] = thinking_config
-                    logger.info(
-                        f"[Gemini] Non-streaming retry #{attempt}: reducing thinking "
-                        f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
-                        f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
-                    )
+                # Same replace-or-pop as the streaming path — the old
+                # if-only variant kept the first attempt's thinkingConfig
+                # when the reduction resolved to None.
+                apply_retry_thinking_config(payload, thinking_config)
+                logger.info(
+                    f"[Gemini] Non-streaming retry #{attempt}: reducing thinking "
+                    f"(budget: {self.extra_params.get('thinking_budget')} -> {retry_thinking_budget}, "
+                    f"level: {self.extra_params.get('thinking_level')} -> {retry_thinking_level})"
+                )
 
             try:
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:

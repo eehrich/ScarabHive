@@ -139,6 +139,25 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
                 f"{wanted} is required when provider=openai_responses "
                 f"targets {effective_url}")
         from .openai_responses_client import OpenAIResponsesClient
+        if thinking_budget:
+            # Visible instead of silently dropped: the Responses client only
+            # knows thinking_level (reasoning.effort) — a budget has no wire
+            # field on this route.
+            logger.warning(
+                "thinking_budget is not wired for provider=openai_responses "
+                "and will be ignored (model=%s) — use thinking_level instead.",
+                model,
+            )
+        if include_thoughts:
+            # debug only: config sets this on every OpenRouter model; the
+            # gateway returns reasoning summaries on its own, so the intent
+            # roughly holds without a request field.
+            logger.debug(
+                "include_thoughts has no request field on provider="
+                "openai_responses (model=%s) — reasoning summaries arrive "
+                "at the provider's discretion.",
+                model,
+            )
         if httpx_timeouts:
             responses_timeouts = HTTPXTimeoutConfig(
                 connect=httpx_timeouts.get('connect', 10.0),
@@ -181,6 +200,15 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
 
         if provider == "openai_httpx":
+            if include_thoughts:
+                # Visible instead of silently dropped: the httpx client only
+                # wires thinking_level/thinking_budget into the reasoning
+                # param; include_thoughts has no effect here.
+                logger.warning(
+                    "include_thoughts is not wired for provider=openai_httpx "
+                    "and will be ignored (model=%s).",
+                    model,
+                )
             if httpx_timeouts:
                 timeout_config = HTTPXTimeoutConfig(
                     connect=httpx_timeouts.get('connect', 10.0),
@@ -226,6 +254,17 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             if modalities:
                 default_extra["modalities"] = modalities
 
+            if thinking_level or thinking_budget or include_thoughts:
+                # Visible instead of silently dropped: the SDK client has no
+                # thinking path at all.
+                logger.warning(
+                    "thinking_level/thinking_budget/include_thoughts are not "
+                    "wired for provider=openai (SDK client) and will be "
+                    "ignored (model=%s) — switch the profile to openai_httpx "
+                    "or openai_responses.",
+                    model,
+                )
+
             if prompt_cache_key or prompt_cache_mode:
                 # Sichtbar statt still verworfen (Review-Finding): der
                 # SDK-Client hat keinen prompt_cache_key-Pfad — wer Caching
@@ -251,6 +290,12 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             )
 
     if provider == "ollama":
+        if thinking_level or thinking_budget or include_thoughts:
+            logger.debug(
+                "thinking_level/thinking_budget/include_thoughts are ignored "
+                "for provider=ollama (model=%s).",
+                model,
+            )
         mode = (ollama_mode or "openai_compat").lower()
         if mode == "native":
             base_native = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
