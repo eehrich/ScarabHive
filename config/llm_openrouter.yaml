@@ -14,12 +14,12 @@ llm_system:
       provider: openai_responses
       api_key: ${OPENROUTER_API_KEY}
       base_url: https://openrouter.ai/api/v1
-      context_window: 272000    # independend of more conext size limit by default to 272K to avoid long context costs
-      request_timeout: 600      # some models are really slow
-      max_tokens: 16384         # default limit to 16k
+      context_window: 272000      # independend of more conext size limit by default to 272K to avoid long context costs
+      request_timeout: 600        # some models are really slow
+      max_tokens: 16384           # default limit to 16k
       include_thoughts: true    
       thinking_level: medium
-      service_tier: flex        # use flex as std to save money
+      service_tier: flex          # use flex as std to save money
       
       capabilities:
         tools: true               # most models can handle tool calls nowadays
@@ -58,7 +58,7 @@ llm_system:
     openrouter-gemini-pro:
       extends: openrouter-gemini
       model: google/gemini-3.1-pro-preview
- 
+
     openrouter-gemini-pro-unlimited:
       extends: openrouter-gemini-pro
       max_tokens: 0
@@ -123,6 +123,18 @@ llm_system:
       extends: openrouter-gpt-luna
       max_tokens: 0
 
+    # Non-thinking twin for mechanical text-in/text-out tasks (fallback of
+    # the writer nothink role). Same pattern as
+    # openrouter-deepseek-flash-nothinking: reasoning off, capabilities off.
+    openrouter-gpt-luna-nothinking:
+      extends: openrouter-gpt-luna
+      thinking_level: none
+      capabilities:
+        tools: false
+        function_calling: false
+        streaming: false
+        json_mode: false
+
 
     #
     # Anthropic models
@@ -157,9 +169,8 @@ llm_system:
         - baidu
 
       max_tokens: null
-      thinking_level: null
       service_tier: null
- 
+
       capabilities:
         tools: true
         function_calling: true
@@ -176,6 +187,16 @@ llm_system:
         - baidu
         quantizations:
         - fp8
+
+    # simple nothinking version of deepseek-flash for easy tasks
+    openrouter-deepseek-flash-nothinking:
+      extends: openrouter-deepseek-flash        
+      thinking_level: none
+      capabilities:
+        tools: false
+        function_calling: false
+        streaming: false
+        json_mode: false     
 
     openrouter-deepseek-pro:
       extends: openrouter-deepseek
