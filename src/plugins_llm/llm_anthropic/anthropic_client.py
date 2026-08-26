@@ -82,6 +82,7 @@ class AnthropicAsyncClient(LLMClient):
         prompt_cache_mode: Optional[str] = None,
         reasoning_details_mode: Optional[str] = None,
         capabilities=None,
+        ssl_verify: Optional[bool] = None,
         **extra_params
     ):
         """Initialize Anthropic client.
@@ -97,6 +98,8 @@ class AnthropicAsyncClient(LLMClient):
             include_thinking: Enable extended thinking output
             thinking_budget: Token budget for thinking (requires include_thinking=True)
             enable_prompt_caching: Enable prompt caching for cost savings
+            ssl_verify: False disables certificate verification (TLS proxies);
+                None keeps the SDK default.
             **extra_params: Additional parameters (temperature, top_p, etc.)
         """
         try:
@@ -132,7 +135,15 @@ class AnthropicAsyncClient(LLMClient):
         }
         if base_url:
             client_kwargs["base_url"] = base_url
-        
+        if ssl_verify is False:
+            # network.ssl_verify: false reaches every other TLS provider —
+            # this one used to accept the flag and ignore it, so behind a
+            # TLS-intercepting proxy Anthropic alone kept failing on the
+            # certificate with nothing pointing at the setting.
+            import httpx as _httpx
+            client_kwargs["http_client"] = _httpx.AsyncClient(
+                verify=False, timeout=request_timeout)
+
         self._client = AsyncAnthropic(**client_kwargs)
         
         logger.info(
@@ -274,10 +285,10 @@ class AnthropicAsyncClient(LLMClient):
                         create_anthropic_multimodal_injection,
                         check_vision_support
                     )
-                    # Anthropic Claude models generally support vision.
-                    # capabilities is not set on this client (never wired through
-                    # __init__), so guard with getattr to avoid AttributeError
-                    # on the first multimodal tool result.
+                    # Anthropic Claude models generally support vision, so an
+                    # unset capabilities means "allow" here. getattr because
+                    # test doubles and partially built clients turn up on this
+                    # path — the factory does wire capabilities through.
                     _caps = getattr(self, "capabilities", None)
                     supports_vision = check_vision_support(_caps) if _caps else True
                     injection = create_anthropic_multimodal_injection(

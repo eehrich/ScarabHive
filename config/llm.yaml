@@ -27,7 +27,13 @@ llm_system:
         cancel_on_startup: true
         fallback_to_sync: true
         
-      openai:
+      # Jeder LLM-Client bringt sein eigenes Batch-Backend unter SEINEM Namen
+      # mit: openai_httpx = der httpx-Client (der auch bisher die
+      # Batch-Modelle synchron bedient hat), openai = der SDK-Client. Beide
+      # sprechen dieselbe /v1/batches-API. Der Name im Modell-Eintrag
+      # (batch_provider) waehlt das Paar — frueher bildete der Kern
+      # "openai" still auf den httpx-Client ab.
+      openai_httpx:
         enabled: true
         collection_window_seconds: 10
         max_requests_per_batch: 100
@@ -292,7 +298,7 @@ llm_system:
       provider: batch
       model: gpt-5.4
       api_key: ${OPENAI_API_KEY}
-      batch_provider: openai
+      batch_provider: openai_httpx
       context_window: 272000
       request_timeout: 240
       capabilities:

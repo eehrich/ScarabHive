@@ -18,13 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
+import time
 from typing import Optional, TYPE_CHECKING
 
 import httpx
 
-from agent_system.llm.tts import TTSClient, TTSResult, TTSVoice
+from agent_system.llm.tts import (
+    TTSClient, TTSResult, TTSVoice,
+    notify_tts_request, notify_tts_response,
+)
+from plugins_llm.llm_common.api_keys import resolve_api_key
 
 if TYPE_CHECKING:
     from agent_system.config.models import TTSModelConfig
@@ -95,6 +99,16 @@ class OpenAISpeechTTSClient(TTSClient):
         headers = {"Authorization": f"Bearer {self.api_key}"}
         url = f"{self.base_url}/audio/speech"
 
+        # Same reason as the Gemini TTS client: TTS calls never pass through
+        # the per-agent hook wiring, so without this dispatch every consumer
+        # (message_debugger, cost/latency capture) is blind to them — and
+        # switching a profile from gemini_tts to this provider used to make
+        # the whole audio pipeline invisible in one line.
+        started = time.time()
+        await notify_tts_request(
+            provider="openai_speech", model=self.model, url=url,
+            payload={**payload, "input_chars": len(text)})
+
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -105,12 +119,35 @@ class OpenAISpeechTTSClient(TTSClient):
                         f"HTTP {response.status_code}: {response.text[:300]}",
                         request=response.request, response=response)
                 elif response.status_code >= 400:
-                    raise httpx.HTTPStatusError(
-                        f"Speech API error {response.status_code}: "
-                        f"{response.text[:500]}",
-                        request=response.request, response=response)
+                    raise await self._failed(
+                        url, started,
+                        httpx.HTTPStatusError(
+                            f"Speech API error {response.status_code}: "
+                            f"{response.text[:500]}",
+                            request=response.request, response=response))
+                elif response.status_code >= 300 or not response.content:
+                    # Everything below 400 used to count as success, and the
+                    # body was never checked: a redirect or an empty 200 went
+                    # into the WAV header as "audio" and only turned up as
+                    # noise in the finished chapter. The Gemini client has
+                    # refused zero-length audio all along.
+                    raise await self._failed(
+                        url, started,
+                        RuntimeError(
+                            f"Speech API returned no audio (HTTP "
+                            f"{response.status_code}, "
+                            f"{len(response.content)} bytes, "
+                            f"content-type="
+                            f"{response.headers.get('content-type', '?')}) "
+                            f"— model={self.model}, url={url}"))
                 else:
-                    return self._to_result(response, voice_name)
+                    result = self._to_result(response, voice_name)
+                    await notify_tts_response(
+                        provider="openai_speech", model=self.model, url=url,
+                        duration_ms=(time.time() - started) * 1000,
+                        audio_seconds=result.duration_seconds,
+                        audio_bytes_len=len(result.audio_data))
+                    return result
             except httpx.TransportError as e:  # includes TimeoutException
                 last_error = e
             if attempt < self.max_retries:
@@ -118,8 +155,25 @@ class OpenAISpeechTTSClient(TTSClient):
                 logger.warning(
                     "Speech API attempt %d/%d failed (%s) — retrying in %.0fs",
                     attempt + 1, self.max_retries + 1, last_error, delay)
+                await notify_tts_response(
+                    provider="openai_speech", model=self.model, url=url,
+                    duration_ms=(time.time() - started) * 1000,
+                    error=f"[RETRY {attempt + 1}/{self.max_retries + 1}] "
+                          f"{type(last_error).__name__}: {last_error}",
+                    finish_reason="retry")
                 await asyncio.sleep(delay)
-        raise last_error  # type: ignore[misc]
+        raise await self._failed(url, started, last_error)  # type: ignore[arg-type]
+
+    async def _failed(self, url: str, started: float,
+                      error: Exception) -> Exception:
+        """Tell the hooks about a terminal failure and hand the error back
+        to be raised — so no exit from the retry loop leaves the debugger
+        with a request that never got a response."""
+        await notify_tts_response(
+            provider="openai_speech", model=self.model, url=url,
+            duration_ms=(time.time() - started) * 1000,
+            error=f"{type(error).__name__}: {error}")
+        return error
 
     def _to_result(self, response: httpx.Response, voice_name: str) -> TTSResult:
         sample_rate = DEFAULT_SAMPLE_RATE
@@ -145,21 +199,14 @@ class OpenAISpeechTTSClient(TTSClient):
 def build_openai_speech(cfg: "TTSModelConfig") -> TTSClient:
     """Factory for the registry (manifest key ``provides_tts``).
 
-    Key follows the EFFECTIVE endpoint, same rule as the openai_responses
-    provider: this defaults to OpenRouter, so a missing OPENROUTER_API_KEY
-    must not fall through to OPENAI_API_KEY.
+    Key follows the EFFECTIVE endpoint (llm_common.api_keys): this defaults
+    to OpenRouter, so a missing OPENROUTER_API_KEY must not fall through to
+    OPENAI_API_KEY.
     """
-    effective_url = cfg.base_url or DEFAULT_BASE_URL
-    via_openrouter = "openrouter.ai" in effective_url.lower()
-    api_key = cfg.api_key
-    if not api_key:
-        api_key = (os.getenv("OPENROUTER_API_KEY") if via_openrouter
-                   else os.getenv("OPENAI_API_KEY"))
-    if not api_key:
-        wanted = "OPENROUTER_API_KEY" if via_openrouter else "OPENAI_API_KEY"
-        raise ValueError(
-            f"{wanted} is required when provider=openai_speech "
-            f"targets {effective_url}")
+    api_key, effective_url = resolve_api_key(
+        cfg.api_key, cfg.base_url,
+        default_base_url=DEFAULT_BASE_URL,
+        provider="openai_speech")
     return OpenAISpeechTTSClient(
         model=cfg.model,
         api_key=api_key,

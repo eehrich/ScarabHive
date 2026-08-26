@@ -32,7 +32,7 @@ except ImportError:
     types = None  # type: ignore
 
 from agent_system.llm.batch.base import BatchProviderClient
-from agent_system.llm.batch.models import BatchJob, BatchStatus
+from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUSES
 from agent_system.llm.batch.job_tracker import get_job_tracker
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import is_rate_limit_error, parse_retry_delay
@@ -54,6 +54,7 @@ T = TypeVar("T")
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BASE_DELAY = 1.0  # seconds
 DEFAULT_MAX_DELAY = 30.0  # seconds
+
 
 
 async def _retry_async_operation(
@@ -880,6 +881,29 @@ class GeminiBatchClient(BatchProviderClient):
             logger.error(f"Failed to list batches: {e}")
             return []
     
+    def describe_listed_batch(
+        self, batch_info: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Gemini listing shape: `name` + `state` (JOB_STATE_*)."""
+        state = batch_info.get("state", "")
+        if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED",
+                     "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"):
+            return None  # finished — nothing to recover
+        job_id = batch_info.get("name", "")
+        if not job_id:
+            return None
+        mapping = {
+            "JOB_STATE_PENDING": BatchStatus.SUBMITTED,
+            "JOB_STATE_RUNNING": BatchStatus.IN_PROGRESS,
+        }
+        return {
+            "job_id": job_id,
+            "status": mapping.get(state, BatchStatus.SUBMITTED),
+            # The listing carries no model name; recovery only polls and
+            # collects results, so a placeholder is honest here.
+            "model": batch_info.get("model") or "unknown",
+        }
+
     async def cancel_all_pending_batches(self) -> int:
         """Cancel only tracked batch jobs from this AgentSystem instance.
         
@@ -893,8 +917,21 @@ class GeminiBatchClient(BatchProviderClient):
         if not tracker:
             logger.warning("No job tracker available, skipping batch cancellation")
             return 0
-        
-        tracked_jobs = await tracker.get_tracked_jobs("gemini")
+
+        # The name this client was REGISTERED under, not a literal: the
+        # tracker is keyed by the configured `batch_provider`, and hardcoding
+        # a name here loses every tracked job the moment the two differ
+        # (renaming openai -> openai_httpx did exactly that: startup
+        # cancellation found nothing and left paid jobs running).
+        provider_key = self._tracker_key()
+        if not provider_key:
+            logger.warning(
+                "%s batch client was never registered with a provider name — "
+                "skipping startup cancellation instead of guessing the "
+                "tracker key", type(self).__name__)
+            return 0
+
+        tracked_jobs = await tracker.get_tracked_jobs(provider_key)
         if not tracked_jobs:
             logger.debug("No tracked Gemini batch jobs to cancel")
             return 0
@@ -904,21 +941,25 @@ class GeminiBatchClient(BatchProviderClient):
         
         for job_id in tracked_jobs:
             try:
-                # Get batch status
+                # get_batch_status returns the MAPPED status under "status" —
+                # there is no "state" key. Reading one always yielded "",
+                # which is in no terminal set, so every tracked job was
+                # cancelled: finished ones got a pointless cancel call that
+                # failed and only showed up as a warning.
                 batch_info = await self.get_batch_status(job_id)
-                state = batch_info.get("state", "")
-                
-                if state not in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
+                status = batch_info.get("status", "")
+
+                if status not in TERMINAL_STATUSES:
                     await self.cancel_batch(job_id)
                     cancelled += 1
                     logger.info(f"Cancelled tracked batch {job_id}")
                 
                 # Remove from tracker (job is done or cancelled)
-                await tracker.remove_job("gemini", job_id)
+                await tracker.remove_job(provider_key, job_id)
                 
             except Exception as e:
                 logger.warning(f"Failed to cancel tracked batch {job_id}: {e}")
                 # Still try to remove from tracker (job may not exist anymore)
-                await tracker.remove_job("gemini", job_id)
+                await tracker.remove_job(provider_key, job_id)
         
         return cancelled

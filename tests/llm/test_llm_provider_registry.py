@@ -15,7 +15,9 @@ exactly that plugin. Three failure modes matter:
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -104,19 +106,56 @@ class TestManifestScan:
     def test_manifests_agree_with_the_provider_dicts(self):
         """A manifest may promise a name the entrypoint does not export —
         that surfaces only at first use in production, so the suite checks
-        every plugin's promise against its PROVIDERS/BATCH_BACKENDS here."""
+        every plugin's promise against its PROVIDERS/BATCH_BACKENDS/
+        TTS_PROVIDERS here."""
         import importlib
         registry._scan_manifests()
-        for provider, dir_name in sorted((registry._provider_dirs or {}).items()):
-            module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
-            assert provider in module.PROVIDERS, (
-                f"{dir_name}/plugin.toml declares '{provider}' but "
-                f"PROVIDERS does not export it")
-        for name, dir_name in sorted((registry._batch_dirs or {}).items()):
-            module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
-            assert name in module.BATCH_BACKENDS, (
-                f"{dir_name}/plugin.toml declares provides_batch '{name}' but "
-                f"BATCH_BACKENDS does not export it")
+        for owners, attr, key in (
+            (registry._provider_dirs, "PROVIDERS", "provides"),
+            (registry._batch_dirs, "BATCH_BACKENDS", "provides_batch"),
+            (registry._tts_dirs, "TTS_PROVIDERS", "provides_tts"),
+        ):
+            for name, dir_name in sorted((owners or {}).items()):
+                module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
+                assert name in (getattr(module, attr, None) or {}), (
+                    f"{dir_name}/plugin.toml declares {key} '{name}' but "
+                    f"{attr} does not export it")
+
+    def test_no_plugin_exports_a_name_its_manifest_never_declared(self):
+        """The other direction: an undeclared export is invisible to config
+        validation (which reads the manifests) but used to be taken over by
+        the loader anyway — so which plugin owned a contested name depended
+        on load order, not on the manifest."""
+        import importlib
+        registry._scan_manifests()
+        for owners, attr in (
+            (registry._provider_dirs, "PROVIDERS"),
+            (registry._batch_dirs, "BATCH_BACKENDS"),
+            (registry._tts_dirs, "TTS_PROVIDERS"),
+        ):
+            for dir_name in sorted(set((owners or {}).values())):
+                module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
+                declared = {n for n, d in (owners or {}).items() if d == dir_name}
+                exported = set(getattr(module, attr, None) or {})
+                assert exported <= declared, (
+                    f"{dir_name}/provider.py exports {sorted(exported - declared)} "
+                    f"in {attr} without declaring it in plugin.toml — the "
+                    f"loader ignores those, config validation never sees them")
+
+    def test_the_loader_ignores_an_undeclared_export(self):
+        """Mechanism behind the test above, measured directly: a factory the
+        manifest does not declare must not end up in the dispatch table."""
+        module = types.SimpleNamespace(
+            PROVIDERS={"openai_httpx": lambda cfg, ssl_verify=None: "declared",
+                       "smuggled": lambda cfg, ssl_verify=None: "undeclared"},
+        )
+        registry._scan_manifests()
+        with patch.object(registry.importlib, "import_module", return_value=module):
+            registry._load_plugin("llm_openai_compat")
+        # Anchor first: without it a _load_plugin that takes over NOTHING
+        # passes this test, since it only asserts an absence.
+        assert registry._factories["openai_httpx"](None) == "declared"
+        assert "smuggled" not in registry._factories
 
 
 class TestDispatch:
@@ -280,6 +319,247 @@ class TestSystemHttpxTimeoutDefault:
         assert spec is not entry
         assert spec.capabilities is not entry.capabilities
         assert spec.provider_routing is not entry.provider_routing
+
+
+class TestBatchModelsFailAtConfigLoad:
+    """`provider: batch` used to skip the typo guard entirely.
+
+    The validator exists so a wrong `provider:` costs the config load, not
+    the first agent build. A batch entry is the case where that matters most:
+    its real provider hides in `batch_provider`, so a typo there produced a
+    config that loaded fine and an agent that died at build time with a
+    message about a field the operator hadn't touched.
+    """
+
+    def _cfg(self, **kwargs):
+        from agent_system.config.models import LLMModelConfig, LLMSystemConfig
+        return LLMSystemConfig(models={"m": LLMModelConfig(
+            provider="batch", model="x", **kwargs)})
+
+    def test_batch_without_batch_provider_is_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="no batch_provider"):
+            self._cfg()
+
+    def test_unknown_batch_provider_is_rejected_and_lists_the_known_ones(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError) as exc:
+            self._cfg(batch_provider="gemnii")
+        msg = str(exc.value)
+        assert "gemnii" in msg and "anthropic" in msg
+
+    def test_a_correct_batch_model_still_loads(self):
+        """Counter-check: the guard rejects typos, not batch models."""
+        assert self._cfg(batch_provider="gemini").models["m"].batch_provider == "gemini"
+
+    def test_a_typo_in_a_batch_providers_key_is_rejected(self):
+        """The KEYS of llm_system.batch.providers are the same vocabulary —
+        and were the only part of it nothing checked. A misspelled key was
+        accepted and ignored, so the provider silently ran on hardcoded
+        defaults instead of its configured poll interval and
+        cancel_on_startup."""
+        from pydantic import ValidationError
+        from agent_system.config.models import (
+            BatchProviderConfig, BatchSystemConfig, LLMSystemConfig)
+
+        with pytest.raises(ValidationError, match="openai_htpx"):
+            LLMSystemConfig(batch=BatchSystemConfig(
+                providers={"openai_htpx": BatchProviderConfig()}))
+
+    def test_correct_batch_providers_keys_load(self):
+        from agent_system.config.models import (
+            BatchProviderConfig, BatchSystemConfig, LLMSystemConfig)
+
+        cfg = LLMSystemConfig(batch=BatchSystemConfig(
+            providers={name: BatchProviderConfig()
+                       for name in registry.known_batch_providers()}))
+        assert set(cfg.batch.providers) == set(registry.known_batch_providers())
+
+    def test_every_batch_provider_resolves_to_a_declared_client(self):
+        """The batch vocabulary and the client each entry maps to both come
+        from the manifests — a mapping pointing at a provider nobody declares
+        would break at the first build."""
+        for batch_provider in registry.known_batch_providers():
+            target = registry.batch_client_provider(batch_provider)
+            assert target in registry.known_providers(), (
+                f"batch_provider '{batch_provider}' maps to provider "
+                f"'{target}', which no plugin declares")
+
+    def test_an_undeclared_batch_provider_is_a_named_error(self):
+        with pytest.raises(registry.ProviderNotFoundError) as exc:
+            registry.batch_client_provider("gemnii")
+        assert "gemnii" in str(exc.value) and "provides_batch" in str(exc.value)
+
+    def test_a_batch_provider_pairs_with_the_client_of_the_same_name(self):
+        """Every LLM client brings its OWN batch backend under its own name —
+        there is no mapping table anywhere. The core used to translate
+        `openai` into `openai_httpx`, which is how a provider list ends up in
+        core code again.
+        """
+        registry._scan_manifests()
+        for name in registry.known_batch_providers():
+            assert registry.batch_client_provider(name) == name
+
+    def test_both_openai_clients_have_their_own_batch_backend(self):
+        """The SDK client and the httpx client are separate providers, so
+        each declares its own batch backend (they share the /v1/batches
+        implementation through the registry, not through a rename)."""
+        declared = registry.known_batch_providers()
+        assert {"openai", "openai_httpx"} <= declared, (
+            f"an OpenAI client lost its batch backend: {sorted(declared)}")
+        from agent_system.config.models import LLMModelConfig
+        cfg = LLMModelConfig(provider="openai_httpx", model="m", api_key="sk-t")
+        built = {n: type(registry.get_batch_backend(n)(cfg)).__name__
+                 for n in ("openai", "openai_httpx")}
+        assert built == {"openai": "OpenAIBatchClient",
+                         "openai_httpx": "OpenAIBatchClient"}, built
+
+    #: Pydantic FIELD declarations whose DEFAULT VALUE legitimately names
+    #: something provider-shaped: a config default has to name a value, and
+    #: the cache marker style names a WIRE FORMAT ("the OpenAI-style
+    #: breakpoint field", "Anthropic-style cache_control") that collides with
+    #: provider names only by coincidence — a model of any provider can be
+    #: told to use either.
+    #:
+    #: Only the value is exempt, never the annotation: exempting the whole
+    #: statement would let `provider: Literal["openai", "gemini", ...]` back
+    #: in — the very shape this test was written against (measured: it did
+    #: pass through until the exemption was narrowed to node.value).
+    #: Every entry here was verified to actually excuse something; a dead
+    #: exemption is a future hole (`ollama_mode` would have covered a later
+    #: `"openai"` in its Literal).
+    EXEMPT_FIELD_DEFAULTS = {"provider"}
+    #: Fields whose Literal spells out WIRE FORMATS that happen to share a
+    #: name with a provider: `prompt_cache_marker_style` selects the marker
+    #: field ("OpenAI-style prompt_cache_breakpoint" vs. "Anthropic-style
+    #: cache_control"), and a model of ANY provider can be told to use
+    #: either. This is the only annotation-level exemption — `provider`
+    #: deliberately does NOT get one, so re-adding its old
+    #: `Literal["openai", "gemini", ...]` fails here.
+    EXEMPT_FIELD_ANNOTATIONS = {"prompt_cache_marker_style"}
+    #: Module constants that name wire formats, not providers.
+    EXEMPT_CONSTANTS = {"MARKER_STYLE_OPENAI", "MARKER_STYLE_ANTHROPIC"}
+
+    def test_the_core_names_no_providers(self):
+        """The whole point of the plugin seam: which providers exist, which
+        client a batch model uses, and which endpoint one defaults to are
+        manifest facts. They keep coming back as if-chains, Literals and
+        dicts in core code — the batch mapping did twice. This fails when the
+        next one appears.
+
+        Two shapes count: a provider name in a DECLARATION (Literal, dict,
+        constant) is core-owned vocabulary, and one anywhere else is dispatch
+        logic (`provider == "gemini"`). Exemptions are by NAME, not by line —
+        a line number silently stops matching the thing it excused.
+        """
+        import ast
+
+        names = (set(registry.known_providers())
+                 | set(registry.known_batch_providers())
+                 | set(registry.known_tts_providers()))
+        names.discard("batch")  # the resolver's own pseudo-provider
+        assert len(names) >= 5, "provider scan came up empty — check would be vacuous"
+
+        core = REPO_ROOT / "src" / "agent_system"
+        # The whole core, not three hand-picked globs: the first version of
+        # this test scanned llm/ + config/models.py and left a real dispatch
+        # (`native_providers = {"gemini", "google"}`) standing in utils/.
+        skip = {
+            # Package version report, not provider dispatch: it reads
+            # `anthropic.__version__` / `openai.__version__` from the INSTALLED
+            # DISTRIBUTIONS, whose names happen to match provider names.
+            core / "app.py",
+        }
+        files = [p for p in sorted(core.rglob("*.py")) if p not in skip]
+        assert len(files) > 50, "core modules not found — check would be vacuous"
+
+        offenders = []
+        for path in files:
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            exempt_nodes = set()
+
+            def exempt(part):
+                if part is not None:
+                    exempt_nodes.update(id(c) for c in ast.walk(part))
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    # The VALUE only — exempting the whole statement would
+                    # excuse the annotation, i.e. a Literal listing providers.
+                    if node.target.id in self.EXEMPT_FIELD_DEFAULTS:
+                        exempt(node.value)
+                    if node.target.id in self.EXEMPT_FIELD_ANNOTATIONS:
+                        exempt(node.annotation)
+                        exempt(node.value)
+                elif isinstance(node, ast.Assign) and any(
+                        t.id in self.EXEMPT_CONSTANTS
+                        for t in node.targets if isinstance(t, ast.Name)):
+                    exempt(node.value)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and node.value in names
+                        and id(node) not in exempt_nodes):
+                    offenders.append(
+                        f"{path.name}:{node.lineno}: {node.value!r}")
+        assert not offenders, (
+            "core code names plugin providers — declare it in the plugin's "
+            f"manifest and read it via the registry instead: {offenders}")
+
+
+class TestEmptyChain:
+    def test_an_empty_llm_profile_list_is_rejected(self):
+        """`llm_profile: []` resolved to the string "normal" — a profile the
+        operator never wrote, so the error arrived later and pointed at a
+        name that appears nowhere in their config."""
+        from pydantic import ValidationError
+        from agent_system.config.models import AgentConfig
+        with pytest.raises(ValidationError, match="not a chain"):
+            AgentConfig(llm_profile=[])
+
+    def test_a_normal_chain_still_loads(self):
+        from agent_system.config.models import AgentConfig
+        assert AgentConfig(llm_profile=["a", "b"]).default_llm_profile == "a"
+
+
+class TestProviderRoutingIsDecoupled:
+    """The merged routing dict is only shallow-fresh.
+
+    `model_copy(update=..., deep=True)` applies update values AS-IS, so
+    `{**system_defaults, **per_model}` handed the spec the system config's
+    OWN nested objects — an in-place edit in any factory would travel back
+    into the process-wide config.
+    """
+
+    def _resolved(self):
+        from agent_system.llm.factory import resolve_llm_config_for_agent
+        from agent_system.config.models import (
+            AgentConfig, AgentSystemConfig, LLMModelConfig, LLMProfile,
+            LLMSystemConfig,
+        )
+        config = AgentSystemConfig(llm_system=LLMSystemConfig(
+            openrouter_routing={"order": ["provider-a"], "sort": "price"},
+            profiles={"p": LLMProfile(model_ref="m")},
+            models={"m": LLMModelConfig(
+                provider="openai_responses", model="x",
+                base_url="https://openrouter.ai/api/v1",
+                provider_routing={"sort": "throughput"})},
+        ))
+        return config, resolve_llm_config_for_agent(
+            config, AgentConfig(llm_profile="p")).spec
+
+    def test_the_merge_actually_happened(self):
+        """Anchor: without the merge there is nothing to alias, and the
+        decoupling assert below would pass on an empty dict."""
+        config, spec = self._resolved()
+        assert spec.provider_routing == {"order": ["provider-a"],
+                                         "sort": "throughput"}
+
+    def test_nested_values_are_not_the_system_configs_objects(self):
+        config, spec = self._resolved()
+        system_order = config.llm_system.openrouter_routing["order"]
+        assert spec.provider_routing["order"] is not system_order
+        spec.provider_routing["order"].append("__leak__")
+        assert system_order == ["provider-a"], (
+            "editing the spec's routing changed the system config")
 
 
 class TestSeam:

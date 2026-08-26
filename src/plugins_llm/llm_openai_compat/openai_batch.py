@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 import httpx
 
 from agent_system.llm.batch.base import BatchProviderClient
-from agent_system.llm.batch.models import BatchJob, BatchStatus
+from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUSES
 from agent_system.llm.batch.job_tracker import get_job_tracker
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from plugins_llm.llm_common import openai_utils
@@ -536,6 +536,29 @@ class OpenAIBatchClient(BatchProviderClient):
         data = response.json()
         return data.get("data", [])
     
+    def describe_listed_batch(
+        self, batch_info: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """OpenAI listing shape: `id` + `status`, model in `metadata`."""
+        status_str = batch_info.get("status", "")
+        if status_str in ("completed", "failed", "expired", "cancelled"):
+            return None  # finished — nothing to recover
+        job_id = batch_info.get("id", "")
+        if not job_id:
+            return None
+        mapping = {
+            "validating": BatchStatus.VALIDATING,
+            "in_progress": BatchStatus.IN_PROGRESS,
+            "finalizing": BatchStatus.FINALIZING,
+            "cancelling": BatchStatus.CANCELLING,
+        }
+        metadata = batch_info.get("metadata") or {}
+        return {
+            "job_id": job_id,
+            "status": mapping.get(status_str, BatchStatus.PENDING),
+            "model": metadata.get("model") or "unknown",
+        }
+
     async def cancel_all_pending_batches(self) -> int:
         """Cancel only tracked batch jobs from this AgentSystem instance.
         
@@ -549,8 +572,21 @@ class OpenAIBatchClient(BatchProviderClient):
         if not tracker:
             logger.warning("No job tracker available, skipping batch cancellation")
             return 0
-        
-        tracked_jobs = await tracker.get_tracked_jobs("openai")
+
+        # The name this client was REGISTERED under, not a literal: the
+        # tracker is keyed by the configured `batch_provider`, and hardcoding
+        # a name here loses every tracked job the moment the two differ
+        # (renaming openai -> openai_httpx did exactly that: startup
+        # cancellation found nothing and left paid jobs running).
+        provider_key = self._tracker_key()
+        if not provider_key:
+            logger.warning(
+                "%s batch client was never registered with a provider name — "
+                "skipping startup cancellation instead of guessing the "
+                "tracker key", type(self).__name__)
+            return 0
+
+        tracked_jobs = await tracker.get_tracked_jobs(provider_key)
         if not tracked_jobs:
             logger.debug("No tracked OpenAI batch jobs to cancel")
             return 0
@@ -564,17 +600,17 @@ class OpenAIBatchClient(BatchProviderClient):
                 batch_info = await self.get_batch_status(job_id)
                 status = batch_info.get("status", "")
                 
-                if status not in ("completed", "failed", "expired", "cancelled"):
+                if status not in TERMINAL_STATUSES:
                     await self.cancel_batch(job_id)
                     cancelled += 1
                     logger.info(f"Cancelled tracked batch {job_id}")
                 
                 # Remove from tracker (job is done or cancelled)
-                await tracker.remove_job("openai", job_id)
+                await tracker.remove_job(provider_key, job_id)
                 
             except Exception as e:
                 logger.warning(f"Failed to cancel tracked batch {job_id}: {e}")
                 # Still try to remove from tracker (job may not exist anymore)
-                await tracker.remove_job("openai", job_id)
+                await tracker.remove_job(provider_key, job_id)
         
         return cancelled

@@ -27,7 +27,7 @@ import httpx
 from agent_system.utils.json_utils import repair_json
 
 from agent_system.llm.batch.base import BatchProviderClient
-from agent_system.llm.batch.models import BatchJob, BatchStatus
+from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUSES
 from agent_system.llm.batch.job_tracker import get_job_tracker
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from . import anthropic_utils
@@ -37,11 +37,35 @@ logger = logging.getLogger(__name__)
 
 class _DateTimeEncoder(json.JSONEncoder):
     """JSON encoder that handles datetime objects."""
-    
+
     def default(self, obj: Any) -> Any:
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
+
+
+def _outcome_from_counts(counts: Dict[str, Any]) -> str:
+    """How an "ended" Message Batch actually ended, from its request counts.
+
+    The batch object reports no overall outcome — only per-request counts
+    (succeeded / errored / canceled / expired). Anything with results is
+    COMPLETED; a batch that produced none is classified by what happened to
+    its requests instead of being reported as a success.
+    """
+    succeeded = int(counts.get("succeeded", 0) or 0)
+    if succeeded:
+        return BatchStatus.COMPLETED.value
+    canceled = int(counts.get("canceled", 0) or 0)
+    expired = int(counts.get("expired", 0) or 0)
+    errored = int(counts.get("errored", 0) or 0)
+    if canceled and not (expired or errored):
+        return BatchStatus.CANCELLED.value
+    if expired and not (canceled or errored):
+        return BatchStatus.EXPIRED.value
+    if errored or canceled or expired:
+        return BatchStatus.FAILED.value
+    # Ended with no counts at all: nothing to report as failed either.
+    return BatchStatus.COMPLETED.value
 
 
 class AnthropicBatchClient(BatchProviderClient):
@@ -394,25 +418,33 @@ class AnthropicBatchClient(BatchProviderClient):
             "canceling": BatchStatus.CANCELLING.value,
         }
         
-        # Ended can mean completed, failed, or cancelled based on end status
-        if anthropic_status == "ended":
-            end_status = data.get("end_status", "")
-            if end_status == "succeeded":
-                status = BatchStatus.COMPLETED.value
-            elif end_status == "failed":
-                status = BatchStatus.FAILED.value
-            elif end_status == "canceled":
-                status = BatchStatus.CANCELLED.value
-            elif end_status == "expired":
-                status = BatchStatus.EXPIRED.value
-            else:
-                status = BatchStatus.COMPLETED.value  # Default to completed
-        else:
-            status = status_mapping.get(anthropic_status, anthropic_status)
-        
         # Extract request counts
         request_counts = data.get("request_counts", {})
-        
+
+        # "ended" only says the batch stopped, not how. The Message Batches
+        # object has NO end_status field — reading one meant every ended
+        # batch reported COMPLETED, including cancelled and expired ones, and
+        # the FAILED/CANCELLED/EXPIRED branches were dead code. What the API
+        # does return is per-request counts, so the outcome is derived from
+        # those. Partial success stays COMPLETED: individual errors are
+        # reported per request by _parse_results, and the queue manager needs
+        # the successful ones.
+        if anthropic_status == "ended":
+            status = _outcome_from_counts(request_counts)
+        elif anthropic_status in status_mapping:
+            status = status_mapping[anthropic_status]
+        else:
+            # A processing_status we do not know must not be handed to the
+            # queue manager as-is: it compares against BatchStatus values,
+            # so a raw Anthropic string reads as "not terminal, not any known
+            # state" and the job is polled forever. Treat it as running (the
+            # safe direction — it keeps polling AND stays cancellable) and
+            # say so once.
+            logger.warning(
+                "Unknown Anthropic processing_status %r for batch %s — "
+                "treating as in_progress", anthropic_status, batch_id)
+            status = BatchStatus.IN_PROGRESS.value
+
         return {
             "status": status,
             "request_counts": {
@@ -616,6 +648,31 @@ class AnthropicBatchClient(BatchProviderClient):
         data = response.json()
         return data.get("data", [])
     
+    def describe_listed_batch(
+        self, batch_info: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Anthropic listing shape: `id` + `processing_status`.
+
+        Not `status` — the queue manager's old fallback branch read the
+        OpenAI keys here and recovered Anthropic batches with an empty status
+        and the model name "gpt-4o".
+        """
+        processing = batch_info.get("processing_status", "")
+        if processing == "ended":
+            return None  # finished — nothing to recover
+        job_id = batch_info.get("id", "")
+        if not job_id:
+            return None
+        mapping = {
+            "in_progress": BatchStatus.IN_PROGRESS,
+            "canceling": BatchStatus.CANCELLING,
+        }
+        return {
+            "job_id": job_id,
+            "status": mapping.get(processing, BatchStatus.SUBMITTED),
+            "model": self.default_model or "unknown",
+        }
+
     async def cancel_all_pending_batches(self) -> int:
         """Cancel only tracked batch jobs from this AgentSystem instance.
         
@@ -629,8 +686,21 @@ class AnthropicBatchClient(BatchProviderClient):
         if not tracker:
             logger.warning("No job tracker available, skipping batch cancellation")
             return 0
-        
-        tracked_jobs = await tracker.get_tracked_jobs("anthropic")
+
+        # The name this client was REGISTERED under, not a literal: the
+        # tracker is keyed by the configured `batch_provider`, and hardcoding
+        # a name here loses every tracked job the moment the two differ
+        # (renaming openai -> openai_httpx did exactly that: startup
+        # cancellation found nothing and left paid jobs running).
+        provider_key = self._tracker_key()
+        if not provider_key:
+            logger.warning(
+                "%s batch client was never registered with a provider name — "
+                "skipping startup cancellation instead of guessing the "
+                "tracker key", type(self).__name__)
+            return 0
+
+        tracked_jobs = await tracker.get_tracked_jobs(provider_key)
         if not tracked_jobs:
             logger.debug("No tracked Anthropic batch jobs to cancel")
             return 0
@@ -644,17 +714,20 @@ class AnthropicBatchClient(BatchProviderClient):
                 status_info = await self.get_batch_status(job_id)
                 status = status_info.get("status", "")
                 
-                if status in (BatchStatus.IN_PROGRESS.value,):
+                # Everything not finished, same rule as the other providers:
+                # this used to check IN_PROGRESS only, so a SUBMITTED batch
+                # survived shutdown and kept billing.
+                if status not in TERMINAL_STATUSES:
                     await self.cancel_batch(job_id)
                     cancelled += 1
                     logger.info(f"Cancelled tracked batch {job_id}")
                 
                 # Remove from tracker (job is done or cancelled)
-                await tracker.remove_job("anthropic", job_id)
+                await tracker.remove_job(provider_key, job_id)
                 
             except Exception as e:
                 logger.warning(f"Failed to cancel tracked batch {job_id}: {e}")
                 # Still try to remove from tracker (job may not exist anymore)
-                await tracker.remove_job("anthropic", job_id)
+                await tracker.remove_job(provider_key, job_id)
         
         return cancelled

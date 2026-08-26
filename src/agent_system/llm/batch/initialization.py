@@ -83,11 +83,7 @@ def setup_batch_queue_manager_sync(
     
     # Check if any provider is enabled
     providers_config = batch_system_config.providers
-    gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
-    openai_enabled = providers_config.openai.enabled if providers_config.openai else False
-    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
-    
-    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
+    if not any(p.enabled for p in providers_config.values()):
         log.debug("No batch providers enabled, skipping batch queue manager")
         return None
     
@@ -183,7 +179,7 @@ async def start_batch_queue_manager(
                 if batch_provider not in providers_needing_clients:
                     providers_needing_clients[batch_provider] = model_config
                 # Check cancel_on_startup from global provider config
-                provider_config = getattr(batch_system_config.providers, batch_provider, None)
+                provider_config = batch_system_config.providers.get(batch_provider)
                 if provider_config and provider_config.cancel_on_startup:
                     providers_cancel_on_startup.add(batch_provider)
         
@@ -266,11 +262,7 @@ async def init_batch_system(
     
     # Check if any provider is enabled
     providers_config = batch_system_config.providers
-    gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
-    openai_enabled = providers_config.openai.enabled if providers_config.openai else False
-    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
-    
-    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
+    if not any(p.enabled for p in providers_config.values()):
         log.debug("No batch providers enabled, skipping batch initialization")
         return None
     
@@ -289,7 +281,7 @@ async def init_batch_system(
             if batch_provider not in providers_needing_clients:
                 providers_needing_clients[batch_provider] = model_config
             # Check cancel_on_startup from global provider config
-            provider_config = getattr(providers_config, batch_provider, None)
+            provider_config = providers_config.get(batch_provider)
             if provider_config and provider_config.cancel_on_startup:
                 providers_cancel_on_startup.add(batch_provider)
     

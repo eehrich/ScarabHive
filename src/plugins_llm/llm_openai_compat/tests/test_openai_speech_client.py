@@ -145,6 +145,118 @@ class TestErrors:
             result = await _client(max_retries=1).synthesize("x")
         assert result.audio_data
 
+    @pytest.mark.asyncio
+    async def test_transport_errors_are_retried(self, monkeypatch):
+        """A connect reset is exactly the kind of blip retries exist for —
+        and the only path that reaches `raise last_error` at the end."""
+        import asyncio
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+        calls = []
+
+        def handler(url, json, headers):
+            calls.append(1)
+            if len(calls) == 1:
+                raise httpx.ConnectError("connection reset")
+            return _response()
+
+        with _respond(handler):
+            result = await _client(max_retries=2).synthesize("x")
+        assert result.audio_data
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_raise_the_last_error(self, monkeypatch):
+        """The end of the loop re-raises what actually went wrong — an
+        exception swapped for a generic one here loses the cause."""
+        import asyncio
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+        def handler(url, json, headers):
+            raise httpx.ConnectTimeout("no route")
+
+        with _respond(handler):
+            with pytest.raises(httpx.ConnectTimeout, match="no route"):
+                await _client(max_retries=1).synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_an_empty_body_is_an_error_not_silent_garbage(self):
+        """200 with no bytes used to become a zero-length "audio" result;
+        the Gemini client has always refused that."""
+        with _respond(lambda *a: _response(content=b"")):
+            with pytest.raises(RuntimeError, match="no audio"):
+                await _client().synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_is_not_audio(self):
+        """Anything below 400 counted as success, so a misconfigured
+        base_url could put an HTML body into the WAV header."""
+        with _respond(lambda *a: _response(
+                status=301, content=b"<html>moved</html>",
+                content_type="text/html")):
+            with pytest.raises(RuntimeError, match="no audio"):
+                await _client().synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_the_request_timeout_reaches_httpx(self, monkeypatch):
+        """The client takes request_timeout from the model entry; if it
+        never reaches httpx, a hung gateway stalls the scene forever."""
+        seen = {}
+        real_init = httpx.AsyncClient.__init__
+
+        def spy_init(self, *args, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(httpx.AsyncClient, "__init__", spy_init)
+        with _respond(lambda *a: _response()):
+            await _client(request_timeout=42).synthesize("x")
+        assert seen["timeout"] == 42
+
+
+class TestHookVisibility:
+    """The debugger must see this provider too.
+
+    Only the Gemini client dispatched hooks, so the advertised one-line
+    profile switch to openai_speech made every TTS call invisible to
+    message_debugger and any cost/latency consumer.
+    """
+
+    @staticmethod
+    def _recorder(seen):
+        class _Registry:
+            async def execute_hooks(self, hook_type, context):
+                seen.append((hook_type, context.llm_provider, context.llm_error))
+        return _Registry()
+
+    @pytest.mark.asyncio
+    async def test_request_and_response_are_dispatched(self):
+        from agent_system.hooks import HookType
+        seen = []
+        with _respond(lambda *a: _response()):
+            with patch("agent_system.hooks.get_hook_registry",
+                       return_value=self._recorder(seen)):
+                await _client().synthesize("Hallo")
+        kinds = [k for k, _, _ in seen]
+        assert HookType.PRE_LLM_REQUEST in kinds
+        assert HookType.POST_LLM_RESPONSE in kinds
+        assert all(p == "openai_speech" for _, p, _ in seen)
+
+    @pytest.mark.asyncio
+    async def test_a_failure_is_dispatched_too(self):
+        """A request without a response leaves the debugger with a call that
+        never ended — the error path has to report as well."""
+        from agent_system.hooks import HookType
+        seen = []
+        with _respond(lambda *a: _response(status=400, content=b"nope",
+                                           content_type="application/json")):
+            with patch("agent_system.hooks.get_hook_registry",
+                       return_value=self._recorder(seen)):
+                with pytest.raises(httpx.HTTPStatusError):
+                    await _client(max_retries=0).synthesize("Hallo")
+        errors = [e for k, _, e in seen
+                  if k is HookType.POST_LLM_RESPONSE and e]
+        assert errors, "the failed TTS call was never reported to the hooks"
+
 
 async def _instant_sleep(_delay):
     return None

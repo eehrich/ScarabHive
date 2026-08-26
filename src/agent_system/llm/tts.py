@@ -118,12 +118,119 @@ class TTSResult:
 
 
 # ---------------------------------------------------------------------------
+# Hook dispatch (shared by every TTS client)
+# ---------------------------------------------------------------------------
+
+#: Providers whose hook dispatch already failed once. A broken dispatch is a
+#: permanent condition, not a per-call event: warn once, then stay quiet.
+_hook_failures_reported: set = set()
+
+
+def _report_hook_failure(provider: str, phase: str, error: Exception) -> None:
+    """A dead hook dispatch must not be findable only at DEBUG level.
+
+    This exact silence hid a HIGH bug: after the client moved into a plugin
+    its relative hook imports resolved to the wrong package, every dispatch
+    raised ImportError, and the message debugger stopped seeing TTS calls —
+    with no line above DEBUG anywhere. Once per provider and phase, so a
+    per-segment run does not turn the log into noise.
+    """
+    marker = f"{provider}:{phase}"
+    if marker in _hook_failures_reported:
+        logger.debug("TTS %s hook error (%s): %s", phase, provider, error)
+        return
+    _hook_failures_reported.add(marker)
+    logger.warning(
+        "TTS %s hooks are NOT being dispatched for provider=%s (%s: %s) — "
+        "message_debugger and every other hook consumer are blind to these "
+        "calls. Reported once per provider.",
+        phase, provider, type(error).__name__, error)
+
+
+async def notify_tts_request(
+    *, provider: str, model: str, url: str, payload: dict,
+) -> None:
+    """Fire PRE_LLM_REQUEST for a TTS call.
+
+    TTS clients are invoked directly, not through Agent, so they bypass the
+    per-agent ``wire_llm_hooks`` path and dispatch to the global registry
+    themselves. Shared here because every TTS provider needs it — the
+    debugger must not go blind just because a profile switched provider.
+    """
+    try:
+        import time as _time
+        from agent_system.hooks import get_hook_registry, HookContext, HookType
+        context = HookContext(
+            hook_type=HookType.PRE_LLM_REQUEST,
+            request_id=_current_request_id(),
+            session_id='',
+            agent=None,
+            agent_name=provider,
+            llm_request_payload=payload,
+            llm_provider=provider,
+            llm_model=model,
+            llm_request_url=url,
+            llm_is_streaming=False,
+            metadata={"timestamp_ms": _time.time() * 1000},
+        )
+        await get_hook_registry().execute_hooks(HookType.PRE_LLM_REQUEST, context)
+    except Exception as e:
+        _report_hook_failure(provider, "pre_request", e)
+
+
+async def notify_tts_response(
+    *, provider: str, model: str, url: str, duration_ms: float,
+    audio_seconds: Optional[float] = None,
+    audio_bytes_len: Optional[int] = None,
+    error: Optional[str] = None,
+    finish_reason: Optional[str] = None,
+) -> None:
+    """Fire POST_LLM_RESPONSE with the TTS result or error."""
+    try:
+        import time as _time
+        from agent_system.hooks import get_hook_registry, HookContext, HookType
+        response_data: dict[str, Any] = {}
+        if audio_seconds is not None:
+            response_data["audio_seconds"] = audio_seconds
+        if audio_bytes_len is not None:
+            response_data["audio_bytes"] = audio_bytes_len
+        context = HookContext(
+            hook_type=HookType.POST_LLM_RESPONSE,
+            request_id=_current_request_id(),
+            session_id='',
+            agent=None,
+            agent_name=provider,
+            llm_response_data=response_data or None,
+            llm_provider=provider,
+            llm_model=model,
+            llm_request_url=url,
+            llm_duration_ms=duration_ms,
+            llm_error=error,
+            llm_finish_reason=finish_reason or ("stop" if not error else None),
+            llm_is_streaming=False,
+            metadata={"timestamp_ms": _time.time() * 1000},
+        )
+        await get_hook_registry().execute_hooks(HookType.POST_LLM_RESPONSE, context)
+    except Exception as e:
+        _report_hook_failure(provider, "post_response", e)
+
+
+def _current_request_id() -> str:
+    """Request id of the surrounding API call, empty outside one."""
+    try:
+        from agent_system.mcp.status import current_request_id
+        return current_request_id.get('') or ''
+    except Exception:
+        return ''
+
+
+# ---------------------------------------------------------------------------
 # Base client
 # ---------------------------------------------------------------------------
 
 class TTSClient:
     """Base class for Text-to-Speech clients.
-    
+
     Subclasses must implement ``synthesize`` and optionally
     ``synthesize_multi_speaker``.
     """
@@ -185,10 +292,10 @@ def create_tts_from_profile(
     tts_profile: str,
 ) -> TTSClient:
     """Create a TTS client from a named profile in the system config.
-    
-    Looks up the profile in ``config.llm.tts_profiles``, resolves the
-    model reference from ``config.llm.tts_models``, and returns a
-    configured client.
+
+    Looks up the profile in ``config.llm_system.tts_profiles``, resolves the
+    model reference from ``config.llm_system.tts_models``, and returns a
+    configured client via the provider registry.
     
     Args:
         config: AgentSystemConfig instance.

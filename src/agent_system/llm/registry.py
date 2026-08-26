@@ -48,6 +48,9 @@ _lock = threading.RLock()
 _provider_dirs: Optional[Dict[str, str]] = None  # provider name -> plugin dir name
 _batch_dirs: Optional[Dict[str, str]] = None  # batch provider name -> plugin dir name
 _tts_dirs: Optional[Dict[str, str]] = None  # tts provider name -> plugin dir name
+#: provider name -> endpoint its factory defaults to (manifest
+#: `default_base_url`). Only providers that HAVE a default appear.
+_default_base_urls: Dict[str, str] = {}
 _factories: Dict[str, ProviderFactory] = {}
 _batch_backends: Dict[str, BatchBackendFactory] = {}
 _tts_factories: Dict[str, Callable] = {}
@@ -103,37 +106,58 @@ def _read_manifest(plugin_dir: Path) -> Dict:
         logger.warning("Failed to parse %s: %s", toml_path, e)
         return {}
     meta = data.get("plugin", data)
-    return meta if isinstance(meta, dict) else {}
+    if not isinstance(meta, dict):
+        logger.warning(
+            "%s: [plugin] is a %s, not a table — plugin ignored",
+            toml_path, type(meta).__name__)
+        return {}
+    return meta
 
 
 def _scan_manifests() -> None:
     """Read every plugins_llm/*/plugin.toml once; imports nothing."""
-    global _provider_dirs, _batch_dirs, _tts_dirs
+    global _provider_dirs, _batch_dirs, _tts_dirs, _default_base_urls
     if _provider_dirs is not None:
         return
 
     providers: Dict[str, str] = {}
     batches: Dict[str, str] = {}
     tts: Dict[str, str] = {}
+    base_urls: Dict[str, str] = {}
+
+    def claim(owners: Dict[str, str], names, kind: str, plugin: str) -> None:
+        """First manifest wins a name — and says so.
+
+        Silent first-wins on a collision makes the winner depend on directory
+        order: whoever is alphabetically first owns the provider, and the
+        loser looks like a plugin that simply does nothing. Warned for all
+        three kinds, not just `provides` (batch/tts used to lose quietly).
+        """
+        for name in names or []:
+            if name in owners:
+                logger.warning(
+                    "%s '%s' declared by both %s and %s — keeping %s",
+                    kind, name, owners[name], plugin, owners[name])
+                continue
+            owners[name] = plugin
+
     for plugin_dir in sorted(_plugins_root().iterdir()):
         if not plugin_dir.is_dir():
             continue
         meta = _read_manifest(plugin_dir)
         if "llm-provider" not in (meta.get("type") or []):
             continue
-        for name in meta.get("provides") or []:
-            if name in providers:
-                logger.warning(
-                    "LLM provider '%s' declared by both %s and %s — keeping %s",
-                    name, providers[name], plugin_dir.name, providers[name])
-                continue
-            providers[name] = plugin_dir.name
-        for name in meta.get("provides_batch") or []:
-            if name not in batches:
-                batches[name] = plugin_dir.name
-        for name in meta.get("provides_tts") or []:
-            if name not in tts:
-                tts[name] = plugin_dir.name
+        claim(providers, meta.get("provides"), "LLM provider", plugin_dir.name)
+        claim(batches, meta.get("provides_batch"), "Batch backend", plugin_dir.name)
+        claim(tts, meta.get("provides_tts"), "TTS provider", plugin_dir.name)
+        mapping = meta.get("default_base_url")
+        if isinstance(mapping, dict):
+            base_urls.update({str(k): str(v) for k, v in mapping.items()})
+        elif mapping is not None:
+            logger.warning(
+                "%s: default_base_url must be a table, got %s — ignored",
+                plugin_dir.name, type(mapping).__name__)
+    _default_base_urls = base_urls
     _provider_dirs = providers
     _batch_dirs = batches
     _tts_dirs = tts
@@ -142,14 +166,25 @@ def _scan_manifests() -> None:
 
 
 def _load_plugin(dir_name: str) -> None:
-    """Import one plugin's entrypoint module and take over its factories."""
+    """Import one plugin's entrypoint module and take over its factories.
+
+    Only names this plugin's MANIFEST declares are taken over. Without that
+    filter an undeclared export could claim a name another plugin owns by
+    manifest, and which one wins would depend on load order — the manifest
+    is the vocabulary (it is what config validation reads), so it decides
+    here too. An export the manifest never declared is dead weight, and the
+    manifest-agreement test names it.
+    """
     module = importlib.import_module(f"{PLUGIN_PACKAGE}.{dir_name}.provider")
-    for name, factory in (getattr(module, "PROVIDERS", None) or {}).items():
-        _factories.setdefault(name, factory)
-    for name, factory in (getattr(module, "BATCH_BACKENDS", None) or {}).items():
-        _batch_backends.setdefault(name, factory)
-    for name, factory in (getattr(module, "TTS_PROVIDERS", None) or {}).items():
-        _tts_factories.setdefault(name, factory)
+    for attr, owners, target in (
+        ("PROVIDERS", _provider_dirs, _factories),
+        ("BATCH_BACKENDS", _batch_dirs, _batch_backends),
+        ("TTS_PROVIDERS", _tts_dirs, _tts_factories),
+    ):
+        for name, factory in (getattr(module, attr, None) or {}).items():
+            if (owners or {}).get(name) != dir_name:
+                continue
+            target.setdefault(name, factory)
 
 
 def get_provider(provider: str) -> ProviderFactory:
@@ -195,7 +230,17 @@ def get_batch_backend(batch_provider: str) -> Optional[BatchBackendFactory]:
                 f"LLM provider plugin '{dir_name}' failed to import for "
                 f"batch provider '{batch_provider}' — are its plugin.toml "
                 f"dependencies installed? ({e})") from e
-        return _batch_backends.get(batch_provider)
+        factory = _batch_backends.get(batch_provider)
+        if factory is None:
+            # None means "nobody declares this" — but here somebody DID and
+            # then failed to export it. Returning None made the caller report
+            # "Unknown batch provider", which sends the operator looking for
+            # a config typo that isn't there.
+            raise ProviderNotFoundError(
+                f"Plugin '{dir_name}' declares batch provider "
+                f"'{batch_provider}' in its manifest but its BATCH_BACKENDS "
+                f"dict does not export it")
+        return factory
 
 
 def get_tts_provider(tts_provider: str) -> Callable:
@@ -234,7 +279,7 @@ def build_tts_client(cfg) -> "TTSClient":
     factory = get_tts_provider(cfg.provider)
     try:
         return factory(cfg)
-    except ModuleNotFoundError as e:
+    except ImportError as e:
         dir_name = (_tts_dirs or {}).get(cfg.provider, "?")
         raise ImportError(
             f"LLM provider plugin '{dir_name}' failed while building TTS "
@@ -247,6 +292,54 @@ def known_tts_providers() -> frozenset:
     with _lock:
         _scan_manifests()
         return frozenset(_tts_dirs or {})
+
+
+def known_batch_providers() -> frozenset:
+    """Batch provider names any plugin manifest declares (``provides_batch``)."""
+    with _lock:
+        _scan_manifests()
+        return frozenset(_batch_dirs or {})
+
+
+def default_base_url(provider: str) -> Optional[str]:
+    """Endpoint a provider uses when the model entry names none.
+
+    Declared per provider in the manifests::
+
+        default_base_url = { openai_responses = "https://openrouter.ai/api/v1" }
+
+    The resolver needs it to answer "does this model actually talk to
+    OpenRouter?" for entries without a base_url — previously answered by
+    naming the one provider that defaults there, in core code. The factory
+    still applies its own default; the agreement between the two is pinned by
+    tests/llm/test_llm_openrouter_routing_default.py.
+    """
+    with _lock:
+        _scan_manifests()
+        return _default_base_urls.get(provider)
+
+
+def batch_client_provider(batch_provider: str) -> str:
+    """Which PROVIDER builds the client for ``provider: batch`` models.
+
+    Every LLM client brings its OWN batch backend under its own name, so the
+    answer is always the name itself — ``batch_provider: openai_httpx`` pairs
+    the httpx client with the httpx batch backend, ``batch_provider: gemini``
+    pairs the Gemini client with the Gemini one. This function exists to
+    VALIDATE the name and to keep the rule in one place; the core used to
+    carry an if-chain over gemini/openai/anthropic that mapped one name onto
+    another (openai -> openai_httpx), which is exactly the hardcoded provider
+    list the plugin seam exists to avoid.
+    """
+    with _lock:
+        _scan_manifests()
+        if batch_provider not in (_batch_dirs or {}):
+            known = sorted(_batch_dirs or {})
+            raise ProviderNotFoundError(
+                f"Unknown batch_provider: {batch_provider} — no plugin under "
+                f"src/plugins_llm declares it via provides_batch "
+                f"(known: {', '.join(known)})")
+        return batch_provider
 
 
 def known_providers() -> frozenset:
@@ -269,11 +362,14 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
     factory = get_provider(cfg.provider)
     try:
         return factory(cfg, ssl_verify=ssl_verify)
-    except ModuleNotFoundError as e:
+    except ImportError as e:
         # The SDK imports are LAZY inside the client constructors, so a
         # missing dependency surfaces here — at the factory call, not at
         # plugin import. Name the plugin, or the operator only sees a bare
-        # "No module named 'anthropic'".
+        # "No module named 'anthropic'". ImportError, not just its
+        # ModuleNotFoundError subclass: a broken compiled extension or a DLL
+        # that won't load raises the parent, and that is the case where
+        # knowing which plugin was being built matters most.
         dir_name = (_provider_dirs or {}).get(cfg.provider, "?")
         raise ImportError(
             f"LLM provider plugin '{dir_name}' failed while building "
@@ -283,8 +379,9 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
 
 def reset_for_tests() -> None:
     """Drop all cached scan/import state (test isolation)."""
-    global _provider_dirs, _batch_dirs, _tts_dirs
+    global _provider_dirs, _batch_dirs, _tts_dirs, _default_base_urls
     with _lock:
+        _default_base_urls = {}
         _provider_dirs = None
         _batch_dirs = None
         _tts_dirs = None

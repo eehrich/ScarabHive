@@ -5,8 +5,9 @@ Body is the former ``make_llm`` branch, verbatim in semantics.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional, TYPE_CHECKING
+
+from plugins_llm.llm_common.api_keys import resolve_api_key
 
 from .openai_client import OpenAIAsyncClient
 
@@ -19,9 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 def build_openai(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
-    api_key = cfg.api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY is required when provider=openai")
+    # The key follows the endpoint (llm_common.api_keys): this SDK client
+    # accepts any OpenAI-compatible base_url, so the env fallback must not
+    # send the OpenAI secret to a gateway named in the model entry.
+    api_key, base_url = resolve_api_key(
+        cfg.api_key, cfg.base_url,
+        default_base_url="https://api.openai.com/v1",
+        provider="openai")
 
     default_extra: Dict[str, Any] = {}
     if cfg.temperature is not None:
@@ -54,7 +59,7 @@ def build_openai(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
     return OpenAIAsyncClient(
         model=cfg.model,
         api_key=api_key,
-        base_url=cfg.base_url or "https://api.openai.com/v1",
+        base_url=base_url,
         timeout=float(cfg.request_timeout) if cfg.request_timeout else None,
         verify=ssl_verify,
         context_window=cfg.context_window,
@@ -65,11 +70,31 @@ def build_openai(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
 
 
 def make_batch_backend(cfg: "LLMModelConfig") -> Optional["BatchProviderClient"]:
-    api_key = cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        return None
-    from .openai_batch import OpenAIBatchClient
-    return OpenAIBatchClient(api_key=api_key)
+    """Batch backend for the SDK client.
+
+    The OpenAI Batch API is plain HTTP, so the implementation lives with the
+    httpx clients (llm_openai_compat) — this plugin owns the SDK, not a
+    second copy of /v1/batches. Delegating through the registry is the same
+    move llm_ollama makes for its openai_compat mode: `get_batch_backend`,
+    not the concrete class, so the plugin boundary stays intact.
+
+    Each client keeps its OWN batch backend name: `batch_provider: openai`
+    pairs this SDK client with this backend, `batch_provider: openai_httpx`
+    pairs the httpx client with its own. The core no longer maps one name
+    onto another.
+    """
+    from agent_system.llm import registry
+
+    delegate = registry.get_batch_backend("openai_httpx")
+    if delegate is None:
+        # Only reachable if llm_openai_compat is missing from the deployment.
+        # Say which plugin, or the caller's generic handler logs a bare
+        # "'NoneType' object is not callable".
+        raise ImportError(
+            "batch_provider=openai needs the llm_openai_compat plugin, which "
+            "owns the /v1/batches implementation — it declares no "
+            "openai_httpx batch backend here")
+    return delegate(cfg)
 
 
 PROVIDERS = {"openai": build_openai}

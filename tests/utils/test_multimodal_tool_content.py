@@ -7,7 +7,6 @@ from agent_system.utils.multimodal_tool_content import (
     encode_multimodal_item,
     create_injection_message_content,
     create_gemini_parts,
-    should_inject_multimodal,
     EncodedMultimodalContent,
 )
 
@@ -256,26 +255,7 @@ class TestCreateGeminiParts:
         assert parts[0] == {"text": "Result text"}
 
 
-class TestShouldInjectMultimodal:
-    """Tests for should_inject_multimodal function."""
-    
-    def test_openai_needs_injection(self):
-        """OpenAI doesn't support native multimodal tool responses."""
-        assert should_inject_multimodal("openai") is True
-        assert should_inject_multimodal("OpenAI") is True
-    
-    def test_anthropic_needs_injection(self):
-        """Anthropic doesn't support native multimodal tool responses."""
-        assert should_inject_multimodal("anthropic") is True
-    
-    def test_gemini_has_native_support(self):
-        """Gemini supports native multimodal tool responses."""
-        assert should_inject_multimodal("gemini") is False
-        assert should_inject_multimodal("Gemini") is False
-        assert should_inject_multimodal("google") is False
-    
-    def test_unknown_provider_needs_injection(self):
-        """Unknown providers default to injection."""
-        assert should_inject_multimodal("unknown_provider") is True
-        assert should_inject_multimodal("deepseek") is True
-        assert should_inject_multimodal("ollama") is True
+# TestShouldInjectMultimodal is gone with the function it tested: it
+# hardcoded a provider list in core code and had no production caller — each
+# client calls the injection helper matching its own wire format. The tests
+# made the dead code look alive, which is why it survived so long.

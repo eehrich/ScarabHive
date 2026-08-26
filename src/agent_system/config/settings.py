@@ -373,6 +373,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         logger.debug(f"Failed configuration data: {data}")
         raise
     _report_dropped_llm_params(data, cfg)
+    _report_unknown_llm_profiles(cfg)
     return cfg
 
 
@@ -457,8 +458,10 @@ def _warn_stale_llm_params(name: str, raw: Any, agent_cfg: Any) -> None:
     if marker in _reported_stale_llm_params:
         return
     _reported_stale_llm_params.add(marker)
-    chain = list(getattr(agent_cfg, "llm_profile", None) or []) + \
-        list(getattr(agent_cfg, "llm_profile_advanced", None) or [])
+    # available_llm_profiles instead of list(llm_profile): the field may be a
+    # plain STRING, and list("turbo") spells the chain out letter by letter in
+    # the error message the operator has to act on.
+    chain = list(getattr(agent_cfg, "available_llm_profiles", None) or [])
     fmt = ("Agent '%s': llm_params for %s have NO effect — those profiles are in "
            "none of its LLM chains %s. Values: %s")
     args = (name, sorted(dropped), chain, {k: raw[k] for k in sorted(dropped)})
@@ -473,6 +476,42 @@ def _report_dropped_llm_params(data: dict, cfg: AgentSystemConfig) -> None:
     for name, server in (getattr(cfg.plugins, "servers", None) or {}).items():
         raw = ((raw_servers.get(name) or {}).get("agent_config") or {}).get("llm_params")
         _warn_stale_llm_params(name, raw, getattr(server, "agent_config", None))
+
+
+def _report_unknown_llm_profiles(cfg: AgentSystemConfig) -> None:
+    """Name chain members that do not exist as profiles.
+
+    Only the PRIMARY profile is resolved at startup; fallback links are built
+    lazily, in the failure path. A typo in one therefore stays invisible until
+    the primary model rate-limits — the exact moment the fallback was
+    configured for. Then it dies with "Profile 'x' not found" and the
+    configured resilience turns out to never have existed.
+
+    Loud, but not fatal — same rule as the stale llm_params next door: one
+    typo in ONE agent must not keep every server down, and the primary
+    profile of every OTHER agent still works.
+    """
+    profiles = set(getattr(cfg.llm_system, "profiles", None) or {})
+    if not profiles:
+        return  # nothing to compare against (partial config / tests)
+    for name, server in (getattr(cfg.plugins, "servers", None) or {}).items():
+        agent_cfg = getattr(server, "agent_config", None)
+        if agent_cfg is None:
+            continue
+        chain = getattr(agent_cfg, "available_llm_profiles", None) or []
+        unknown = [p for p in chain if p not in profiles]
+        if not unknown:
+            continue
+        primary = getattr(agent_cfg, "default_llm_profile", None)
+        fmt = ("Agent '%s': LLM profiles %s are in its chain but in no "
+               "llm_system.profiles — %s. Chain: %s")
+        args = (name, sorted(unknown),
+                "THE AGENT WILL NOT START" if primary in unknown
+                else "the fallback dies in the incident it exists for",
+                list(chain))
+        logger.error(fmt, *args)
+        if not logging.getLogger().handlers:
+            _deferred_config_errors.append((fmt, args))
 
 
 # Cache for plugin discovery (avoid repeated calls)

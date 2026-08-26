@@ -54,7 +54,11 @@ def build_gemini_sdk(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -
 
 
 def make_batch_backend(cfg: "LLMModelConfig") -> Optional["BatchProviderClient"]:
-    api_key = cfg.api_key or os.environ.get("GOOGLE_API_KEY", "")
+    # Same two variables the sync path accepts (_resolve_key): a
+    # GEMINI_API_KEY-only environment used to lose batch silently — the
+    # caller just logs a skip and falls back to sync.
+    api_key = (cfg.api_key or os.environ.get("GEMINI_API_KEY")
+               or os.environ.get("GOOGLE_API_KEY", ""))
     if not api_key:
         return None
     from .gemini_batch import GeminiBatchClient

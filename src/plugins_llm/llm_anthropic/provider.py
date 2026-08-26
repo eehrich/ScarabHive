@@ -7,6 +7,7 @@ knowledge and live here — the core registry only dispatches on
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional, TYPE_CHECKING
 
@@ -23,10 +24,21 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY is required when provider=anthropic")
 
+    if cfg.thinking_level:
+        # Visible instead of silently dropped: Anthropic thinking is driven by
+        # include_thoughts/thinking_budget here — a thinking_level set on a
+        # Claude model (e.g. via an llm_params "*" overlay) has no effect at
+        # all, and every other provider says so when it drops a field.
+        logging.getLogger(__name__).warning(
+            "thinking_level is not wired for provider=anthropic and will be "
+            "ignored (model=%s) — use include_thoughts/thinking_budget.",
+            cfg.model)
+
     # Only forward temperature when configured: a None would override
     # provider-side defaults.
     temp_kw = {} if cfg.temperature is None else {"temperature": cfg.temperature}
     return AnthropicAsyncClient(
+        ssl_verify=ssl_verify,
         model=cfg.model,
         **temp_kw,
         api_key=api_key,

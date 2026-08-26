@@ -121,6 +121,38 @@ class TestEffectiveBaseUrlDecides:
             "openai_responses defaultet nicht mehr auf OpenRouter — "
             "_targets_openrouter() in factory.py zieht die falsche Grenze")
 
+    def test_every_manifest_default_matches_its_factory(self):
+        """Der Default steht ZWEIMAL: im Manifest (der Resolver liest ihn) und
+        als Literal in der Factory (der Client benutzt ihn). Driften die
+        auseinander, beantwortet `_targets_openrouter` die Frage „geht dieser
+        Eintrag wirklich an OpenRouter?" falsch — provider_routing landet am
+        fremden Endpunkt oder faellt weg. Der Kommentar im Manifest verspricht
+        genau diesen Test; bis hierher gab es ihn nur fuer openai_responses.
+        """
+        import os
+        from unittest.mock import patch
+
+        from agent_system.llm import registry
+
+        registry._scan_manifests()
+        declared = dict(registry._default_base_urls)
+        assert declared, "kein Plugin deklariert default_base_url — Test blind"
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-t",
+                                     "OPENROUTER_API_KEY": "sk-t"}):
+            for provider, manifest_url in sorted(declared.items()):
+                client = _real_build_client()(LLMModelConfig(
+                    provider=provider, model="m"))
+                # Die Clients fuehren die URL unterschiedlich (public
+                # `base_url` bzw. `_base_url` beim SDK-Wrapper) — beide Namen
+                # fragen, damit der Test die Verdrahtung misst und nicht die
+                # Namenswahl.
+                actual = str(getattr(client, "base_url", None)
+                             or getattr(client, "_base_url", "")).rstrip("/")
+                assert actual == manifest_url.rstrip("/"), (
+                    f"{provider}: Manifest sagt {manifest_url}, die Factory "
+                    f"baut {actual!r}")
+
 
 class TestModelEntryWinsPerKey:
     def test_own_order_is_kept_alongside_the_default(self):

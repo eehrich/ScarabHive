@@ -1407,6 +1407,26 @@ class TestContentFilterFallback:
         assert "error" not in result["assistant"]
         assert result["assistant"]["content"] == "hello"
 
+    def test_an_unparseable_response_is_an_error_not_an_empty_answer(
+            self, gemini_client):
+        """A client-side parse failure used to return bare empty content.
+
+        The agent loop cannot tell that from "the model said nothing": it
+        retries the same model, files a content issue, and never reaches the
+        fallback chain — while the actual cause is an unexpected response
+        shape from a new gateway backend.
+        """
+        class Exploding(dict):
+            def get(self, *args, **kwargs):
+                raise TypeError("unexpected shape")
+
+        result = gemini_client._format_response(Exploding())
+        assistant = result["assistant"]
+        assert assistant["content"] == ""
+        assert assistant.get("error"), "parse failure looked like an empty answer"
+        assert assistant["error"]["type"] == "response_format_error"
+        assert "unexpected shape" in assistant["error"]["message"]
+
 
 class TestEncryptedReasoningRecovery:
     """Zweistufige Recovery für den encrypted-reasoning-400.

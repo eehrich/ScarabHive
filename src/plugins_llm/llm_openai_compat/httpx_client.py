@@ -1946,9 +1946,23 @@ class HTTPXOpenAIClient(LLMClient):
                                                 for tc_delta in delta["tool_calls"]:
                                                     self._accumulate_tool_call_delta(
                                                         accumulated_tool_calls, tc_delta)
-                                    except Exception:
+                                    except json.JSONDecodeError:
+                                        # EXPECTED here: this is the salvage pass
+                                        # over an unterminated buffer, so a partial
+                                        # JSON tail is the normal case. Narrow on
+                                        # purpose — a TypeError/KeyError from the
+                                        # accumulators would be a real bug, and
+                                        # `except Exception` used to bury it in a
+                                        # path that is already degraded.
                                         pass
-                        
+                                    except Exception as _salvage_error:
+                                        logger.warning(
+                                            "Rest-buffer salvage failed on a "
+                                            "well-formed chunk (%s): %s",
+                                            type(_salvage_error).__name__,
+                                            _salvage_error)
+
+
                             # Stream ended without [DONE] - yield final result anyway
                             # This can happen with some API implementations
                             logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
@@ -2586,7 +2600,24 @@ class HTTPXOpenAIClient(LLMClient):
 
         except Exception as e:
             logger.error(f"Failed to format response: {e}, raw data: {response_data}")
-            return {"assistant": {"role": "assistant", "content": ""}}
+            # An empty content with no error marker is indistinguishable from
+            # "the model said nothing": the agent loop then treats a CLIENT
+            # bug (an unexpected response shape from a new gateway backend) as
+            # a content problem — retrying the same model, writing an issue,
+            # never reaching the fallback chain. Same shape the content_filter
+            # branch above uses, and the SDK client's error path.
+            return {
+                "assistant": {
+                    "role": "assistant",
+                    "content": "",
+                    "error": {
+                        "message": (f"Could not parse the provider response "
+                                    f"({type(e).__name__}: {e}, "
+                                    f"model={self.model})"),
+                        "type": "response_format_error",
+                    },
+                }
+            }
 
 
 # Factory function for easy integration

@@ -11,7 +11,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from agent_system.llm.tts import TTSClient, TTSResult, TTSSpeaker, TTSVoice
+from agent_system.llm.tts import (
+    TTSClient, TTSResult, TTSSpeaker, TTSVoice,
+    notify_tts_request, notify_tts_response,
+)
 
 if TYPE_CHECKING:
     from agent_system.config.models import TTSModelConfig
@@ -68,7 +71,16 @@ class GeminiTTSClient(TTSClient):
         self.default_voice = default_voice or self.DEFAULT_VOICE
 
         from google import genai as _genai
-        self._client = _genai.Client(api_key=self.api_key)
+        from google.genai import types as _types
+        # Without http_options the SDK passes timeout=None down to httpx —
+        # i.e. NO timeout at all, and a hanging connection stalls the whole
+        # scene forever (the log line below promised a timeout that did not
+        # exist). HttpOptions.timeout is in MILLISECONDS.
+        self._client = _genai.Client(
+            api_key=self.api_key,
+            http_options=_types.HttpOptions(
+                timeout=int(self.request_timeout * 1000)),
+        )
 
         logger.info(
             "Initialized GeminiTTSClient model=%s timeout=%ss retries=%s",
@@ -214,6 +226,8 @@ class GeminiTTSClient(TTSClient):
         """
         import asyncio
         import time as _time
+
+        import httpx
         from google.genai.errors import ServerError, APIError
 
         url = f"google-genai://{self.model}:generate_content"
@@ -233,7 +247,13 @@ class GeminiTTSClient(TTSClient):
         last_error: Optional[Exception] = None
         _start = _time.time()
 
-        for attempt in range(self.max_retries):
+        # max_retries is a RETRY count, so attempts = retries + 1 — same
+        # semantics as the speech client. It used to be `range(max_retries)`,
+        # which made the config value `max_retries: 0` (explicitly allowed,
+        # ge=0, and meaning "no retries" everywhere else) synthesize NOTHING:
+        # zero API calls, guaranteed failure.
+        attempts = self.max_retries + 1
+        for attempt in range(attempts):
             try:
                 response = await asyncio.to_thread(
                     self._client.models.generate_content,
@@ -277,38 +297,23 @@ class GeminiTTSClient(TTSClient):
                 )
                 return audio_bytes
 
-            except ServerError as exc:
-                # 5xx server errors and rate limits (429) are retryable
+            except (ServerError, httpx.TransportError) as exc:
+                # 5xx server errors — and transport failures (connect reset,
+                # read timeout, DNS blip), which the SDK does NOT wrap in
+                # APIError: those used to hit the catch-all below and abort
+                # the whole scene on a single network hiccup, discarding every
+                # segment already synthesized.
                 last_error = exc
-                wait = min(2 ** attempt * 2, 30)
-                logger.warning(
-                    "Gemini TTS transient error (attempt %d/%d): %s — retrying in %ds",
-                    attempt + 1, self.max_retries, exc, wait,
-                )
-                await self._notify_tts_post_response(
-                    url=url,
-                    duration_ms=(_time.time() - _start) * 1000,
-                    error=f"[RETRY {attempt + 1}/{self.max_retries}] {type(exc).__name__}: {exc}",
-                    finish_reason="retry",
-                )
-                await asyncio.sleep(wait)
+                await self._retry_pause(
+                    attempt, attempts, url, _start, exc,
+                    f"{type(exc).__name__}: {exc}")
 
             except APIError as exc:
                 # 429 rate limit is also retryable
                 if getattr(exc, "code", 0) == 429:
                     last_error = exc
-                    wait = min(2 ** attempt * 2, 30)
-                    logger.warning(
-                        "Gemini TTS rate limited (attempt %d/%d): %s — retrying in %ds",
-                        attempt + 1, self.max_retries, exc, wait,
-                    )
-                    await self._notify_tts_post_response(
-                        url=url,
-                        duration_ms=(_time.time() - _start) * 1000,
-                        error=f"[RETRY {attempt + 1}/{self.max_retries}] 429: {exc}",
-                        finish_reason="retry",
-                    )
-                    await asyncio.sleep(wait)
+                    await self._retry_pause(
+                        attempt, attempts, url, _start, exc, f"429: {exc}")
                 else:
                     await self._notify_tts_post_response(
                         url=url,
@@ -330,86 +335,47 @@ class GeminiTTSClient(TTSClient):
         await self._notify_tts_post_response(
             url=url,
             duration_ms=(_time.time() - _start) * 1000,
-            error=f"Failed after {self.max_retries} attempts: {last_error!r}",
+            error=f"Failed after {attempts} attempts: {last_error!r}",
         )
         raise RuntimeError(
-            f"Gemini TTS failed after {self.max_retries} attempts: {last_error}"
+            f"Gemini TTS failed after {attempts} attempts: {last_error}"
+        ) from last_error
+
+    async def _retry_pause(self, attempt: int, attempts: int, url: str,
+                           start: float, exc: Exception, label: str) -> None:
+        """Log the retry, tell the hooks, and back off — unless that was the
+        last attempt: sleeping up to 30s after the FINAL failure only delays
+        the exception the caller is already going to get."""
+        import asyncio
+        import time as _time
+
+        remaining = attempts - attempt - 1
+        logger.warning(
+            "Gemini TTS transient error (attempt %d/%d): %s%s",
+            attempt + 1, attempts, exc,
+            "" if not remaining else f" — retrying in {min(2 ** attempt * 2, 30)}s")
+        if not remaining:
+            # No hook notification and no backoff after the LAST attempt: the
+            # terminal POST follows immediately in _generate, so reporting
+            # here as well gives the debugger two responses for one call —
+            # the second labelled "[RETRY n/n]" for a retry that never
+            # happens, with the attempt's latency counted twice.
+            return
+        await self._notify_tts_post_response(
+            url=url,
+            duration_ms=(_time.time() - start) * 1000,
+            error=f"[RETRY {attempt + 1}/{attempts}] {label}",
+            finish_reason="retry",
         )
+        await asyncio.sleep(min(2 ** attempt * 2, 30))
 
     async def _notify_tts_pre_request(self, url: str, payload: Dict[str, Any]) -> None:
-        """Fire PRE_LLM_REQUEST hook so the message debugger sees TTS calls.
+        await notify_tts_request(
+            provider="gemini_tts", model=self.model, url=url, payload=payload)
 
-        TTS calls bypass the per-agent ``wire_llm_hooks`` path (they're invoked
-        directly, not via Agent), so we dispatch to the global hook registry here.
-        """
-        try:
-            import time as _time
-            from agent_system.hooks import get_hook_registry, HookContext, HookType
-            try:
-                from agent_system.mcp.status import current_request_id
-                req_id = current_request_id.get('') or ''
-            except Exception:
-                req_id = ''
-            context = HookContext(
-                hook_type=HookType.PRE_LLM_REQUEST,
-                request_id=req_id,
-                session_id='',
-                agent=None,
-                agent_name='gemini_tts',
-                llm_request_payload=payload,
-                llm_provider='gemini_tts',
-                llm_model=self.model,
-                llm_request_url=url,
-                llm_is_streaming=False,
-                metadata={"timestamp_ms": _time.time() * 1000},
-            )
-            await get_hook_registry().execute_hooks(HookType.PRE_LLM_REQUEST, context)
-        except Exception as e:
-            logger.debug("Gemini TTS pre_llm_request hook error: %s", e)
-
-    async def _notify_tts_post_response(
-        self,
-        *,
-        url: str,
-        duration_ms: float,
-        audio_seconds: Optional[float] = None,
-        audio_bytes_len: Optional[int] = None,
-        error: Optional[str] = None,
-        finish_reason: Optional[str] = None,
-    ) -> None:
-        """Fire POST_LLM_RESPONSE hook with TTS result or error."""
-        try:
-            import time as _time
-            from agent_system.hooks import get_hook_registry, HookContext, HookType
-            try:
-                from agent_system.mcp.status import current_request_id
-                req_id = current_request_id.get('') or ''
-            except Exception:
-                req_id = ''
-            response_data: Dict[str, Any] = {}
-            if audio_seconds is not None:
-                response_data["audio_seconds"] = audio_seconds
-            if audio_bytes_len is not None:
-                response_data["audio_bytes"] = audio_bytes_len
-            context = HookContext(
-                hook_type=HookType.POST_LLM_RESPONSE,
-                request_id=req_id,
-                session_id='',
-                agent=None,
-                agent_name='gemini_tts',
-                llm_response_data=response_data or None,
-                llm_provider='gemini_tts',
-                llm_model=self.model,
-                llm_request_url=url,
-                llm_duration_ms=duration_ms,
-                llm_error=error,
-                llm_finish_reason=finish_reason or ("stop" if not error else None),
-                llm_is_streaming=False,
-                metadata={"timestamp_ms": _time.time() * 1000},
-            )
-            await get_hook_registry().execute_hooks(HookType.POST_LLM_RESPONSE, context)
-        except Exception as e:
-            logger.debug("Gemini TTS post_llm_response hook error: %s", e)
+    async def _notify_tts_post_response(self, **kwargs) -> None:
+        await notify_tts_response(
+            provider="gemini_tts", model=self.model, **kwargs)
 
 
 # Available Gemini TTS voices for reference / validation

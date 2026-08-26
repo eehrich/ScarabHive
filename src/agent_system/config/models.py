@@ -102,21 +102,21 @@ class BatchProviderConfig(BaseModel):
     fallback_to_sync: bool = False  # Fallback to sync API on timeout/failure
 
 
-class BatchProvidersConfig(BaseModel):
-    """Configuration for all batch providers."""
-    gemini: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
-    openai: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
-    anthropic: BatchProviderConfig = Field(default_factory=BatchProviderConfig)
-
-
 class BatchSystemConfig(BaseModel):
     """Global batch system configuration.
-    
+
     Centralized configuration for batch processing. Models with
     provider='batch' reference this config via their batch_provider field.
     """
     storage_path: str = "data/batch_jobs"  # Where to store batch job data
-    providers: BatchProvidersConfig = Field(default_factory=BatchProvidersConfig)
+    #: batch provider name -> its settings. A DICT, not a model with one
+    #: field per provider: the batch vocabulary belongs to the plugins
+    #: (plugin.toml `provides_batch`), and a fixed field list made the core a
+    #: second registry that had to be edited for every new backend. The YAML
+    #: shape is unchanged — `providers: {gemini: {...}, openai: {...}}` reads
+    #: the same either way. Unknown names are caught by
+    #: LLMSystemConfig._providers_must_exist_as_plugins.
+    providers: Dict[str, BatchProviderConfig] = Field(default_factory=dict)
 
 
 class LLMModelConfig(BaseModel):
@@ -161,8 +161,13 @@ class LLMModelConfig(BaseModel):
     provider_routing: Optional[Dict[str, Any]] = None  # OpenRouter "provider" object: {order: [slugs], allow_fallbacks: bool, sort: "price", ...}. Order-only is enough to bias toward a sticky backend (improves implicit cache hit rate); allow_fallbacks: false would hard-pin. Systemweiter Default: llm_system.openrouter_routing (wird pro Schluessel von hier ueberstimmt). ⚠️ Nur die Pfade provider=openai_httpx und openai_responses reichen das Feld an den Request weiter — der SDK-Pfad provider=openai kennt es nicht und wuerde es STILL verwerfen (kein Modell im Katalog nutzt ihn; wer eines dorthin umstellt, verliert das Routing wortlos).
     reasoning_details_mode: Optional[Literal["keep_last", "keep_all", "strip"]] = None  # How to round-trip provider reasoning blocks across turns: "keep_last" (default, Gemini — current turn's thought signature only), "keep_all" (OpenAI reasoning models — encrypted chain must stay intact), "strip" (drop entirely). Literal: a typo must fail config load, not silently fall back to keep_last.
 
-    # Batch provider (only for provider="batch")
-    batch_provider: Optional[Literal["gemini", "openai", "anthropic"]] = None  # Which batch API to use
+    # Batch provider (only for provider="batch"). Free string for the same
+    # reason `provider` is one: the vocabulary belongs to the plugins
+    # (plugin.toml `provides_batch`), and a Literal here would make the core
+    # a second registry that has to be edited for every new batch backend.
+    # Typos are caught by _providers_must_exist_as_plugins against
+    # registry.known_batch_providers().
+    batch_provider: Optional[str] = None  # Which batch API to use
 
 
 class LLMProfile(BaseModel):
@@ -268,14 +273,19 @@ class LLMSystemConfig(BaseModel):
         error at build time in that case.
         """
         try:
-            from agent_system.llm.registry import known_providers
+            from agent_system.llm.registry import (
+                batch_client_provider, known_batch_providers, known_providers,
+                known_tts_providers)
             known = known_providers()
+            known_tts = known_tts_providers()
         except Exception as e:
             # Lenient, but never silent: without this line an unreadable
             # plugin root turns the typo guard off with no trace, and every
-            # agent dies individually at build time instead.
+            # agent dies individually at build time instead. Names BOTH
+            # checks — the TTS half used to be skipped without mention.
             logging.getLogger(__name__).warning(
-                "LLM provider validation skipped (manifest scan failed): %s", e)
+                "LLM and TTS provider validation skipped (manifest scan "
+                "failed): %s", e)
             return self
         unknown = sorted(
             f"{name} (provider={m.provider})"
@@ -287,8 +297,50 @@ class LLMSystemConfig(BaseModel):
                 f"llm_system.models: unknown provider on {unknown} — no plugin "
                 f"under src/plugins_llm declares it (known: {sorted(known)})")
 
-        from agent_system.llm.registry import known_tts_providers
-        known_tts = known_tts_providers()
+        # provider: batch is the resolver's pseudo-provider — the REAL work is
+        # done by the provider batch_provider names. Without this the typo
+        # guard has a hole exactly where the config is least obvious: a batch
+        # entry with a missing or misspelled batch_provider loaded fine and
+        # died at the first agent build, which is what this validator exists
+        # to prevent. Both the batch vocabulary and the client it maps to come
+        # from the plugin manifests.
+        broken_batch = []
+        for name, m in self.models.items():
+            if m.provider != "batch":
+                continue
+            if not m.batch_provider:
+                broken_batch.append(f"{name} (no batch_provider)")
+                continue
+            try:
+                # Also rejects an unknown batch_provider, naming the declared
+                # ones — no second copy of that check here.
+                client_provider = batch_client_provider(m.batch_provider)
+            except ValueError as e:
+                broken_batch.append(f"{name}: {e}")
+                continue
+            if client_provider not in known:
+                broken_batch.append(
+                    f"{name} (batch_provider={m.batch_provider} needs provider "
+                    f"'{client_provider}', which no plugin declares)")
+        if broken_batch:
+            raise ValueError(
+                f"llm_system.models: unusable batch models {sorted(broken_batch)}")
+
+        # The keys of batch.providers are the same vocabulary — and the only
+        # part of it nothing checked: a typo there is accepted and silently
+        # ignored, so the provider runs on hardcoded defaults instead of its
+        # configured collection window, poll interval, and cancel_on_startup.
+        if self.batch and self.batch.providers:
+            unknown_batch_cfg = sorted(
+                name for name in self.batch.providers
+                if name not in known_batch_providers())
+            if unknown_batch_cfg:
+                raise ValueError(
+                    f"llm_system.batch.providers: unknown batch provider on "
+                    f"{unknown_batch_cfg} — no plugin under src/plugins_llm "
+                    f"declares it via provides_batch "
+                    f"(known: {sorted(known_batch_providers())})")
+
         unknown_tts = sorted(
             f"{name} (provider={m.provider})"
             for name, m in self.tts_models.items()
@@ -585,6 +637,20 @@ class AgentConfig(BaseModel):
             return v
         _check_flat(v, "")
         return v
+
+    @model_validator(mode="after")
+    def _reject_empty_llm_chain(self) -> "AgentConfig":
+        # `llm_profile: []` is not "use the default" — it is a chain the
+        # operator wrote and that resolves to nothing. default_llm_profile
+        # then hands out "normal", a profile nobody configured here, and the
+        # error arrives later as "Profile 'normal' not found" pointing at a
+        # name that appears nowhere in this file.
+        if isinstance(self.llm_profile, list) and not self.llm_profile:
+            raise ValueError(
+                "llm_profile: [] is not a chain — name a profile "
+                "([primary, fallback...]) or drop the field so the default "
+                "applies.")
+        return self
 
     @model_validator(mode="after")
     def _reject_legacy_fallbacks(self) -> "AgentConfig":

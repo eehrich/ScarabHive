@@ -16,7 +16,6 @@ Usage:
         create_injection_message_content,
         create_multimodal_injection,
         create_anthropic_multimodal_injection,
-        should_inject_multimodal,
         check_vision_support
     )
     
@@ -402,18 +401,12 @@ def _get_audio_format(mime_type: str) -> str:
     return mime_to_format.get(mime_type.lower(), "wav")
 
 
-def should_inject_multimodal(provider: str) -> bool:
-    """Check if a provider needs user message injection for multimodal tool content.
-    
-    Args:
-        provider: LLM provider name (e.g., "openai", "anthropic", "gemini")
-    
-    Returns:
-        True if provider needs injection, False if native support
-    """
-    # Gemini supports native multimodal in tool responses
-    native_providers = {"gemini", "google"}
-    return provider.lower() not in native_providers
+# `should_inject_multimodal(provider)` lived here and hardcoded
+# `native_providers = {"gemini", "google"}` — provider dispatch in core code,
+# and it had ZERO production callers (only its own tests): every client
+# already decides for itself, by calling the injection helper that fits its
+# wire format. Removed 2026-08-26 rather than kept as a name for a later
+# caller to trust; the list was already stale (`gemini_sdk` was missing).
 
 
 def create_multimodal_injection(

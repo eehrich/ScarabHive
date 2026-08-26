@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
 from agent_system.utils.id import short_id
+from .base import BatchProviderClient
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
 from .job_tracker import get_job_tracker
 from ..models import LLMQuotaExhaustedError, LLMRateLimitError
@@ -77,14 +78,13 @@ class BatchQueueManager:
             self.storage_path = Path("data/batch_jobs")
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
-        # Per-provider configurations
-        self._provider_configs: Dict[str, "BatchProviderConfig"] = {}
-        if batch_system_config and batch_system_config.providers:
-            if batch_system_config.providers.gemini:
-                self._provider_configs["gemini"] = batch_system_config.providers.gemini
-            if batch_system_config.providers.openai:
-                self._provider_configs["openai"] = batch_system_config.providers.openai
-        
+        # Per-provider configurations — every configured provider, whatever
+        # it is called. This used to copy `gemini` and `openai` by name, so
+        # `anthropic` (added later) never arrived here at all: the exact cost
+        # of naming providers in core code.
+        self._provider_configs: Dict[str, "BatchProviderConfig"] = dict(
+            (batch_system_config.providers if batch_system_config else None) or {})
+
         # Default configuration values (can be overridden per-provider)
         # These are used for queue management and polling
         self._collection_window = 10.0  # seconds
@@ -92,8 +92,14 @@ class BatchQueueManager:
         self._poll_interval = 10.0  # seconds
         self._max_wait_hours = 24.0
         self._max_retries = 3
-        
-        # Use first available provider config for defaults
+
+        # KNOWN GAP, not an oversight: these knobs are configured PER PROVIDER
+        # but applied GLOBALLY — one polling loop serves all providers, so the
+        # first entry's values win for everyone (anthropic's poll_interval of
+        # 30s never applies while gemini is configured). Closing it means
+        # per-provider timing in the polling loop, i.e. a change in production
+        # batch behaviour, not a rename. Left as it always was; the config
+        # comment says which entry decides.
         for provider_config in self._provider_configs.values():
             self._collection_window = provider_config.collection_window_seconds
             self._max_requests = provider_config.max_requests_per_batch
@@ -169,13 +175,17 @@ class BatchQueueManager:
                     pass  # Never let status reporting break batch processing
     
     def register_batch_client(self, provider: str, client: Any) -> None:
-        """Register a batch client for a provider.
-        
+        """Register a batch client for a batch provider name.
+
         Args:
-            provider: Provider name ("openai" or "gemini")
-            client: Batch client instance (OpenAIBatchClient or GeminiBatchClient)
+            provider: Batch provider name as configured (`batch_provider:`)
+            client: Batch client instance from that provider's plugin
         """
         self._batch_clients[provider] = client
+        # The tracker is keyed by THIS name (add_job below), so the client
+        # must not carry its own idea of what it is called — startup
+        # cancellation looks its jobs up by exactly this key.
+        client.provider_name = provider
         logger.info(f"Registered batch client for provider: {provider}")
     
     def _ensure_polling_started(self) -> None:
@@ -267,36 +277,36 @@ class BatchQueueManager:
                     logger.debug(f"Provider {provider} doesn't support list_batches")
                     continue
                 
+                # The provider's own client knows its listing shape — this used
+                # to switch on the provider NAME here, with an `else` that read
+                # OpenAI's keys out of whatever came in. The base
+                # implementation always returns None, so a provider that never
+                # overrode it would silently recover nothing — a different
+                # problem from "this batch is finished", and worth saying once
+                # per provider rather than per entry.
+                if getattr(type(client), "describe_listed_batch", None) is (
+                        BatchProviderClient.describe_listed_batch):
+                    logger.warning(
+                        "Batch provider %s lists batches but does not "
+                        "implement describe_listed_batch — no jobs can be "
+                        "recovered for it", provider)
+                    continue
+
                 logger.debug(f"Listing batches from {provider}...")
                 batches = await client.list_batches(limit=50)
                 logger.info(f"Found {len(batches)} batches from {provider}")
-                
+
                 for batch_info in batches:
                     logger.debug(f"Processing batch: {batch_info}")
-                    
-                    # Extract job info based on provider format
-                    if provider == "gemini":
-                        job_id = batch_info.get("name", "")
-                        state = batch_info.get("state", "")
-                        logger.debug(f"Gemini batch: {job_id}, state={state}")
-                        # Map Gemini states to our BatchStatus
-                        if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
-                            logger.debug(f"Skipping completed Gemini job: {job_id}")
-                            continue  # Skip completed jobs
-                        status = self._map_gemini_state(state)
-                        model = "gemini-2.5-flash"  # Default, can't determine from list
-                    else:  # openai
-                        job_id = batch_info.get("id", "")
-                        status_str = batch_info.get("status", "")
-                        logger.debug(f"OpenAI batch: {job_id}, status={status_str}")
-                        if status_str in ("completed", "failed", "expired", "cancelled"):
-                            logger.debug(f"Skipping completed OpenAI job: {job_id}")
-                            continue  # Skip completed jobs
-                        status = self._map_openai_status(status_str)
-                        # Try to extract model from metadata (metadata can be None)
-                        metadata = batch_info.get("metadata") or {}
-                        model = metadata.get("model", "gpt-4o")
-                    
+                    described = client.describe_listed_batch(batch_info)
+                    if not described:
+                        logger.debug(
+                            "Skipping finished %s batch: %s", provider, batch_info)
+                        continue
+                    job_id = described["job_id"]
+                    status = described["status"]
+                    model = described["model"]
+
                     # Check if we're already tracking this job
                     already_tracked = any(
                         job.provider_job_id == job_id 
@@ -334,33 +344,6 @@ class BatchQueueManager:
             logger.info("No active batch jobs found to recover")
         
         return recovered_count
-    
-    def _map_gemini_state(self, state: str) -> "BatchStatus":
-        """Map Gemini job state to BatchStatus."""
-        from .models import BatchStatus
-        mapping = {
-            "JOB_STATE_PENDING": BatchStatus.SUBMITTED,  # Waiting at provider
-            "JOB_STATE_RUNNING": BatchStatus.IN_PROGRESS,
-            "JOB_STATE_SUCCEEDED": BatchStatus.COMPLETED,
-            "JOB_STATE_FAILED": BatchStatus.FAILED,
-            "JOB_STATE_CANCELLED": BatchStatus.CANCELLED,
-        }
-        return mapping.get(state, BatchStatus.SUBMITTED)
-    
-    def _map_openai_status(self, status: str) -> "BatchStatus":
-        """Map OpenAI batch status to BatchStatus."""
-        from .models import BatchStatus
-        mapping = {
-            "validating": BatchStatus.VALIDATING,
-            "in_progress": BatchStatus.IN_PROGRESS,
-            "finalizing": BatchStatus.FINALIZING,
-            "completed": BatchStatus.COMPLETED,
-            "failed": BatchStatus.FAILED,
-            "expired": BatchStatus.EXPIRED,
-            "cancelled": BatchStatus.CANCELLED,
-            "cancelling": BatchStatus.CANCELLING,
-        }
-        return mapping.get(status, BatchStatus.PENDING)
     
     async def stop(self) -> None:
         """Stop the batch queue manager and cleanup."""

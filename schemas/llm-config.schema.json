@@ -157,23 +157,6 @@
       "type": "object",
       "additionalProperties": false
     },
-    "BatchProvidersConfig": {
-      "description": "Configuration for all batch providers.",
-      "properties": {
-        "gemini": {
-          "$ref": "#/$defs/BatchProviderConfig"
-        },
-        "openai": {
-          "$ref": "#/$defs/BatchProviderConfig"
-        },
-        "anthropic": {
-          "$ref": "#/$defs/BatchProviderConfig"
-        }
-      },
-      "title": "BatchProvidersConfig",
-      "type": "object",
-      "additionalProperties": false
-    },
     "BatchSystemConfig": {
       "description": "Global batch system configuration.\n\nCentralized configuration for batch processing. Models with\nprovider='batch' reference this config via their batch_provider field.",
       "properties": {
@@ -183,7 +166,11 @@
           "type": "string"
         },
         "providers": {
-          "$ref": "#/$defs/BatchProvidersConfig"
+          "additionalProperties": {
+            "$ref": "#/$defs/BatchProviderConfig"
+          },
+          "title": "Providers",
+          "type": "object"
         }
       },
       "title": "BatchSystemConfig",
@@ -513,11 +500,6 @@
         "batch_provider": {
           "anyOf": [
             {
-              "enum": [
-                "gemini",
-                "openai",
-                "anthropic"
-              ],
               "type": "string"
             },
             {

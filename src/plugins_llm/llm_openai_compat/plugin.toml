@@ -9,6 +9,17 @@ description = "httpx clients for OpenAI-compatible endpoints (Chat Completions +
 author = "AgentSystem"
 type = ["llm-provider"]
 provides = ["openai_httpx", "openai_responses"]
+# The OpenAI Batch API (/v1/batches) is plain HTTP — the implementation lives
+# here with the other httpx clients, under the SAME name as the client it
+# belongs to. llm_openai's SDK client declares its own `openai` backend and
+# reaches this one through the registry.
+provides_batch = ["openai_httpx"]
 provides_tts = ["openai_speech"]
+# Endpoint each factory falls back to when the model entry names none. The
+# resolver reads this to tell whether a base_url-less entry actually talks to
+# OpenRouter (provider_routing, key-follows-endpoint) instead of knowing the
+# provider names itself. Must match the factories in provider.py — pinned by
+# tests/llm/test_llm_openrouter_routing_default.py.
+default_base_url = { openai_httpx = "https://api.openai.com/v1", openai_responses = "https://openrouter.ai/api/v1" }
 requires = { agent_system = ">=0.6.0" }
 dependencies = []

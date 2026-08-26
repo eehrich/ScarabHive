@@ -192,9 +192,19 @@ try:
     if not hasattr(_llm_registry, "_orig_build_client"):
         _llm_registry._orig_build_client = _llm_registry.build_client
     _llm_registry.build_client = _fake_build_client
-except Exception:
-    # If importing or patching fails, don't break test run; fall back to normal behavior
-    pass
+except Exception as _seam_error:
+    # Stop, don't warn: without the seam, tests build REAL clients — with the
+    # real keys from the environment, opening real sockets during bootstrap.
+    # A warning would not do here anyway (pytest.ini sets
+    # filterwarnings=error, so it ends the session with a confusing
+    # "ImportError while loading conftest"); this says what actually
+    # happened. tests/llm pins the seam too, but a targeted partial run — the
+    # normal way to work here — doesn't include that test.
+    raise RuntimeError(
+        f"LLM build_client seam could not be installed ({_seam_error!r}). "
+        f"Tests would construct real clients and open real sockets, so the "
+        f"run is stopped instead."
+    ) from _seam_error
 
 
 

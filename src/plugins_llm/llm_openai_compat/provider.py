@@ -1,13 +1,15 @@
 """Provider factories for OpenAI-compatible httpx clients.
 
-Bodies are the former ``make_llm`` branches, verbatim in semantics —
-including the key-follows-endpoint rule of the Responses provider.
+Bodies are the former ``make_llm`` branches. One deliberate deviation: the
+key-follows-endpoint rule, which used to exist only on the Responses
+provider, now applies to every factory here (llm_common.api_keys).
 """
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional, TYPE_CHECKING
+
+from plugins_llm.llm_common.api_keys import resolve_api_key
 
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
 
@@ -31,9 +33,13 @@ def _timeout_config(cfg: "LLMModelConfig", default_read: float,
 
 
 def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
-    api_key = cfg.api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY is required when provider=openai_httpx")
+    # The key follows the endpoint: this client speaks to OpenRouter just as
+    # happily as to api.openai.com, and an env fallback that ignores base_url
+    # would hand the OpenAI secret to whatever host the model entry names.
+    api_key, base_url = resolve_api_key(
+        cfg.api_key, cfg.base_url,
+        default_base_url="https://api.openai.com/v1",
+        provider="openai_httpx")
 
     if cfg.include_thoughts:
         # Visible instead of silently dropped: the httpx client only wires
@@ -50,7 +56,7 @@ def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None)
         model=cfg.model,
         **temp_kw,
         api_key=api_key,
-        base_url=cfg.base_url or "https://api.openai.com/v1",
+        base_url=base_url,
         timeout_config=_timeout_config(cfg, default_read=180.0, default_write=10.0),
         max_retries=1,  # 2 attempts total — faster fallback on 5xx (e.g. DeepSeek 504)
         retry_backoff=1.0,
@@ -76,23 +82,12 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
     # round-trip, no Chat-Completions bridging — removes the
     # encrypted-reasoning 400s of that translation layer entirely.
     # See openai_responses_client.py for the full rationale.
-    # The EFFECTIVE endpoint decides which key may be used. This provider
-    # defaults to OpenRouter, so a missing OPENROUTER_API_KEY must not fall
-    # through to OPENAI_API_KEY: the client would come up healthy and put
-    # the OpenAI secret into an Authorization header addressed to
-    # openrouter.ai, and only the first turn would fail — after the key
-    # had already been sent to a third party.
-    effective_url = cfg.base_url or "https://openrouter.ai/api/v1"
-    via_openrouter = "openrouter.ai" in effective_url.lower()
-    api_key = cfg.api_key
-    if not api_key:
-        api_key = (os.getenv("OPENROUTER_API_KEY") if via_openrouter
-                   else os.getenv("OPENAI_API_KEY"))
-    if not api_key:
-        wanted = "OPENROUTER_API_KEY" if via_openrouter else "OPENAI_API_KEY"
-        raise ValueError(
-            f"{wanted} is required when provider=openai_responses "
-            f"targets {effective_url}")
+    # The EFFECTIVE endpoint decides which key may be used — see
+    # llm_common.api_keys for why. This provider defaults to OpenRouter.
+    api_key, effective_url = resolve_api_key(
+        cfg.api_key, cfg.base_url,
+        default_base_url="https://openrouter.ai/api/v1",
+        provider="openai_responses")
 
     if cfg.thinking_budget:
         # Visible instead of silently dropped: the Responses client only
@@ -144,8 +139,37 @@ def build_openai_speech_tts(cfg):
     return build_openai_speech(cfg)
 
 
+def make_batch_backend(cfg: "LLMModelConfig"):
+    """Batch backend for the httpx OpenAI client.
+
+    The OpenAI Batch API is plain HTTP (/v1/batches) — this implementation
+    never touched the SDK, so it lives with the other httpx clients. Each
+    LLM client brings its own batch backend; `batch_provider: openai_httpx`
+    therefore pairs the httpx client with this one, and `batch_provider:
+    openai` pairs the SDK client with the one in llm_openai. Same name on
+    both sides, no mapping table anywhere.
+    """
+    import os
+
+    # No key-follows-endpoint dance here: the Batch API exists at OpenAI,
+    # not at the gateways this client otherwise talks to, so the key is the
+    # OpenAI one. Returning None on a missing key is the contract — the
+    # caller logs the skip and the models fall back to sync.
+    api_key = cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return None
+    from .openai_batch import OpenAIBatchClient
+    # base_url is NOT forwarded: the model entry's base_url points at
+    # whatever gateway serves its sync calls, and those gateways do not have
+    # /v1/batches. Sending an OpenAI key to one of them is exactly what the
+    # key-follows-endpoint rule exists to prevent, so the batch client keeps
+    # its own default (api.openai.com).
+    return OpenAIBatchClient(api_key=api_key)
+
+
 PROVIDERS = {
     "openai_httpx": build_openai_httpx,
     "openai_responses": build_openai_responses,
 }
+BATCH_BACKENDS = {"openai_httpx": make_batch_backend}
 TTS_PROVIDERS = {"openai_speech": build_openai_speech_tts}

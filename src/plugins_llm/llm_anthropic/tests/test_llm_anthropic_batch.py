@@ -243,60 +243,72 @@ class TestAnthropicBatchResultParsing:
 
 
 class TestAnthropicBatchStatusMapping:
-    """Test status mapping from Anthropic to internal status."""
+    """Test status mapping from Anthropic to internal status.
+
+    The Message Batches object has NO `end_status` field — only
+    `processing_status` (in_progress / canceling / ended) and per-request
+    counts. Reading a nonexistent field made every ended batch report
+    COMPLETED, cancelled and expired ones included, and left the
+    FAILED/CANCELLED/EXPIRED branches as dead code. The outcome now comes
+    from the counts, so these mocks carry only fields the API really sends.
+    """
+
+    async def _status_for(self, client, **payload):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "batch_123", **payload}
+        client._client.get = AsyncMock(return_value=mock_response)
+        result = await client.get_batch_status("batch_123")
+        return result["status"]
 
     @pytest.mark.asyncio
     async def test_status_in_progress(self, anthropic_batch_client):
         """Test in_progress status mapping."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "batch_123",
-            "processing_status": "in_progress",
-            "request_counts": {"total": 10, "succeeded": 0, "processing": 10}
-        }
-        
-        anthropic_batch_client._client.get = AsyncMock(return_value=mock_response)
-        
-        status = await anthropic_batch_client.get_batch_status("batch_123")
-        
-        assert status["status"] == BatchStatus.IN_PROGRESS.value
+        status = await self._status_for(
+            anthropic_batch_client, processing_status="in_progress",
+            request_counts={"total": 10, "succeeded": 0, "processing": 10})
+        assert status == BatchStatus.IN_PROGRESS.value
 
     @pytest.mark.asyncio
     async def test_status_completed(self, anthropic_batch_client):
         """Test completed status mapping."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "batch_123",
-            "processing_status": "ended",
-            "end_status": "succeeded",
-            "request_counts": {"total": 10, "succeeded": 10}
-        }
-        
-        anthropic_batch_client._client.get = AsyncMock(return_value=mock_response)
-        
-        status = await anthropic_batch_client.get_batch_status("batch_123")
-        
-        assert status["status"] == BatchStatus.COMPLETED.value
+        status = await self._status_for(
+            anthropic_batch_client, processing_status="ended",
+            request_counts={"total": 10, "succeeded": 10})
+        assert status == BatchStatus.COMPLETED.value
 
     @pytest.mark.asyncio
     async def test_status_failed(self, anthropic_batch_client):
         """Test failed status mapping."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "batch_123",
-            "processing_status": "ended",
-            "end_status": "failed",
-            "request_counts": {"total": 10, "errored": 10}
-        }
-        
-        anthropic_batch_client._client.get = AsyncMock(return_value=mock_response)
-        
-        status = await anthropic_batch_client.get_batch_status("batch_123")
-        
-        assert status["status"] == BatchStatus.FAILED.value
+        status = await self._status_for(
+            anthropic_batch_client, processing_status="ended",
+            request_counts={"total": 10, "errored": 10})
+        assert status == BatchStatus.FAILED.value
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_batch_is_not_reported_as_completed(
+            self, anthropic_batch_client):
+        status = await self._status_for(
+            anthropic_batch_client, processing_status="ended",
+            request_counts={"total": 10, "succeeded": 0, "canceled": 10})
+        assert status == BatchStatus.CANCELLED.value
+
+    @pytest.mark.asyncio
+    async def test_an_expired_batch_is_not_reported_as_completed(
+            self, anthropic_batch_client):
+        status = await self._status_for(
+            anthropic_batch_client, processing_status="ended",
+            request_counts={"total": 10, "succeeded": 0, "expired": 10})
+        assert status == BatchStatus.EXPIRED.value
+
+    @pytest.mark.asyncio
+    async def test_partial_success_stays_completed(self, anthropic_batch_client):
+        """Individual failures are reported per request by _parse_results —
+        the queue manager still needs the successful half."""
+        status = await self._status_for(
+            anthropic_batch_client, processing_status="ended",
+            request_counts={"total": 10, "succeeded": 7, "errored": 3})
+        assert status == BatchStatus.COMPLETED.value
 
 
 class TestAnthropicBatchSubmission:

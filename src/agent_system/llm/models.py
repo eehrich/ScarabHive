@@ -321,8 +321,7 @@ class LLMClient:
             try:
                 await self._on_pre_llm_request(payload_info)
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).debug(f"pre_llm_request hook error: {e}")
+                self._report_hook_failure("pre_llm_request", e)
 
     async def _notify_post_response(self, response_info: Dict[str, Any]) -> None:
         """Notify post-response hook if set. Errors are swallowed to not break LLM calls."""
@@ -336,8 +335,34 @@ class LLMClient:
             try:
                 await self._on_post_llm_response(response_info)
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).debug(f"post_llm_response hook error: {e}")
+                self._report_hook_failure("post_llm_response", e)
+
+    #: Hook phases already reported as broken — per class, not per instance:
+    #: clients are built per agent, and the cause is global (a signature
+    #: change, a bad consumer), so one line is the point.
+    _hook_failures_reported: set = set()
+
+    def _report_hook_failure(self, phase: str, error: Exception) -> None:
+        """Swallowing is right, staying silent is not.
+
+        The call must survive a broken hook — but at DEBUG the breakage is
+        invisible, and a dead dispatch means the message debugger (and every
+        cost/latency consumer) quietly stops seeing LLM traffic. That exact
+        silence hid a HIGH bug in the TTS client. Once per phase and error
+        type, then back to DEBUG.
+        """
+        import logging
+
+        log = logging.getLogger(__name__)
+        marker = f"{phase}:{type(error).__name__}"
+        if marker in LLMClient._hook_failures_reported:
+            log.debug("%s hook error: %s", phase, error)
+            return
+        LLMClient._hook_failures_reported.add(marker)
+        log.warning(
+            "%s hooks are NOT being dispatched (%s: %s) — the message "
+            "debugger and other hook consumers are blind to these calls. "
+            "Reported once per error type.", phase, type(error).__name__, error)
 
     async def _notify_retry(
         self,

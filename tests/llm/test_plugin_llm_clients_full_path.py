@@ -128,10 +128,16 @@ class TestTheFullPathCarriesTheProfile:
 
         from agent_system.llm import factory
         from agent_system.llm.batch.batch_client import BatchLLMClient
-        from agent_system.config.models import BatchSystemConfig
+        from agent_system.config.models import (
+            BatchProviderConfig, BatchSystemConfig)
 
-        config = _synthetic(provider="batch", batch_provider="openai")
-        config.llm_system.batch = BatchSystemConfig()
+        config = _synthetic(provider="batch", batch_provider="openai_httpx")
+        # Named explicitly: `providers` is a dict now, so an empty
+        # BatchSystemConfig() has no provider enabled — which is the honest
+        # reading of a config that names none, and would make this test pass
+        # for the wrong reason.
+        config.llm_system.batch = BatchSystemConfig(
+            providers={"openai_httpx": BatchProviderConfig()})
 
         # Without a manager: sync fallback, not a crash.
         monkeypatch.setattr(factory, "get_batch_queue_manager", lambda: None)
@@ -150,11 +156,14 @@ class TestNoPluginHandRollsTheArguments:
     factory and the llm_ollama delegation are its home; a plugin calling it
     directly would skip profile chains, llm_params, and batch wrapping."""
 
+    #: Plugins whose client construction the BEHAVIOURAL tests below also
+    #: exercise. The AST scan runs over every plugin — pinning it to a list
+    #: meant a plugin that started building clients later (lessons_learned
+    #: did) was outside the guard without anyone deciding that.
     PLUGINS = ("basic_agent", "context_summarizer", "agent_continuation",
                "llm_router")
 
-    @pytest.mark.parametrize("plugin", PLUGINS)
-    def test_the_plugin_does_not_call_the_registry_directly(self, plugin):
+    def test_no_plugin_calls_the_registry_directly(self):
         """Parsed, not grepped — but only one step deep.
 
         Catches the realistic regressions: a direct `build_client(...)` /
@@ -166,15 +175,17 @@ class TestNoPluginHandRollsTheArguments:
         constructs `OpenAIResponsesClient(...)` outright — the last of which
         is the same defect and worse. Do not read a green run here as "no
         plugin hand-rolls a client"; the behavioural tests below are what
-        actually establish that, and they cover three of the four plugins.
+        actually establish that, and they cover four plugins.
         """
         import ast
 
-        root = Path(__file__).parents[2] / "src" / "plugins" / plugin
-        assert root.is_dir(), f"{plugin} moved — this check would be vacuous"
+        root = Path(__file__).parents[2] / "src" / "plugins"
+        assert root.is_dir(), "src/plugins moved — this check would be vacuous"
 
         modules = [p for p in root.rglob("*.py") if "tests" not in p.parts]
-        assert modules, f"{plugin} has no modules — this check would be vacuous"
+        assert len(modules) > 100, (
+            f"only {len(modules)} plugin modules found — the scan lost its "
+            f"tree and would pass on anything")
 
         BANNED = {"make_llm", "build_client", "get_provider"}
         offenders = []
@@ -217,7 +228,7 @@ class TestNoPluginHandRollsTheArguments:
                     offenders.append(f"{path.relative_to(root)}:{node.lineno}")
 
         assert not offenders, (
-            f"{plugin} builds a client by hand again — use "
+            f"a plugin builds a client by hand again — use "
             f"create_llm_from_profile, which applies profile chains, "
             f"llm_params and batch wrapping: {offenders}")
 

@@ -7,6 +7,7 @@ Uses the new profile-based configuration system.
 """
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,12 +69,7 @@ def _create_batch_queue_manager_sync(config: AgentSystemConfig) -> Optional["Bat
         return None
     
     # Check if any provider is enabled
-    providers_config = batch_system_config.providers
-    gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
-    openai_enabled = providers_config.openai.enabled if providers_config.openai else False
-    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
-    
-    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
+    if not any(p.enabled for p in batch_system_config.providers.values()):
         return None
     
     # Check if any model uses batch provider
@@ -173,8 +169,8 @@ def _build_client(
         if queue_manager:
             batch_system_config = config.llm_system.batch if config.llm_system else None
             if batch_system_config:
-                provider_config = getattr(
-                    batch_system_config.providers, resolved.batch_provider, None)
+                provider_config = batch_system_config.providers.get(
+                    resolved.batch_provider)
                 if provider_config and provider_config.enabled:
                     from .batch.batch_client import BatchLLMClient
                     logger.info("Wrapping LLM client with batch support: model=%s, provider=%s",
@@ -198,19 +194,19 @@ def _build_client(
 def _targets_openrouter(model_config: LLMModelConfig) -> bool:
     """Does this model talk to OpenRouter?
 
-    The EFFECTIVE base_url decides, not the configured one: the
-    openai_responses provider factory (plugins_llm/llm_openai_compat)
-    defaults to OpenRouter when base_url is empty, while openai_httpx/
-    openai default to api.openai.com. A Responses entry without base_url
-    therefore lands on OpenRouter — looking only at the config field would
-    let it slip through. Guarded against drift by
-    tests/llm/test_llm_openrouter_routing_default.py, which builds a real
-    client and asserts its default base_url.
+    The EFFECTIVE base_url decides, not the configured one: a provider whose
+    factory defaults to OpenRouter lands there with an empty base_url, so
+    looking only at the config field would let those entries slip through.
+    WHICH provider does that is plugin knowledge — the manifests declare it
+    as `default_base_url`; this used to be a provider name spelled out here.
+    Guarded against drift by tests/llm/test_llm_openrouter_routing_default.py,
+    which builds a real client and asserts its default base_url matches.
     """
-    base_url = model_config.base_url
-    if not base_url:
-        return model_config.provider == "openai_responses"
-    return "openrouter.ai" in base_url.lower()
+    from . import registry as _registry
+
+    base_url = model_config.base_url or _registry.default_base_url(
+        model_config.provider)
+    return "openrouter.ai" in (base_url or "").lower()
 
 
 def _resolve_provider_routing(
@@ -310,15 +306,10 @@ def resolve_llm_config_for_agent(
     if is_batch_model:
         if not batch_provider:
             raise ValueError(f"Model '{model_ref}' has provider='batch' but no batch_provider specified")
-        # Map batch_provider to actual LLM provider
-        if batch_provider == "gemini":
-            provider = "gemini"
-        elif batch_provider == "openai":
-            provider = "openai_httpx"  # Use httpx variant for OpenAI
-        elif batch_provider == "anthropic":
-            provider = "anthropic"
-        else:
-            raise ValueError(f"Unknown batch_provider: {batch_provider}")
+        # Which client a batch model uses is declared by the plugin that
+        # serves that batch provider, not listed here.
+        from . import registry as _registry
+        provider = _registry.batch_client_provider(batch_provider)
         logger.debug("Batch model detected: %s (batch_provider=%s)", model_ref, batch_provider)
 
     # Stamp resolved values into the spec so provider factories read ONE
@@ -338,7 +329,11 @@ def resolve_llm_config_for_agent(
         updates["httpx_timeouts"] = config.llm_system.httpx_timeouts.model_copy()
     provider_routing = _resolve_provider_routing(config.llm_system, model_config)
     if provider_routing != model_config.provider_routing:
-        updates["provider_routing"] = provider_routing
+        # deepcopy for the same reason as httpx_timeouts above: update values
+        # are applied AS-IS, and the merged dict is only shallow-fresh — its
+        # nested values (`order: [...]`) are still the system config's own
+        # objects, so an in-place edit would travel back into it.
+        updates["provider_routing"] = copy.deepcopy(provider_routing)
     # ALWAYS a deep copy, updates or not: without it the spec aliases the
     # shared registry entry (config.llm_system.models[...]) including its
     # capabilities/provider_routing objects, and any factory that ever
