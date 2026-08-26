@@ -109,7 +109,7 @@ class LLMRouterServer(SchemaBasedMCPServer):
         batch wrapping. The previous route resolved the config by hand - with
         the arguments swapped, so it raised on every call - and then dropped
         thinking_level, max_tokens, safety_settings, service_tier,
-        provider_routing and capabilities on the way to make_llm.
+        provider_routing and capabilities on the way to the client factory.
         """
         from agent_system.llm.factory import create_llm_from_profile
 

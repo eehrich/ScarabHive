@@ -1,22 +1,22 @@
 """LLM Batch API Support Module.
 
-Provides asynchronous batch processing for OpenAI and Gemini APIs
-with 50% cost reduction and separate rate limits.
+Provides asynchronous batch processing with 50% cost reduction and
+separate rate limits.
 
 Components:
 - BatchQueueManager: Collects and groups requests by model
 - BatchLLMClient: Wrapper for transparent batch processing
 - BatchProviderClient: Abstract base class for provider implementations
 - BatchJob: Represents a submitted batch job
-- OpenAIBatchClient: OpenAI Files + Batch API integration
-- GeminiBatchClient: Gemini Batch API integration
+
+The provider-specific backends (OpenAI, Gemini, Anthropic) live in their
+LLM provider plugins under src/plugins_llm/ and are looked up through
+agent_system.llm.registry.get_batch_backend().
 """
 
 from .base import BatchProviderClient
 from .queue_manager import BatchQueueManager
 from .models import BatchJob, BatchRequest, BatchResult, BatchStatus
-from .openai_batch import OpenAIBatchClient
-from .gemini_batch import GeminiBatchClient
 from .batch_client import BatchLLMClient
 
 __all__ = [
@@ -27,6 +27,4 @@ __all__ = [
     "BatchRequest",
     "BatchResult",
     "BatchStatus",
-    "OpenAIBatchClient",
-    "GeminiBatchClient",
 ]

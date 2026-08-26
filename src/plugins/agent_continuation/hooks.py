@@ -407,7 +407,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
 
         try:
             # create_llm_from_profile forwards EVERY resolved field. Listing the
-            # make_llm arguments by hand dropped thinking_level, max_tokens,
+            # factory arguments by hand (pre-registry make_llm) dropped thinking_level, max_tokens,
             # safety_settings, service_tier and provider_routing - harmless for
             # the profile configured today, silently wrong the moment this points
             # at an OpenRouter profile. It also gets batch wrapping right, which

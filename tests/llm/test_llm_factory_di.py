@@ -1,3 +1,11 @@
+"""LLMFactory dependency-injection tests.
+
+SCOPE, honestly stated: these run against the conftest fake
+(registry.build_client is replaced), so they verify that the factory
+resolves profiles and forwards the resolved spec — the returned object is
+a _FakeLLMClient carrying provider/model from the spec, not a real client.
+Real construction is covered by tests/llm/test_llm_provider_registry.py.
+"""
 from agent_system.llm.factory import LLMFactory
 from agent_system.config.models import (
     AgentSystemConfig, 

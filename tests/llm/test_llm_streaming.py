@@ -2,8 +2,8 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from agent_system.llm.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
-from agent_system.llm.openai_client import OpenAIAsyncClient
+from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
+from plugins_llm.llm_openai.openai_client import OpenAIAsyncClient
 from agent_system.llm.models import ChatMessage
 
 

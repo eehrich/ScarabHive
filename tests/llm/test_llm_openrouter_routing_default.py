@@ -8,14 +8,15 @@ Drei Dinge muessen halten, und jedes davon ist schon einmal schiefgegangen:
 
 * Der Wert muss am Produktionspfad ANKOMMEN. Geprueft wird deshalb durch
   ``resolve_llm_config_for_agent()`` — die eine Stelle, durch die Agent- und
-  Profil-Pfad beide laufen — und fuer den letzten Hop durch ``make_llm()``
-  selbst, denn zwischen Aufloeser und Client liegt eine Uebergabe pro
-  Provider-Zweig, die einzeln vergessen werden kann.
+  Profil-Pfad beide laufen — und fuer den letzten Hop durch
+  ``registry.build_client()`` selbst, denn hinter dem Aufloeser liest jede
+  Provider-Factory die Spec einzeln und kann ein Feld einzeln vergessen.
 * Er darf NUR an OpenRouter gehen. ``provider`` ist ein OpenRouter-Body-Feld;
   an einem fremden Endpunkt waere es ein unbekannter Key im Request.
-* Massgeblich ist die WIRKSAME base_url. ``make_llm()`` setzt fuer
-  ``openai_responses`` mangels base_url OpenRouter ein — ein solcher Eintrag
-  redet mit OpenRouter, obwohl im Config-Feld nichts steht.
+* Massgeblich ist die WIRKSAME base_url. Die openai_responses-Factory
+  (plugins_llm/llm_openai_compat) setzt mangels base_url OpenRouter ein —
+  ein solcher Eintrag redet mit OpenRouter, obwohl im Config-Feld nichts
+  steht.
 """
 from __future__ import annotations
 
@@ -37,12 +38,12 @@ from agent_system.config.models import (
 from agent_system.llm.factory import resolve_llm_config_for_agent
 
 
-def _real_make_llm():
-    """conftest.py ersetzt ``make_llm`` global durch einen Fake, damit beim
-    Bootstrap keine Sockets aufgehen. Fuer die Verdrahtungstests brauchen wir
-    das Original — es liegt unter ``_orig_make_llm``."""
-    from agent_system.llm import clients
-    return getattr(clients, "_orig_make_llm", clients.make_llm)
+def _real_build_client():
+    """conftest.py ersetzt ``registry.build_client`` global durch einen Fake,
+    damit beim Bootstrap keine Sockets aufgehen. Fuer die Verdrahtungstests
+    brauchen wir das Original — es liegt unter ``_orig_build_client``."""
+    from agent_system.llm import registry
+    return getattr(registry, "_orig_build_client", registry.build_client)
 
 #: Am Datei-Anker, nicht am CWD — sonst ueberspringt sich der Katalogteil
 #: lautlos, sobald pytest aus einem Unterverzeichnis laeuft.
@@ -50,8 +51,9 @@ OPENROUTER_YAML = REPO_ROOT / "config" / "llm_openrouter.yaml"
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
 
-def _resolve(model: LLMModelConfig, openrouter_routing: dict | None = None) -> dict:
-    """Ein Modell durch den echten Aufloeser schicken."""
+def _resolve(model: LLMModelConfig, openrouter_routing: dict | None = None) -> LLMModelConfig:
+    """Ein Modell durch den echten Aufloeser schicken; liefert die
+    aufgeloeste Spec (ResolvedLLM.spec)."""
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             openrouter_routing=openrouter_routing,
@@ -59,7 +61,7 @@ def _resolve(model: LLMModelConfig, openrouter_routing: dict | None = None) -> d
             models={"m": model},
         ),
     )
-    return resolve_llm_config_for_agent(cfg, AgentConfig(llm_profile="p"))
+    return resolve_llm_config_for_agent(cfg, AgentConfig(llm_profile="p")).spec
 
 
 def _openrouter_model(**overrides) -> LLMModelConfig:
@@ -71,49 +73,50 @@ def _openrouter_model(**overrides) -> LLMModelConfig:
 class TestSystemDefaultReachesOpenRouterModels:
     def test_default_lands_on_a_model_without_own_routing(self):
         kwargs = _resolve(_openrouter_model(), {"sort": "price"})
-        assert kwargs["provider_routing"] == {"sort": "price"}
+        assert kwargs.provider_routing == {"sort": "price"}
 
     def test_absent_default_changes_nothing(self):
         """Aus ist aus — ohne den Schalter bleibt der Request wie bisher."""
-        assert "provider_routing" not in _resolve(_openrouter_model())
+        assert _resolve(_openrouter_model()).provider_routing is None
 
     def test_model_entry_survives_without_the_switch(self):
         kwargs = _resolve(_openrouter_model(provider_routing={"order": ["a"]}))
-        assert kwargs["provider_routing"] == {"order": ["a"]}
+        assert kwargs.provider_routing == {"order": ["a"]}
 
     def test_host_match_ignores_case(self):
         """Der Riegel vergleicht kleingeschrieben — sonst entscheidet die
         Schreibweise in der yaml darueber, ob der Schalter wirkt."""
         model = _openrouter_model()
         model.base_url = "HTTPS://OpenRouter.AI/api/v1"
-        assert _resolve(model, {"sort": "price"})["provider_routing"] == {
+        assert _resolve(model, {"sort": "price"}).provider_routing == {
             "sort": "price"}
 
 
 class TestEffectiveBaseUrlDecides:
-    """``make_llm()`` setzt pro Provider eine andere Default-base_url ein.
+    """Jede Provider-Factory setzt ihre eigene Default-base_url ein.
 
-    ``openai_responses`` ohne base_url landet bei OpenRouter (clients.py),
-    ``openai_httpx`` bei api.openai.com. Wer nur das Config-Feld ansieht,
-    behandelt beide gleich — und liegt bei einem von beiden falsch.
+    ``openai_responses`` ohne base_url landet bei OpenRouter
+    (llm_openai_compat/provider.py), ``openai_httpx`` bei api.openai.com.
+    Wer nur das Config-Feld ansieht, behandelt beide gleich — und liegt
+    bei einem von beiden falsch.
     """
 
     def test_responses_without_base_url_counts_as_openrouter(self):
         model = LLMModelConfig(provider="openai_responses", model="m")
-        assert _resolve(model, {"sort": "price"})["provider_routing"] == {
+        assert _resolve(model, {"sort": "price"}).provider_routing == {
             "sort": "price"}
 
     def test_responses_pointed_elsewhere_stays_out(self):
         model = LLMModelConfig(provider="openai_responses", model="m",
                                base_url="https://api.openai.com/v1")
-        assert "provider_routing" not in _resolve(model, {"sort": "price"})
+        assert _resolve(model, {"sort": "price"}).provider_routing is None
 
     def test_the_configured_default_matches_make_llm(self):
         """Anti-Drift: der Riegel ahmt clients.py nach. Aendert sich dort die
         Default-base_url, muss das hier auffallen — sonst zeigt der Riegel auf
         einen Endpunkt, den es nicht mehr gibt."""
-        client = _real_make_llm()("openai_responses", "m", "sk-test", None,
-                                  None, "openai_compat", 60)
+        client = _real_build_client()(LLMModelConfig(
+            provider="openai_responses", model="m", api_key="sk-test"))
         assert "openrouter.ai" in str(client.base_url).lower(), (
             "openai_responses defaultet nicht mehr auf OpenRouter — "
             "_targets_openrouter() in factory.py zieht die falsche Grenze")
@@ -126,14 +129,14 @@ class TestModelEntryWinsPerKey:
         kwargs = _resolve(
             _openrouter_model(provider_routing={"order": ["google-vertex"]}),
             {"sort": "price"})
-        assert kwargs["provider_routing"] == {
+        assert kwargs.provider_routing == {
             "sort": "price", "order": ["google-vertex"]}
 
     def test_own_value_beats_the_default_on_the_same_key(self):
         kwargs = _resolve(
             _openrouter_model(provider_routing={"sort": "throughput"}),
             {"sort": "price"})
-        assert kwargs["provider_routing"] == {"sort": "throughput"}
+        assert kwargs.provider_routing == {"sort": "throughput"}
 
     def test_nested_values_are_replaced_whole_not_merged(self):
         """Bewusst FLACH: ein Deep-Merge auf einem freien Dict waere die
@@ -143,7 +146,7 @@ class TestModelEntryWinsPerKey:
         kwargs = _resolve(
             _openrouter_model(provider_routing={"max_price": {"prompt": 5}}),
             {"max_price": {"prompt": 1, "completion": 2}})
-        assert kwargs["provider_routing"] == {"max_price": {"prompt": 5}}
+        assert kwargs.provider_routing == {"max_price": {"prompt": 5}}
 
 
 class TestForeignEndpointsStayUntouched:
@@ -158,7 +161,7 @@ class TestForeignEndpointsStayUntouched:
     ])
     def test_default_does_not_leak(self, provider, base_url):
         model = LLMModelConfig(provider=provider, model="m", base_url=base_url)
-        assert "provider_routing" not in _resolve(model, {"sort": "price"})
+        assert _resolve(model, {"sort": "price"}).provider_routing is None
 
     def test_own_routing_still_passes_through(self):
         """Wer es am Modell ausdruecklich hinschreibt, bekommt es — der
@@ -167,23 +170,24 @@ class TestForeignEndpointsStayUntouched:
             provider="openai_httpx", model="m",
             base_url="https://api.openai.com/v1",
             provider_routing={"order": ["x"]})
-        assert _resolve(model, {"sort": "price"})["provider_routing"] == {
+        assert _resolve(model, {"sort": "price"}).provider_routing == {
             "order": ["x"]}
 
 
-class TestMakeLlmForwardsRoutingPerProviderBranch:
-    """Der letzte Hop: jeder Provider-Zweig reicht ``provider_routing`` einzeln
-    weiter. Faellt einer aus, verliert er das Routing lautlos — der Aufloeser
+class TestFactoriesForwardRoutingPerProvider:
+    """Der letzte Hop: jede Provider-Factory reicht ``provider_routing`` einzeln
+    weiter. Faellt eine aus, verliert sie das Routing lautlos — der Aufloeser
     daneben bleibt gruen, weil er seine Arbeit ja getan hat.
     """
 
     @pytest.mark.parametrize("provider", ["openai_httpx", "openai_responses"])
     def test_routing_reaches_the_client(self, provider):
-        client = _real_make_llm()(provider, "some/model", "sk-test",
-                                  OPENROUTER_URL, 200000, "openai_compat", 60,
-                                  provider_routing={"sort": "price"})
+        client = _real_build_client()(LLMModelConfig(
+            provider=provider, model="some/model", api_key="sk-test",
+            base_url=OPENROUTER_URL, context_window=200000,
+            provider_routing={"sort": "price"}))
         assert getattr(client, "provider_routing", None) == {"sort": "price"}, (
-            f"make_llm() reicht provider_routing im {provider}-Zweig nicht "
+            f"die {provider}-Factory reicht provider_routing nicht "
             f"weiter — das Routing faellt still unter den Tisch")
 
 
@@ -223,8 +227,8 @@ class TestAgainstTheShippedModels:
 
         missed = [
             name for name, model in via_openrouter.items()
-            if _resolve(model, {"sort": "price"}).get(
-                "provider_routing", {}).get("sort") != "price"
+            if (_resolve(model, {"sort": "price"}).provider_routing
+                or {}).get("sort") != "price"
         ]
         assert not missed, f"Schalter erreicht diese Modelle nicht: {missed}"
 
@@ -238,7 +242,7 @@ class TestAgainstTheShippedModels:
 
         losses = [
             name for name, model in with_order.items()
-            if _resolve(model, {"sort": "price"})["provider_routing"].get("order")
+            if (_resolve(model, {"sort": "price"}).provider_routing or {}).get("order")
             != model.provider_routing["order"]
         ]
         assert not losses, f"order verloren gegangen bei: {losses}"

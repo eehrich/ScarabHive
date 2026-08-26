@@ -186,10 +186,14 @@ class Agent(MCPServer):
                     from ...llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
 
                     # Use new profile-based resolution with agent config
-                    llm_kwargs = resolve_llm_config_for_agent(system_config, self.agent_config)
+                    resolved = resolve_llm_config_for_agent(system_config, self.agent_config)
 
                     # Store profile information for status display
-                    self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
+                    self.llm_profile_info = self._extract_profile_info(system_config, name, {
+                        "profile_name": resolved.profile_name,
+                        "provider": resolved.spec.provider,
+                        "model": resolved.spec.model,
+                    })
 
                     # Get SSL verify setting
                     ssl_verify = getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None
@@ -209,8 +213,12 @@ class Agent(MCPServer):
                     except Exception as e2:
                         logger.debug(f"Failed to stringify exception: {e2}")
                         msg = "<exception>"
-                    # Match the exact ValueError message emitted by make_llm
-                    if isinstance(e, ValueError) and msg == "OPENAI_API_KEY is required when provider=openai":
+                    # The provider factories raise "<VAR> is required when
+                    # provider=<name>" — since the registry split there are
+                    # two openai-family variants, so match both.
+                    if isinstance(e, ValueError) and msg in (
+                            "OPENAI_API_KEY is required when provider=openai",
+                            "OPENAI_API_KEY is required when provider=openai_httpx"):
                         logger.debug("LLM not initialized (no API key): %s", msg)
                     else:
                         logger.warning("LLM initialization failed: %s", msg)

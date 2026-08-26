@@ -17,17 +17,17 @@ from __future__ import annotations
 
 import pytest
 
-import agent_system.llm.clients as _clients
+import agent_system.llm.registry as _registry
 from agent_system.config.models import LLMModelConfig
 
 
 def make_llm(**kwargs):
-    """Echte Factory — conftest.py ersetzt ``make_llm`` global durch einen
-    Fake, damit Bootstrap-Code keine realen Clients baut. Für DIESE Tests
-    brauchen wir die echte Verdrahtung; das Original liegt als
-    ``_orig_make_llm`` bereit (conftest.py:190)."""
-    fn = getattr(_clients, "_orig_make_llm", None) or _clients.make_llm
-    return fn(**kwargs)
+    """Real construction path — conftest.py replaces ``registry.build_client``
+    globally with a fake so bootstrap code never builds real clients. THESE
+    tests need the real wiring; the original is kept as
+    ``_orig_build_client`` (conftest.py)."""
+    fn = getattr(_registry, "_orig_build_client", None) or _registry.build_client
+    return fn(LLMModelConfig(**kwargs))
 
 
 class TestConfigField:

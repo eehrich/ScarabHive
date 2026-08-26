@@ -262,9 +262,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
                 # Get profile info for status display
                 temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-                model = llm_kwargs.get('model', 'unknown')
-                provider = llm_kwargs.get('provider', 'unknown')
+                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
+                model = resolved.spec.model
+                provider = resolved.spec.provider
                 llm_profile_info = f"{llm_profile}:{provider}/{model}"
 
                 logger.info(f"Using LLM override: {llm_profile_info}")

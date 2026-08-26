@@ -554,13 +554,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             try:
                 from agent_system.llm.factory import resolve_llm_config_for_agent
 
-                llm_config = resolve_llm_config_for_agent(
+                resolved = resolve_llm_config_for_agent(
                     context.agent.system_config,
                     context.agent.agent_config
                 )
 
-                if 'context_window' in llm_config and llm_config['context_window']:
-                    return llm_config['context_window']
+                if resolved.spec.context_window:
+                    return resolved.spec.context_window
             except Exception as e:
                 logger.warning(f"[ContextSummarizer] Error resolving LLM config: {e}")
 
@@ -946,7 +946,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Create LLM instance with configured profile
         try:
             # create_llm_from_profile forwards EVERY resolved field. Listing the
-            # make_llm arguments by hand dropped thinking_level, max_tokens,
+            # factory arguments by hand (pre-registry make_llm) dropped thinking_level, max_tokens,
             # safety_settings, service_tier and provider_routing - harmless for
             # the profile configured today, silently wrong the moment this points
             # at an OpenRouter profile. It also gets batch wrapping right, which

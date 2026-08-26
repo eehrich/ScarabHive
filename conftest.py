@@ -123,14 +123,14 @@ class _PopenForceUtf8:
 subprocess.Popen = _PopenForceUtf8
 
 # --- Test-only LLM factory stub ---------------------------------------------
-# During bootstrap the code may call `make_llm()` to construct LLM clients which
-# can create real HTTP/async clients and open sockets. To prevent network
-# allocations during test collection/bootstrap we replace `make_llm` with a
+# During bootstrap the code may call `registry.build_client()` to construct LLM
+# clients which can create real HTTP/async clients and open sockets. To prevent
+# network allocations during test collection/bootstrap we replace it with a
 # lightweight fake client that does not allocate network resources. Tests that
-# need real LLM client behavior should construct them directly or patch the
-# factory themselves.
+# need real LLM client behavior should construct them directly, use
+# `registry._orig_build_client`, or patch the factory themselves.
 try:
-    from agent_system.llm import clients as _llm_clients
+    from agent_system.llm import registry as _llm_registry
 
     class _FakeLLMClient:
         def __init__(self, provider: str | None = None, model: str | None = None, **_kwargs):
@@ -183,13 +183,15 @@ try:
             yield {"delta": {"content": txt}, "done": False}
             yield {"delta": {}, "done": True}
 
-    def _fake_make_llm(provider, model, api_key=None, base_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None, capabilities=None, parallel_tool_calls=True, include_thoughts=None, thinking_budget=None, **kwargs):
-        return _FakeLLMClient(provider=provider, model=model, context_window=context_window)
+    def _fake_build_client(cfg, ssl_verify=None, **_kwargs):
+        return _FakeLLMClient(provider=getattr(cfg, "provider", None),
+                              model=getattr(cfg, "model", None),
+                              context_window=getattr(cfg, "context_window", None))
 
-    # Preserve original for debugging if needed
-    if not hasattr(_llm_clients, "_orig_make_llm"):
-        _llm_clients._orig_make_llm = _llm_clients.make_llm
-    _llm_clients.make_llm = _fake_make_llm
+    # Preserve original for tests that exercise the real construction path
+    if not hasattr(_llm_registry, "_orig_build_client"):
+        _llm_registry._orig_build_client = _llm_registry.build_client
+    _llm_registry.build_client = _fake_build_client
 except Exception:
     # If importing or patching fails, don't break test run; fall back to normal behavior
     pass

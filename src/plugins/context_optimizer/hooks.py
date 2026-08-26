@@ -230,13 +230,13 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             try:
                 from agent_system.llm.factory import resolve_llm_config_for_agent
 
-                llm_config = resolve_llm_config_for_agent(
+                resolved = resolve_llm_config_for_agent(
                     context.agent.system_config,
                     context.agent.agent_config
                 )
 
-                if 'context_window' in llm_config and llm_config['context_window']:
-                    return llm_config['context_window']
+                if resolved.spec.context_window:
+                    return resolved.spec.context_window
             except Exception as e:
                 logger.warning(f"[ContextOptimizer] Error resolving LLM config: {e}")
 

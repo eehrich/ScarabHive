@@ -19,7 +19,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Any
 
@@ -375,65 +374,23 @@ async def _register_batch_clients(
         batch_system_config: Global BatchSystemConfig
         log: Logger instance
     """
+    # Backends live in the LLM provider plugins (declared via provides_batch
+    # in their plugin.toml); env-key fallback is provider knowledge and
+    # happens inside each plugin's factory, which returns None to skip.
+    from agent_system.llm import registry
+
     for batch_provider, model_config in providers_needing_clients.items():
         try:
-            if batch_provider == "openai":
-                from .openai_batch import OpenAIBatchClient
-                
-                # Get API key from model config or environment
-                api_key = model_config.api_key
-                if not api_key:
-                    api_key = os.environ.get("OPENAI_API_KEY", "")
-                
-                if not api_key:
-                    log.info("No OpenAI API key found, skipping OpenAI batch client")
-                    continue
-                    
-                client = OpenAIBatchClient(api_key=api_key)
-                queue_manager.register_batch_client("openai", client)
-                log.info("Registered OpenAI batch client")
-                
-            elif batch_provider == "gemini":
-                from .gemini_batch import GeminiBatchClient
-                
-                # Get API key from model config or environment
-                api_key = model_config.api_key
-                if not api_key:
-                    api_key = os.environ.get("GOOGLE_API_KEY", "")
-                
-                if not api_key:
-                    log.info("No Gemini API key found, skipping Gemini batch client")
-                    continue
-                    
-                client = GeminiBatchClient(api_key=api_key)
-                queue_manager.register_batch_client("gemini", client)
-                log.info("Registered Gemini batch client")
-                
-            elif batch_provider == "anthropic":
-                from .anthropic_batch import AnthropicBatchClient
-                
-                # Get API key from model config or environment
-                api_key = model_config.api_key
-                if not api_key:
-                    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-                
-                if not api_key:
-                    log.info("No Anthropic API key found, skipping Anthropic batch client")
-                    continue
-                
-                # Get default model from config if available
-                default_model = model_config.model or "claude-sonnet-4-20250514"
-                
-                client = AnthropicBatchClient(
-                    api_key=api_key,
-                    default_model=default_model,
-                )
-                queue_manager.register_batch_client("anthropic", client)
-                log.info("Registered Anthropic batch client")
-                
-            else:
+            backend_factory = registry.get_batch_backend(batch_provider)
+            if backend_factory is None:
                 log.warning(f"Unknown batch provider: {batch_provider}")
-                
+                continue
+            client = backend_factory(model_config)
+            if client is None:
+                log.info("No API key found, skipping %s batch client", batch_provider)
+                continue
+            queue_manager.register_batch_client(batch_provider, client)
+            log.info("Registered %s batch client", batch_provider)
         except Exception as e:
             log.error(f"Failed to register batch client for {batch_provider}: {e}")
 

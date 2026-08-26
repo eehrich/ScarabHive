@@ -8,6 +8,7 @@ Uses the new profile-based configuration system.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
@@ -15,7 +16,7 @@ from ..config.models import (
     AgentSystemConfig, AgentConfig, LLMModelConfig, LLMSystemConfig,
     resolve_llm_params,
 )
-from .clients import LLMClient  # make_llm: local import in _build_llm (late binding)
+from .models import LLMClient
 
 if TYPE_CHECKING:
     from .batch.queue_manager import BatchQueueManager
@@ -128,17 +129,21 @@ def create_llm_from_profile(
 
 
 
-#: Optional per-model fields forwarded verbatim when the resolver produced a
-#: non-None value. ONE list — this used to exist twice (create_llm_from_profile
-#: and LLMFactory.create), and the copies had already drifted once: a field
-#: added to one block silently never reached clients built through the other.
-_FORWARDED_FIELDS = (
-    "include_thoughts", "enable_prompt_caching", "thinking_budget",
-    "thinking_level", "modalities", "max_tokens", "temperature",
-    "safety_settings", "service_tier", "prompt_cache_key",
-    "prompt_cache_mode", "prompt_cache_marker_style", "provider_routing",
-    "reasoning_details_mode", "parallel_tool_calls",
-)
+@dataclass
+class ResolvedLLM:
+    """Result of profile resolution: the ONE vocabulary handed to providers.
+
+    ``spec`` is the model config with everything already applied that used
+    to be re-assembled downstream: per-agent llm_params overlay, the system
+    httpx_timeouts default, the merged OpenRouter provider_routing, and —
+    for batch models — the underlying provider. Provider factories read it
+    directly; there is no flattened kwargs dict anymore.
+    """
+    spec: LLMModelConfig
+    profile_name: str
+    model_ref: str
+    is_batch: bool = False
+    batch_provider: Optional[str] = None
 
 
 def _build_client(
@@ -146,79 +151,61 @@ def _build_client(
     agent_config: AgentConfig,
     ssl_verify: Optional[bool],
 ) -> LLMClient:
-    """Resolve, forward, build, and batch-wrap — the ONE construction path.
+    """Resolve, build, and batch-wrap — the ONE construction path.
 
     Everything after profile resolution is identical for every caller, so it
     lives exactly once.
     """
     # Imported HERE, not at module level: late binding is what lets
-    # conftest/tests swap clients.make_llm for a fake (a module-level
-    # `from .clients import make_llm` would freeze the original).
-    from .clients import make_llm
+    # conftest/tests swap registry.build_client for a fake (a module-level
+    # `from .registry import build_client` would freeze the original).
+    from . import registry
 
-    llm_kwargs = resolve_llm_config_for_agent(config, agent_config)
-
-    is_batch_model: bool = llm_kwargs.pop("is_batch_model", False)
-    batch_provider: Optional[str] = llm_kwargs.pop("batch_provider", None)
-    model_ref: Optional[str] = llm_kwargs.pop("model_ref", None)
+    resolved = resolve_llm_config_for_agent(config, agent_config)
 
     if ssl_verify is None:
         ssl_verify = getattr(config.network, "ssl_verify", None) if config.network else None
 
-    make_kwargs: Dict[str, Any] = {
-        "ssl_verify": ssl_verify,
-        "httpx_timeouts": llm_kwargs.get("httpx_timeouts"),
-        "capabilities": llm_kwargs.get("capabilities"),
-    }
-    for field in _FORWARDED_FIELDS:
-        if llm_kwargs.get(field) is not None:
-            make_kwargs[field] = llm_kwargs[field]
+    underlying_client = registry.build_client(resolved.spec, ssl_verify=ssl_verify)
 
-    underlying_client = make_llm(
-        llm_kwargs["provider"],
-        llm_kwargs["model"],
-        llm_kwargs["api_key"],
-        llm_kwargs["base_url"],
-        llm_kwargs["context_window"],
-        llm_kwargs["ollama_mode"],
-        llm_kwargs["request_timeout"],
-        **make_kwargs,
-    )
-
-    if is_batch_model and batch_provider:
+    if resolved.is_batch and resolved.batch_provider:
         queue_manager = get_batch_queue_manager()
         if queue_manager:
             batch_system_config = config.llm_system.batch if config.llm_system else None
             if batch_system_config:
-                provider_config = getattr(batch_system_config.providers, batch_provider, None)
+                provider_config = getattr(
+                    batch_system_config.providers, resolved.batch_provider, None)
                 if provider_config and provider_config.enabled:
                     from .batch.batch_client import BatchLLMClient
                     logger.info("Wrapping LLM client with batch support: model=%s, provider=%s",
-                                model_ref, batch_provider)
+                                resolved.model_ref, resolved.batch_provider)
                     return BatchLLMClient(
                         underlying_client=underlying_client,
                         queue_manager=queue_manager,
                         batch_provider_config=provider_config,
-                        model_name=llm_kwargs["model"],
-                        batch_provider=batch_provider,
+                        model_name=resolved.spec.model,
+                        batch_provider=resolved.batch_provider,
                     )
         logger.warning(
             "Batch mode requested for model %s but batch system not available. "
             "Falling back to sync mode.",
-            model_ref
+            resolved.model_ref
         )
 
     return underlying_client
 
 
 def _targets_openrouter(model_config: LLMModelConfig) -> bool:
-    """Redet dieses Modell mit OpenRouter?
+    """Does this model talk to OpenRouter?
 
-    Massgeblich ist die WIRKSAME base_url, nicht die konfigurierte: ``make_llm()``
-    setzt fuer ``openai_responses`` mangels base_url OpenRouter ein (clients.py),
-    fuer ``openai_httpx``/``openai`` dagegen api.openai.com. Ein Responses-Eintrag
-    ohne base_url landet also bei OpenRouter — wer hier nur das Config-Feld
-    ansieht, laesst ihn still durchs Raster.
+    The EFFECTIVE base_url decides, not the configured one: the
+    openai_responses provider factory (plugins_llm/llm_openai_compat)
+    defaults to OpenRouter when base_url is empty, while openai_httpx/
+    openai default to api.openai.com. A Responses entry without base_url
+    therefore lands on OpenRouter — looking only at the config field would
+    let it slip through. Guarded against drift by
+    tests/llm/test_llm_openrouter_routing_default.py, which builds a real
+    client and asserts its default base_url.
     """
     base_url = model_config.base_url
     if not base_url:
@@ -264,7 +251,9 @@ def _resolve_provider_routing(
     return {**defaults, **(per_model or {})}
 
 
-def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentConfig) -> dict:
+def resolve_llm_config_for_agent(
+    config: AgentSystemConfig, agent_config: AgentConfig
+) -> ResolvedLLM:
     """
     Resolve LLM configuration for a specific agent using the profile system.
 
@@ -273,7 +262,8 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
         agent_config: The agent-specific configuration
 
     Returns:
-        dict: LLM configuration parameters for make_llm()
+        ResolvedLLM: fully resolved model config plus batch metadata,
+        ready for registry.build_client()
     """
     if not config.llm_system:
         raise ValueError("LLM system configuration is missing from AgentSystemConfig")
@@ -312,12 +302,11 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
         )
         logger.debug("Applied agent llm_params on model_ref=%s: %s", model_ref, llm_params)
 
-    # Determine the actual provider for make_llm()
-    # If provider is "batch", we use batch_provider to determine the underlying provider
+    # If provider is "batch", batch_provider names the underlying provider
     provider = model_config.provider
     batch_provider = model_config.batch_provider
     is_batch_model = provider == "batch"
-    
+
     if is_batch_model:
         if not batch_provider:
             raise ValueError(f"Model '{model_ref}' has provider='batch' but no batch_provider specified")
@@ -330,87 +319,42 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
             provider = "anthropic"
         else:
             raise ValueError(f"Unknown batch_provider: {batch_provider}")
-
-    # Build LLM kwargs from model config
-    llm_kwargs = {
-        "provider": provider,
-        "model": model_config.model,
-        "api_key": model_config.api_key,
-        "base_url": model_config.base_url,
-        "context_window": model_config.context_window,
-        "ollama_mode": model_config.ollama_mode,
-        "request_timeout": model_config.request_timeout,
-        "parallel_tool_calls": model_config.parallel_tool_calls,
-        "capabilities": model_config.capabilities,  # Pass Pydantic model directly
-    }
-
-    if model_config.include_thoughts is not None:
-        llm_kwargs["include_thoughts"] = model_config.include_thoughts
-    if model_config.enable_prompt_caching is not None:
-        llm_kwargs["enable_prompt_caching"] = model_config.enable_prompt_caching
-
-    if model_config.thinking_budget is not None:
-        llm_kwargs["thinking_budget"] = model_config.thinking_budget
-
-    if model_config.thinking_level is not None:
-        llm_kwargs["thinking_level"] = model_config.thinking_level
-
-    if model_config.modalities is not None:
-        llm_kwargs["modalities"] = model_config.modalities
-
-    if model_config.max_tokens is not None:
-        llm_kwargs["max_tokens"] = model_config.max_tokens
-
-    if model_config.temperature is not None:
-        llm_kwargs["temperature"] = model_config.temperature
-
-    if model_config.safety_settings is not None:
-        llm_kwargs["safety_settings"] = model_config.safety_settings
-
-    if model_config.service_tier is not None:
-        llm_kwargs["service_tier"] = model_config.service_tier
-
-    if model_config.prompt_cache_key is not None:
-        llm_kwargs["prompt_cache_key"] = model_config.prompt_cache_key
-
-    if model_config.prompt_cache_mode is not None:
-        llm_kwargs["prompt_cache_mode"] = model_config.prompt_cache_mode
-
-    if model_config.prompt_cache_marker_style is not None:
-        llm_kwargs["prompt_cache_marker_style"] = model_config.prompt_cache_marker_style
-
-    provider_routing = _resolve_provider_routing(config.llm_system, model_config)
-    if provider_routing is not None:
-        llm_kwargs["provider_routing"] = provider_routing
-
-    if model_config.reasoning_details_mode is not None:
-        llm_kwargs["reasoning_details_mode"] = model_config.reasoning_details_mode
-
-    # Add HTTPX timeouts if available (model-specific overrides or system defaults)
-    httpx_timeouts = None
-    if model_config.httpx_timeouts:
-        # Model-specific HTTPX timeouts
-        httpx_timeouts = model_config.httpx_timeouts.model_dump()
-    elif config.llm_system.httpx_timeouts:
-        # System default HTTPX timeouts
-        httpx_timeouts = config.llm_system.httpx_timeouts.model_dump()
-
-    if httpx_timeouts:
-        llm_kwargs["httpx_timeouts"] = httpx_timeouts
-    
-    # Add batch info if this is a batch model
-    if is_batch_model:
-        llm_kwargs["is_batch_model"] = True
-        llm_kwargs["batch_provider"] = batch_provider
-        llm_kwargs["model_ref"] = model_ref
         logger.debug("Batch model detected: %s (batch_provider=%s)", model_ref, batch_provider)
-    else:
-        llm_kwargs["is_batch_model"] = False
+
+    # Stamp resolved values into the spec so provider factories read ONE
+    # object: the mapped provider, the system httpx_timeouts default, and
+    # the merged OpenRouter routing.
+    updates: Dict[str, Any] = {}
+    if provider != model_config.provider:
+        updates["provider"] = provider
+    if is_batch_model:
+        # The spec is fully resolved; the batch origin lives on ResolvedLLM.
+        updates["batch_provider"] = None
+    if not model_config.httpx_timeouts and config.llm_system.httpx_timeouts:
+        # A copy, not the shared instance: LLMModelConfig is not frozen, so a
+        # factory mutating spec.httpx_timeouts must not edit the system config.
+        # (model_copy(update=...) applies update values AS-IS, so the deep
+        # copy below does not cover this one.)
+        updates["httpx_timeouts"] = config.llm_system.httpx_timeouts.model_copy()
+    provider_routing = _resolve_provider_routing(config.llm_system, model_config)
+    if provider_routing != model_config.provider_routing:
+        updates["provider_routing"] = provider_routing
+    # ALWAYS a deep copy, updates or not: without it the spec aliases the
+    # shared registry entry (config.llm_system.models[...]) including its
+    # capabilities/provider_routing objects, and any factory that ever
+    # normalizes a field in place would edit the system config process-wide.
+    spec = model_config.model_copy(update=updates, deep=True)
 
     logger.debug("Resolved LLM config: profile=%s, model_ref=%s, provider=%s, model=%s",
-                 profile_name, model_ref, provider, model_config.model)
+                 profile_name, model_ref, provider, spec.model)
 
-    return llm_kwargs
+    return ResolvedLLM(
+        spec=spec,
+        profile_name=profile_name,
+        model_ref=model_ref,
+        is_batch=is_batch_model,
+        batch_provider=batch_provider if is_batch_model else None,
+    )
 
 
 class LLMFactory:

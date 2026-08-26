@@ -221,7 +221,7 @@ llm_profile: "think"
 2. Validated against `agent_config.available_llm_profiles` (agent-level validation)
 3. Validated against `system_config.llm_system.profiles` (system-level validation)
 4. A temporary `AgentConfig` is created with the requested profile
-5. An LLM client override is created using `resolve_llm_config_for_agent()` and `make_llm()`
+5. An LLM client override is created using `create_llm_from_profile()` (resolver + provider registry)
 6. The override is passed to `run_events()` via the `llm_override` parameter
 
 ### Error Handling

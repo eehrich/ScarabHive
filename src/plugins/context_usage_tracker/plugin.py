@@ -108,11 +108,11 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             elif context.agent:
                 # Fallback: resolve from agent_config (legacy behavior)
                 try:
-                    llm_config = resolve_llm_config_for_agent(
+                    resolved = resolve_llm_config_for_agent(
                         context.agent.system_config,
                         context.agent.agent_config
                     )
-                    context_window = llm_config.get('context_window', 0)
+                    context_window = resolved.spec.context_window or 0
                     logger.debug(f"Using context_window from agent_config: {context_window}")
                 except Exception as e:
                     logger.debug(f"Could not resolve context_window: {e}")

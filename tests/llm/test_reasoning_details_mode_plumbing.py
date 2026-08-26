@@ -21,7 +21,7 @@ from agent_system.config.models import (
     LLMSystemConfig,
 )
 from agent_system.llm.factory import resolve_llm_config_for_agent
-from agent_system.llm.httpx_client import HTTPXOpenAIClient
+from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 
 
 def _system_config() -> AgentSystemConfig:
@@ -33,6 +33,7 @@ def _system_config() -> AgentSystemConfig:
                 "m-keepall": LLMModelConfig(
                     provider="openai_httpx",
                     model="openai/gpt-5.6-terra",
+                    api_key="x",
                     reasoning_details_mode="keep_all",
                 ),
                 "m-default": LLMModelConfig(
@@ -45,15 +46,15 @@ def _system_config() -> AgentSystemConfig:
 
 
 class TestResolvePlumbing:
-    def test_mode_lands_in_llm_kwargs(self):
-        kwargs = resolve_llm_config_for_agent(
+    def test_mode_lands_in_the_spec(self):
+        resolved = resolve_llm_config_for_agent(
             _system_config(), AgentConfig(llm_profile="p"))
-        assert kwargs["reasoning_details_mode"] == "keep_all"
+        assert resolved.spec.reasoning_details_mode == "keep_all"
 
-    def test_unset_mode_absent_from_llm_kwargs(self):
-        kwargs = resolve_llm_config_for_agent(
+    def test_unset_mode_stays_unset(self):
+        resolved = resolve_llm_config_for_agent(
             _system_config(), AgentConfig(llm_profile="p-default"))
-        assert kwargs.get("reasoning_details_mode") is None
+        assert resolved.spec.reasoning_details_mode is None
 
 
 class TestClientDefault:
@@ -69,30 +70,19 @@ class TestClientDefault:
         assert c.reasoning_details_mode == "keep_all"
 
 
-class TestTheOneForwardingPathCarriesTheMode:
-    """This used to pin that BOTH make_kwargs blocks in factory.py forward the
-    field — the two copies had drifted apart once. There is now exactly ONE
-    construction path (_build_client with _FORWARDED_FIELDS), so the "copy
-    forgotten" failure class is structurally gone.
+class TestTheWholePathCarriesTheMode:
+    """The flattened forwarding list (_FORWARDED_FIELDS) that this class used
+    to guard is gone: the resolver hands the WHOLE model config to the
+    provider factory, so a field can no longer be lost between resolver and
+    client. What remains worth pinning is the end-to-end behaviour."""
 
-    The membership assertion below is deliberately weak on its own — a list
-    checked against a copy of its own content. The BEHAVIOURAL guarantee lives
-    in test_plugin_llm_clients_full_path.py::TestEveryResolvedFieldReachesMakeLlm,
-    which records the real make_llm call and dies if the field stops arriving.
-    What this file adds is the anti-drift half: no second hand-written block.
-    """
-
-    def test_the_field_is_forwarded(self):
-        from agent_system.llm import factory
-        assert "reasoning_details_mode" in factory._FORWARDED_FIELDS, (
-            "reasoning_details_mode missing from _FORWARDED_FIELDS - silent "
-            "keep_last fallback despite a keep_all config"
-        )
-
-    def test_no_second_forwarding_copy_reappears(self):
-        src = (Path(__file__).parent.parent.parent /
-               "src/agent_system/llm/factory.py").read_text(encoding="utf-8")
-        assert src.count('make_kwargs["reasoning_details_mode"]') == 0, (
-            "a hand-written forwarding block is back - new fields belong in "
-            "_FORWARDED_FIELDS, not in a second copy"
+    def test_the_mode_survives_resolver_and_factory(self):
+        from agent_system.llm import registry
+        resolved = resolve_llm_config_for_agent(
+            _system_config(), AgentConfig(llm_profile="p"))
+        build = getattr(registry, "_orig_build_client", registry.build_client)
+        client = build(resolved.spec)
+        assert client.reasoning_details_mode == "keep_all", (
+            "reasoning_details_mode lost between resolver and client - "
+            "silent keep_last fallback despite a keep_all config"
         )

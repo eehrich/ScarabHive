@@ -1189,9 +1189,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 # Get profile info for status display
                 temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-                model = llm_kwargs.get('model', 'unknown')
-                provider = llm_kwargs.get('provider', 'unknown')
+                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
+                model = resolved.spec.model
+                provider = resolved.spec.provider
                 llm_profile_info = f"{llm_profile}:{provider}/{model}"
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)

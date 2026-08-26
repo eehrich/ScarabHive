@@ -6,6 +6,13 @@ Tests the full workflow:
 2. Get MCP config with inheritance
 3. Resolve LLM configuration from agent config
 4. Create LLM client
+
+SCOPE, honestly stated: client construction runs through the conftest fake
+(registry.build_client is replaced so bootstrap opens no sockets) — the
+"client" assertions here verify resolution and factory WIRING, not that a
+provider plugin can actually build. Real construction is covered by
+tests/llm/test_llm_provider_registry.py and
+test_plugin_llm_clients_full_path.py (via _orig_build_client).
 """
 import pytest
 from agent_system.config.settings import load_settings, get_mcp_config_by_name
@@ -28,11 +35,11 @@ class TestLLMFactoryIntegration:
         assert mcp_config.agent_config is not None
 
         # Resolve LLM config
-        llm_kwargs = resolve_llm_config_for_agent(system_config, mcp_config.agent_config)
+        resolved = resolve_llm_config_for_agent(system_config, mcp_config.agent_config)
 
-        assert "provider" in llm_kwargs
-        assert "model" in llm_kwargs
-        assert "context_window" in llm_kwargs
+        assert resolved.spec.provider
+        assert resolved.spec.model
+        assert resolved.spec.context_window
 
         # Create LLM client
         factory = LLMFactory(system_config, mcp_config.agent_config)
@@ -53,8 +60,8 @@ class TestLLMFactoryIntegration:
         assert len(basic_config.agent_config.llm_profile) > 0
 
         # Check that we got a valid model
-        assert basic_llm["model"] is not None
-        assert basic_llm["provider"] is not None
+        assert basic_llm.spec.model is not None
+        assert basic_llm.spec.provider is not None
 
     def test_llm_factory_with_inherited_agent_config(self, system_config):
         """Test LLM factory with agent config that inherits from default."""
@@ -97,12 +104,17 @@ class TestLLMFactoryIntegration:
         """Test that HTTPX timeout configuration is properly resolved."""
         mcp_config = get_mcp_config_by_name("basic_agent", system_config)
 
-        llm_kwargs = resolve_llm_config_for_agent(system_config, mcp_config.agent_config)
+        resolved = resolve_llm_config_for_agent(system_config, mcp_config.agent_config)
 
-        # Should have timeout configuration (either from model or system defaults)
-        # This depends on the specific configuration in llm.yaml
-        # Just verify the structure is correct
-        assert "request_timeout" in llm_kwargs
+        # The shipped llm.yaml sets llm_system.httpx_timeouts and basic_agent's
+        # model carries no override, so the SYSTEM default must be stamped into
+        # the spec. The previous assertion here checked request_timeout, a
+        # non-optional int with a default — it could never fail.
+        assert system_config.llm_system.httpx_timeouts is not None, (
+            "llm.yaml no longer sets system httpx_timeouts — this test "
+            "stopped measuring the default-stamping branch")
+        assert resolved.spec.httpx_timeouts is not None, (
+            "system httpx_timeouts never reached the resolved spec")
 
     def test_error_on_invalid_profile(self, system_config):
         """Test that invalid profile names raise appropriate errors."""

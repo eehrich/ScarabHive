@@ -7,6 +7,7 @@ for LLM and MCP configurations.
 """
 from __future__ import annotations
 
+import logging
 import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo, model_validator
 from typing import Literal, Optional, Dict, List, Any, Union
@@ -125,7 +126,13 @@ class LLMModelConfig(BaseModel):
     # the entry quietly runs on defaults instead of on its base.
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["ollama", "openai", "openai_httpx", "openai_responses", "anthropic", "gemini", "gemini_sdk", "batch", "mock"] = "ollama"
+    # A free string, NOT a Literal: the provider plugins under
+    # src/plugins_llm/ are the source of truth (their plugin.toml `provides`
+    # lists). Typos still fail at config load — see
+    # LLMSystemConfig._providers_must_exist_as_plugins. "batch" is the one
+    # pseudo-provider: the resolver maps it to the real provider via
+    # batch_provider before the registry ever sees it.
+    provider: str = "ollama"
     # Optional, damit ein Eintrag reine Basisklasse sein kann: er sammelt
     # provider, base_url, Limits und capabilities, und die Kinder setzen nur
     # noch den Modellnamen. Wer keinen hat, darf nicht benutzt werden — das
@@ -235,6 +242,40 @@ class LLMSystemConfig(BaseModel):
             raise ValueError(
                 "llm_system.profiles: diese Profile zeigen auf Eintraege ohne "
                 f"`model:` — das sind Basisklassen zum Erben: {broken}")
+        return self
+
+    @model_validator(mode="after")
+    def _providers_must_exist_as_plugins(self) -> "LLMSystemConfig":
+        """A typo in `provider:` must fail at config load, not at first use.
+
+        The provider vocabulary is owned by the plugins under
+        src/plugins_llm/ (their manifests' `provides` lists) — this used to
+        be a Literal here, which made the core the second registry. "batch"
+        is the resolver-internal pseudo-provider and always allowed.
+
+        Lenient on a missing/unreadable plugin root: config loading must not
+        die because the scan failed — the registry raises its own, clearer
+        error at build time in that case.
+        """
+        try:
+            from agent_system.llm.registry import known_providers
+            known = known_providers()
+        except Exception as e:
+            # Lenient, but never silent: without this line an unreadable
+            # plugin root turns the typo guard off with no trace, and every
+            # agent dies individually at build time instead.
+            logging.getLogger(__name__).warning(
+                "LLM provider validation skipped (manifest scan failed): %s", e)
+            return self
+        unknown = sorted(
+            f"{name} (provider={m.provider})"
+            for name, m in self.models.items()
+            if m.provider != "batch" and m.provider not in known
+        )
+        if unknown:
+            raise ValueError(
+                f"llm_system.models: unknown provider on {unknown} — no plugin "
+                f"under src/plugins_llm declares it (known: {sorted(known)})")
         return self
 
     # TTS (Text-to-Speech) configuration

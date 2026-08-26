@@ -224,17 +224,6 @@
       "properties": {
         "provider": {
           "default": "ollama",
-          "enum": [
-            "ollama",
-            "openai",
-            "openai_httpx",
-            "openai_responses",
-            "anthropic",
-            "gemini",
-            "gemini_sdk",
-            "batch",
-            "mock"
-          ],
           "title": "Provider",
           "type": "string"
         },

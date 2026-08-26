@@ -61,12 +61,12 @@ class TestResolveAppliesLlmParams:
             llm_profile="test-profile",
             llm_params={"thinking_level": "low", "max_tokens": 8000},
         )
-        kwargs = resolve_llm_config_for_agent(cfg, agent)
-        assert kwargs["thinking_level"] == "low"
-        assert kwargs["max_tokens"] == 8000
+        resolved = resolve_llm_config_for_agent(cfg, agent)
+        assert resolved.spec.thinking_level == "low"
+        assert resolved.spec.max_tokens == 8000
         # Nicht überschriebene Felder bleiben vom Basis-Modell
-        assert kwargs["service_tier"] == "flex"
-        assert kwargs["model"] == "gpt-test"
+        assert resolved.spec.service_tier == "flex"
+        assert resolved.spec.model == "gpt-test"
 
     def test_can_set_field_unset_in_base(self):
         cfg = _system_config()
@@ -74,15 +74,15 @@ class TestResolveAppliesLlmParams:
             llm_profile="advanced-profile",
             llm_params={"thinking_level": "xhigh"},
         )
-        kwargs = resolve_llm_config_for_agent(cfg, agent)
-        assert kwargs["thinking_level"] == "xhigh"
+        resolved = resolve_llm_config_for_agent(cfg, agent)
+        assert resolved.spec.thinking_level == "xhigh"
 
     def test_no_params_is_noop(self):
         cfg = _system_config()
         agent = AgentConfig(llm_profile="test-profile")
-        kwargs = resolve_llm_config_for_agent(cfg, agent)
-        assert kwargs["thinking_level"] == "high"
-        assert kwargs["max_tokens"] == 32000
+        resolved = resolve_llm_config_for_agent(cfg, agent)
+        assert resolved.spec.thinking_level == "high"
+        assert resolved.spec.max_tokens == 32000
 
     def test_shared_model_registry_not_mutated(self):
         """Der Override darf NIE in den geteilten models-Eintrag zurückschreiben —
@@ -99,8 +99,8 @@ class TestResolveAppliesLlmParams:
 
         # Zweiter Agent ohne Params sieht das Original
         other = AgentConfig(llm_profile="test-profile")
-        kwargs = resolve_llm_config_for_agent(cfg, other)
-        assert kwargs["thinking_level"] == "high"
+        resolved = resolve_llm_config_for_agent(cfg, other)
+        assert resolved.spec.thinking_level == "high"
 
 
 class TestAgentConfigValidation:
@@ -174,8 +174,8 @@ class TestKeyedLlmParams:
             llm_params={"advanced-profile": {"thinking_level": "xhigh"}},
         )
         # resolve löst das Default-Profil auf → Advanced-Params greifen NICHT
-        kwargs = resolve_llm_config_for_agent(cfg, agent)
-        assert kwargs["thinking_level"] == "high"  # Basis-Modell unverändert
+        resolved = resolve_llm_config_for_agent(cfg, agent)
+        assert resolved.spec.thinking_level == "high"  # Basis-Modell unverändert
 
     def test_keyed_star_applies_to_default(self):
         cfg = _system_config()
@@ -184,9 +184,9 @@ class TestKeyedLlmParams:
             llm_profile_advanced=["advanced-profile"],
             llm_params=self.KEYED,
         )
-        kwargs = resolve_llm_config_for_agent(cfg, agent)
-        assert kwargs["thinking_level"] == "low"
-        assert kwargs["max_tokens"] == 8000
+        resolved = resolve_llm_config_for_agent(cfg, agent)
+        assert resolved.spec.thinking_level == "low"
+        assert resolved.spec.max_tokens == 8000
 
     def test_resolved_keyed_valid_as_temp_config(self):
         # create_llm_from_profile reduziert gekeyte Params VOR der temp-
@@ -287,5 +287,5 @@ class TestKeyedLlmParamsValidation:
         with pytest.raises(ValidationError, match="kollidieren"):
             LLMSystemConfig(
                 profiles={"max_tokens": LLMProfile(model_ref="test-model")},
-                models={"test-model": LLMModelConfig(provider="mock", model="m")},
+                models={"test-model": LLMModelConfig(provider="ollama", model="m")},
             )

@@ -121,7 +121,7 @@ class TestHTTPXRetryHooks:
     """Test that HTTPXOpenAIClient fires _notify_retry during retries."""
 
     def _make_client(self):
-        from agent_system.llm.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
+        from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
         timeout_config = HTTPXTimeoutConfig(connect=1.0, read=2.0, write=1.0, pool=0.5)
         client = HTTPXOpenAIClient(
             model="gpt-4",
@@ -186,7 +186,7 @@ class TestOpenAIRetryHooks:
     async def test_pre_post_hooks_on_chat_tools(self):
         """_chat_tools_chat_completions should fire pre and post hooks."""
         try:
-            from agent_system.llm.openai_client import OpenAIAsyncClient
+            from plugins_llm.llm_openai.openai_client import OpenAIAsyncClient
         except ImportError:
             pytest.skip("openai package not installed")
 
@@ -249,7 +249,7 @@ class TestOllamaRetryHooks:
     @pytest.mark.asyncio
     async def test_pre_hook_fires(self):
         """Pre-request hook should fire before streaming."""
-        from agent_system.llm.ollama_client import OllamaNativeAsyncClient
+        from plugins_llm.llm_ollama.ollama_client import OllamaNativeAsyncClient
 
         hook_calls = {"pre": [], "post": []}
 
@@ -304,7 +304,7 @@ class TestOllamaRetryHooks:
     @pytest.mark.asyncio
     async def test_server_error_retry_fires_hook(self):
         """5xx error should fire _notify_retry on Ollama client."""
-        from agent_system.llm.ollama_client import OllamaNativeAsyncClient
+        from plugins_llm.llm_ollama.ollama_client import OllamaNativeAsyncClient
 
         retry_calls = []
 
@@ -371,7 +371,7 @@ class TestGeminiClientRetryHooks:
     @pytest.mark.asyncio
     async def test_too_many_states_retry_fires_hook(self):
         """400 'too many states' error should fire _notify_retry in non-streaming."""
-        from agent_system.llm.gemini_client import GeminiClient
+        from plugins_llm.llm_gemini.gemini_client import GeminiClient
 
         retry_calls = []
 

@@ -1,0 +1,13 @@
+# llm_openai_compat — httpx-based clients for OpenAI-compatible endpoints
+# (OpenRouter, DeepSeek, ...): Chat Completions (openai_httpx) and the
+# Responses API item round-trip (openai_responses). No SDK dependency —
+# httpx is a core requirement.
+[plugin]
+name = "llm_openai_compat"
+version = "1.0.0"
+description = "httpx clients for OpenAI-compatible endpoints (Chat Completions + Responses API)"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides = ["openai_httpx", "openai_responses"]
+requires = { agent_system = ">=0.6.0" }
+dependencies = []

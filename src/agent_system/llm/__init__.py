@@ -1,7 +1,6 @@
 """LLM module exports."""
 
 from .models import ChatMessage, LLMClient
-from .clients import make_llm
 from .tts import (
     TTSClient,
     TTSResult,
@@ -23,7 +22,6 @@ from .capabilities import (
 __all__ = [
     "ChatMessage",
     "LLMClient",
-    "make_llm",
     # TTS
     "TTSClient",
     "TTSResult",

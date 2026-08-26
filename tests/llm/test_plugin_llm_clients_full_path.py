@@ -43,19 +43,19 @@ def config():
 
 @pytest.fixture
 def real_clients(monkeypatch):
-    """conftest.py swaps `make_llm` for a fake so bootstrap opens no sockets.
+    """conftest.py swaps `registry.build_client` for a fake so bootstrap opens no sockets.
 
     That fake carries none of the fields under test, so checking "the client
     kept its profile" against it would compare against a stub and pass for the
     wrong reason - or, as here, fail for one. Put the real factory back for the
     duration of the test; constructing a client opens no connection.
     """
-    from agent_system.llm import clients
+    from agent_system.llm import registry
 
-    original = getattr(clients, "_orig_make_llm", None)
+    original = getattr(registry, "_orig_build_client", None)
     if original is None:
         return
-    monkeypatch.setattr(clients, "make_llm", original)
+    monkeypatch.setattr(registry, "build_client", original)
 
 
 #: The two OpenAI-compatible client families. They do NOT share code: the
@@ -95,12 +95,12 @@ class TestTheFullPathCarriesTheProfile:
     @pytest.mark.parametrize("provider", CLIENT_FAMILIES)
     def test_a_client_built_from_a_profile_keeps_its_fields(self, real_clients, provider):
         config = _synthetic(provider=provider, **FIELDS)
-        expected = resolve_llm_config_for_agent(config, AgentConfig(llm_profile="p"))
-        assert all(expected.get(f) is not None for f in CARRIED),             "the fixture stopped setting the fields under test"
+        expected = resolve_llm_config_for_agent(config, AgentConfig(llm_profile="p")).spec
+        assert all(getattr(expected, f) is not None for f in CARRIED),             "the fixture stopped setting the fields under test"
 
         client = create_llm_from_profile(config, "p")
 
-        lost = [f for f in CARRIED if getattr(client, f, None) != expected[f]]
+        lost = [f for f in CARRIED if getattr(client, f, None) != getattr(expected, f)]
         assert not lost, f"{provider}: these never reached the client: {lost}"
 
     def test_the_system_wide_routing_default_reaches_the_client(self, real_clients):
@@ -146,23 +146,27 @@ class TestTheFullPathCarriesTheProfile:
 
 class TestNoPluginHandRollsTheArguments:
     """Anti-drift: the next plugin that needs a client must not copy the old
-    pattern back in. `make_llm` itself stays legitimate — clients.py and the
-    factory are its home."""
+    pattern back in. `registry.build_client` itself stays legitimate — the
+    factory and the llm_ollama delegation are its home; a plugin calling it
+    directly would skip profile chains, llm_params, and batch wrapping."""
 
     PLUGINS = ("basic_agent", "context_summarizer", "agent_continuation",
                "llm_router")
 
     @pytest.mark.parametrize("plugin", PLUGINS)
-    def test_the_plugin_does_not_call_make_llm(self, plugin):
+    def test_the_plugin_does_not_call_the_registry_directly(self, plugin):
         """Parsed, not grepped — but only one step deep.
 
-        Catches the realistic regression: a direct `make_llm(...)` or an
-        aliased `import make_llm as _mk` + `_mk(...)`. It does NOT catch
-        `getattr(clients, "make_llm")(...)`, a variable alias, or a plugin that
-        constructs `OpenAIResponsesClient(...)` outright — the last of which is
-        the same defect and worse. Do not read a green run here as "no plugin
-        hand-rolls a client"; the behavioural tests below are what actually
-        establish that, and they cover three of the four plugins.
+        Catches the realistic regressions: a direct `build_client(...)` /
+        `make_llm(...)`, an aliased from-import (absolute or relative), a
+        module alias (`from agent_system.llm import registry as r`), and the
+        dotted form (`agent_system.llm.registry.build_client(...)`). It does
+        NOT catch `getattr(registry, "build_client")(...)`, rebinding through
+        a variable (`f = registry.build_client; f(...)`), or a plugin that
+        constructs `OpenAIResponsesClient(...)` outright — the last of which
+        is the same defect and worse. Do not read a green run here as "no
+        plugin hand-rolls a client"; the behavioural tests below are what
+        actually establish that, and they cover three of the four plugins.
         """
         import ast
 
@@ -172,27 +176,50 @@ class TestNoPluginHandRollsTheArguments:
         modules = [p for p in root.rglob("*.py") if "tests" not in p.parts]
         assert modules, f"{plugin} has no modules — this check would be vacuous"
 
+        BANNED = {"make_llm", "build_client", "get_provider"}
         offenders = []
         for path in modules:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-            aliases = {
-                alias.asname or alias.name
-                for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
-                for alias in node.names if alias.name == "make_llm"
-            }
+            tree = ast.parse(path.read_text(encoding="utf-8-sig", errors="replace"))
+            fn_aliases = set()          # names bound to a banned function
+            mod_aliases = {"registry"}  # names bound to the registry module
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    mod = node.module or ""
+                    # level>0 relative imports carry "llm.registry"/"llm"
+                    if (mod.startswith("agent_system.llm")
+                            or mod.endswith("llm.registry")
+                            or mod.endswith(".llm") or mod == "llm"):
+                        for alias in node.names:
+                            if alias.name in BANNED:
+                                fn_aliases.add(alias.asname or alias.name)
+                            if alias.name == "registry":
+                                mod_aliases.add(alias.asname or alias.name)
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "agent_system.llm.registry" and alias.asname:
+                            mod_aliases.add(alias.asname)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
                 target = node.func
-                name = (target.id if isinstance(target, ast.Name)
-                        else target.attr if isinstance(target, ast.Attribute) else None)
-                if name in aliases or name == "make_llm":
+                if isinstance(target, ast.Name):
+                    hit = target.id in fn_aliases or target.id == "make_llm"
+                elif isinstance(target, ast.Attribute) and target.attr in BANNED:
+                    # `x.build_client(...)`: count it when x names the
+                    # registry module in any spelling; `.registry` suffix
+                    # covers `agent_system.llm.registry.build_client(...)`.
+                    # `capabilities.get_provider(...)` stays unrelated.
+                    base = ast.unparse(target.value)
+                    hit = base in mod_aliases or base.endswith(".registry")
+                else:
+                    hit = False
+                if hit:
                     offenders.append(f"{path.relative_to(root)}:{node.lineno}")
 
         assert not offenders, (
             f"{plugin} builds a client by hand again — use "
-            f"create_llm_from_profile, which forwards every resolved field: "
-            f"{offenders}")
+            f"create_llm_from_profile, which applies profile chains, "
+            f"llm_params and batch wrapping: {offenders}")
 
 
 class TestThePluginsThemselvesBuildTheRightModel:
@@ -269,7 +296,7 @@ class TestThePluginsThemselvesBuildTheRightModel:
         """
         build = request.getfixturevalue(plugin)
         expected = resolve_llm_config_for_agent(
-            config, AgentConfig(llm_profile=profile))["model"]
+            config, AgentConfig(llm_profile=profile)).spec.model
 
         client = build(profile, config)
 
@@ -281,8 +308,8 @@ class TestThePluginsThemselvesBuildTheRightModel:
     def test_two_profiles_really_differ(self, config, summarizer):
         """Counter-check: if both profiles resolved to one model, the test
         above would pass on a hardcoded profile name."""
-        a = resolve_llm_config_for_agent(config, AgentConfig(llm_profile="turbo"))["model"]
-        b = resolve_llm_config_for_agent(config, AgentConfig(llm_profile="normal"))["model"]
+        a = resolve_llm_config_for_agent(config, AgentConfig(llm_profile="turbo")).spec.model
+        b = resolve_llm_config_for_agent(config, AgentConfig(llm_profile="normal")).spec.model
         assert a != b, "turbo and normal resolve to the same model here"
 
 
@@ -312,7 +339,7 @@ class TestTheShippedConfigurationReachesTheSummarizer:
 
         system_config = load_settings()
         expected = resolve_llm_config_for_agent(
-            system_config, AgentConfig(llm_profile=profile))["model"]
+            system_config, AgentConfig(llm_profile=profile)).spec.model
 
         mcp = types.SimpleNamespace(config=shipped["config"], hook_config={},
                                     name="context_summarizer")
@@ -328,29 +355,30 @@ class TestTheShippedConfigurationReachesTheSummarizer:
             f"the client speaks {getattr(client, 'model', None)!r}")
 
 
-class TestEveryResolvedFieldReachesMakeLlm:
+class TestEveryResolvedFieldReachesTheRegistry:
     """One recorder, the WHOLE handover — not a per-field sample.
 
-    Mutation runs showed 7 of the 15 forwarded fields plus the entire
-    make_kwargs base (capabilities, httpx_timeouts, ssl_verify) survived
-    removal: the per-field tests only sampled the popular fields. Recording
-    the actual make_llm call and comparing the complete kwargs closes all of
-    it in one place — including the nastiest survivor, `ssl_verify=False`
-    silently turning into the config default.
+    Under the old flattened make_llm signature, mutation runs showed 7 of
+    the 15 forwarded fields plus the entire kwargs base (capabilities,
+    httpx_timeouts, ssl_verify) survived removal: per-field tests only
+    sampled the popular fields. The resolver now hands the whole model
+    config to registry.build_client; recording that call and comparing the
+    complete spec keeps the property pinned — including the nastiest
+    survivor, `ssl_verify=False` silently turning into the config default.
     """
 
     @staticmethod
     def _record(monkeypatch):
-        from agent_system.llm import clients
+        from agent_system.llm import registry
 
         calls = {}
 
-        def recorder(provider, model, api_key, base_url, context_window,
-                     ollama_mode, request_timeout, **kwargs):
-            calls.update(kwargs, provider=provider, model=model)
+        def recorder(cfg, ssl_verify=None, **_kwargs):
+            calls["spec"] = cfg
+            calls["ssl_verify"] = ssl_verify
             return object()
 
-        monkeypatch.setattr(clients, "make_llm", recorder)
+        monkeypatch.setattr(registry, "build_client", recorder)
         return calls
 
     @staticmethod
@@ -383,7 +411,7 @@ class TestEveryResolvedFieldReachesMakeLlm:
                 )},
             ))
 
-    def test_the_complete_kwargs_arrive(self, monkeypatch):
+    def test_the_complete_spec_arrives(self, monkeypatch):
         calls = self._record(monkeypatch)
         config = self._full_config()
 
@@ -402,13 +430,15 @@ class TestEveryResolvedFieldReachesMakeLlm:
             "reasoning_details_mode": "keep_all",
             "parallel_tool_calls": False,
         }
-        missing = {k: v for k, v in expected.items() if calls.get(k) != v}
-        assert not missing, f"these never reached make_llm: {missing}"
+        spec = calls["spec"]
+        missing = {k: v for k, v in expected.items()
+                   if getattr(spec, k, None) != v}
+        assert not missing, f"these never reached the registry: {missing}"
 
-        assert calls["capabilities"] is not None, "capabilities dropped"
-        assert calls["capabilities"].json_mode is True
-        assert calls["httpx_timeouts"], "httpx_timeouts dropped"
-        assert calls["httpx_timeouts"]["read"] == 99.0
+        assert spec.capabilities is not None, "capabilities dropped"
+        assert spec.capabilities.json_mode is True
+        assert spec.httpx_timeouts, "httpx_timeouts dropped"
+        assert spec.httpx_timeouts.read == 99.0
 
     def test_an_explicit_ssl_verify_false_survives(self, monkeypatch):
         """The nastiest survivor: config says verify, the caller says don't.
@@ -425,4 +455,4 @@ class TestEveryResolvedFieldReachesMakeLlm:
 
         create_llm_from_profile(self._full_config(), "p")
 
-        assert calls["ssl_verify"] is True,             "network.ssl_verify never reached make_llm"
+        assert calls["ssl_verify"] is True,             "network.ssl_verify never reached the registry"

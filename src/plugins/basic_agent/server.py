@@ -71,7 +71,7 @@ class BasicAgent(SchemaBasedAgent):
                 }
 
             try:
-                # create_llm_from_profile, not make_llm: it forwards EVERY
+                # create_llm_from_profile, not the raw registry: it forwards EVERY
                 # resolved field. Hand-listing the arguments dropped
                 # thinking_level, max_tokens, safety_settings, service_tier and
                 # provider_routing — invisible for the profiles configured

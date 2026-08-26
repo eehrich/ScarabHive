@@ -1778,9 +1778,9 @@ def main() -> None:
 
                 # Get profile info for logging
                 temp_agent_config = AgentConfig(llm_profile=effective_profile)
-                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-                model = llm_kwargs.get('model', 'unknown')
-                provider = llm_kwargs.get('provider', 'unknown')
+                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
+                model = resolved.spec.model
+                provider = resolved.spec.provider
                 llm_profile_info = f"{effective_profile}:{provider}/{model}"
                 if llm_params_override:
                     _params_str = ",".join(

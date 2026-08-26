@@ -33,6 +33,11 @@ IMPORT_TO_DIST = {
     "dateutil": "python-dateutil", "fitz": "pymupdf",
     "tavily": "tavily-python", "ruamel": "ruamel.yaml",
     "duckduckgo_search": "duckduckgo-search",
+    # Coarse: `google` is a namespace shared by many dists (google-cloud-*,
+    # google-auth). Today the only google import in any plugin is genai; a
+    # plugin importing e.g. google.cloud would slip past this mapping and
+    # needs its own entry then.
+    "google": "google-genai",
 }
 
 #: (plugin, import) pairs that are deliberately undeclared, each with a reason.
@@ -63,7 +68,8 @@ def _core_dists() -> set[str]:
 
 
 def _plugin_dirs() -> list[Path]:
-    return sorted(d for d in (REPO_ROOT / "src" / "plugins").iterdir()
+    roots = (REPO_ROOT / "src" / "plugins", REPO_ROOT / "src" / "plugins_llm")
+    return sorted(d for root in roots for d in root.iterdir()
                   if (d / "plugin.toml").exists())
 
 
@@ -82,10 +88,18 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
     for py in plugin_dir.rglob("*.py"):
         if "tests" in py.parts:
             continue
+        # utf-8-sig: a BOM survives plain utf-8 reading as ﻿ and makes
+        # ast.parse throw — which the old `except SyntaxError: continue`
+        # swallowed, silently blinding this guard for the file (that is how
+        # llm_openai/openai_client.py escaped the scan once). Parse failures
+        # are now loud: a plugin file the guard cannot read is a finding,
+        # not a skip.
         try:
-            tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
-        except SyntaxError:
-            continue
+            tree = ast.parse(py.read_text(encoding="utf-8-sig", errors="replace"))
+        except SyntaxError as e:
+            raise AssertionError(
+                f"{py} is unparseable ({e}) — the dependency guard cannot "
+                f"scan it, so its imports would go unchecked") from e
         for node in ast.walk(tree):
             mods = []
             if isinstance(node, ast.Import):
@@ -96,7 +110,7 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
                 top = mod.split(".")[0]
                 if top.lower() in stdlib:
                     continue
-                if top in ("agent_system", "plugins", "plugins_writer"):
+                if top in ("agent_system", "plugins", "plugins_writer", "plugins_llm"):
                     continue
                 found.add(top)
     return found
@@ -129,3 +143,39 @@ def test_every_import_is_declared_in_core_or_the_plugins_toml():
         "TRANSITIVE installs and fail on a fresh server (that is how "
         "image_compose lost SVG rendering in production):\n  "
         + "\n  ".join(offenders))
+
+
+#: Core llm/ imports that deliberately live on a PLUGIN-declared dist, each
+#: with the reason. Anything new here needs the same kind of justification.
+CORE_LLM_KNOWN_PLUGIN_DEPS = {
+    # tts.py (Gemini TTS, its own factory chain) imports google-genai lazily;
+    # the dist is owned by plugins_llm/llm_gemini (see its plugin.toml) and
+    # installed via requirements/all.txt. Documented last Gemini remnant in
+    # core — moves to the plugin once writer_audio's import path can change.
+    "google",
+}
+
+
+def test_core_llm_imports_stay_provider_free():
+    """The provider split's core invariant: src/agent_system/llm/ must not
+    grow imports of plugin-owned SDKs. The SDKs left requirements/core.txt,
+    so a new core import of one works locally (all.txt installs everything)
+    and fails exactly on installs that trim plugins — invisible to every
+    other test."""
+    core = _core_dists()
+    llm_dir = REPO_ROOT / "src" / "agent_system" / "llm"
+    assert llm_dir.is_dir()
+
+    imports = _third_party_imports(llm_dir)
+    assert len(imports) >= 3, f"scanner collected only {imports} — went blind"
+
+    offenders = [
+        imp for imp in sorted(imports)
+        if imp not in CORE_LLM_KNOWN_PLUGIN_DEPS
+        and _norm(IMPORT_TO_DIST.get(imp.lower(), imp)) not in core
+    ]
+    assert not offenders, (
+        f"core llm/ imports third-party packages that core.txt does not "
+        f"declare: {offenders} — either the dep belongs back in core.txt or "
+        f"the code belongs in a plugin (documented exceptions: "
+        f"{sorted(CORE_LLM_KNOWN_PLUGIN_DEPS)})")

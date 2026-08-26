@@ -21,7 +21,9 @@ class TestWebUICancellation:
         # Create proper AgentSystemConfig (not AgentConfig)
         system_config = AgentSystemConfig(
             llm_system=LLMSystemConfig(
-                models={"test-model": LLMModelConfig(provider="mock", model="test-model")},
+                # provider "ollama": needs no API key; the conftest fake intercepts the
+                # build anyway, so no socket is ever opened.
+                models={"test-model": LLMModelConfig(provider="ollama", model="test-model")},
                 profiles={"normal": LLMProfile(model_ref="test-model")},
                 default_profile="normal"
             )
