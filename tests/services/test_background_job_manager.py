@@ -9,6 +9,7 @@ Tests cover:
 - Concurrent access
 """
 import asyncio
+import contextlib
 import pytest
 from unittest.mock import MagicMock
 
@@ -157,6 +158,109 @@ class TestBackgroundJobManager:
         assert job.status == JobStatus.FAILED
         assert "Test error" in job.error_message
     
+    @pytest.mark.asyncio
+    async def test_create_job_refuses_duplicate_running_request_id(
+        self, job_manager,
+    ):
+        """Check-and-register must be ONE atomic step.
+
+        The callers' duplicate guard (app.py's _validate_client_request_id)
+        is a check-then-act with a wide window — it runs in the request
+        handler while create_job only runs once the SSE body streams — so
+        two concurrent requests both passed it and both started a full
+        agent run. Registering blindly then left the older run alive but
+        unreachable by id: no reconnect, and cancel_job would have hit the
+        younger run instead.
+        """
+        from agent_system.services.background_job_manager import (
+            DuplicateRequestIdError,
+        )
+        may_finish = asyncio.Event()
+        started = []
+
+        async def runner():
+            started.append(1)
+            yield {"type": "ev"}
+            await may_finish.wait()
+
+        first = await job_manager.create_job(
+            request_id="dup0", user_id="u", agent_name="a",
+            session_id=None, agent_runner=runner,
+        )
+        await asyncio.sleep(0)  # let the first wrapper start
+
+        with pytest.raises(DuplicateRequestIdError):
+            await job_manager.create_job(
+                request_id="dup0", user_id="u", agent_name="a",
+                session_id=None, agent_runner=runner,
+            )
+
+        assert await job_manager.get_job("dup0") is first, (
+            "the refused duplicate displaced the live job anyway"
+        )
+        may_finish.set()
+        await asyncio.wait_for(first.task, timeout=2.0)
+        assert started == [1], f"a second agent run started: {started!r}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "outcome, expected",
+        [
+            ("complete", JobStatus.COMPLETED),
+            ("raise", JobStatus.FAILED),
+            ("cancel", JobStatus.CANCELLED),
+        ],
+    )
+    async def test_terminal_status_is_written_to_its_own_job(
+        self, job_manager, outcome, expected,
+    ):
+        """A finishing job must only write its OWN status — on every one
+        of the three terminal paths.
+
+        Writing through self._jobs[request_id] instead meant that if the
+        dict had since been rebound to another job, the finishing run
+        marked THAT still-running job terminal: a live agent reported as
+        done. Parametrised because the three branches are separate code:
+        covering only 'completed' let the failure and cancel paths keep
+        the old lookup silently.
+        """
+        may_finish = asyncio.Event()
+
+        async def runner():
+            yield {"type": "ev"}
+            await may_finish.wait()
+            if outcome == "raise":
+                raise ValueError("boom")
+
+        job = await job_manager.create_job(
+            request_id="own1", user_id="u", agent_name="a",
+            session_id=None, agent_runner=runner,
+        )
+        await asyncio.sleep(0)
+
+        # Rebind the id to a foreign job, exactly as a racing duplicate
+        # would have. Bypasses create_job (which now refuses duplicates) —
+        # the point here is the WRITE path, not the registration.
+        foreign = BackgroundJob(
+            request_id="own1", user_id="u", agent_name="other",
+            session_id=None, task=MagicMock(spec=asyncio.Task),
+            event_queue=asyncio.Queue(),
+        )
+        job_manager._jobs["own1"] = foreign
+
+        may_finish.set()
+        if outcome == "cancel":
+            job.task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(job.task), timeout=2.0)
+        await asyncio.sleep(0.05)
+
+        assert job.status == expected
+        assert foreign.status == JobStatus.RUNNING, (
+            f"the finishing job wrote {foreign.status} onto a foreign, "
+            "still-running job — status lies about a live agent"
+        )
+
     @pytest.mark.asyncio
     async def test_get_job(self, job_manager):
         """Test getting a job by ID."""

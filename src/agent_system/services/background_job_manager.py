@@ -23,6 +23,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class DuplicateRequestIdError(RuntimeError):
+    """A job is already RUNNING under this request_id.
+
+    Raised by ``create_job`` instead of displacing the live run. Callers
+    should surface it rather than starting a second agent: retrying the
+    same request_id lands on the reconnect path once the caller sees it.
+    """
+
+    def __init__(self, request_id: str) -> None:
+        super().__init__(
+            f"request_id {request_id} is already running — refusing to "
+            "start a second job under the same id"
+        )
+        self.request_id = request_id
+
+
 class JobStatus(Enum):
     """Status of a background job."""
     RUNNING = "running"
@@ -191,13 +207,17 @@ class BackgroundJobManager:
             BackgroundJob instance with task and event_queue
         """
         event_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.MAX_EVENT_BUFFER)
-        
+
+        # The job object THIS wrapper owns, assigned below under the lock.
+        # The wrapper must never write through ``self._jobs[request_id]``:
+        # should the dict ever hold a different job for this id, writing
+        # through it would flip a foreign, still-running job to COMPLETED —
+        # a lying status on a live run. (``is not None`` is for the type
+        # checker: the assignment happens before the task can first run.)
+        own_job: Optional[BackgroundJob] = None
+
         async def job_wrapper() -> None:
             """Wrapper that runs the agent and captures events/errors."""
-            job = self._jobs.get(request_id)
-            if not job:
-                return
-            
             try:
                 async for event in agent_runner():
                     # Put event in queue (non-blocking, drop old if full)
@@ -213,24 +233,24 @@ class BackgroundJobManager:
                 
                 # Mark as completed
                 async with self._lock:
-                    if job := self._jobs.get(request_id):
-                        job.status = JobStatus.COMPLETED
-                        job.completed_at = time.time()
+                    if own_job is not None:
+                        own_job.status = JobStatus.COMPLETED
+                        own_job.completed_at = time.time()
                         logger.info(f"[BACKGROUND_JOB] Job {request_id} completed successfully")
-                
+
             except asyncio.CancelledError:
                 async with self._lock:
-                    if job := self._jobs.get(request_id):
-                        job.status = JobStatus.CANCELLED
-                        job.completed_at = time.time()
+                    if own_job is not None:
+                        own_job.status = JobStatus.CANCELLED
+                        own_job.completed_at = time.time()
                         logger.info(f"[BACKGROUND_JOB] Job {request_id} was cancelled")
                 raise
             except Exception as e:
                 async with self._lock:
-                    if job := self._jobs.get(request_id):
-                        job.status = JobStatus.FAILED
-                        job.error_message = str(e)
-                        job.completed_at = time.time()
+                    if own_job is not None:
+                        own_job.status = JobStatus.FAILED
+                        own_job.error_message = str(e)
+                        own_job.completed_at = time.time()
                         logger.error(f"[BACKGROUND_JOB] Job {request_id} failed: {e}", exc_info=True)
             finally:
                 # Signal end to any waiting consumers
@@ -239,21 +259,36 @@ class BackgroundJobManager:
                 except asyncio.QueueFull:
                     pass
         
-        task = asyncio.create_task(job_wrapper(), name=f"background_job_{request_id}")
-        
-        job = BackgroundJob(
-            request_id=request_id,
-            user_id=user_id,
-            agent_name=agent_name,
-            session_id=session_id,
-            task=task,
-            event_queue=event_queue,
-            llm_profile=llm_profile,
-        )
-        
+        # Check-and-register in ONE lock block. The callers' own duplicate
+        # guard (app.py's _validate_client_request_id) is a check-then-act
+        # with a wide window — it runs in the request handler while
+        # create_job only runs once the SSE body is being streamed — so two
+        # concurrent requests carrying the same caller-supplied request_id
+        # both passed it and both started a full agent run. Registering
+        # blindly then left the older run alive but unreachable by id: no
+        # reconnect, and cancel_job would cancel the younger run instead.
+        # asyncio.create_task does not await, so the whole sequence stays
+        # atomic against other coroutines.
         async with self._lock:
+            existing = self._jobs.get(request_id)
+            if existing is not None and existing.status == JobStatus.RUNNING:
+                raise DuplicateRequestIdError(request_id)
+
+            task = asyncio.create_task(
+                job_wrapper(), name=f"background_job_{request_id}",
+            )
+            job = BackgroundJob(
+                request_id=request_id,
+                user_id=user_id,
+                agent_name=agent_name,
+                session_id=session_id,
+                task=task,
+                event_queue=event_queue,
+                llm_profile=llm_profile,
+            )
+            own_job = job
             self._jobs[request_id] = job
-        
+
         logger.info(f"[BACKGROUND_JOB] Started job {request_id} for agent {agent_name}")
         return job
     

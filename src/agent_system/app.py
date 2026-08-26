@@ -34,6 +34,7 @@ from .services.session_manager import SessionManager, SessionPermissionError
 from .services.background_job_manager import (
     BackgroundJob,
     BackgroundJobManager,
+    DuplicateRequestIdError,
     JobStatus,
     get_background_job_manager,
 )
@@ -258,10 +259,38 @@ async def _init_batch_queue_manager(config, logger):
 
 async def _shutdown_batch_queue_manager(logger):
     """Stop the batch queue manager during shutdown.
-    
+
     Delegates to the centralized shutdown_batch_system() utility function.
     """
     await shutdown_batch_system(custom_logger=logger)
+
+
+async def _validate_client_request_id(client_request_id: str) -> str:
+    """Guard a caller-supplied request_id before adopting it for a NEW run.
+
+    Shared by POST /run and GET/POST /events (non-reconnect path). The id
+    flows into log lines, ownership maps and cancellation-token keys, so:
+      - format whitelist (8-64 url-safe chars) → 400;
+      - 409 when the id is already live ANYWHERE (BackgroundJob, any
+        registry agent, default agent) — the duplicate-dispatch guard: a
+        caller retry that fires while the original run is still grinding
+        gets a clean 409 instead of silently starting a second run.
+    """
+    rid = str(client_request_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", rid):
+        raise HTTPException(
+            status_code=400,
+            detail="invalid request_id: expected 8-64 chars [A-Za-z0-9_-]",
+        )
+    if await get_background_job_manager().is_request_active_anywhere(rid):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"request_id {rid} is already active — "
+                "the original run is still in flight"
+            ),
+        )
+    return rid
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
@@ -1520,32 +1549,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # and cancel propagation no-opped while the agent kept burning
         # tokens.
         #
-        # Guards:
-        #   - format whitelist (8-64 url-safe chars) — the id flows into
-        #     log lines, ownership maps and cancellation-token keys;
-        #   - 409 when the id is already live ANYWHERE (BackgroundJob,
-        #     any registry agent, default agent). This doubles as a
-        #     duplicate-dispatch guard: a writer retry that fires while
-        #     the original run is still grinding gets a clean 409
-        #     (classified transient writer-side) instead of silently
-        #     starting a second concurrent agent run for the same job.
+        # Guards (format whitelist → 400, already-active id → 409):
+        # see _validate_client_request_id, shared with /events.
         if client_request_id:
-            if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", str(client_request_id)):
-                raise HTTPException(
-                    status_code=400,
-                    detail="invalid request_id: expected 8-64 chars [A-Za-z0-9_-]",
-                )
-            if await get_background_job_manager().is_request_active_anywhere(
-                str(client_request_id)
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"request_id {client_request_id} is already active — "
-                        "the original run is still in flight"
-                    ),
-                )
-            request_id = str(client_request_id)
+            request_id = await _validate_client_request_id(client_request_id)
 
         logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user=%s",
                    task, len(upload_files), request_id, session_id, agent_name or "default", 
@@ -1867,9 +1874,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Use the agent_name from the original job, not from query params
                 agent_name = existing_job.agent_name
         
-        # Generate new request_id if not reconnecting
+        # Not reconnecting: adopt a caller-supplied request_id (parity with
+        # POST /run) so external dispatchers can track/cancel the run under
+        # an ID they know; mint one only when the client sent none. Before
+        # 2026-08 a client-supplied ID was silently discarded here, which
+        # made every /events-dispatched run uncancellable by its caller.
+        # Same guards as /run: format whitelist → 400, id already active
+        # elsewhere (non-BackgroundJob, so not reconnectable) → 409.
         if not existing_job:
-            request_id = short_id()
+            if request_id:
+                request_id = await _validate_client_request_id(request_id)
+            else:
+                request_id = short_id()
             
         # Register request ownership for status stream security
         # (register_request_user, not a raw dict write -- keeps the FIFO cap)
@@ -2022,14 +2038,27 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 ):
                     yield ev
             
-            job = await job_manager.create_job(
-                request_id=request_id,
-                user_id=user_id,
-                agent_name=agent_name or "default",
-                session_id=session_id,
-                agent_runner=agent_runner,
-                llm_profile=llm_profile,
-            )
+            try:
+                job = await job_manager.create_job(
+                    request_id=request_id,
+                    user_id=user_id,
+                    agent_name=agent_name or "default",
+                    session_id=session_id,
+                    agent_runner=agent_runner,
+                    llm_profile=llm_profile,
+                )
+            except DuplicateRequestIdError:
+                # A concurrent request won the race for this caller-supplied
+                # id (the 409 guard above cannot be atomic with create_job,
+                # which only runs once this body is streamed). Refuse instead
+                # of starting a second agent under the same id; the caller's
+                # retry lands on the reconnect fast path.
+                logger.warning(
+                    "SSE /events refused duplicate request_id=%s — a job is "
+                    "already running under it", request_id,
+                )
+                yield f"data: {json.dumps({'type': 'error', 'request_id': request_id, 'error': 'request_id is already running — reconnect instead of starting a second run'}, ensure_ascii=False)}\n\n"
+                return
             # Store task description for reconnect
             job.task_description = task
 
@@ -2157,7 +2186,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent or agent_name: Optional agent to use
         - llm_profile: Optional LLM profile override
-        - request_id: Optional request ID to reconnect to an existing running job
+        - request_id: Optional request ID — reconnects if it matches a
+          running job, otherwise the new run is keyed under it (parity
+          with POST /run; format/active-elsewhere guards apply)
 
         Note: For long task texts, prefer POST /events to avoid URL length limits.
         """
@@ -2181,7 +2212,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use
         - llm_profile: Optional LLM profile override
-        - request_id: Optional request ID to reconnect to an existing running job
+        - request_id: Optional request ID — reconnects if it matches a
+          running job, otherwise the new run is keyed under it (parity
+          with POST /run; format/active-elsewhere guards apply)
 
         This endpoint avoids URL length limits that affect GET /events
         when sending long task texts.
